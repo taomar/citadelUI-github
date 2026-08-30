@@ -1,0 +1,1521 @@
+/* ============================================================================
+   Citadel UI — foundation
+
+   THE WORLD: cold-rolled steel. The working sheet is paper white and the
+   *chrome* is tinted graphite — the inverse of a tinted-page dashboard. Rules
+   are hairlines. Controls are wells sunk back into the sheet with a top inner
+   shadow, never filled grey blocks: an empty well is a recess, which reads as
+   absence, where an empty filled block reads as presence. No card ever gets a
+   border. Two elevations exist and nothing sits between them.
+
+   RAMPS, named for role rather than hue:
+     --ground / --band / --sunk     the chrome: rails, title block, sticky bands
+     --sheet / --well / --zebra     the paper: working surface, control, banding
+     --ink-1 / --ink-2 / --ink-3    one ink at three weights
+
+   COLOUR IS RATIONED to four meanings and nothing else:
+     --brass  action, current position, focus — never decoration, never a chip
+     --prov   provenance: this value is sourced outside this file
+     --ok     valid
+     --bad    invalid
+   Brass rather than indigo: indigo is the single most common accent in
+   light-mode developer tooling, which is precisely why it reads as generic.
+
+   SIZING: two rules, and they are the whole control system.
+     1. Control TYPE is a function of the declared Bicep type, never of the
+        expression wrapping it. int(readEnvironmentVariable(..)) is a number.
+     2. Control WIDTH is a function of the value's expected length, never of
+        available space. Four widths exist. Nothing is 100%.
+   The four widths are stated in rem, not px, so they hold their content
+   relationship under browser zoom and a changed root font-size while landing
+   on the reviewed pixel values at a 16px root. Layout tracks stay intrinsic
+   (minmax/auto-fit/clamp/ch) so the sheet is resolution-independent.
+
+   TYPE: Segoe UI Variable at its three intended optical sizes — Small at or
+   below 12px, Text for body and controls, Display for the area title. Cascadia
+   Mono for every value, identifier and path, because those are data.
+   No text-transform: uppercase anywhere. Uppercasing an identifier deletes the
+   camelCase word boundaries that are the only thing making it legible.
+
+   CONTRAST: every text token clears 4.5:1 on every surface it can land on,
+   including the deepest. Ratios are computed by tools/contrast.mjs.
+   ========================================================================== */
+
+:root {
+  /* --- the chrome ------------------------------------------------------- */
+  --ground: #edf1f5;
+  --band: #f1f4f7;
+  --sunk: #d8e0e8;
+  --nav: #17212c;
+  --nav-hover: #202d3a;
+  --nav-active: #263544;
+  --nav-rule: #334353;
+  --nav-ink: #f7f9fb;
+  --nav-muted: #bdc8d3;
+  --nav-accent: #ffc07a;
+
+  /* --- the paper -------------------------------------------------------- */
+  --sheet: #ffffff;
+  --well: #fbfcfd;
+  --zebra: #f7f9fb;
+
+  /* --- rules: a hairline, never a border -------------------------------- */
+  --rule: #dce3ea;
+  --rule-strong: #b9c5d0;
+  --rule-soft: #e8edf2;
+
+  /* --- ink -------------------------------------------------------------- */
+  --ink-1: #121820;
+  --ink-2: #344150;
+  --ink-3: #526171;
+
+  /* --- action, current position, focus ---------------------------------- */
+  --brass: #914800;
+  --brass-2: #713800;
+  --brass-wash: #fbf0e5;
+  --brass-line: #d7aa7d;
+  --on-brass: #ffffff;
+
+  /* --- provenance: sourced outside this file ---------------------------- */
+  --prov: #0b5e75;
+  --prov-wash: #e6f0f3;
+  --prov-line: #a6cad4;
+
+  /* --- validity --------------------------------------------------------- */
+  --ok: #146b33;
+  --ok-wash: #e8f2eb;
+  --ok-line: #a8ceb6;
+
+  --bad: #b3261e;
+  --bad-wash: #f9eae9;
+  --bad-line: #e2b2af;
+  /* An alpha wash without a matching ink is how the recovery alert landed at
+     4.17:1. Text on --bad-wash uses this, not the secondary ink. */
+  --bad-ink: #0f1216;
+
+  /* --- legacy aliases ---------------------------------------------------
+     The component layer addresses these names in ~300 rules. They are mapped
+     onto the ramp above rather than renamed in place, so there is exactly one
+     source of truth for every colour and no rule can drift off it. */
+  --casing: var(--band);
+  --casing-2: var(--sunk);
+  --sheet-2: var(--zebra);
+  --field: var(--well);
+  --field-2: var(--zebra);
+  --rule-2: var(--rule-strong);
+  --ink: var(--ink-1);
+  --act: var(--brass);
+  --act-2: var(--brass-2);
+  --act-tint: var(--brass-wash);
+  --act-line: var(--brass-line);
+  --on-act: var(--on-brass);
+  --env: var(--prov);
+  --env-tint: var(--prov-wash);
+  --env-line: var(--prov-line);
+  --ok-tint: var(--ok-wash);
+  --bad-tint: var(--bad-wash);
+
+  /* --- type ------------------------------------------------------------- */
+  --sans: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --sans-display: 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --sans-small: 'Segoe UI Variable Small', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'Cascadia Mono', 'Cascadia Code', ui-monospace, Consolas, 'Liberation Mono', monospace;
+
+  /* 11 · 12 · 13 · 15 · 17 · 20. Ratio 1.15–1.25: tight, as Operate wants.
+     The two upper steps clamp so they track the viewport without ever
+     colliding with the step below. */
+  --t-mark: 0.6875rem;
+  --t-meta: 0.78125rem;
+  --t-body: 0.875rem;
+  --t-lead: 1rem;
+  --t-micro: var(--t-mark);
+  --t-small: var(--t-meta);
+  --t-h3: var(--t-lead);
+  --t-h2: clamp(1rem, 0.95rem + 0.2vw, 1.0625rem);
+  --t-h1: clamp(1.125rem, 1.05rem + 0.3vw, 1.25rem);
+
+  /* --- space: 2 · 4 · 8 · 12 · 16 · 24 · 32 · 48 ------------------------
+     An 8px base with a 4px half-step. Everything lands on the grid, which is
+     what makes the 32px row height fall out instead of being dialled in. */
+  --sp-1: 0.125rem;
+  --sp-2: 0.25rem;
+  --sp-3: 0.25rem;
+  --sp-4: 0.5rem;
+  --sp-5: 0.75rem;
+  --sp-6: 1rem;
+  --sp-7: 1.5rem;
+  --sp-8: 2rem;
+  --sp-9: 3rem;
+
+  /* Sheet gutter grows with the viewport but never runs away from the text. */
+  --gutter: clamp(0.75rem, 0.4rem + 1.1vw, 1.5rem);
+
+  /* 3px everywhere. Not 2/4/6. */
+  --r-1: 4px;
+  --r-2: 5px;
+  --r-3: 6px;
+
+  /* --- control geometry --------------------------------------------------
+     Four widths, keyed to what the value is, never to the space beside it.
+     88 / 200 / 320 / 460 at a 16px root; rem so they survive zoom. */
+  --w-num: 5.5rem;
+  --w-short: 12.5rem;
+  --w-id: 20rem;
+  --w-long: 28.75rem;
+
+  /* 30px: line-height 18px at 13px mono clears descenders. 26px did not. */
+  --ctl-h: 1.875rem;
+  --ctl-h-sm: 1.625rem;
+  --row-h: 2rem;
+
+  /* --- elevation: exactly two -------------------------------------------
+     0 for everything in the document; --lift for the three things that
+     genuinely overlay it (explain popover, picker, dialog). */
+  --lift-1: none;
+  --lift-2: 0 6px 20px -6px rgba(15, 18, 22, 0.18), 0 1px 3px rgba(15, 18, 22, 0.1);
+  --lift: var(--lift-2);
+  /* Solid brass at full opacity on a surface-coloured spacer, so the ring
+     reads identically on sheet, zebra, band and ground. */
+  --focus-ring: 0 0 0 2px var(--sheet), 0 0 0 4px var(--brass);
+  --sink: inset 0 1px 0 rgba(15, 18, 22, 0.06);
+
+  /* --- motion ----------------------------------------------------------- */
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --fast: 140ms;
+  --slow: 180ms;
+
+  /* --- shell tracks ----------------------------------------------------- */
+  --rail-areas: clamp(9.5rem, 10.5vw, 13.5rem);
+  --rail-context: clamp(12rem, 13vw, 15rem);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--ground);
+  color: var(--ink);
+  font: var(--t-body) / 1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--mono);
+  font-size: 0.94em;
+  font-variant-ligatures: none;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5 {
+  margin: 0;
+  font-family: var(--sans-display);
+  font-weight: 600;
+  line-height: 1.22;
+  letter-spacing: -0.006em;
+}
+
+p {
+  margin: 0;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+a {
+  color: var(--act);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--r-2);
+}
+
+::selection {
+  background: var(--act-line);
+  color: var(--ink);
+}
+
+/* `display` on a component overrides the `hidden` attribute unless it is
+   restated. Every element the app toggles with `hidden` relies on this. */
+[hidden] {
+  display: none !important;
+}
+
+/* ------------------------------------------------------------- scrollbars */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule-2) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--rule-2);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-3);
+  background-clip: content-box;
+}
+
+/* ============================================================== the shell */
+
+/* Four regions on two rows. The context rail is its own named track so it can
+   collapse to nothing without a second grid definition or a breakpoint hack. */
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail-areas) var(--ctx-track, var(--rail-context)) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    'title title title'
+    'areas context sheet';
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.shell[data-rail='off'] {
+  --ctx-track: 0px;
+}
+
+.shell[data-rail='off'] .rail-context {
+  display: none;
+}
+
+/* Under ~1100px the two rails cannot both hold their labels at full width, so
+   both tracks step down proportionally rather than one of them collapsing. */
+@media (max-width: 68rem) {
+  :root {
+    --rail-areas: clamp(8.5rem, 15vw, 11rem);
+    --rail-context: clamp(9rem, 16vw, 12rem);
+  }
+}
+
+/* ----------------------------------------------------------- title block */
+
+.titleblock {
+  grid-area: title;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  min-height: 2.5rem;
+  padding: var(--sp-3) var(--gutter) var(--sp-3) var(--sp-5);
+  background: var(--sheet);
+  border-bottom: 1px solid var(--rule-2);
+}
+
+.tb-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex: none;
+  color: var(--ink);
+  text-decoration: none;
+  border-radius: var(--r-2);
+}
+
+.tb-brand:hover {
+  text-decoration: none;
+}
+
+.tb-mark {
+  width: 0.625rem;
+  height: 0.625rem;
+  flex: none;
+  background: var(--act);
+  transform: rotate(45deg);
+  border-radius: 2px;
+}
+
+.tb-name {
+  font-family: var(--sans-display);
+  font-size: var(--t-small);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.tb-doc {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.tb-key {
+  flex: none;
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.tb-path {
+  min-width: 0;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tb-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex: none;
+}
+
+.tb-sep {
+  width: 1px;
+  align-self: stretch;
+  margin-block: var(--sp-1);
+  background: var(--rule-2);
+}
+
+.tb-pending,
+.tb-clean {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font-family: var(--sans-small);
+  font-size: var(--t-small);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.tb-pending::before,
+.tb-clean::before {
+  content: '';
+  width: 0.4375rem;
+  height: 0.4375rem;
+  border-radius: 50%;
+  background: var(--rule-2);
+}
+
+.tb-pending.is-dirty {
+  color: var(--act);
+  font-weight: 600;
+}
+
+.tb-pending.is-dirty::before {
+  background: var(--act);
+}
+
+/* ------------------------------------------------------------------ rails */
+
+.rail {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  background: var(--casing);
+}
+
+.rail-areas {
+  grid-area: areas;
+  border-right: 1px solid var(--nav-hover);
+  background: var(--nav);
+  padding-block: var(--sp-4) var(--sp-6);
+}
+
+.rail-context {
+  grid-area: context;
+  border-right: 1px solid var(--rule-2);
+  background: var(--band);
+  padding-block: var(--sp-4) var(--sp-6);
+}
+
+.rail-block {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.rail-block + .rail-block {
+  margin-top: var(--sp-5);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--rule);
+}
+
+.rail-block-grow {
+  flex: 1 1 auto;
+}
+
+.rail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-4) var(--sp-3) var(--sp-5);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.rail-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+/* ------------------------------------------------------------- areas nav */
+
+.areas {
+  display: flex;
+  flex-direction: column;
+}
+
+.area {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: var(--sp-4) var(--sp-4) var(--sp-4) var(--sp-5);
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--fast) var(--ease);
+}
+
+.area:hover {
+  background: var(--nav-hover);
+}
+
+.area.active {
+  background: var(--nav-active);
+}
+
+.area.active::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 2px;
+  background: var(--act);
+}
+
+.area-title {
+  display: block;
+  font-family: var(--sans-display);
+  font-size: var(--t-lead);
+  font-weight: 600;
+  color: var(--nav-ink);
+}
+
+.area.active .area-title {
+  color: var(--nav-accent);
+}
+
+.area-sub {
+  display: block;
+  margin-top: var(--sp-1);
+  font-size: var(--t-small);
+  line-height: 1.35;
+  color: var(--nav-muted);
+  text-wrap: pretty;
+}
+
+/* --------------------------------------------------- all parameter files */
+
+.all-deployments {
+  margin-top: var(--sp-5);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--nav-rule);
+}
+
+.all-deployments > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-5);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--nav-muted);
+  cursor: pointer;
+  list-style: none;
+}
+
+.all-deployments > summary::-webkit-details-marker {
+  display: none;
+}
+
+.all-deployments > summary::before {
+  content: '';
+  width: 0.4375rem;
+  height: 0.4375rem;
+  flex: none;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--fast) var(--ease);
+}
+
+.all-deployments[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+.all-deployments > summary:hover {
+  color: var(--nav-ink);
+}
+
+.all-deployments .ctl-sm {
+  width: calc(100% - 2 * var(--sp-5));
+  margin: var(--sp-2) var(--sp-5) var(--sp-3);
+}
+
+.all-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-item {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-5);
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--fast) var(--ease);
+}
+
+.nav-item:hover {
+  background: var(--nav-hover);
+}
+
+.nav-item.active {
+  background: var(--nav-active);
+}
+
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 2px;
+  background: var(--act);
+}
+
+.nav-name {
+  display: block;
+  font-size: var(--t-body);
+  font-weight: 600;
+  color: var(--nav-ink);
+  overflow-wrap: anywhere;
+}
+
+.nav-meta {
+  display: block;
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  color: var(--nav-muted);
+  overflow-wrap: anywhere;
+}
+
+/* ============================================================ primitives */
+
+/* ---------------------------------------------------------------- button */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  min-height: var(--ctl-h);
+  padding: 0 var(--sp-5);
+  border: 1px solid var(--rule-2);
+  border-radius: var(--r-2);
+  background: var(--sheet);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: var(--t-body);
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--fast) var(--ease),
+    border-color var(--fast) var(--ease),
+    color var(--fast) var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--field);
+  border-color: var(--ink-3);
+}
+
+.btn:active:not(:disabled) {
+  background: var(--field-2);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--act);
+  border-color: var(--act);
+  color: var(--on-act);
+}
+
+.btn-primary:hover:not(:disabled),
+.btn-primary:active:not(:disabled),
+.btn-primary.active {
+  background: var(--act-2);
+  border-color: var(--act-2);
+  color: var(--on-act);
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-2);
+  font-weight: 500;
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--field);
+  border-color: var(--rule-2);
+  color: var(--ink);
+}
+
+.btn-danger-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--bad);
+  font-weight: 500;
+}
+
+.btn-danger-ghost:hover:not(:disabled) {
+  background: var(--bad-tint);
+  border-color: var(--bad-line);
+  color: var(--bad);
+}
+
+.btn-sm {
+  min-height: var(--ctl-h-sm);
+  padding: 0 var(--sp-4);
+  font-size: var(--t-small);
+}
+
+.btn-link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--act);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: var(--r-1);
+}
+
+.btn-link:hover {
+  color: var(--act-2);
+  text-decoration: underline;
+}
+
+/* Destructive actions are not sentences.
+   "Remove override" and "Stop checking" used to be link-coloured runs of text
+   that a reader could take for prose and a mouse could hit by accident. They
+   are buttons now, and they carry a button's outline the moment a pointer or
+   the keyboard reaches them, so the difference between reading and destroying
+   is legible before the click rather than after it. */
+.btn-quiet {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--sp-2);
+  min-height: var(--ctl-h-sm);
+  border: 1px solid transparent;
+  border-radius: var(--r-1);
+  background: none;
+  font-family: inherit;
+  font-size: var(--t-meta);
+  font-weight: 600;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition:
+    color var(--fast) var(--ease),
+    border-color var(--fast) var(--ease),
+    background var(--fast) var(--ease);
+}
+
+.btn-destructive:hover,
+.btn-destructive:focus-visible {
+  border-color: var(--bad-line);
+  background: var(--bad-wash);
+  color: var(--bad);
+}
+
+/* ---------------------------------------------------------------- inputs
+   A control is a well sunk into the sheet: near-white fill, a firmer edge than
+   a document rule, and a single-pixel inner shadow along the top so light
+   falls into it. This is the whole reason an *empty* control can now read as
+   absence — a recess with nothing in it is nothing, where the filled grey
+   block it replaces was the heaviest object in its row and shouted at the
+   reader about the one field that had least to say.
+
+   WIDTH IS NEVER 100%. A control's width states what the value is: a port
+   number is 88px because ports are four digits, a resource name is 320px
+   because that is a resource name. Sizing to the parent instead is what put a
+   190px input inside a 957px cell on ninety-seven consecutive rows. */
+
+.ctl {
+  width: var(--w-id);
+  max-width: 100%;
+  min-width: 0;
+  min-height: var(--ctl-h);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-2);
+  background: var(--well);
+  box-shadow: var(--sink);
+  color: var(--ink-1);
+  font-family: var(--mono);
+  font-size: var(--t-body);
+  line-height: calc(var(--ctl-h) - 2px);
+  transition:
+    background var(--fast) var(--ease),
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease);
+}
+
+/* The four widths. Nothing else assigns a control width. */
+.ctl-w-num { width: var(--w-num); }
+.ctl-w-short { width: var(--w-short); }
+.ctl-w-id { width: var(--w-id); }
+.ctl-w-long { width: var(--w-long); }
+
+textarea.ctl {
+  width: var(--w-long);
+  min-height: calc(var(--ctl-h) * 2);
+  padding: var(--sp-3) var(--sp-4);
+  line-height: 1.5;
+  resize: vertical;
+  field-sizing: content;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+select.ctl {
+  width: auto;
+  min-width: var(--w-short);
+  max-width: var(--w-id);
+  padding-right: var(--sp-3);
+  font-family: var(--sans);
+  cursor: pointer;
+}
+
+.ctl::placeholder {
+  color: var(--ink-3);
+  font-family: var(--sans);
+  font-style: italic;
+  opacity: 1;
+}
+
+.ctl:hover:not(:disabled) {
+  background: var(--sheet);
+  border-color: var(--ink-3);
+}
+
+.ctl:focus {
+  outline: none;
+  background: var(--sheet);
+  border-color: var(--brass);
+  box-shadow: var(--focus-ring);
+}
+
+.ctl:disabled {
+  color: var(--ink-3);
+  background: var(--zebra);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.ctl:user-invalid {
+  border-color: var(--bad);
+  background: var(--bad-wash);
+  color: var(--bad-ink);
+}
+
+.ctl-sm {
+  min-height: var(--ctl-h-sm);
+  font-size: var(--t-meta);
+  line-height: calc(var(--ctl-h-sm) - 2px);
+}
+
+/* A number is four to six digits. It is never a name-width box, and it reads
+   in a column, so it is tabular and right-aligned. */
+.ctl-num {
+  width: var(--w-num);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+input[type='search'].ctl {
+  font-family: var(--sans);
+}
+
+.ctl-check {
+  width: 0.9375rem;
+  height: 0.9375rem;
+  margin: 0;
+  accent-color: var(--act);
+  cursor: pointer;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: var(--ctl-h);
+  font-size: var(--t-body);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.check:hover {
+  color: var(--ink);
+}
+
+/* ---------------------------------------------------------------- switch */
+
+/* `position: relative` is load-bearing, not cosmetic. The visually-hidden input
+   below is absolutely positioned; without a positioned ancestor its containing
+   block is the initial containing block, so no `overflow` on .sheet/.shell/body
+   can clip it. Fifteen of them then sit at document coordinates far below the
+   fold and stretch the page to ~2.5x the viewport, which lets the whole shell
+   scroll up and expose the ground colour beneath it. */
+.toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-height: var(--ctl-h);
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toggle-track {
+  position: relative;
+  width: 1.875rem;
+  height: 1.0625rem;
+  flex: none;
+  border: 1px solid var(--rule-2);
+  border-radius: 999px;
+  background: var(--field-2);
+  transition:
+    background var(--fast) var(--ease),
+    border-color var(--fast) var(--ease);
+}
+
+.toggle-track::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 0.8125rem;
+  height: 0.8125rem;
+  border-radius: 50%;
+  background: var(--sheet);
+  box-shadow: 0 1px 2px rgba(20, 23, 29, 0.3);
+  transition: transform var(--slow) var(--ease-out);
+}
+
+.toggle input:checked + .toggle-track {
+  background: var(--act);
+  border-color: var(--act);
+}
+
+.toggle input:checked + .toggle-track::after {
+  transform: translateX(0.8125rem);
+}
+
+.toggle input:focus-visible + .toggle-track {
+  box-shadow: var(--focus-ring);
+}
+
+.toggle input:disabled + .toggle-track {
+  opacity: 0.5;
+}
+
+.toggle-label {
+  font-family: var(--mono);
+  font-size: var(--t-body);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.toggle input:checked ~ .toggle-label {
+  color: var(--ink);
+}
+
+/* ----------------------------------------------------------------- chips */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 1.125rem;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-1);
+  background: var(--field);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  line-height: 1.125rem;
+  letter-spacing: 0.02em;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.chip-type {
+  padding-inline: 0;
+  border-color: transparent;
+  background: transparent;
+  font-family: var(--mono);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.chip-env {
+  background: var(--env-tint);
+  border-color: var(--env-line);
+  color: var(--env);
+}
+
+.chip-secure,
+.chip-bad {
+  background: var(--bad-tint);
+  border-color: var(--bad-line);
+  color: var(--bad);
+}
+
+.chip-dirty,
+.chip-provider {
+  background: var(--act-tint);
+  border-color: var(--act-line);
+  color: var(--act);
+}
+
+.chip-ok {
+  background: var(--ok-tint);
+  border-color: var(--ok-line);
+  color: var(--ok);
+}
+
+.chip-warn {
+  border-color: var(--rule-2);
+  color: var(--ink-2);
+}
+
+.chip-count,
+.chip-note,
+.chip-muted {
+  font-family: var(--mono);
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--ink-3);
+}
+
+.chip-note {
+  font-family: var(--sans-small);
+  font-weight: 600;
+  font-style: italic;
+}
+
+.chip-expr {
+  background: var(--env-tint);
+  border-color: var(--env-line);
+  color: var(--env);
+  font-family: var(--mono);
+}
+
+.chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.875rem;
+  height: 0.875rem;
+  margin-right: calc(var(--sp-2) * -1);
+  border: 0;
+  border-radius: var(--r-1);
+  background: none;
+  color: var(--ink-3);
+  font-size: var(--t-small);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chip-x:hover {
+  color: var(--ink);
+  background: rgba(20, 23, 29, 0.1);
+}
+
+/* ------------------------------------------------------------------ tabs */
+
+.tabs {
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-5);
+}
+
+.tab {
+  position: relative;
+  padding: var(--sp-3) 0 calc(var(--sp-3) + 1px);
+  border: 0;
+  border-radius: var(--r-1) var(--r-1) 0 0;
+  background: none;
+  color: var(--ink-3);
+  font-family: var(--sans);
+  font-size: var(--t-body);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--fast) var(--ease);
+}
+
+.tab:hover {
+  color: var(--ink);
+}
+
+.tab.active {
+  color: var(--act);
+}
+
+.tab.active::after {
+  content: '';
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: 1px 1px 0 0;
+  background: var(--act);
+}
+
+.tab-sm {
+  font-size: var(--t-small);
+}
+
+/* ------------------------------------------------------------------ text */
+
+.hint {
+  font-size: var(--t-small);
+  line-height: 1.45;
+  color: var(--ink-3);
+  text-wrap: pretty;
+}
+
+.hint code {
+  color: var(--ink-2);
+}
+
+.hint-warn {
+  color: var(--bad);
+}
+
+.hint-preview {
+  font-family: var(--mono);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.empty {
+  font-size: var(--t-small);
+  font-style: italic;
+  color: var(--ink-3);
+}
+
+.empty-state {
+  padding: var(--sp-6);
+  border: 1px dashed var(--rule-2);
+  border-radius: var(--r-2);
+  background: var(--sheet-2);
+  font-size: var(--t-body);
+  color: var(--ink-3);
+  text-align: center;
+  text-wrap: pretty;
+}
+
+.empty-state-lg {
+  display: grid;
+  gap: var(--sp-4);
+  justify-items: center;
+  align-content: center;
+  min-height: 10rem;
+  padding: var(--sp-8) var(--sp-6);
+  border: 1px dashed var(--rule-2);
+  border-radius: var(--r-3);
+  background: var(--sheet-2);
+  text-align: center;
+}
+
+.empty-state-lg h4 {
+  font-size: var(--t-h3);
+  color: var(--ink);
+}
+
+.empty-state-lg p {
+  max-width: 52ch;
+  font-size: var(--t-body);
+  color: var(--ink-3);
+  text-wrap: pretty;
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--sheet-2);
+  font-size: var(--t-body);
+  color: var(--ink-2);
+}
+
+.banner-warn {
+  background: var(--bad-tint);
+  border-color: var(--bad-line);
+  color: var(--bad);
+}
+
+.welcome {
+  display: grid;
+  gap: var(--sp-5);
+  align-content: start;
+  justify-items: start;
+  max-width: 68ch;
+  padding: var(--sp-8) 0;
+}
+
+.welcome > p,
+.welcome > .welcome-list {
+  justify-self: stretch;
+}
+
+.welcome h2 {
+  font-size: var(--t-h1);
+}
+
+.welcome p {
+  font-size: var(--t-lead);
+  line-height: 1.55;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+.welcome-list {
+  display: grid;
+  gap: var(--sp-4);
+  padding-left: var(--sp-5);
+  border-left: 2px solid var(--rule);
+}
+
+.welcome-list li {
+  font-size: var(--t-body);
+  color: var(--ink-2);
+}
+
+.raw {
+  margin: 0;
+  padding: var(--sp-5) var(--sp-6);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--sheet-2);
+  font-size: var(--t-body);
+  line-height: 1.55;
+  color: var(--ink);
+  overflow: auto;
+  tab-size: 2;
+}
+
+/* ---------------------------------------------------------------- status */
+
+.status {
+  position: fixed;
+  right: var(--sp-6);
+  bottom: var(--sp-6);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  max-width: min(34rem, calc(100vw - 2 * var(--sp-6)));
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--rule-2);
+  border-radius: var(--r-2);
+  background: var(--sheet);
+  box-shadow: var(--lift-2);
+  font-size: var(--t-body);
+  color: var(--ink);
+  animation: status-in var(--slow) var(--ease-out);
+}
+
+@keyframes status-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+}
+
+/* Severity reads from a leading marker, not a coloured edge. */
+.status::before {
+  content: '';
+  width: 0.4375rem;
+  height: 0.4375rem;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ink-3);
+}
+
+.status-ok::before {
+  background: var(--ok);
+}
+
+.status-warn::before {
+  background: var(--act);
+}
+
+.status-error::before {
+  background: var(--bad);
+}
+
+.status-error {
+  border-color: var(--bad-line);
+  color: var(--bad);
+}
+
+.status-x {
+  margin-left: auto;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-1);
+  background: none;
+  color: var(--ink-3);
+  font-size: var(--t-lead);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.status-x:hover {
+  background: var(--field);
+  color: var(--ink);
+}
+
+/* ----------------------------------------------------------------- modal */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-7);
+  background: rgba(20, 23, 29, 0.42);
+  animation: fade var(--slow) var(--ease-out);
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  width: min(72rem, 100%);
+  max-height: min(90dvh, 60rem);
+  border-radius: var(--r-3);
+  background: var(--sheet);
+  box-shadow: var(--lift-2);
+  overflow: hidden;
+  animation: modal-in var(--slow) var(--ease-out);
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem) scale(0.99);
+  }
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  padding: var(--sp-5) var(--sp-6);
+  border-bottom: 1px solid var(--rule);
+  background: var(--band);
+}
+
+.modal-head h2 {
+  font-size: var(--t-h2);
+}
+
+.modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  gap: var(--sp-6);
+  align-content: start;
+  padding: var(--sp-6);
+  overflow: auto;
+}
+
+.modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-4);
+  padding: var(--sp-5) var(--sp-6);
+  border-top: 1px solid var(--rule);
+  background: var(--band);
+}
+
+/* ------------------------------------------------------------------ diff */
+
+.diff {
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--sheet-2);
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  line-height: 1.6;
+}
+
+/* Four tracks because diff.mjs emits four children per line: the old line
+   number, the new line number, the +/- sign, then the text. Three tracks put
+   .diff-text into an implicit second row inside the 4ch gutter, where it wrapped
+   one character per line. Any change to the row markup in diff.mjs has to be
+   met here. */
+.diff-line {
+  display: grid;
+  grid-template-columns: 4ch 4ch 2ch minmax(0, 1fr);
+  align-items: start;
+}
+
+.diff-no {
+  padding-right: var(--sp-3);
+  text-align: right;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.diff-sign {
+  text-align: center;
+  color: var(--ink-3);
+  user-select: none;
+}
+
+.diff-text {
+  padding-right: var(--sp-5);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diff-add {
+  background: var(--ok-tint);
+}
+
+.diff-add .diff-sign,
+.diff-add .diff-text {
+  color: var(--ok);
+}
+
+.diff-del {
+  background: var(--bad-tint);
+}
+
+.diff-del .diff-sign,
+.diff-del .diff-text {
+  color: var(--bad);
+}
+
+.diff-gap {
+  padding: var(--sp-2) 0;
+  border-block: 1px solid var(--rule);
+  background: var(--field);
+  color: var(--ink-3);
+  text-align: center;
+  font-size: var(--t-micro);
+}
+
+/* ---------------------------------------------------------------- motion */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}

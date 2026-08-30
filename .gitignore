@@ -431,3 +431,16 @@ bicep/infra/citadel-access-contracts/contracts/hr-chatagent/dev/ai-product-polic
 bicep/infra/llm-backend-onboarding/llm-backends-aliases-validation.bicepparam
 bicep/infra/llm-backend-onboarding/main.bicepparam
 scripts/generate-lean-openapi.py
+
+# Citadel UI local runtime and QA artifacts
+CitadelUI/.backups/
+CitadelUI/.baseline/
+CitadelUI/.qa/
+CitadelUI/.shots/
+CitadelUI/.snapshots/
+CitadelUI/.srv.err
+CitadelUI/.srv.log
+
+# Citadel UI tests are source, despite the repository-wide **/test rule.
+!CitadelUI/test/
+!CitadelUI/test/**

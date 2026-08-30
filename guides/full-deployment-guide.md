@@ -219,10 +219,13 @@ param apimSku = readEnvironmentVariable('APIM_SKU', 'StandardV2')
 param apimSkuUnits = int(readEnvironmentVariable('APIM_SKU_UNITS', '1'))
 param eventHubCapacityUnits = int(readEnvironmentVariable('EVENTHUB_CAPACITY', '1'))
 param cosmosDbRUs = int(readEnvironmentVariable('COSMOS_DB_RUS', '400'))
+param logicAppsSkuName = readEnvironmentVariable('LOGIC_APPS_SKU_NAME', 'WS1')
 param logicAppsSkuCapacityUnits = int(readEnvironmentVariable('LOGIC_APPS_SKU_CAPACITY_UNITS', '1'))
 param apicSku = readEnvironmentVariable('APIC_SKU', 'Free')
 param keyVaultSkuName = readEnvironmentVariable('KEY_VAULT_SKU_NAME', 'standard')
 ```
+
+For Logic Apps Standard, choose the worker size independently from assigned instances: WS1 is 1 vCPU/3.5 GB, WS2 is 2 vCPU/7 GB, and WS3 is 4 vCPU/14 GB; capacity is 1–20 assigned plan instances under the current template ceiling.
 
 > 📐 **See the [Sizing Guide](./citadel-sizing-guide.md)** for the reference Azure pricing estimates behind each size and for scale-out guidance (adding APIM units).
 

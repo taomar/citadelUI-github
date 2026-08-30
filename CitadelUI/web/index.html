@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Citadel UI</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/css/app.css" />
+    <link rel="stylesheet" href="/css/components.css" />
+  </head>
+  <body>
+    <!--
+      THESIS: A .bicepparam is a parameter table, so this is a datasheet, not a
+      dashboard. Every screen is a sheet of rows whose columns are declared once
+      and shared, so a value is never squeezed while its row runs half empty.
+      OWN-WORLD: Midnight drafting studio. A deep ink navigation rail frames a
+      bright working canvas; warm copper carries action and position, while
+      teal marks values sourced outside the file. Crisp table rules, quiet
+      mist surfaces and strong Segoe/Cascadia hierarchy make the dense editor
+      feel authored without spending space on decoration.
+      SIZING: No layout is written in pixels. Columns are declared in ch and fr
+      through one shared --pcols custom property, panes use minmax()/auto-fill,
+      and type runs on a clamp() scale, so 1100px and 2560px are the same design
+      at two sizes rather than two designs.
+      STORY: The engineer sees the whole sheet, finds the knob, reads where its
+      value comes from, changes it, and reviews the exact text before it lands.
+      FIRST VIEWPORT: Title block across the top holding path and Review & save;
+      areas rail, section index rail, then the sheet -- one sticky strip and
+      ruled five-column parameter rows running to the fold.
+      FORM: Component datasheet / parameter table. Brief-pinned direction.
+    -->
+    <div class="shell" data-rail="off">
+      <header class="titleblock">
+        <a class="tb-brand" href="/" aria-label="Citadel UI">
+          <span class="tb-mark" aria-hidden="true"></span>
+          <span class="tb-name">Citadel</span>
+        </a>
+
+        <div class="tb-doc">
+          <span class="tb-key">repo</span>
+          <code id="repo-path" class="tb-path">&#8230;</code>
+        </div>
+
+        <div id="tb-actions" class="tb-actions"></div>
+      </header>
+
+      <nav id="sidebar" class="rail rail-areas" aria-label="Deployment areas"></nav>
+
+      <aside id="context-rail" class="rail rail-context" aria-label="Section index"></aside>
+
+      <main id="workspace" class="sheet" tabindex="-1"></main>
+
+      <div id="status" class="status" role="status" hidden></div>
+      <div id="modal" hidden></div>
+    </div>
+
+    <script type="module" src="/js/app.mjs"></script>
+  </body>
+</html>

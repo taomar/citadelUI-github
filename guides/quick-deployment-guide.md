@@ -94,6 +94,8 @@ azd up
 | `APIM_SKU` | `StandardV2` | API Management SKU |
 | `COSMOS_DB_RUS` | `400` | Cosmos DB throughput |
 | `EVENTHUB_CAPACITY` | `1` | Event Hub capacity units |
+| `LOGIC_APPS_SKU_NAME` | `WS1` | Workflow Standard worker size: WS1, WS2, or WS3 |
+| `LOGIC_APPS_SKU_CAPACITY_UNITS` | `1` | Assigned plan instances (1–20), independent of worker size |
 | `ENABLE_API_CENTER` | `true` | Enable API Center registry |
 
 For full list of variables, see [/bicep/infra/main.bicepparam](../bicep/infra/main.bicepparam).

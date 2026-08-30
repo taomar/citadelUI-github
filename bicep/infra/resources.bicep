@@ -311,7 +311,13 @@ param eventHubCapacityUnits int = 1
 @description('Cosmos DB throughput in Request Units (RUs).')
 param cosmosDbRUs int = 400
 
-@description('Logic Apps SKU capacity units.')
+@description('Workflow Standard worker size for the Logic Apps plan. WS1 provides 1 vCPU and 3.5 GB memory, WS2 provides 2 vCPU and 7 GB memory, and WS3 provides 4 vCPU and 14 GB memory.')
+@allowed(['WS1', 'WS2', 'WS3'])
+param logicAppsSkuName string = 'WS1'
+
+@description('Number of assigned Workflow Standard plan instances. This horizontal baseline capacity is independent of the selected worker size and is bounded by this template elastic ceiling.')
+@minValue(1)
+@maxValue(20)
 param logicAppsSkuCapacityUnits int = 1
 
 @description('SKU for the API Center service.')
@@ -1089,12 +1095,8 @@ module logicApp './modules/logicapp/logicapp.bicep' = {
     azdserviceName: 'usageProcessingLogicApp'   
     storageAccountName: storageAccount.outputs.storageAccountName
     applicationInsightsName: monitoring.outputs.funcApplicationInsightsName
-    skuFamily: 'WS'
-    skuName: 'WS1'
+    skuName: logicAppsSkuName
     skuCapacity: logicAppsSkuCapacityUnits
-    skuSize: 'WS1'
-    skuTier: 'WorkflowStandard'
-    isReserved: false
     cosmosDbAccountName: cosmosDb.outputs.cosmosDbAccountName
     eventHubName: eventHub.outputs.eventHubName
     eventHubNamespaceName: eventHub.outputs.eventHubNamespaceName

@@ -10,12 +10,14 @@ param applicationInsightsName string
 
 param location string = resourceGroup().location
 
-param skuName string
-param skuFamily string
-param skuSize string
-param skuCapacity int
-param skuTier string
-param isReserved bool
+@description('Workflow Standard worker size. The hosting plan name and size are kept identical by this module.')
+@allowed(['WS1', 'WS2', 'WS3'])
+param skuName string = 'WS1'
+
+@description('Number of assigned Workflow Standard plan instances, independent of worker size.')
+@minValue(1)
+@maxValue(20)
+param skuCapacity int = 1
 
 param cosmosDbAccountName string
 
@@ -26,6 +28,9 @@ param dotnetFrameworkVersion string = 'v6.0'
 var docDbAccNativeContributorRoleDefinitionId = '00000000-0000-0000-0000-000000000002'
 var eventHubsDataOwnerRoleDefinitionId = resourceId('Microsoft.Authorization/roleDefinitions', 'f526a384-b230-433a-b45c-95f59c4a2dec')
 var azureMonitorLogsRoleDefinitionId = resourceId('Microsoft.Authorization/roleDefinitions', '43d0d8ad-25c7-4714-9337-8ba259a9fe05')
+var skuFamily = 'WS'
+var skuTier = 'WorkflowStandard'
+var isReserved = false
 
 param eventHubNamespaceName string
 param eventHubName string
@@ -60,11 +65,11 @@ resource hostingPlan 'Microsoft.Web/serverfarms@2024-04-01' = {
   tags: union(tags, { 'azd-service-name': 'hosting-plan-${logicAppName}' })
   location: location
   sku: {
-    name: skuName //'WS1'
-    tier: skuTier //'WorkflowStandard'
-    family: skuFamily //'WS'
-    size: skuSize //'WS1'
-    capacity: skuCapacity //1
+    name: skuName
+    tier: skuTier
+    family: skuFamily
+    size: skuName
+    capacity: skuCapacity
   }
   kind: 'elastic'
   properties: {

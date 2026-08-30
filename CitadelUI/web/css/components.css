@@ -1,0 +1,3713 @@
+/* ============================================================================
+   Citadel UI — components
+
+   One structural idea runs through the whole file: a layout track is either
+   content-derived (`ch`, `max-content`, `min-content`) or proportional (`fr`).
+   There are no layout pixels, no fixed column widths and no breakpoint patches.
+   A row therefore reflows continuously from 1100px to 2560px, and survives a
+   font-size change or a browser zoom because every track is expressed in the
+   same units the text is.
+
+   Where a row has to change shape rather than size, the shape is a data
+   attribute the view layer already writes (`data-kind` on `.prow`,
+   `data-blank` on `.pcell-val`) or a container query on the block itself. It
+   is never a `:has()` repair bolted on after the fact.
+   ========================================================================== */
+
+/* ============================================================== the sheet */
+
+.sheet {
+  grid-area: sheet;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  background: var(--sheet);
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet {
+    scroll-behavior: auto;
+  }
+}
+
+.sheetwrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  /* The datasheet is tabular, not prose: extra width buys longer value inputs
+     and a real description column, so the measure is generous. Prose inside it
+     is capped separately at 82ch, so nothing turns into one very long line. */
+  max-width: min(100%, 128rem);
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+
+/* The masthead sticks; nothing else in the sheet does, so there is no second
+   sticky layer that can slide underneath it and overlap. Position is carried
+   by the section index in the rail instead. */
+.sheet-strip {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: grid;
+  gap: var(--sp-2);
+  padding-block: var(--sp-4) 0;
+  background: var(--sheet);
+  border-bottom: 1px solid var(--rule);
+}
+
+.strip-top {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4) var(--sp-5);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.strip-title {
+  font-size: var(--t-h2);
+  color: var(--ink);
+}
+
+.strip-path {
+  min-width: 0;
+  flex: 1 1 20ch;
+  font-size: var(--t-small);
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.strip-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex: none;
+  margin-left: auto;
+}
+
+.strip-tabs {
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.strip-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.sheet-blurb {
+  max-width: 82ch;
+  padding-top: var(--sp-5);
+  font-size: var(--t-body);
+  line-height: 1.55;
+  color: var(--ink-3);
+  text-wrap: pretty;
+}
+
+.sheet-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-block: var(--sp-5) var(--sp-8);
+}
+
+/* --------------------------------------------------------- document body */
+
+.document {
+  display: grid;
+  gap: var(--sp-6);
+  align-content: start;
+  min-width: 0;
+}
+
+.intro {
+  display: grid;
+  gap: var(--sp-3);
+  max-width: 86ch;
+  padding-bottom: var(--sp-5);
+  border-bottom: 1px solid var(--rule);
+}
+
+.intro-title {
+  font-size: var(--t-h3);
+  color: var(--ink);
+}
+
+.sections {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------- a section */
+
+.sec {
+  min-width: 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.sec-band {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-width: 0;
+  padding: var(--sp-4) var(--sp-3);
+  border-radius: var(--r-2);
+  cursor: pointer;
+  list-style: none;
+  transition: background var(--fast) var(--ease);
+}
+
+.sec-band::-webkit-details-marker {
+  display: none;
+}
+
+.sec-band:hover {
+  background: var(--sheet-2);
+}
+
+.sec-caret {
+  flex: none;
+  width: 0.75rem;
+  color: var(--ink-3);
+  font-size: var(--t-lead);
+  line-height: 1;
+  text-align: center;
+  transition: transform var(--fast) var(--ease);
+}
+
+.sec[open] > .sec-band .sec-caret {
+  transform: rotate(90deg);
+}
+
+.sec-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-family: var(--sans-display);
+  font-size: var(--t-h3);
+  font-weight: 600;
+  color: var(--ink);
+  text-wrap: balance;
+}
+
+.sec-tokens {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex: none;
+}
+
+.sec-spacer {
+  flex: 1 1 auto;
+}
+
+.sec-summary {
+  flex: 1 1 24ch;
+  min-width: 0;
+  font-size: var(--t-small);
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sec-body {
+  display: grid;
+  gap: var(--sp-5);
+  min-width: 0;
+  padding: 0 var(--sp-3) var(--sp-7);
+}
+
+.sec-note .sec-body {
+  max-width: 90ch;
+}
+
+/* Folded reference prose carried in the file's own comments. */
+.secdoc {
+  min-width: 0;
+}
+
+.secdoc-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  font-family: var(--sans-small);
+  font-size: var(--t-small);
+  font-weight: 600;
+  color: var(--ink-3);
+  cursor: pointer;
+  list-style: none;
+}
+
+.secdoc-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.secdoc-toggle:hover {
+  color: var(--act);
+}
+
+.secdoc-caret {
+  display: inline-block;
+  transition: transform var(--fast) var(--ease);
+}
+
+.secdoc[open] .secdoc-caret {
+  transform: rotate(90deg);
+}
+
+.secdoc[open] > .doc {
+  margin-top: var(--sp-4);
+}
+
+/* ---------------------------------------------------------------- groups */
+
+.grp {
+  display: grid;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.grp-label {
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+/* ==================================================== the parameter sheet */
+
+/*
+   Five content columns. Every track is deterministic — a character-count
+   minimum and an `fr` share — so the header row and the rows in every group
+   resolve to exactly the same column lines even though they are separate
+   grids. Widening the window widens the columns that benefit from width
+   instead of stranding whitespace beside a control.
+
+   `.prow` is a subgrid, so all ninety-seven rows share one set of column
+   lines regardless of what is inside any single row.
+*/
+/* ============================================================ the datasheet
+
+   Three columns, and the third is a control at its own width.
+
+     [ 8px provenance gutter | identity | value ]
+
+   The sheet used to run five: name, type, value, variable, description. Four
+   of the five were read-only, two of them said the same thing as each other,
+   and together they spent about 500px per row on facts the popover already
+   carried. Reclaiming that width is what makes the second stack possible, and
+   the second stack is what turns twenty-two visible records into forty-four.
+
+   COLUMN-MAJOR, NOT A GRID. `columns` flows records down one stack and then
+   into the next, so reading order stays vertical -- a two-column *grid* would
+   put record 2 beside record 1 and destroy the run. The count is the smaller
+   of what the data earns (--stacks, set per group) and what fits (--stack-min),
+   so it is intrinsic at both ends: no breakpoint decides it and no width is
+   assumed. At a 900px sheet it resolves to one stack, at 1440 to two, at 2560
+   to three, and it does that by measuring rather than by asking.
+*/
+.sec-body {
+  /* An identity cell holds `foundryApplicationInsightsDashboardName`, the
+     longest identifier in the file, without wrapping; the value column holds
+     the widest control (--w-long) plus its bounds note. */
+  --p-ident: 19rem;
+  --pgap: var(--sp-6);
+  /* The narrowest stack that still holds a full record: gutter + identity +
+     two gaps + the widest ordinary control (--w-id). Below this the control
+     would have to shrink, and a control that shrinks to fit its column is the
+     190px input this rebuild exists to remove. */
+  --stack-min: 40rem;
+}
+
+.prows {
+  columns: var(--stacks, 1) var(--stack-min);
+  column-gap: var(--sp-8);
+  column-rule: 1px solid var(--rule);
+  min-width: 0;
+}
+
+/* The column header is a sibling of the stacks rather than a child of one, so
+   it states the tracks itself and spans the full sheet. */
+.sec-body > .prow-head {
+  display: grid;
+  grid-template-columns: 0.5rem var(--p-ident) minmax(0, 1fr);
+  column-gap: var(--sp-4);
+}
+
+/* One record, one line, and never split across a stack boundary. The eye can
+   only read ninety-seven rows as a column of records while the row pitch holds
+   constant, so every identity cell is single-line and the full text stays
+   reachable through the popover and the title attribute. Structured values opt
+   out below and take the whole sheet. */
+.prow {
+  display: grid;
+  grid-template-columns: 0.5rem var(--p-ident) minmax(0, 1fr);
+  column-gap: var(--sp-4);
+  align-items: start;
+  min-width: 0;
+  min-height: var(--row-h);
+  padding-block: var(--sp-1);
+  border-top: 1px solid var(--rule-soft);
+  break-inside: avoid;
+}
+
+/* A 30px control in a 97-row sheet spends a third of the vertical budget on
+   chrome. Inside the datasheet every control drops to the small measure, which
+   is what holds the row pitch at 32px and the section at forty-odd rows. */
+.prow .ctl,
+.prow .toggle {
+  min-height: var(--ctl-h-sm);
+  height: var(--ctl-h-sm);
+}
+
+.prow input.ctl,
+.prow select.ctl {
+  line-height: calc(var(--ctl-h-sm) - 2px);
+}
+
+.prow textarea.ctl {
+  height: auto;
+}
+
+.prow .unset {
+  min-height: var(--ctl-h-sm);
+  line-height: var(--ctl-h-sm);
+}
+
+/* Zebra banding, computed per stack so the alternation never inverts across a
+   column boundary. Odd rows only; the sheet stays white. */
+.prow:nth-child(odd) {
+  background: var(--zebra);
+}
+
+/* The provenance spine. Two pixels of teal down the gutter of every row whose
+   value is resolved outside this file -- ninety of ninety-seven, so it has to
+   cost nothing and still be countable down the run. */
+.pcell-gut {
+  align-self: stretch;
+  border-radius: 1px;
+}
+
+.prow-env > .pcell-gut {
+  background: var(--prov);
+  width: 2px;
+}
+
+.pcell-ident {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  min-width: 0;
+  min-height: var(--ctl-h-sm);
+  padding-top: 1px;
+}
+
+/* Every parameter name carries its explanation, not only the ones with prose:
+   the type and the environment variable are facts about all ninety-seven, and
+   they moved in here when their columns came out. */
+.prow-name {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: var(--t-body);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.45;
+  color: var(--ink-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ptype {
+  flex: none;
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: var(--t-mark);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.pcell {
+  min-width: 0;
+}
+
+.pcell-val {
+  min-width: 0;
+  container-type: inline-size;
+}
+
+.prow:hover {
+  background: var(--band);
+}
+
+.prow-dirty,
+.prow-dirty:hover {
+  background: var(--brass-wash);
+}
+
+/* The pending-edit marker is the one place brass appears in the document body:
+   it is the same accent as the action that will resolve it. */
+.prow-dirty > .pcell-gut {
+  background: var(--brass);
+  width: 2px;
+}
+
+/* Column header, stated once per section. */
+.prow-head {
+  position: relative;
+  padding-block: var(--sp-4) var(--sp-2);
+  border-top: 0;
+  border-bottom: 1px solid var(--rule-strong);
+  background: none;
+  font-family: var(--sans-small);
+  font-size: var(--t-mark);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.prow-head:hover {
+  background: none;
+}
+
+/*
+   Structured values — objects, arrays and anything long enough that a 40ch
+   cell would truncate it — break out of the column stacks but preserve the
+   same three-cell row shape. Their value table takes the remaining sheet
+   width beside a fixed identity column instead of becoming a nested form.
+*/
+.prow[data-kind='object'],
+.prow[data-kind='array'],
+.prow[data-kind='raw'],
+.prow[data-kind='long'],
+.prow-full {
+  column-span: all;
+  grid-template-columns: 0.5rem var(--p-ident) minmax(0, 1fr);
+  padding-block: var(--sp-5);
+  background: none;
+}
+
+.prow[data-kind='object']:hover,
+.prow[data-kind='array']:hover,
+.prow[data-kind='raw']:hover,
+.prow[data-kind='long']:hover {
+  background: none;
+}
+
+.prow[data-kind='object'] > .pcell-val,
+.prow[data-kind='array'] > .pcell-val,
+.prow[data-kind='raw'] > .pcell-val,
+.prow[data-kind='long'] > .pcell-val {
+  grid-column: 3;
+}
+
+.prow[data-kind='object'] > .pcell-ident,
+.prow[data-kind='array'] > .pcell-ident,
+.prow[data-kind='raw'] > .pcell-ident,
+.prow[data-kind='long'] > .pcell-ident {
+  grid-column: 2;
+}
+
+/* A structured value states its type beside its name, not eight hundred pixels
+   away at the far edge of a full-width row. The right-hand anchor only earns
+   its keep when there is a column of them to align. */
+.prow[data-kind='object'] .ptype,
+.prow[data-kind='array'] .ptype,
+.prow[data-kind='raw'] .ptype,
+.prow[data-kind='long'] .ptype,
+.prow-full .ptype {
+  margin-left: 0;
+}
+
+/*
+   A value the file does not supply.
+
+   Nineteen consecutive environment-backed resource names used to render as
+   nineteen identical filled boxes — which made the emptiest field the heaviest
+   object in its row and told the reader nothing. The row now states the fact
+   in words and names the variable that resolves it. It is a button, so click
+   or Enter turns it into a real control, focused.
+*/
+.unset {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  /* The variable name is the widest part and the least essential: the word
+     "not set" is what the reader is scanning for. Cap the button at its cell
+     and let the name clip with an ellipsis rather than push nine pixels past
+     the edge of the stack, which is what a 44-character identifier did. */
+  max-width: 100%;
+  min-width: 0;
+  min-height: var(--ctl-h);
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-1);
+  background: none;
+  font-family: var(--sans);
+  font-size: var(--t-body);
+  line-height: var(--ctl-h);
+  color: var(--ink-3);
+  text-align: left;
+  cursor: text;
+}
+
+.unset:hover {
+  color: var(--ink-2);
+}
+
+.unset-mark {
+  flex: none;
+  color: var(--rule-strong);
+}
+
+.unset-text {
+  flex: none;
+  font-style: italic;
+}
+
+.unset-var {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: var(--t-meta);
+  color: var(--prov);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.unset-var::before {
+  content: '\00b7\00a0';
+  color: var(--rule-strong);
+}
+
+/* --------------------------------------------- full-width parameter block */
+
+.prow-full {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-4);
+  padding-block: var(--sp-5);
+  border-top: 1px solid var(--rule);
+}
+
+.prow-full:hover {
+  background: none;
+}
+
+.prow-fullhead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+
+/* =============================================================== controls */
+
+/* ------------------------------------------------------------ expression */
+
+.expr {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+/* Provenance is carried by the `From environment` column, which names the
+   variable, so the control itself stays unmarked. Ninety of ninety-seven rows
+   are environment-backed; a marker on each one would be noise, not signal. */
+.expr-env {
+  min-width: 0;
+}
+
+.expr-empty {
+  min-width: 0;
+}
+
+.expr-raw {
+  display: block;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--field);
+  font-size: var(--t-small);
+  line-height: 1.5;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ctl-note {
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  color: var(--ink-3);
+}
+
+.field-error {
+  margin-top: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--bad);
+  background: var(--bad-wash);
+  color: var(--bad);
+  font-family: var(--sans-small);
+  font-size: var(--t-small);
+  line-height: 1.35;
+}
+
+.param-guidance,
+.target-note {
+  margin-top: var(--sp-2);
+  max-width: 58rem;
+  color: var(--ink-3);
+  font-family: var(--sans-small);
+  font-size: var(--t-small);
+  line-height: 1.4;
+}
+
+.target-action {
+  width: min(100%, var(--w-long));
+  margin-bottom: var(--sp-3);
+}
+
+.template-facts {
+  display: grid;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+  max-width: 62rem;
+  color: var(--ink-3);
+  font-family: var(--sans-small);
+  font-size: var(--t-small);
+  line-height: 1.4;
+}
+
+.template-facts strong {
+  color: var(--ink-2);
+}
+
+.ctl-blank {
+  color: var(--ink-3);
+}
+
+/* ---------------------------------------------- secret, bounds, expression */
+
+/* A masked value with a reveal: the eye lives inside the field's own box so the
+   control still reads as one thing at a glance. */
+.secret {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.secret > .ctl {
+  padding-right: calc(var(--sp-4) + 1.75rem);
+}
+
+.ctl-reveal {
+  position: absolute;
+  inset-block: 1px;
+  inset-inline-end: 1px;
+  inline-size: 1.75rem;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--r-1);
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.ctl-reveal::before {
+  content: '';
+  inline-size: 0.85rem;
+  block-size: 0.85rem;
+  border: 1px solid currentcolor;
+  border-radius: 50% 0;
+  transform: rotate(45deg);
+}
+
+.ctl-reveal[aria-pressed='true'] {
+  color: var(--act);
+}
+
+.ctl-reveal[aria-pressed='true']::before {
+  background: currentcolor;
+}
+
+.ctl-reveal:hover {
+  color: var(--ink);
+  background: var(--casing-2);
+}
+
+/* A declared bound sits with the number it governs, on one line, so it costs a
+   row of height only when a template actually states one. */
+.numfield {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.numfield > .ctl {
+  flex: 0 1 auto;
+}
+
+.ctl-bound {
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* An expression box grows to its content rather than scrolling it out of view. */
+.ctl-expr {
+  font-family: var(--mono);
+  line-height: 1.5;
+  padding-block: var(--sp-2);
+  resize: vertical;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  field-sizing: content;
+  min-height: var(--ctl-h);
+  max-height: 18rem;
+}
+
+/* ------------------------------------------------------------- chip list */
+
+/* A list of short strings is a set: the entries read together and the only
+   operations are add and drop. */
+.chiplist {
+  display: grid;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.chiplist-set {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.listchip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0.125rem var(--sp-2) 0.125rem var(--sp-3);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--sheet);
+  min-width: 0;
+}
+
+.listchip-text {
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.listchip-x {
+  flex: none;
+  inline-size: 1.125rem;
+  block-size: 1.125rem;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.listchip-x::before {
+  content: '\00d7';
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.listchip-x:hover {
+  background: var(--casing-2);
+  color: var(--ink);
+}
+
+.chiplist-add {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.chiplist-add > .ctl {
+  flex: 1 1 14rem;
+  max-width: 26rem;
+}
+
+/* -------------------------------------------------------------- combobox */
+
+.combo {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.ctl-combo {
+  font-family: var(--mono);
+}
+
+/* -------------------------------------------------------- object / array */
+
+/*
+   Structured values, flattened.
+
+   A four-level object used to render as an indentation staircase: each level
+   added ~90px of left padding, so the deepest leaves started 547px in, the
+   whole block ran 915px tall, and at a 1280px sheet the number inputs landed
+   past the right edge -- unreachable behind a horizontal scrollbar. Depth was
+   being spent to communicate something a dotted path says in one line.
+
+   So: one flat table, keys on the left at a fixed measure, controls on the
+   right at their own width. Two levels or more and the key becomes the full
+   dotted path. Zero indentation at any depth, and the block cannot outgrow
+   its column because nothing about it depends on how deep the data goes.
+*/
+.defs,
+.paths {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, max-content);
+  column-gap: var(--sp-6);
+  align-items: start;
+  width: max-content;
+  max-width: 100%;
+  min-width: 0;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--sheet);
+}
+
+.defs-row,
+.paths-row,
+.paths-head {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-5);
+  border-top: 1px solid var(--rule-soft);
+}
+
+.defs-row:first-child,
+.paths-head {
+  border-top: 0;
+}
+
+.defs-row:nth-child(even),
+.paths-row:nth-child(even) {
+  background: var(--zebra);
+}
+
+.paths-head {
+  padding-block: var(--sp-2);
+  border-bottom: 1px solid var(--rule-strong);
+  background: var(--band);
+  font-family: var(--sans-small);
+  font-size: var(--t-mark);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+/* A dotted path is short by construction -- flattening is what made it short --
+   so it holds one line and the column takes the measure of the longest one.
+   Wrapping here would put the row pitch back where the indentation staircase
+   left it. The full text stays on the title attribute if the table is ever
+   squeezed narrower than its content. */
+.defs-key,
+.paths-key {
+  min-width: 0;
+  max-width: 30ch;
+  font-family: var(--mono);
+  font-size: var(--t-meta);
+  line-height: 1.45;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The last segment is the leaf's own name and the segments before it are
+   context, so the path reads as a sentence with the subject at the end. */
+.paths-key {
+  color: var(--ink-3);
+}
+
+.defs-val,
+.paths-val {
+  min-width: 0;
+}
+
+@container (max-width: 30rem) {
+  .defs,
+  .paths {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .defs-row,
+  .paths-row,
+  .paths-head {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-2);
+  }
+
+  .defs-key,
+  .paths-key {
+    max-width: none;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+.array {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+  padding: var(--sp-4);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--sheet);
+}
+
+.item {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+  padding: var(--sp-3) 0;
+  border-top: 1px solid var(--rule-soft);
+}
+
+.item:first-of-type {
+  border-top: 0;
+}
+
+.item-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.item-index {
+  font-family: var(--mono);
+  font-size: var(--t-mark);
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.item-body {
+  min-width: 0;
+}
+
+/* An action hugs its label; only a value earns the full column. */
+.array > .btn {
+  justify-self: start;
+}
+
+/* ========================================================= the sections rail */
+
+.outline {
+  min-width: 0;
+}
+
+.outline-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.outline-link {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-5);
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--fast) var(--ease);
+}
+
+.outline-link:hover {
+  background: var(--casing-2);
+}
+
+.outline-link.current {
+  background: var(--sheet);
+}
+
+.outline-link.current::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 2px;
+  background: var(--act);
+}
+
+.outline-label {
+  min-width: 0;
+  font-size: var(--t-meta);
+  line-height: 1.35;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outline-link.current .outline-label {
+  color: var(--act);
+  font-weight: 600;
+}
+
+.outline-note .outline-label {
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+.outline-badge {
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.outline-badge-dirty {
+  color: var(--act);
+  font-size: 0.5rem;
+}
+
+.outline-env {
+  font-family: var(--mono);
+  font-size: var(--t-mark);
+  color: var(--prov);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+   The same index, laid on its side.
+
+   Below ~1600px the section rail is worth less than the sheet column it
+   occupies, so it moves here rather than being duplicated: one nav element,
+   one set of handlers, one current-section marker. It wraps rather than
+   scrolls sideways, because a horizontal scroller hides exactly the sections
+   you have not visited yet.
+*/
+.outline-strip {
+  padding: var(--sp-4) var(--gutter) 0;
+}
+
+.outline-strip .outline-list {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.outline-strip .outline-link {
+  width: auto;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-1);
+  background: var(--sheet);
+}
+
+.outline-strip .outline-link:hover {
+  background: var(--zebra);
+  border-color: var(--rule-strong);
+}
+
+.outline-strip .outline-link.current {
+  border-color: var(--brass-line);
+  background: var(--brass-wash);
+}
+
+.outline-strip .outline-link.current::before {
+  display: none;
+}
+
+.outline-strip .outline-label {
+  max-width: 24ch;
+}
+
+/* ============================================================ environment */
+
+.env {
+  display: grid;
+  gap: var(--sp-5);
+  min-width: 0;
+}
+
+.env-rows {
+  display: grid;
+  grid-template-columns: minmax(16ch, 34ch) minmax(0, 1fr);
+  column-gap: var(--sp-6);
+  min-width: 0;
+}
+
+.env-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  padding-block: var(--sp-3);
+  border-top: 1px solid var(--rule-soft);
+}
+
+.env-key {
+  font-family: var(--mono);
+  font-size: var(--t-body);
+  color: var(--env);
+  overflow-wrap: anywhere;
+}
+
+.env-picker {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+
+/* ============================================================== contracts */
+
+.contract-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.contract-list-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-4) var(--sp-3) var(--sp-5);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.contract-list-head .btn {
+  margin-left: auto;
+}
+
+.contract-item {
+  position: relative;
+  display: grid;
+  gap: var(--sp-1);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-5);
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--fast) var(--ease);
+}
+
+.contract-item:hover {
+  background: var(--casing-2);
+}
+
+.contract-item.active {
+  background: var(--sheet);
+}
+
+.contract-item.active::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 2px;
+  background: var(--act);
+}
+
+.contract-name {
+  font-size: var(--t-body);
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.contract-item.active .contract-name {
+  color: var(--act);
+}
+
+.contract-meta {
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+/* ============================================ data recovery + overview
+ *
+ * The recovery banner is the highest-stakes surface in the product: it is the
+ * only screen that can give a user back work that vanished from disk. It used
+ * to be a 12px sentence at 4.17:1 inside a 214px rail. It is now a full-width
+ * sheet banner using --bad-ink on --bad-wash (12.82:1), one outlined action
+ * per contract, and the saved-at time so the user knows what they are getting.
+ */
+
+.recover {
+  display: grid;
+  gap: var(--sp-4);
+  margin-block-end: var(--sp-7);
+  padding: var(--sp-5) var(--sp-6);
+  border: 1px solid var(--bad-line);
+  border-inline-start-color: var(--bad);
+  border-radius: var(--r-3);
+  background: var(--bad-wash);
+}
+
+.recover-head {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.recover-title {
+  font-family: var(--sans-display);
+  font-size: var(--t-lead);
+  font-weight: 600;
+  color: var(--bad-ink);
+}
+
+.recover-lede {
+  max-width: 78ch;
+  font-size: var(--t-body);
+  line-height: 1.55;
+  color: var(--bad-ink);
+  text-wrap: pretty;
+}
+
+.recover-lede code {
+  font-family: var(--mono);
+  font-size: 0.95em;
+}
+
+.recover-list {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Intrinsic: the name column is as wide as the longest name and no wider. */
+.recover-item {
+  display: grid;
+  grid-template-columns: minmax(8ch, max-content) minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--bad-line);
+  border-radius: var(--r-2);
+  background: var(--sheet);
+}
+
+.recover-name {
+  font-family: var(--mono);
+  font-size: var(--t-body);
+  font-weight: 600;
+  color: var(--ink-1);
+  overflow-wrap: anywhere;
+}
+
+.recover-when {
+  font-size: var(--t-meta);
+  color: var(--ink-3);
+}
+
+.btn-recover {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.btn-recover:hover {
+  border-color: var(--bad);
+  background: var(--bad-wash);
+  color: var(--bad);
+}
+
+/* The contracts landing table. Columns size to their content, so nothing is
+ * truncated and nothing is stretched across an empty sheet. */
+.otable {
+  width: max-content;
+  max-width: 100%;
+  border-collapse: collapse;
+  font-size: var(--t-body);
+}
+
+.otable th {
+  padding: var(--sp-2) var(--sp-5) var(--sp-2) 0;
+  border-block-end: 1px solid var(--rule-strong);
+  font-family: var(--sans-small);
+  font-size: var(--t-mark);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+  text-align: start;
+  white-space: nowrap;
+}
+
+.otable td {
+  padding: var(--sp-2) var(--sp-5) var(--sp-2) 0;
+  border-block-end: 1px solid var(--rule-soft);
+  color: var(--ink-2);
+  vertical-align: baseline;
+}
+
+.otable-row {
+  cursor: pointer;
+}
+
+.otable-row:hover {
+  background: var(--zebra);
+}
+
+.otable-row:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.otable-name {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.otable-link {
+  font-weight: 600;
+  color: var(--ink-1);
+}
+
+.otable-row:hover .otable-link {
+  color: var(--brass-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.otable-num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  padding-inline-end: var(--sp-6);
+}
+
+.otable-path code {
+  font-family: var(--mono);
+  font-size: var(--t-meta);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* ========================================================= documentation */
+
+.doc {
+  display: grid;
+  gap: var(--sp-3);
+  max-width: 90ch;
+  min-width: 0;
+  font-size: var(--t-body);
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+
+.doc-heading {
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.doc-para {
+  text-wrap: pretty;
+}
+
+.doc-list {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+/* Three tracks, because docblocks.mjs emits three children for a definition
+   item: the term, an em-dash separator, then the text. Two tracks dropped
+   .doc-text into an implicit row sized by the max-content term column -- the
+   same arity mismatch that broke .diff-line. A plain bullet has one child. */
+.doc-def {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) max-content minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-2);
+  align-items: baseline;
+}
+
+.doc-bullet {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-3);
+  align-items: baseline;
+  padding-left: var(--sp-5);
+  position: relative;
+}
+
+.doc-bullet::before {
+  content: '';
+  position: absolute;
+  left: var(--sp-2);
+  top: 0.55em;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--rule-2);
+}
+
+.doc-term {
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.doc-sep {
+  color: var(--ink-3);
+}
+
+.doc-text {
+  min-width: 0;
+  text-wrap: pretty;
+}
+
+.doc-code {
+  min-width: 0;
+}
+
+.doc-code > summary {
+  padding: var(--sp-2) 0;
+  font-family: var(--sans-small);
+  font-size: var(--t-small);
+  font-weight: 600;
+  color: var(--ink-3);
+  cursor: pointer;
+  list-style: none;
+}
+
+.doc-code > summary::-webkit-details-marker {
+  display: none;
+}
+
+.doc-code > summary:hover {
+  color: var(--act);
+}
+
+.doc-code pre {
+  margin: var(--sp-2) 0 0;
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--sheet-2);
+  font-size: var(--t-small);
+  line-height: 1.5;
+  color: var(--ink);
+  overflow-x: auto;
+  tab-size: 2;
+}
+
+.doc-paramlist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  align-items: center;
+}
+
+.doc-param-ref {
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+/* ============================================================ explanation */
+
+/*
+   Position is owned by explain.mjs, which writes `position: fixed` plus inline
+   `left` and `top` after measuring the trigger. This rule set therefore
+   describes appearance only — never `position`, `left` or `top`.
+*/
+/*
+   `explain.mjs` measures against the viewport (`getBoundingClientRect`,
+   `clientWidth`) and writes only inline `left`/`top`. The containing block has
+   to be the viewport for that arithmetic to land, so `position` lives here and
+   the coordinates stay JS-owned -- nothing in CSS sets `left`/`top`/`inset`.
+*/
+.explain {
+  position: fixed;
+  z-index: 80;
+  width: max-content;
+  max-width: min(52ch, calc(100vw - 2rem));
+  max-height: min(28rem, 70dvh);
+  padding: var(--sp-5);
+  border: 1px solid var(--rule-2);
+  border-radius: var(--r-3);
+  background: var(--sheet);
+  box-shadow: var(--lift-2);
+  overflow: auto;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity var(--fast) var(--ease),
+    visibility var(--fast) var(--ease);
+}
+
+.explain-open {
+  opacity: 1;
+  visibility: visible;
+}
+
+.explain-body {
+  display: grid;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.explain-title {
+  font-family: var(--sans-display);
+  font-size: var(--t-lead);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.explain-title code {
+  font-size: var(--t-body);
+}
+
+/*
+   The facts the sheet no longer prints in columns of its own: declared type
+   and, where there is one, the environment variable the value resolves from.
+   Four read-only columns went away; this is where two of them landed, stated
+   once on demand instead of ninety-seven times unasked.
+*/
+.explain-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-5);
+  margin: 0;
+  padding-bottom: var(--sp-4);
+  border-bottom: 1px solid var(--rule-soft);
+  font-size: var(--t-meta);
+}
+
+.explain-facts dt {
+  font-family: var(--sans-small);
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.explain-facts dd {
+  margin: 0;
+  min-width: 0;
+  font-family: var(--mono);
+  color: var(--ink-1);
+  overflow-wrap: anywhere;
+}
+
+.explain-facts dd.is-env {
+  color: var(--prov);
+}
+
+/*
+   Ninety-seven dotted underlines would be noise, so the explanation
+   affordance stays latent and surfaces under the pointer or keyboard focus
+   that is about to use it.
+*/
+.explain-trigger {
+  cursor: help;
+  text-decoration: underline dotted transparent;
+  text-underline-offset: 3px;
+  transition: text-decoration-color var(--fast) var(--ease);
+}
+
+.explain-trigger:hover,
+.explain-trigger:focus-visible,
+.explain-trigger.explain-open {
+  text-decoration-color: var(--act);
+}
+
+/* ============================================================ model picker */
+
+.mp {
+  position: relative;
+  min-width: 0;
+}
+
+.mp-panel {
+  padding: var(--sp-2);
+  border: 1px solid var(--rule-2);
+  border-radius: var(--r-2);
+  background: var(--sheet);
+  box-shadow: var(--lift-2);
+  overflow: auto;
+  overscroll-behavior: contain;
+  display: none;
+}
+
+/* Geometry belongs entirely to picker.mjs. The panel is portalled to <body>,
+   above the modal layer, and receives viewport coordinates inline. */
+.mp-panel.mp-portal {
+  position: fixed;
+  z-index: 75;
+}
+
+.mp-open {
+  display: block;
+}
+
+.mp-group {
+  padding: var(--sp-3) var(--sp-3) var(--sp-1);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.mp-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--sp-2) var(--sp-4);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-4);
+  border: 0;
+  border-radius: var(--r-2);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mp-item:hover,
+.mp-item:focus-visible {
+  background: var(--act-tint);
+}
+
+.mp-item[aria-selected='true'] {
+  box-shadow: inset 2px 0 0 var(--act);
+}
+
+.mp-name {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: var(--t-body);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.mp-meta {
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.mp-added {
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  color: var(--ok);
+}
+
+/* Already-added models stay fully legible; the "added" tag carries the state,
+   not a dimmed row, so nothing here drops under its measured contrast. */
+.mp-item-used .mp-name {
+  color: var(--ink-3);
+}
+
+.mp-item-free .mp-name {
+  font-style: italic;
+}
+
+.mp-empty {
+  padding: var(--sp-5);
+  font-size: var(--t-small);
+  color: var(--ink-3);
+  text-align: center;
+}
+
+/* ============================================================ LLM editor */
+
+.llm {
+  display: grid;
+  gap: var(--sp-5);
+  min-width: 0;
+}
+
+.lb-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  flex-wrap: wrap;
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--sheet-2);
+}
+
+.lb-stats {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  flex-wrap: wrap;
+}
+
+.stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-family: var(--sans-small);
+  font-size: var(--t-small);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.stat strong {
+  font-family: var(--mono);
+  font-size: var(--t-body);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-ok strong {
+  color: var(--ok);
+}
+
+.stat-bad strong {
+  color: var(--bad);
+}
+
+.stat-warn strong {
+  color: var(--act);
+}
+
+.picker {
+  position: relative;
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+  flex: 1 1 26ch;
+}
+
+.picker-lead {
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.picker-group {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.picker-group-title {
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.picker-item {
+  display: grid;
+  gap: var(--sp-1);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--sheet);
+  text-align: left;
+  cursor: pointer;
+}
+
+.picker-item:hover {
+  border-color: var(--act);
+  background: var(--act-tint);
+}
+
+.picker-name {
+  font-family: var(--mono);
+  font-size: var(--t-body);
+  color: var(--ink);
+}
+
+.picker-desc {
+  font-size: var(--t-small);
+  color: var(--ink-3);
+}
+
+.picker-tags {
+  display: flex;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.lb-list {
+  display: grid;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.lb {
+  min-width: 0;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--sheet);
+  overflow: clip;
+}
+
+.lb-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  padding: var(--sp-4) var(--sp-5);
+  background: var(--band);
+  cursor: pointer;
+  list-style: none;
+}
+
+.lb-head::-webkit-details-marker {
+  display: none;
+}
+
+.lb-head:hover {
+  background: var(--casing-2);
+}
+
+.lb-caret {
+  flex: none;
+  width: 0.75rem;
+  color: var(--ink-3);
+  line-height: 1;
+  transition: transform var(--fast) var(--ease);
+}
+
+.lb[open] > .lb-head .lb-caret {
+  transform: rotate(90deg);
+}
+
+.lb-id {
+  font-family: var(--mono);
+  font-size: var(--t-body);
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.lb-summary {
+  font-size: var(--t-small);
+  color: var(--ink-3);
+}
+
+.lb-spacer {
+  flex: 1 1 auto;
+}
+
+.lb-body {
+  display: grid;
+  gap: var(--sp-5);
+  padding: var(--sp-5);
+  border-top: 1px solid var(--rule);
+}
+
+.lb-note {
+  font-size: var(--t-small);
+  color: var(--ink-3);
+  text-wrap: pretty;
+}
+
+.lb-sub {
+  display: grid;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.lb-sub-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+
+.lb-sub-title {
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.lb-sub-note {
+  font-size: var(--t-small);
+  color: var(--ink-3);
+}
+
+.lb-findings {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.finding {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--sp-3);
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.finding-dot {
+  width: 0.4375rem;
+  height: 0.4375rem;
+  align-self: center;
+  border-radius: 50%;
+  background: var(--ink-3);
+}
+
+.finding-error .finding-dot {
+  background: var(--bad);
+}
+
+.finding-warn .finding-dot {
+  background: var(--act);
+}
+
+.finding-info .finding-dot {
+  background: var(--env);
+}
+
+.lb-panel {
+  display: grid;
+  gap: var(--sp-4);
+  min-width: 0;
+  padding: var(--sp-5);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--sheet-2);
+}
+
+.lb-panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+
+.lb-panel-head h4 {
+  font-size: var(--t-h3);
+}
+
+.lb-panel-sub {
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.lb-panel-lead {
+  max-width: 86ch;
+  font-size: var(--t-small);
+  color: var(--ink-3);
+  text-wrap: pretty;
+}
+
+.lb-panel-routing {
+  background: var(--sheet);
+}
+
+.lb-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+
+.lb-foot-note {
+  font-size: var(--t-small);
+  color: var(--ink-3);
+}
+
+/* ---------------------------------------------------------- model tables */
+
+/*
+   A faux table built on one grid so every row shares the same column lines.
+   The tracks are content-derived, so adding a column of numbers does not
+   require a new breakpoint.
+*/
+.lm-table {
+  display: grid;
+  grid-template-columns:
+    minmax(12ch, 1.5fr)
+    minmax(7ch, 0.9fr)
+    minmax(7ch, 0.7fr)
+    minmax(7ch, 0.8fr)
+    minmax(3ch, max-content)
+    minmax(0, max-content)
+    max-content;
+  column-gap: var(--sp-4);
+  min-width: 0;
+}
+
+.lb-models {
+  min-width: 0;
+  overflow-x: hidden;
+  container-name: lm-models;
+  container-type: inline-size;
+}
+
+.lm-rowgroup {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  column-gap: inherit;
+  min-width: 0;
+}
+
+.lm-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  min-width: 0;
+  padding-block: var(--sp-2);
+  border-top: 1px solid var(--rule-soft);
+}
+
+.lm-row:hover {
+  background: var(--sheet-2);
+}
+
+.lm-head {
+  padding-block: var(--sp-2);
+  border-top: 0;
+  border-bottom: 1px solid var(--rule-2);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.lm-head:hover {
+  background: none;
+}
+
+.lm-model-cell {
+  min-width: 0;
+}
+
+/* The disclosure is the model name itself, not a box around it. */
+.lm-name {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  justify-self: start;
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--sp-1) 0;
+  border: 0;
+  border-radius: var(--r-1);
+  background: none;
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.lm-name:hover {
+  color: var(--act);
+}
+
+.lm-model-id {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.lm-cell {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.lm-num .ctl,
+.lm-cell .ctl {
+  min-height: var(--ctl-h-sm);
+  font-size: var(--t-small);
+  line-height: calc(var(--ctl-h-sm) - 2px);
+}
+
+.lm-num {
+  min-width: 0;
+}
+
+.lm-flags {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.lm-actions {
+  justify-self: end;
+}
+
+.lm-x {
+  display: grid;
+  place-items: center;
+  justify-self: end;
+  width: var(--ctl-h-sm);
+  height: var(--ctl-h-sm);
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-1);
+  background: none;
+  color: var(--ink-3);
+  font-size: var(--t-small);
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color var(--fast) var(--ease),
+    border-color var(--fast) var(--ease),
+    background var(--fast) var(--ease);
+}
+
+.lm-x:hover {
+  border-color: var(--bad-line);
+  background: var(--bad-tint);
+  color: var(--bad);
+}
+
+.lm-caret {
+  display: inline-block;
+  width: 0.75rem;
+  color: var(--ink-3);
+  transition: transform var(--fast) var(--ease);
+}
+
+.lm-caret.open {
+  transform: rotate(90deg);
+}
+
+.lm-group {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.lm-editor {
+  min-width: 0;
+  padding: var(--sp-6);
+  border-block: 1px solid var(--rule-soft);
+  background: var(--sheet-2);
+}
+
+.lm-section {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.lm-legend {
+  margin-bottom: var(--sp-4);
+  padding: 0;
+  font-family: var(--sans-small);
+  font-size: var(--t-small);
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.lm-identity-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  gap: var(--sp-5);
+}
+
+.lm-editor-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--ctl-h-sm);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-1);
+  background: var(--sheet);
+  font: 600 var(--t-micro) / 1 var(--sans-small);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.lm-editor-toggle:hover {
+  border-color: var(--brass-line);
+  color: var(--act);
+}
+
+.lm-sections {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--sp-7);
+  min-width: 0;
+  margin-top: var(--sp-7);
+}
+
+.lm-section-serving {
+  grid-column: span 5;
+}
+
+.lm-section-request {
+  grid-column: span 4;
+}
+
+.lm-section-lifecycle {
+  grid-column: span 3;
+}
+
+.lm-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-4) var(--sp-5);
+  min-width: 0;
+}
+
+.lm-section-identity .lm-fields {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+}
+
+.lm-editor-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--sp-7);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--rule-soft);
+}
+
+@container lm-models (max-width: 72rem) {
+  .lm-section-serving {
+    grid-column: span 7;
+  }
+
+  .lm-section-request {
+    grid-column: span 5;
+  }
+
+  .lm-section-lifecycle {
+    grid-column: 1 / -1;
+  }
+}
+
+@container lm-models (max-width: 48rem) {
+  .lm-table {
+    display: block;
+  }
+
+  .lm-rowgroup {
+    display: block;
+  }
+
+  .lm-head {
+    display: none;
+  }
+
+  .lm-row:not(.lm-head) {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-3) var(--sp-5);
+    flex-wrap: wrap;
+    padding-block: var(--sp-4);
+  }
+
+  .lm-model-cell {
+    flex: 1 1 100%;
+  }
+
+  .lm-cell,
+  .lm-flags {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+  }
+
+  .lm-cell::before,
+  .lm-flags::before {
+    content: attr(data-label) ":";
+    font-family: var(--sans-small);
+    font-size: var(--t-micro);
+    font-weight: 600;
+    color: var(--ink-3);
+  }
+
+  .lm-flags:empty {
+    display: none;
+  }
+
+  .lm-actions {
+    margin-left: auto;
+  }
+
+  .lm-identity-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-4);
+  }
+
+  .lm-sections {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lm-section-serving,
+  .lm-section-request,
+  .lm-section-lifecycle {
+    grid-column: 1 / -1;
+  }
+
+  .lm-fields,
+  .lm-section-identity .lm-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.lm-add {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+
+.lm-add > .mp {
+  flex: 1 1 20rem;
+  max-width: 34rem;
+}
+
+.lm-add-hint,
+.lm-add-note {
+  font-size: var(--t-small);
+  color: var(--ink-3);
+}
+
+/* ----------------------------------------------------------- local field */
+
+.lf {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.lf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: var(--sp-4) var(--sp-5);
+  min-width: 0;
+}
+
+.lf-wide {
+  grid-column: 1 / -1;
+}
+
+.lf-label {
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.lf-ctl {
+  min-width: 0;
+}
+
+.lf-match {
+  font-size: var(--t-small);
+  color: var(--ok);
+}
+
+.lf-match-custom {
+  color: var(--ink-3);
+}
+
+/* -------------------------------------------------------- routing preview */
+
+.lb-routing {
+  flex: none;
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.lp-table {
+  display: grid;
+  grid-template-columns:
+    minmax(18ch, 1.4fr)
+    minmax(10ch, 1fr)
+    minmax(8ch, 0.8fr)
+    minmax(0, 1fr);
+  column-gap: var(--sp-4);
+  min-width: 44rem;
+}
+
+.lb-panel-routing {
+  overflow-x: auto;
+}
+
+.lp-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: baseline;
+  min-width: 0;
+  padding-block: var(--sp-2);
+  border-top: 1px solid var(--rule-soft);
+}
+
+.lp-head {
+  border-top: 0;
+  border-bottom: 1px solid var(--rule-2);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.lp-model {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.lp-cell {
+  min-width: 0;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* =========================================================== policy editor */
+
+.policy {
+  display: grid;
+  gap: var(--sp-5);
+  align-content: start;
+  min-width: 0;
+}
+
+.policy-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  flex-wrap: wrap;
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--rule);
+}
+
+.policy-path {
+  min-width: 0;
+  flex: 1 1 24ch;
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+.policy-modes {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  flex: none;
+}
+
+.policy-rawwrap {
+  min-width: 0;
+}
+
+.policy-raw {
+  min-height: min(42rem, 62dvh);
+  font-size: var(--t-small);
+  line-height: 1.55;
+  tab-size: 2;
+  field-sizing: fixed;
+}
+
+.policy-guided {
+  display: grid;
+  gap: var(--sp-5);
+  align-content: start;
+  min-width: 0;
+}
+
+/*
+   Master/detail. The index is bounded by the length of a block name; the
+   detail pane takes the rest and aligns its content to the top, so selecting
+   a two-field block does not leave a thousand pixels of empty pane below it.
+*/
+/*
+   Master/detail as one instrument rather than two floating stacks. The wrapper
+   owns the chrome so a short block (Response headers is a single field) sits
+   inside a defined pane instead of stranded on the page, and the index pane
+   keeps its full height instead of stopping mid-canvas. The floor is bounded
+   in viewport units, so it shrinks with the window instead of forcing scroll
+   on a short screen.
+*/
+.policy-guided-nav {
+  display: grid;
+  grid-template-columns: minmax(14rem, 20rem) minmax(0, 1fr);
+  align-items: start;
+  min-width: 0;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-3);
+  background: var(--sheet);
+}
+
+@media (max-width: 68rem) {
+  .policy-guided-nav {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    min-height: 0;
+  }
+}
+
+/*
+   The index and the document are two columns of one sheet. The index is sticky
+   inside its column rather than stretched, because the document is now the
+   taller of the two: all twelve blocks are mounted, so the index has room to
+   travel and needs to stay in view while it does.
+*/
+.pnav {
+  display: grid;
+  gap: var(--sp-3);
+  align-content: start;
+  align-self: start;
+  position: sticky;
+  top: 0;
+  max-height: 100dvh;
+  overflow: auto;
+  min-width: 0;
+  padding: var(--sp-4);
+  border-right: 1px solid var(--rule);
+  border-radius: calc(var(--r-3) - 1px) 0 0 calc(var(--r-3) - 1px);
+  background: var(--sheet-2);
+}
+
+@media (max-width: 68rem) {
+  .pnav {
+    position: static;
+    max-height: none;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+    border-radius: calc(var(--r-3) - 1px) calc(var(--r-3) - 1px) 0 0;
+  }
+}
+
+.pnav-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  padding-inline: var(--sp-2);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.pnav-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+.pnav-list {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.pnav-link {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: 0;
+  border-radius: var(--r-2);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--fast) var(--ease);
+}
+
+.pnav-link:hover {
+  background: var(--field);
+}
+
+.pnav-link.current {
+  background: var(--act);
+}
+
+.pnav-label {
+  min-width: 0;
+  font-size: var(--t-body);
+  line-height: 1.35;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+.pnav-link.current .pnav-label {
+  color: var(--on-act);
+  font-weight: 600;
+}
+
+.pnav-tally {
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.pnav-link.current .pnav-tally {
+  color: var(--on-act);
+}
+
+/* A word, not a coloured dot. "on" and "off" are read at a glance and survive
+   a colour-blind reader, a greyscale print and a screenshot. */
+.pnav-state {
+  min-width: 2.25rem;
+  padding: 1px var(--sp-2);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-1);
+  font-family: var(--sans-small);
+  font-size: var(--t-mark);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-align: center;
+  color: var(--ink-3);
+  background: var(--sheet);
+}
+
+.pnav-state-on {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.pnav-state-info {
+  border-color: var(--rule);
+  color: var(--ink-3);
+}
+
+.pnav-link.current .pnav-state {
+  border-color: var(--sheet);
+  background: var(--sheet);
+}
+
+.pnav-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+  padding: var(--sp-3) var(--sp-2) 0;
+  border-top: 1px solid var(--rule);
+  font-size: var(--t-micro);
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+.pnav-foot {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-2) 0;
+  border-top: 1px solid var(--rule);
+}
+
+.pnav-foot-label {
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.pnav-views {
+  display: flex;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+
+.pnav-view {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: var(--t-small);
+  font-weight: 600;
+  color: var(--ink-3);
+  cursor: pointer;
+  border-radius: var(--r-1);
+}
+
+.pnav-view:hover {
+  color: var(--act);
+}
+
+.pnav-view.current {
+  color: var(--act);
+}
+
+/* One continuous document. Every block stays mounted, so a two-field block no
+   longer leaves a thousand pixels of empty pane behind it -- the next block
+   simply follows. */
+.pnav-doc {
+  display: grid;
+  gap: var(--sp-7);
+  align-content: start;
+  min-width: 0;
+  padding: var(--sp-6);
+  container-type: inline-size;
+}
+
+.pnav-section {
+  display: grid;
+  gap: var(--sp-4);
+  align-content: start;
+  min-width: 0;
+  scroll-margin-top: var(--sp-5);
+}
+
+.pnav-section + .pnav-section {
+  padding-top: var(--sp-7);
+  border-top: 1px solid var(--rule-soft);
+}
+
+.pnav-section-title {
+  font-family: var(--sans-display);
+  font-size: var(--t-h3);
+  font-weight: 600;
+  color: var(--ink-1);
+}
+
+/* The block rendered its own heading before it was a section; the section
+   heading is the one that stays, so the block's is redundant. */
+.pnav-section > * > .pol-card-head h4,
+.pnav-section > * > .pol-card-head h3 {
+  font-size: var(--t-body);
+  color: var(--ink-2);
+}
+
+/* Tables and expression fields get the whole pane; prose keeps a measure it
+   can be read at. */
+.pnav-doc p,
+.pnav-doc .hint,
+.pnav-doc .pol-lead {
+  max-width: 82ch;
+}
+
+/* ------------------------------------------------------------ policy bits */
+
+.pol-scope {
+  display: grid;
+  gap: var(--sp-5);
+  align-content: start;
+  min-width: 0;
+}
+
+.pol-scope > h3 {
+  font-size: var(--t-h3);
+}
+
+.pol-field {
+  display: grid;
+  gap: var(--sp-2);
+  align-content: start;
+  min-width: 0;
+}
+
+.pol-label {
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.pol-control {
+  min-width: 0;
+}
+
+.pol-control > .ctl {
+  max-width: 100%;
+}
+
+/*
+   Fields pack by their own width rather than being stretched into equal
+   columns. The auto-fit grid this replaces gave a two-digit "tokens per
+   minute" the same 320px cell as a counter-key expression, which is the same
+   defect as the parameter sheet's 190px input in a 957px cell, inverted: here
+   the control was too wide for its value rather than too narrow. Width follows
+   the data; `data-kind` is written by the view layer from the control's own
+   type, and the four widths are the only ones in the system.
+*/
+.pol-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-5) var(--sp-6);
+  align-items: start;
+  min-width: 0;
+}
+
+.pol-grid > .pol-field {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pol-field[data-kind='num'] .ctl {
+  width: var(--w-num);
+}
+
+.pol-field[data-kind='bool'] .ctl,
+.pol-field[data-kind='enum'] .ctl {
+  width: auto;
+  min-width: var(--w-short);
+  max-width: var(--w-id);
+}
+
+.pol-field[data-kind='text'] .ctl {
+  width: var(--w-id);
+}
+
+/* An expression is the one value whose length is genuinely unbounded, so it is
+   the one field allowed to take the row. */
+.pol-field[data-kind='expr'] {
+  flex-basis: 100%;
+}
+
+.pol-field[data-kind='expr'] .ctl {
+  width: var(--w-long);
+  max-width: 100%;
+  font-family: var(--mono);
+}
+
+.pol-sub {
+  display: grid;
+  gap: var(--sp-4);
+  align-content: start;
+  min-width: 0;
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--rule);
+}
+
+.pol-sub-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.pol-card {
+  display: grid;
+  gap: var(--sp-4);
+  align-content: start;
+  min-width: 0;
+  padding: var(--sp-5);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--sheet-2);
+}
+
+.pol-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+}
+
+.pol-card-head h4,
+.pol-card-head h5 {
+  font-size: var(--t-lead);
+}
+
+/* Not-configured blocks read quieter through surface and border, never through
+   opacity: opacity would silently drop the text below its measured contrast. */
+.pol-card-off {
+  background: var(--sheet-2);
+  border-style: dashed;
+}
+
+/* Picker, action, then the consequence of the action on its own line. */
+.pol-add {
+  display: grid;
+  grid-template-columns: minmax(16rem, 28rem) max-content;
+  gap: var(--sp-3) var(--sp-4);
+  align-items: center;
+  justify-content: start;
+}
+
+.pol-add > .hint {
+  grid-column: 1 / -1;
+  max-width: 82ch;
+}
+
+/* A single call to action: it sizes to its label, not to the pane. */
+.pol-enable {
+  display: grid;
+  gap: var(--sp-3);
+  justify-items: start;
+}
+
+.pol-enable > .hint {
+  max-width: 82ch;
+}
+
+@media (max-width: 40rem) {
+  .pol-add {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.pol-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.pol-readonly {
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--field);
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.models {
+  display: grid;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.model-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 1.375rem;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--rule-2);
+  border-radius: var(--r-2);
+  background: var(--field);
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.model-chip-src {
+  background: var(--env-tint);
+  border-color: var(--env-line);
+  color: var(--env);
+}
+
+.model-chip-warn,
+.model-chip-unknown {
+  background: var(--bad-tint);
+  border-color: var(--bad-line);
+  color: var(--bad);
+}
+
+.models-src {
+  font-size: var(--t-small);
+  color: var(--ink-3);
+}
+
+/* -------------------------------------------------------- repeat matrix */
+
+/*
+   Repeated per-model overrides collapse into one table: one row per model,
+   one column per field, the shared explanation stated once in the header
+   instead of once per field per model.
+*/
+.pol-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 0;
+  font-size: var(--t-small);
+}
+
+.pol-matrix th,
+.pol-matrix td {
+  padding: var(--sp-2) var(--sp-3);
+  text-align: left;
+  vertical-align: top;
+  border-top: 1px solid var(--rule-soft);
+}
+
+.pol-matrix thead th {
+  border-top: 0;
+  border-bottom: 1px solid var(--rule-2);
+  vertical-align: bottom;
+}
+
+.pol-matrix-corner {
+  width: 1%;
+  white-space: nowrap;
+}
+
+/* The row header carries the model id: it may wrap, but it should not shred
+   into one word per line, so it gets a floor and a ceiling in characters. */
+.pol-matrix tbody th {
+  min-width: 18ch;
+  max-width: 26ch;
+}
+
+.pol-matrix-th {
+  display: inline-block;
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.pol-matrix-name {
+  display: block;
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.pol-matrix-tag {
+  display: block;
+  margin-top: var(--sp-1);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.pol-matrix-act {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.pol-matrix-control {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.pol-matrix-control > .pol-control {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pol-bound {
+  flex: 0 0 auto;
+  min-height: 1.35rem;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--act-line);
+  border-radius: 999px;
+  background: var(--act-tint);
+  font-family: var(--mono);
+  font-size: var(--t-mark);
+  line-height: 1;
+  color: var(--act);
+  white-space: nowrap;
+  cursor: help;
+}
+
+.pol-matrix td .ctl {
+  width: 100%;
+  min-height: var(--ctl-h-sm);
+  font-size: var(--t-small);
+  line-height: calc(var(--ctl-h-sm) - 2px);
+}
+
+/* Column floors in characters, matching the widths policynav budgets for when
+   it decides between the table and the stacked form. */
+.pol-matrix th[data-kind='num'],
+.pol-matrix td[data-kind='num'] {
+  min-width: 15ch;
+}
+
+.pol-matrix th[data-kind='enum'],
+.pol-matrix td[data-kind='enum'] {
+  min-width: 14ch;
+}
+
+.pol-matrix th[data-kind='text'],
+.pol-matrix td[data-kind='text'] {
+  min-width: 15ch;
+}
+
+.pol-matrix td[data-kind='num'] .ctl {
+  max-width: 14ch;
+}
+
+/* An expression column is the widest thing in the table by definition, so it
+   claims the slack the fixed-width columns do not use rather than truncating. */
+.pol-matrix th[data-kind='expr'],
+.pol-matrix td[data-kind='expr'] {
+  min-width: 38ch;
+  width: 100%;
+}
+
+.pol-matrix td[data-kind='expr'] .ctl {
+  max-width: none;
+  font-family: var(--mono);
+}
+
+.pol-matrix td[data-kind='bool'] {
+  white-space: nowrap;
+}
+
+/*
+   Column width follows the values, not the headings. A four-digit rate limit
+   was taking 212px because "Tokens per minute" is a long phrase, while the
+   counter-key expression next to it truncated mid-token. The short columns are
+   now shrink-to-fit and their headings are allowed to wrap — a heading is
+   stated once, so two lines there costs nothing — which leaves the slack to
+   the one column whose content is genuinely long.
+*/
+.pol-matrix th[data-kind='num'],
+.pol-matrix th[data-kind='bool'],
+.pol-matrix th[data-kind='enum'],
+.pol-matrix td[data-kind='num'],
+.pol-matrix td[data-kind='bool'],
+.pol-matrix td[data-kind='enum'] {
+  width: 1%;
+}
+
+/*
+   Shrink-to-fit is measured against the heading once the heading is allowed to
+   wrap, which can land under the value. A token quota is six digits plus a
+   stepper, so the numeric columns keep a floor stated in characters of the
+   figures they hold.
+*/
+.pol-matrix th[data-kind='num'],
+.pol-matrix td[data-kind='num'] {
+  min-width: 11ch;
+}
+
+/*
+   The floor that matters is the one on the control: `ch` on the cell resolves
+   against the sans heading font, while the figures inside are mono and wider.
+   Stated here it is measured in the same characters the value is drawn in, so
+   a six-digit quota and its stepper fit at any zoom.
+*/
+.pol-matrix td[data-kind='num'] .ctl {
+  min-width: 12ch;
+}
+
+.pol-matrix th[data-kind='enum'],
+.pol-matrix td[data-kind='enum'] {
+  min-width: 13ch;
+}
+
+.pol-matrix th[data-kind='text'],
+.pol-matrix td[data-kind='text'] {
+  width: 100%;
+}
+
+.pol-cell-diff .ctl {
+  border-color: var(--act-line);
+  background: var(--act-tint);
+}
+
+.pol-cell-mark {
+  color: var(--act);
+}
+
+.pol-cell-note {
+  display: block;
+  margin-top: var(--sp-1);
+  font-size: var(--t-micro);
+  color: var(--ink-3);
+}
+
+/*
+   When the matrix cannot hold its columns, JS marks it stacked and each row
+   becomes a labelled record. The labels come from `data-label`, so no column
+   header is lost in the transition.
+*/
+.pol-matrix.is-stacked,
+.pol-matrix.is-stacked thead,
+.pol-matrix.is-stacked tbody,
+.pol-matrix.is-stacked tr,
+.pol-matrix.is-stacked th,
+.pol-matrix.is-stacked td {
+  display: block;
+  width: auto;
+}
+
+.pol-matrix.is-stacked thead {
+  display: none;
+}
+
+.pol-matrix.is-stacked tbody tr {
+  padding: var(--sp-4) 0;
+  border-top: 1px solid var(--rule);
+}
+
+.pol-matrix.is-stacked td {
+  display: grid;
+  grid-template-columns: minmax(10ch, 18ch) minmax(0, 1fr);
+  gap: var(--sp-4);
+  align-items: center;
+  padding: var(--sp-2) 0;
+  border-top: 0;
+}
+
+.pol-matrix.is-stacked td[data-label]::before {
+  content: attr(data-label);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.pol-matrix.is-stacked .pol-matrix-name {
+  display: block;
+}
+
+/*
+   Stacked mode gives each value a full row, so the control should use it. The
+   column caps that keep the table honest are measured against a shared column
+   and mean nothing once every field is on its own line -- left in place they
+   were the one thing still truncating a counter key at 1280px.
+
+   The cell holds four things: the generated label, the difference mark, the
+   control and the difference note. In a two-column grid those flow into two
+   rows and the control lands under the label, at label width. Each one is
+   placed instead, and the mark -- which is decorative and aria-hidden, with the
+   tinted cell and the note already carrying the same meaning -- is dropped.
+*/
+.pol-matrix.is-stacked td[data-label]::before {
+  grid-column: 1;
+  align-self: center;
+}
+
+.pol-matrix.is-stacked td > .pol-cell-mark {
+  display: none;
+}
+
+.pol-matrix.is-stacked td > .pol-control,
+.pol-matrix.is-stacked td > .pol-matrix-control,
+.pol-matrix.is-stacked td > .ctl,
+.pol-matrix.is-stacked td > .pol-cell-note {
+  grid-column: 2;
+}
+
+.pol-matrix.is-stacked td > .pol-control,
+.pol-matrix.is-stacked td > .pol-matrix-control,
+.pol-matrix.is-stacked td > .pol-matrix-control > .pol-control,
+.pol-matrix.is-stacked td > .pol-matrix-control > .pol-control > .ctl,
+.pol-matrix.is-stacked td > .pol-control > .ctl,
+.pol-matrix.is-stacked td > .ctl {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+/* ===================================================== responsive shell */
+
+/*
+   Below the two-rail width the context rail folds into the sheet's own scroll
+   flow rather than disappearing, so the section index and contract list stay
+   reachable at 1100px and under browser zoom.
+*/
+@media (max-width: 60rem) {
+  .shell {
+    grid-template-columns: var(--rail-areas) minmax(0, 1fr);
+    grid-template-areas:
+      'title title'
+      'areas sheet';
+  }
+
+  .shell .rail-context {
+    display: none;
+  }
+}
+
+/* ======================================================= uniform records */
+
+/* A record keeps its identifying fields in one comparable row. The long tail
+   expands below that row, so every column remains visible without scrolling. */
+.rec {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  container-type: inline-size;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--sheet);
+}
+
+.rec-row {
+  display: grid;
+  grid-template-columns: var(--rec-grid);
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--row-h);
+}
+
+.rec-entry {
+  border-top: 1px solid var(--rule-soft);
+}
+
+.rec-entry:nth-child(odd) .rec-row {
+  background: var(--zebra);
+}
+
+.rec-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 2rem;
+  border-bottom: 1px solid var(--rule-strong);
+  background: var(--band);
+  font-family: var(--sans-small);
+  font-size: var(--t-mark);
+  font-weight: 700;
+  color: var(--ink-3);
+}
+
+.rec-head .rec-cell {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/*
+ * At large zoom the identifying columns no longer fit honestly side by side.
+ * The same cells become a labelled, wrapping record rather than introducing a
+ * horizontal scrollbar. The long tail remains under the existing disclosure.
+ */
+/* 49rem is the widest configured record grid's minimum content measure. */
+@container (max-width: 49rem) {
+  .rec-head {
+    display: none;
+  }
+
+  .rec-row:not(.rec-head) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    padding: var(--sp-2);
+  }
+
+  .rec-row:not(.rec-head) > .rec-cell {
+    flex: 1 1 min(14rem, 100%);
+    padding: var(--sp-2) var(--sp-3);
+    border-left: 0;
+  }
+
+  .rec-row:not(.rec-head) > .rec-cell[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: var(--sp-1);
+    font-family: var(--sans-small);
+    font-size: var(--t-mark);
+    font-weight: 700;
+    color: var(--ink-3);
+    white-space: nowrap;
+  }
+
+  .rec-row:not(.rec-head) > .rec-idx,
+  .rec-row:not(.rec-head) > .rec-actions {
+    flex-basis: 100%;
+  }
+
+  .rec-row:not(.rec-head) > .rec-idx {
+    padding-bottom: 0;
+    text-align: left;
+  }
+}
+
+.rec-cell {
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  overflow: hidden;
+}
+
+.rec-cell + .rec-cell {
+  border-left: 1px solid var(--rule-soft);
+}
+
+.rec-cell > .ctl,
+.rec-cell > .combo,
+.rec-cell > .mp,
+.rec-cell .mp > .ctl {
+  width: 100%;
+  max-width: none;
+}
+
+.rec-cell .ctl {
+  min-height: var(--ctl-h-sm);
+  height: var(--ctl-h-sm);
+  line-height: calc(var(--ctl-h-sm) - 2px);
+}
+
+.rec-idx {
+  font-family: var(--mono);
+  font-size: var(--t-mark);
+  color: var(--ink-3);
+  text-align: right;
+}
+
+.rec-act {
+  text-align: right;
+}
+
+.rec-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  white-space: nowrap;
+  font-size: var(--t-micro);
+  font-variant-numeric: tabular-nums;
+}
+
+.rec-toggle-mark {
+  display: inline-block;
+  font-size: 1rem;
+  transition: transform 120ms ease;
+}
+
+.rec-toggle[aria-expanded='true'] .rec-toggle-mark {
+  transform: rotate(90deg);
+}
+
+.rec-remove {
+  width: 1.75rem;
+  min-width: 1.75rem;
+  padding-inline: 0;
+  font-size: 1rem;
+}
+
+.rec-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding-inline: var(--sp-2);
+}
+
+.rec-detail {
+  padding: var(--sp-3) var(--sp-4) var(--sp-4) 2rem;
+  border-top: 1px solid var(--rule-soft);
+  background: var(--sheet-2);
+}
+
+.rec-detail-title {
+  margin-bottom: var(--sp-2);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.rec-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr));
+  gap: var(--sp-3) var(--sp-5);
+}
+
+.rec-field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.rec-field-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+}
+
+.rec-field > .rec-cell {
+  padding: 0;
+  overflow: visible;
+  border-left: 0;
+}
+
+/* =========================================================== raw policy */
+
+.raw-editor {
+  display: grid;
+  grid-template-columns: 3.5rem minmax(0, 1fr);
+  min-width: 0;
+  margin-top: var(--sp-4);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-2);
+  overflow: hidden;
+  background: var(--well);
+}
+
+.raw-lines,
+.raw-code,
+.raw-stage .policy-raw {
+  margin: 0;
+  padding-block: var(--sp-4);
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  line-height: 1.55;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.raw-lines {
+  min-height: min(44rem, 70dvh);
+  padding-inline: var(--sp-4);
+  overflow: hidden;
+  border-right: 1px solid var(--rule);
+  background: var(--band);
+  color: var(--ink-3);
+  text-align: right;
+  user-select: none;
+}
+
+.raw-stage {
+  position: relative;
+  min-width: 0;
+}
+
+.raw-code {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  padding-inline: var(--sp-4);
+  color: var(--ink-1);
+  pointer-events: none;
+}
+
+.raw-stage .policy-raw {
+  position: relative;
+  width: 100%;
+  max-width: none;
+  min-height: min(44rem, 70dvh);
+  padding-inline: var(--sp-4);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--ink-1);
+  resize: none;
+  overflow: auto;
+}
+
+.raw-stage .policy-raw::selection {
+  background: var(--brass-line);
+  color: transparent;
+}
+
+.xml-tag {
+  color: var(--brass);
+}
+
+.xml-attr {
+  color: var(--prov);
+}
+
+.xml-value {
+  color: var(--ok);
+}
+
+.xml-comment {
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+/* The policy index is moved into the existing contract rail. The document is
+   then the sole child of the guided surface and earns the full sheet width. */
+.policy-guided-nav.policy-nav-external {
+  grid-template-columns: minmax(0, 1fr);
+  border: 0;
+}
+
+.policy-guided-nav.policy-nav-external > .pnav-doc {
+  grid-column: 1;
+  padding-inline: 0;
+}
+
+.rail-policy .pnav {
+  position: static;
+  max-height: none;
+  padding-inline: var(--sp-4);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* ================================================== precision studio layer */
+
+.sheet-strip {
+  padding-top: var(--sp-5);
+}
+
+.strip-title {
+  font-size: 1.25rem;
+  letter-spacing: -0.02em;
+}
+
+.sec-band {
+  background: color-mix(in srgb, var(--band) 58%, transparent);
+}
+
+.lb,
+.lb-panel,
+.lb-toolbar,
+.pol-card {
+  border-color: var(--rule-strong);
+}
