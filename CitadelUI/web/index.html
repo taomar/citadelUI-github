@@ -33,20 +33,24 @@
       <header class="titleblock">
         <a class="tb-brand" href="/" aria-label="Citadel UI">
           <span class="tb-mark" aria-hidden="true"></span>
-          <span class="tb-name">Citadel</span>
+          <span class="tb-brand-copy">
+            <span class="tb-name">Citadel UI</span>
+            <span class="tb-mode">Local control plane</span>
+          </span>
         </a>
 
         <div class="tb-context">
           <nav class="tb-doc" aria-label="Current write context">
-            <span id="project-name" class="tb-crumb">Project</span>
+            <span id="project-name" class="tb-crumb tb-project">Project</span>
             <span class="tb-chevron" aria-hidden="true">&#8250;</span>
-            <span id="environment-name" class="tb-crumb">Environment</span>
+            <span id="environment-name" class="tb-crumb tb-environment">Environment</span>
             <span class="tb-chevron" aria-hidden="true">&#8250;</span>
             <code id="repo-path" class="tb-path">&#8230;</code>
           </nav>
           <button id="local-path-copy" class="tb-local" type="button">
-            <span aria-hidden="true">Local</span>
+            <span class="tb-local-label" aria-hidden="true">Repository</span>
             <code id="local-path">Path not recorded</code>
+            <span class="tb-copy-mark" aria-hidden="true">Copy</span>
           </button>
         </div>
 

@@ -4194,25 +4194,70 @@
 
 /* ====================================================== final Fluent polish */
 
+.titleblock {
+  min-height: 3.5rem;
+  gap: var(--sp-6);
+  padding: var(--sp-3) var(--gutter);
+}
+
+.tb-brand {
+  gap: var(--sp-4);
+  min-height: 2.5rem;
+  padding-right: var(--sp-6);
+  border-right: 1px solid var(--rule);
+}
+
+.tb-mark {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+.tb-brand-copy {
+  display: grid;
+  gap: 1px;
+}
+
+.tb-name {
+  font-size: var(--t-lead);
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+
+.tb-mode {
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  line-height: 1.2;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
 .tb-context {
   display: grid;
-  gap: var(--sp-1);
+  gap: var(--sp-2);
   min-width: 0;
   flex: 1 1 24rem;
 }
 
 .tb-doc {
   display: flex;
-  align-items: baseline;
-  gap: var(--sp-2);
+  align-items: center;
+  gap: var(--sp-3);
   min-width: 0;
 }
 
 .tb-crumb {
   flex: none;
-  color: var(--ink-2);
+  color: var(--ink-3);
   font-size: var(--t-small);
   font-weight: 600;
+}
+
+.tb-environment {
+  padding: 1px var(--sp-3);
+  border: 1px solid var(--brand-line);
+  border-radius: var(--r-1);
+  background: var(--brand-wash);
+  color: var(--brand-pressed);
 }
 
 .tb-chevron {
@@ -4222,6 +4267,7 @@
 .tb-doc .tb-path {
   flex: 1 1 auto;
   direction: ltr;
+  font-size: var(--t-meta);
   color: var(--ink-1);
 }
 
@@ -4240,6 +4286,13 @@
   text-align: left;
 }
 
+.tb-local {
+  max-width: min(100%, 72rem);
+  min-height: var(--ctl-h-sm);
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-1);
+}
+
 .tb-local code,
 .environment-path code {
   min-width: 0;
@@ -4248,10 +4301,94 @@
   white-space: nowrap;
 }
 
-.tb-local:hover,
-.environment-path:hover {
+.tb-local-label {
+  flex: none;
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.tb-copy-mark {
+  flex: none;
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  color: var(--brand);
+  opacity: 0;
+  transition: opacity var(--fast) var(--ease);
+}
+
+.tb-local:hover {
   color: var(--brand-hover);
   text-decoration: underline;
+}
+
+.tb-local:hover {
+  background: var(--zebra);
+}
+
+.tb-local:hover .tb-copy-mark,
+.tb-local:focus-visible .tb-copy-mark {
+  opacity: 1;
+}
+
+.tb-actions {
+  gap: var(--sp-5);
+  padding-left: var(--sp-6);
+  border-left: 1px solid var(--rule);
+}
+
+.tb-status-group,
+.tb-command-set {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.tb-pending {
+  min-height: var(--ctl-h-sm);
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--zebra);
+}
+
+.tb-pending.is-dirty {
+  border-color: var(--brand-line);
+  background: var(--brand-wash);
+}
+
+.tb-pending.has-warnings {
+  border-color: var(--warning-line);
+  background: var(--warning-wash);
+  color: var(--warning);
+}
+
+.tb-pending.has-errors {
+  border-color: var(--danger-line);
+  background: var(--danger-wash);
+  color: var(--danger);
+}
+
+@media (max-width: 80rem) {
+  .titleblock {
+    gap: var(--sp-4);
+  }
+
+  .tb-brand {
+    padding-right: var(--sp-4);
+  }
+
+  .tb-mode,
+  .tb-copy-mark {
+    display: none;
+  }
+
+  .tb-actions {
+    gap: var(--sp-3);
+    padding-left: var(--sp-4);
+  }
 }
 
 .area-disclosure-summary,
@@ -4431,6 +4568,12 @@
 
   .tb-brand {
     min-height: 2.75rem;
+    padding-right: 0;
+    border-right: 0;
+  }
+
+  .tb-brand-copy {
+    display: none;
   }
 
   .tb-context {
@@ -4457,13 +4600,26 @@
   .tb-actions {
     flex: 1 0 100%;
     flex-wrap: wrap;
+    padding-left: 0;
     padding-top: var(--sp-3);
+    border-left: 0;
     border-top: 1px solid var(--rule);
   }
 
-  .tb-actions .tb-pending {
+  .tb-status-group {
     order: -1;
     flex: 1 0 100%;
+  }
+
+  .tb-command-set {
+    width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+  }
+
+  .tb-command-set > * {
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
 
   .rail-areas,

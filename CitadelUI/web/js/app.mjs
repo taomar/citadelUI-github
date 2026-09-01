@@ -2005,7 +2005,14 @@ async function openWorkspaceSettings() {
  */
 function renderActions() {
   if (!state.current) {
-    mount(els.tbActions, h('button', { class: 'btn', onclick: openWorkspaceSettings }, 'Settings'));
+    mount(
+      els.tbActions,
+      h(
+        'div',
+        { class: 'tb-command-set' },
+        h('button', { class: 'btn', onclick: openWorkspaceSettings }, 'Settings')
+      )
+    );
     return;
   }
   const pending = pendingCount();
@@ -2035,59 +2042,73 @@ function renderActions() {
       ? `${warnings.length} validation ${warnings.length === 1 ? 'warning' : 'warnings'}`
       : '';
 
-  mount(
-    els.tbActions,
-    h('button', { class: 'btn', onclick: openWorkspaceSettings }, 'Settings'),
-    h(
-      'span',
-      { class: `tb-pending${pending ? ' is-dirty' : ''}` },
-      validationLabel ? `${pendingLabel} · ${validationLabel}` : pendingLabel
-    ),
-    h(
-      'button',
-      {
-        class: 'btn',
-        disabled: !pending,
-        onclick: async () => {
-          try {
-            await discardAllPending();
-            render();
-          } catch (error) {
-            setStatus(error.message, 'error');
-          }
-        },
+  const settings = h(
+    'button',
+    { class: 'btn btn-ghost', onclick: openWorkspaceSettings },
+    'Settings'
+  );
+  const discard = h(
+    'button',
+    {
+      class: 'btn',
+      disabled: !pending,
+      onclick: async () => {
+        try {
+          await discardAllPending();
+          render();
+        } catch (error) {
+          setStatus(error.message, 'error');
+        }
       },
-      'Discard'
-    ),
-    elsewhere
+    },
+    'Discard'
+  );
+  const primary = elsewhere
+    ? h(
+        'button',
+        {
+          class: 'btn',
+          title: `The unsaved changes are on the ${targetLabel} tab`,
+          onclick: () => {
+            state.tab = target;
+            render();
+          },
+        },
+        `Review on ${targetLabel}\u2026`
+      )
+    : policyTab
       ? h(
           'button',
-          {
-            class: 'btn',
-            title: `The unsaved changes are on the ${targetLabel} tab`,
-            onclick: () => {
-              state.tab = target;
-              render();
-            },
-          },
-          `Review on ${targetLabel}\u2026`
+          { class: 'btn btn-primary', disabled: !savableHere, onclick: savePolicy },
+          'Review & save policy'
         )
-      : policyTab
-        ? h(
-            'button',
-            { class: 'btn btn-primary', disabled: !savableHere, onclick: savePolicy },
-            'Review & save policy'
-          )
-        : h(
-            'button',
-            {
-              class: 'btn btn-primary',
-              disabled: !savableHere || blocking.length > 0,
-              title: blocking.length ? 'Resolve blocking validation errors before review' : '',
-              onclick: openReview,
-            },
-            'Review & save'
-          )
+      : h(
+          'button',
+          {
+            class: 'btn btn-primary',
+            disabled: !savableHere || blocking.length > 0,
+            title: blocking.length ? 'Resolve blocking validation errors before review' : '',
+            onclick: openReview,
+          },
+          'Review & save'
+        );
+
+  mount(
+    els.tbActions,
+    h(
+      'div',
+      { class: 'tb-status-group' },
+      h(
+        'span',
+        {
+          class:
+            `tb-pending${pending ? ' is-dirty' : ''}` +
+            `${blocking.length ? ' has-errors' : warnings.length ? ' has-warnings' : ''}`,
+        },
+        validationLabel ? `${pendingLabel} · ${validationLabel}` : pendingLabel
+      )
+    ),
+    h('div', { class: 'tb-command-set' }, settings, discard, primary)
   );
 }
 
