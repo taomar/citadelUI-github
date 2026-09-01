@@ -19,23 +19,50 @@ export function parameterMap(doc) {
   return new Map((doc && doc.params || []).map((param) => [param.name, editableValue(param.value)]));
 }
 
-function finding(param, message, path = [param]) {
-  return { severity: 'error', param, path, message };
+function finding(param, message, path = [param], severity = 'error') {
+  return { severity, param, path, message };
 }
 
-function missingFields(value, fields) {
+function incompleteFields(value, fields) {
   const object = value && typeof value === 'object' ? value : {};
-  return fields.filter((field) => {
+  return fields.reduce((result, field) => {
     const entry = object[field];
-    return typeof entry !== 'string' || !entry.trim() || PLACEHOLDER.test(entry.trim());
-  });
+    if (typeof entry !== 'string' || !entry.trim()) result.missing.push(field);
+    else if (PLACEHOLDER.test(entry.trim())) result.placeholders.push(field);
+    return result;
+  }, { missing: [], placeholders: [] });
 }
 
 function validateCoordinates(findings, param, value, fields, label) {
-  const missing = missingFields(value, fields);
+  const { missing, placeholders } = incompleteFields(value, fields);
   if (missing.length) {
     findings.push(finding(param, `${label} is incomplete. Missing: ${missing.join(', ')}.`));
   }
+  if (placeholders.length) {
+    findings.push(
+      finding(
+        param,
+        `${label} still uses placeholder values for: ${placeholders.join(', ')}.`,
+        [param],
+        'warning'
+      )
+    );
+  }
+}
+
+export function classifyValidation(findings, baseline = [], dirty = new Set()) {
+  const baselineKeys = new Set(
+    baseline.map((item) => JSON.stringify([item.param, item.path, item.message]))
+  );
+  return findings.map((item) => {
+    const key = JSON.stringify([item.param, item.path, item.message]);
+    const edited = dirty.has(item.param);
+    if (edited) return { ...item, severity: 'error' };
+    if (item.severity === 'warning' || baselineKeys.has(key)) {
+      return { ...item, severity: 'warning' };
+    }
+    return item;
+  });
 }
 
 export function validateDocument(doc) {

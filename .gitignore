@@ -440,7 +440,11 @@ CitadelUI/.shots/
 CitadelUI/.snapshots/
 CitadelUI/.srv.err
 CitadelUI/.srv.log
+.playwright-mcp/
 
 # Citadel UI tests are source, despite the repository-wide **/test rule.
 !CitadelUI/test/
 !CitadelUI/test/**
+
+# Local agent recovery checkpoint
+/AGENT_PROGRESS.md

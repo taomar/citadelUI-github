@@ -4,21 +4,30 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { extractSchema } from '../server/bicep.mjs';
+import { regionOptionsFor } from '../web/js/fields.mjs';
 import { filterPickerItems } from '../web/js/picker.mjs';
-import { APIM_SKUS, LOGIC_APPS_TEMPLATE } from '../web/js/azuremeta.mjs';
+import {
+  APIC_LOCATION_VALUES,
+  APIM_SKUS,
+  LOGIC_APPS_TEMPLATE,
+  PRIMARY_REGIONS,
+} from '../web/js/azuremeta.mjs';
 import { foundryServiceOptions, logicAppsWorkerGuidance } from '../web/js/paramview.mjs';
-import { validateDocument } from '../web/js/validation.mjs';
+import { classifyValidation, validateDocument } from '../web/js/validation.mjs';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const source = readFileSync(join(here, '..', '..', 'bicep', 'infra', 'main.bicep'), 'utf8');
 const schema = extractSchema(source);
 
-assert.equal(schema.location.allowedValues.length, 14);
-assert.deepEqual(schema.apicLocation.allowedValues, [
-  '', 'australiaeast', 'canadacentral', 'centralindia', 'eastus',
-  'francecentral', 'swedencentral', 'uksouth', 'westeurope',
-]);
+assert.deepEqual(schema.location.allowedValues, PRIMARY_REGIONS);
+assert.deepEqual(schema.apicLocation.allowedValues, APIC_LOCATION_VALUES);
 assert.equal(schema.location.name, 'location');
+assert.deepEqual(
+  regionOptionsFor(null, ['aiFoundryInstances', 0, 'location', '__args', 1]),
+  PRIMARY_REGIONS
+);
+assert.deepEqual(regionOptionsFor(null, ['apicLocation']), APIC_LOCATION_VALUES);
+assert.equal(regionOptionsFor(null, ['resourceGroupName']), null);
 assert.deepEqual(schema.logicAppsSkuName.allowedValues, ['WS1', 'WS2', 'WS3']);
 assert.equal(schema.logicAppsSkuCapacityUnits.minValue, 1);
 assert.equal(schema.logicAppsSkuCapacityUnits.maxValue, 20);
@@ -90,6 +99,35 @@ assert.match(
     aiFoundryModelsConfig: [{ name: 'gpt', aiserviceIndex: 2 }],
   }))[0].message,
   /valid indices/
+);
+
+const baselineAccess = doc({
+  apim: {
+    subscriptionId: '00000000-0000-0000-0000-000000000000',
+    resourceGroupName: 'rg-live',
+    name: 'apim-live',
+  },
+  unrelatedBackend: 'before',
+});
+const baselineFindings = validateDocument(baselineAccess);
+assert.equal(baselineFindings[0].severity, 'warning');
+const unrelatedEdit = doc({
+  apim: {
+    subscriptionId: '00000000-0000-0000-0000-000000000000',
+    resourceGroupName: 'rg-live',
+    name: 'apim-live',
+  },
+  unrelatedBackend: 'after',
+});
+assert.deepEqual(
+  classifyValidation(validateDocument(unrelatedEdit), baselineFindings, new Set(['unrelatedBackend']))
+    .map((finding) => finding.severity),
+  ['warning']
+);
+assert.deepEqual(
+  classifyValidation(validateDocument(unrelatedEdit), baselineFindings, new Set(['apim']))
+    .map((finding) => finding.severity),
+  ['error']
 );
 
 console.log('Control metadata and validation checks passed.');

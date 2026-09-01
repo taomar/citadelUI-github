@@ -176,7 +176,11 @@ function plainSub(sub) {
   const rest = kids.filter((k) => k !== grid);
   // Anything else in the box -- a note that a branch is only editable as raw
   // XML, say -- means the row would lose content on the way into a cell.
-  if (rest.some((k) => k.tagName !== 'H5' && !k.classList.contains('pol-sub-head'))) return null;
+  if (
+    rest.some(
+      (k) => !/^H[1-6]$/.test(k.tagName) && !k.classList.contains('pol-sub-head')
+    )
+  ) return null;
   const fields = Array.from(grid.querySelectorAll(':scope > .pol-field'));
   if (!fields.length) return null;
   const head = rest[0] || null;
@@ -184,15 +188,21 @@ function plainSub(sub) {
   return { sub, fields, head, signature: labels.join('\u0001') };
 }
 
-function rowName(head) {
+export function policyMatrixRowName(head) {
   if (!head) return 'All models';
-  if (head.tagName === 'H5') return head.textContent.trim();
-  return head.querySelector('h5')?.textContent.trim() || 'All models';
+  if (/^H[1-6]$/.test(head.tagName)) return head.textContent.trim();
+  return head.querySelector('h1, h2, h3, h4, h5, h6')?.textContent.trim() || 'All models';
 }
 
 function rowActions(head) {
-  if (!head || head.tagName === 'H5') return [];
+  if (!head || /^H[1-6]$/.test(head.tagName)) return [];
   return Array.from(head.querySelectorAll('button, a'));
+}
+
+function isFallbackRow(entry) {
+  return /^(?:applies to every model|fallback for models without their own limit)$/i.test(
+    policyMatrixRowName(entry.head)
+  );
 }
 
 function headerCell(baseField, label, kind) {
@@ -250,17 +260,21 @@ function bodyCell(fieldEl, kind, label, baseValue, isBase) {
  * sentence stated once in the header instead of once per row.
  */
 function buildMatrix(group) {
-  const base = group[0];
-  const labels = base.fields.map(
+  const fallback = group.find(isFallbackRow) || null;
+  const ordered = fallback
+    ? [fallback, ...group.filter((entry) => entry !== fallback)]
+    : group;
+  const sample = ordered[0];
+  const labels = sample.fields.map(
     (f) => (f.querySelector(':scope > .pol-label')?.textContent || '').trim()
   );
 
   // Kind is a property of the column, not of one cell, so a column holding one
   // long expression is wide for every row.
-  const kinds = base.fields.map((f, i) => {
+  const kinds = sample.fields.map((f, i) => {
     const kind = controlKind(f);
     if (kind !== 'text') return kind;
-    const widest = Math.max(...group.map((g) => controlValue(g.fields[i]).length));
+    const widest = Math.max(...ordered.map((g) => controlValue(g.fields[i]).length));
     return widest > 24 ? 'expr' : 'text';
   });
 
@@ -268,23 +282,23 @@ function buildMatrix(group) {
     'tr',
     {},
     h('th', { scope: 'col', class: 'pol-matrix-corner' }, 'Model'),
-    base.fields.map((f, i) => headerCell(f, labels[i], kinds[i]))
+    sample.fields.map((f, i) => headerCell(f, labels[i], kinds[i]))
   );
 
   // Read the fallback before any row is built: assembling a row moves the live
   // control out of its field, so asking the base field for its value afterwards
   // would compare every override against an empty string.
-  const baseValues = base.fields.map((f) => controlValue(f));
+  const baseValues = fallback ? fallback.fields.map((f) => controlValue(f)) : null;
 
-  const rows = group.map((entry, r) => {
-    const isBase = r === 0;
+  const rows = ordered.map((entry) => {
+    const isBase = entry === fallback;
     const actions = rowActions(entry.head);
     // The row header names which model the row is about. For the fallback row
     // the editor spells that out as a sentence, which is the right answer to a
     // different question -- the block's own intro already says it. In a column
     // sized for model ids a sentence wraps to four lines and pushes every other
     // row apart, so it is shortened here and the full wording kept on hover.
-    const rawName = rowName(entry.head);
+    const rawName = policyMatrixRowName(entry.head);
     const label = isBase && rawName.length > 18 ? 'Every other model' : rawName;
     const nameEl = h('span', { class: 'pol-matrix-name' }, label);
     if (label !== rawName) attachExplain(nameEl, label, rawName);
@@ -299,7 +313,13 @@ function buildMatrix(group) {
         actions.length ? h('span', { class: 'pol-matrix-act' }, actions) : null
       ),
       entry.fields.map((f, i) =>
-        bodyCell(f, kinds[i], labels[i], isBase ? null : baseValues[i], isBase)
+        bodyCell(
+          f,
+          kinds[i],
+          labels[i],
+          !baseValues || isBase ? null : baseValues[i],
+          isBase
+        )
       )
     );
   });
@@ -308,7 +328,7 @@ function buildMatrix(group) {
   // nine live controls in a twelve-hundred pixel pane, and a table that has to
   // truncate its values is worse than no table at all.
   const displays = labels.map(compactLabel);
-  const constraints = base.fields.map((field) => Boolean(
+  const constraints = sample.fields.map((field) => Boolean(
     field.querySelector(':scope > .hint') &&
     loadBearing(field.querySelector(':scope > .hint'))
   ));

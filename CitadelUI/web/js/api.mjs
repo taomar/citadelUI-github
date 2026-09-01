@@ -1,48 +1,46 @@
-/** Thin fetch wrapper. Every failure surfaces the server's message verbatim. */
+import { createTransactionCommit } from './transaction-client.mjs';
+import { WorkspaceService } from './workspace-service.mjs';
+import { localRequest as request } from './local-api.mjs';
 
-async function request(path, options = {}) {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
-  const body = await res.json().catch(() => ({ error: `${res.status} ${res.statusText}` }));
-  if (!res.ok) throw new Error(body.error || `Request failed: ${res.status}`);
-  return body;
-}
+const workspace = new WorkspaceService({
+  request,
+  commitFiles: createTransactionCommit(request),
+});
 
 export const api = {
-  health: () => request('/api/health'),
-  deployments: () => request('/api/deployments'),
-  deployment: (path) => request(`/api/deployment?path=${encodeURIComponent(path)}`),
-  preview: (path, operations) =>
-    request('/api/preview', { method: 'POST', body: JSON.stringify({ path, operations }) }),
-  save: (path, operations, expectedMtimeMs) =>
-    request('/api/save', {
-      method: 'POST',
-      body: JSON.stringify({ path, operations, expectedMtimeMs }),
-    }),
-  focus: () => request('/api/focus'),
-  onboardedModels: () => request('/api/onboarded-models'),
-  policyVariables: () => request('/api/policy-variables'),
-  contracts: () => request('/api/contracts'),
-  contract: (id) => request(`/api/contract?id=${encodeURIComponent(id)}`),
-  accessContractTargets: (environment) =>
-    request(`/api/access-contract-targets${environment ? `?environment=${encodeURIComponent(environment)}` : ''}`),
-  createContract: (payload) =>
-    request('/api/contract/create', { method: 'POST', body: JSON.stringify(payload) }),
-  restoreContract: (id) =>
-    request('/api/contract/restore', { method: 'POST', body: JSON.stringify({ id }) }),
-  previewPolicy: (path, changes) =>
-    request('/api/contract/policy/preview', {
-      method: 'POST',
-      body: JSON.stringify({ path, changes }),
-    }),
-  savePolicy: (payload) =>
-    request('/api/contract/policy', { method: 'POST', body: JSON.stringify(payload) }),
-  environments: () => request('/api/environments'),
-  environment: (name) => request(`/api/environment?name=${encodeURIComponent(name)}`),
-  saveEnvironment: (name, updates) =>
-    request('/api/environment', { method: 'POST', body: JSON.stringify({ name, updates }) }),
-  resolve: (environment, variables) =>
-    request('/api/resolve', { method: 'POST', body: JSON.stringify({ environment, variables }) }),
+  resetWorkspace: () => workspace.reset(),
+  health: () => workspace.health(),
+  deployments: () => workspace.deployments(),
+  deployment: (path) => workspace.deployment(path),
+  preview: (path, operations, expectedHash) => workspace.preview(path, operations, expectedHash),
+  save: (path, operations, expectedHash) => workspace.save(path, operations, expectedHash),
+  saveSubscriptionId: (environmentName, value, expectedHash) =>
+    workspace.saveSubscriptionId(environmentName, value, expectedHash),
+  focus: () => workspace.focus(),
+  onboardedModels: () => workspace.onboardedModels(),
+  policyVariables: () => workspace.policyVariables(),
+  contracts: () => workspace.contracts(),
+  contract: (id) => workspace.contract(id),
+  accessContractTargets: () => workspace.accessContractTargets(),
+  createContract: (payload) => workspace.createContract(payload),
+  restoreContract: (id) => workspace.restoreContract(id),
+  previewPolicy: (path, changes, expectedHash) =>
+    workspace.previewPolicy(path, changes, null, expectedHash),
+  savePolicy: (payload) => workspace.savePolicy(payload),
+  compareEnvironment: (environmentId, path) => workspace.compareEnvironment(environmentId, path),
+  previewCopy: (environmentId, path, names, expectedSourceHash) =>
+    workspace.previewCopy(environmentId, path, names, expectedSourceHash),
+  copyParameters: (environmentId, path, names, expectedSourceHash, expectedTargetHash) =>
+    workspace.copyParameters(
+      environmentId,
+      path,
+      names,
+      expectedSourceHash,
+      expectedTargetHash
+    ),
+  history: () => workspace.history(),
+  inspectRecovery: (transactionId) => workspace.inspectRecovery(transactionId),
+  recoverTransaction: (transactionId, action) =>
+    workspace.recoverTransaction(transactionId, action),
+  restoreTransaction: (transactionId) => workspace.restoreTransaction(transactionId),
 };

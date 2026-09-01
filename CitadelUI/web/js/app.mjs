@@ -24,8 +24,36 @@ import { renderParamDocument, renderOutlineNav } from './paramview.mjs';
 import { previewDocument, queueOperation } from './preview.mjs';
 import { renderPolicy } from './policyview.mjs';
 import { decoratePolicy } from './policynav.mjs';
-import { editableValue, validateDocument } from './validation.mjs';
+import { classifyValidation, editableValue, validateDocument } from './validation.mjs';
 import { APIM_SKUS, LOGIC_APPS_TEMPLATE } from './azuremeta.mjs';
+import {
+  activeWorkspace,
+  attachEnvironment,
+  assertSupportedScan,
+  commitActiveWorkspaceReconnect,
+  ensureWorkspace,
+  scanProvider,
+  syncRegistryMetadata,
+  localPathMatchesHandle,
+  validateLocalPath,
+  workspaceRegistry,
+} from './workspace-context.mjs';
+import { BrowserDirectoryProvider } from './directory-provider.mjs';
+import { createEnvironmentOperation } from './settings-operation.mjs';
+import { setRawPolicyDraft } from './policy-edit-state.mjs';
+import {
+  captureContractEdits,
+  clearEditorPending,
+  editorPendingCount,
+  restoreContractEdits,
+} from './contract-edit-state.mjs';
+import {
+  choiceDialog,
+  closeDialog,
+  confirmDialog,
+  promptDialog,
+  showDialog,
+} from './dialog.mjs';
 
 const state = {
   areas: [],
@@ -42,6 +70,7 @@ const state = {
   contentSafetySpec: null,
   policyPreview: null,
   current: null,
+  baselineValidation: [],
   operations: [],
   policyChanges: {},
   policyRaw: null,
@@ -50,12 +79,13 @@ const state = {
   open: new Map(),
   filter: '',
   showAll: false,
-  environment: null,
-  envEntries: [],
   status: null,
+  projectLabel: 'Project',
 };
 
 const els = {};
+const COMPACT_NAV = window.matchMedia('(max-width: 48rem)');
+const pendingByDocument = new Map();
 
 /* ------------------------------------------------------------------ status */
 
@@ -85,8 +115,93 @@ function renderStatus() {
   mount(
     els.status,
     h('span', {}, state.status.message),
-    h('button', { class: 'status-x', onclick: () => setStatus(null) }, '\u2715')
+    h(
+      'button',
+      {
+        class: 'status-x',
+        type: 'button',
+        'aria-label': 'Dismiss notification',
+        onclick: () => setStatus(null),
+      },
+      '\u2715'
+    )
   );
+}
+
+function currentWriteContext(file = state.current?.path || null, environment = null) {
+  let workspace = null;
+  try {
+    workspace = activeWorkspace();
+  } catch {
+    // Setup has no active workspace yet.
+  }
+  const selected = environment || workspace?.environment || {};
+  return {
+    project: state.projectLabel || 'Project',
+    environment: selected.label || 'Environment',
+    file: file || 'No file selected',
+    localPath: selected.localPath || 'Local path not recorded',
+  };
+}
+
+function writeContextNode(options = {}) {
+  const source = options.source || currentWriteContext(options.file);
+  const target = options.target || null;
+  const row = (label, context) =>
+    h(
+      'div',
+      { class: 'write-context-row' },
+      h('strong', {}, label),
+      h(
+        'span',
+        { class: 'write-context-breadcrumb' },
+        h('span', {}, context.project),
+        h('span', { 'aria-hidden': 'true' }, '\u203a'),
+        h('span', {}, context.environment),
+        h('span', { 'aria-hidden': 'true' }, '\u203a'),
+        h('code', {}, context.file)
+      ),
+      h('code', { class: 'write-context-local', title: context.localPath }, context.localPath)
+    );
+  return h(
+    'section',
+    { class: 'write-context', 'aria-label': target ? 'Source and target context' : 'Write context' },
+    row(target ? 'Source' : 'Writing to', source),
+    target ? row('Target', target) : null
+  );
+}
+
+function formatTimestamp(raw) {
+  const date = new Date(raw || '');
+  if (Number.isNaN(date.getTime())) return h('span', { class: 'time-unknown' }, 'Time unavailable');
+  const exact = date.toISOString();
+  return h(
+    'time',
+    { datetime: exact, title: `${exact} (UTC)` },
+    date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+  );
+}
+
+const ACTION_LABELS = {
+  'contract-create': 'Created contract',
+  'history-restore': 'Restored prior revision',
+  'environment-copy': 'Copied environment parameters',
+  save: 'Saved changes',
+  'policy-save': 'Saved policy',
+};
+
+function humanAction(transaction) {
+  const action = transaction.action || transaction.targetLabel || 'change';
+  return ACTION_LABELS[action] || String(action).replace(/[-_]+/g, ' ').replace(/^./, (c) => c.toUpperCase());
+}
+
+function transactionTone(transaction) {
+  const status = transaction.status || 'original';
+  if (transaction.recoveryRequired || ['committing', 'reverting'].includes(status)) return 'warning';
+  if (['failed', 'hash-mismatch', 'corrupt'].includes(status)) return 'danger';
+  if (['committed', 'verified', 'rolled_back'].includes(status)) return 'success';
+  if (['incompatible', 'degraded'].includes(status)) return 'degraded';
+  return 'neutral';
 }
 
 /** Every async entry point runs through here so status can never stick. */
@@ -108,8 +223,43 @@ function pathKey(path) {
   return JSON.stringify(path);
 }
 
+function draftContainsSecureValue(operations = state.operations) {
+  const definitions = state.current?.schema?.parameters || {};
+  return operations.some((operation) => {
+    const definition = definitions[operation.path?.[0]];
+    return !definition || definition.secure;
+  });
+}
+
+async function persistParameterDraft() {
+  if (!state.current) return;
+  const environmentId = activeWorkspace().environment.id;
+  if (!state.operations.length || draftContainsSecureValue()) {
+    await workspaceRegistry.removeDraft(environmentId, state.current.path);
+    return;
+  }
+  await workspaceRegistry.saveDraft(
+    environmentId,
+    state.current.path,
+    state.current.hash,
+    state.operations
+  );
+}
+
+async function restoreParameterDraft(document) {
+  const draft = await workspaceRegistry.getDraft(activeWorkspace().environment.id, document.path);
+  if (!draft) return [];
+  if (draft.sourceHash !== document.hash) {
+    await workspaceRegistry.removeDraft(activeWorkspace().environment.id, document.path);
+    setStatus('A saved draft was discarded because the source changed outside Citadel UI.', 'info');
+    return [];
+  }
+  return draft.operations || [];
+}
+
 function pushOperation(op) {
   state.operations = queueOperation(state.operations, op, state.current);
+  persistParameterDraft().catch((error) => setStatus(error.message, 'error'));
   render();
 }
 
@@ -117,11 +267,20 @@ function pushOperations(operations) {
   for (const operation of operations) {
     state.operations = queueOperation(state.operations, operation, state.current);
   }
+  persistParameterDraft().catch((error) => setStatus(error.message, 'error'));
   render();
 }
 
 function dirtyParams() {
   return new Set(state.operations.map((o) => o.path && o.path[0]).filter(Boolean));
+}
+
+function currentValidation(doc = viewOf(state.current)) {
+  return classifyValidation(validateDocument(doc), state.baselineValidation, dirtyParams());
+}
+
+function blockingValidation(doc = viewOf(state.current)) {
+  return currentValidation(doc).filter((finding) => finding.severity === 'error');
 }
 
 /**
@@ -143,7 +302,113 @@ function hasPolicyEdits() {
 }
 
 function pendingCount() {
-  return state.operations.length + (hasPolicyEdits() ? 1 : 0);
+  let count = editorPendingCount(state);
+  for (const pending of pendingByDocument.values()) {
+    count += editorPendingCount(pending);
+  }
+  return count;
+}
+
+function pendingKey(path = state.current?.path, environmentId = activeWorkspace().environment.id) {
+  return path ? `${environmentId}:${path}` : null;
+}
+
+async function stashCurrentPending() {
+  if (!editorPendingCount(state) || !state.current) return;
+  if (state.operations.length && !draftContainsSecureValue()) await persistParameterDraft();
+  const snapshot = captureContractEdits(state);
+  snapshot.environmentId = activeWorkspace().environment.id;
+  snapshot.secureParameters = draftContainsSecureValue();
+  pendingByDocument.set(pendingKey(), snapshot);
+  clearEditorPending(state);
+}
+
+function restoreStashedPending() {
+  const key = pendingKey();
+  const snapshot = key && pendingByDocument.get(key);
+  if (!snapshot) return;
+  const conflicts = restoreContractEdits(state, snapshot);
+  if (!conflicts.length) {
+    pendingByDocument.delete(key);
+  } else {
+    setStatus(
+      `Preserved edits could not be reapplied because source changed: ${conflicts.join(', ')}.`,
+      'error'
+    );
+  }
+}
+
+function canPersistAllPending() {
+  const snapshots = [
+    {
+      ...captureContractEdits(state),
+      secureParameters: draftContainsSecureValue(),
+    },
+    ...pendingByDocument.values(),
+  ];
+  return snapshots.every(
+    (snapshot) =>
+      !snapshot.secureParameters &&
+      !Object.keys(snapshot.policyChanges || {}).length &&
+      snapshot.policyRaw === null
+  );
+}
+
+async function discardAllPending() {
+  const drafts = [];
+  if (state.current?.path) {
+    drafts.push(
+      workspaceRegistry.removeDraft(activeWorkspace().environment.id, state.current.path)
+    );
+  }
+  for (const snapshot of pendingByDocument.values()) {
+    if (snapshot.parameterPath) {
+      drafts.push(
+        workspaceRegistry.removeDraft(snapshot.environmentId, snapshot.parameterPath)
+      );
+    }
+  }
+  await Promise.all(drafts);
+  pendingByDocument.clear();
+  clearEditorPending(state);
+}
+
+async function choosePendingNavigation({ allowPreserve = true, destination, leavesPage = false }) {
+  if (!pendingCount()) return 'continue';
+  const preserve = allowPreserve && (!leavesPage || canPersistAllPending());
+  return choiceDialog({
+    title: 'Unsaved changes',
+    message: preserve
+      ? `You have unsaved changes. Preserve them as browser drafts before ${destination}, discard them, or stay here.`
+      : `You have unsaved changes that cannot be safely preserved through ${destination}. Discard them or stay here.`,
+    context: writeContextNode(),
+    choices: [
+      { value: 'stay', label: 'Stay' },
+      ...(preserve
+        ? [{ value: 'preserve', label: 'Preserve & continue', primary: true }]
+        : []),
+      { value: 'discard', label: 'Discard & continue', tone: 'danger' },
+    ],
+  });
+}
+
+async function applyPendingNavigation(choice, { leavesPage = false } = {}) {
+  if (!choice || choice === 'stay') return false;
+  if (choice === 'discard') {
+    await discardAllPending();
+    return true;
+  }
+  if (choice === 'preserve') {
+    await stashCurrentPending();
+    if (leavesPage) pendingByDocument.clear();
+    return true;
+  }
+  return choice === 'continue';
+}
+
+async function confirmPendingNavigation(options) {
+  const choice = await choosePendingNavigation(options);
+  return applyPendingNavigation(choice, options);
 }
 
 /* Pending edits live only in memory: a reload discards them with no warning,
@@ -161,7 +426,7 @@ window.addEventListener('beforeunload', (event) => {
 function editContext(doc) {
   const dirty = dirtyParams();
   const params = new Map((doc.params || []).map((param) => [param.name, param]));
-  const findings = validateDocument(doc);
+  const findings = currentValidation(doc);
   return {
     onChange: (path, value) => pushOperation({ op: 'set', path, value }),
     onAppend: (path, value) => pushOperation({ op: 'append', path, value }),
@@ -170,11 +435,7 @@ function editContext(doc) {
     // carry has to be created instead of assigned.
     onAddProperty: (path, key, value) => pushOperation({ op: 'addProperty', path, key, value }),
     rerender: () => render(),
-    onEditEnv: (variable) => openEnvEditor(variable),
-    resolveEnv: (name) => {
-      const hit = state.envEntries.find((e) => e.key === name);
-      return hit ? { source: 'environment', value: hit.value } : null;
-    },
+    resolveEnv: () => null,
     schemaFor: (name) => {
       const schema = doc.schema;
       if (!schema || !schema.available) return null;
@@ -192,6 +453,37 @@ function editContext(doc) {
     },
     paramValue: (name) => editableValue(params.get(name) && params.get(name).value),
     findingsFor: (name) => findings.filter((finding) => finding.param === name),
+    saveSubscriptionId: async ({ environmentName, value, expectedHash }) => {
+      const confirmed = await confirmDialog({
+        title: 'Update Azure subscription ID?',
+        message:
+          `Replace only AZURE_SUBSCRIPTION_ID in .azure/${environmentName}/.env? ` +
+          'Every other environment-file byte remains unchanged and never leaves the browser.',
+        confirmLabel: 'Update subscription ID',
+        context: writeContextNode({ file: `.azure/${environmentName}/.env` }),
+      });
+      if (!confirmed) return;
+      const pendingEdits = captureContractEdits(state);
+      const currentPath = state.current.path;
+      const result = await withStatus('Saving subscription ID\u2026', () =>
+        api.saveSubscriptionId(environmentName, value, expectedHash)
+      );
+      if (!result) return;
+      await loadDocument(currentPath);
+      const conflicts = restoreContractEdits(state, pendingEdits);
+      render();
+      if (conflicts.length) {
+        setStatus(
+          `Subscription ID was saved, but pending edits could not be restored because source changed: ${conflicts.join(', ')}.`,
+          'error'
+        );
+        return;
+      }
+      setStatus(
+        result.changed ? 'Azure subscription ID updated in the azd environment.' : 'Subscription ID is unchanged.',
+        'ok'
+      );
+    },
     accessTargets: state.accessTargets,
     applyObject: (path, source, fields) => {
       const target = path.reduce((value, segment) => value && value[segment], Object.fromEntries(
@@ -243,6 +535,9 @@ function renderSidebar() {
     h('input', {
       class: 'ctl ctl-sm',
       type: 'search',
+      id: 'deployment-filter',
+      name: 'deployment-filter',
+      'aria-label': 'Filter parameter files',
       placeholder: 'Filter\u2026',
       value: state.filter,
       oninput: (e) => {
@@ -276,7 +571,21 @@ function renderSidebar() {
     state.showAll = all.open;
   });
 
-  mount(els.sidebar, areas, all);
+  const currentArea = state.areas.find((area) => area.id === state.area);
+  mount(
+    els.sidebar,
+    h(
+      'details',
+      { class: 'area-disclosure', open: !COMPACT_NAV.matches },
+      h(
+        'summary',
+        { class: 'area-disclosure-summary' },
+        h('span', {}, 'Navigate'),
+        h('strong', {}, currentArea?.title || 'Choose an area')
+      ),
+      h('div', { class: 'area-disclosure-body' }, areas, all)
+    )
+  );
 }
 
 /* ---------------------------------------------------------------- contracts */
@@ -321,13 +630,7 @@ function contractList() {
           { class: 'hint hint-warn' },
           `${data.recoverable.length} missing \u2014 recover from the sheet.`
         )
-      : null,
-    h(
-      'p',
-      { class: 'hint' },
-      h('code', {}, `${data.root}/${data.parent}/`),
-      ' is git-ignored \u2014 contracts you create stay local until you add them deliberately.'
-    )
+      : null
   );
 }
 
@@ -340,7 +643,15 @@ async function restoreContract(id) {
 }
 
 function openCreateContract() {
-  const input = h('input', { class: 'ctl', placeholder: 'hr-chatagent' });
+  const input = h('input', {
+    id: 'new-contract-name',
+    name: 'contractName',
+    class: 'ctl',
+    placeholder: 'hr-chatagent',
+    autocomplete: 'off',
+    required: true,
+    autofocus: true,
+  });
   const preview = h('p', { class: 'hint hint-preview' }, '');
   input.addEventListener('input', () => {
     const name = input.value.trim().toLowerCase();
@@ -359,7 +670,8 @@ function openCreateContract() {
         { class: 'hint' },
         'Copied from the module template and its default policy, with the module path and the policy reference rewired automatically.'
       ),
-      h('label', { class: 'pol-label' }, 'Contract name'),
+      writeContextNode({ file: `${state.contracts.root}/${state.contracts.parent}/<new contract>/main.bicepparam` }),
+      h('label', { class: 'pol-label', for: 'new-contract-name' }, 'Contract name'),
       input,
       h(
         'p',
@@ -392,21 +704,33 @@ function openCreateContract() {
   requestAnimationFrame(() => input.focus());
 }
 
-async function selectContract(id) {
+async function loadContract(id, preserved = null, preserveOptions = undefined) {
   const loaded = await withStatus('Loading contract\u2026', () =>
-    Promise.all([api.contract(id), api.accessContractTargets(state.environment)])
+    Promise.all([api.contract(id), api.accessContractTargets()])
   );
-  if (!loaded) return;
+  if (!loaded) return false;
   const [contract, accessTargets] = loaded;
   state.contractId = id;
   state.contract = contract;
   state.accessTargets = accessTargets;
   state.current = contract.param;
-  state.operations = [];
+  state.baselineValidation = validateDocument(contract.param);
+  state.operations = await restoreParameterDraft(contract.param);
   state.policyChanges = {};
   state.policyRaw = null;
   state.policyPreview = null;
   state.open = new Map();
+  if (preserved) {
+    const conflicts = restoreContractEdits(state, preserved, preserveOptions);
+    if (conflicts.length) {
+      setStatus(
+        `Pending edits could not be reapplied because source changed: ${conflicts.join(', ')}.`,
+        'error'
+      );
+    }
+  } else {
+    restoreStashedPending();
+  }
   render();
 
   // The onboarded-model list only shapes a suggestion, so it is fetched after
@@ -427,6 +751,17 @@ async function selectContract(id) {
       state.onboardedModels = [];
     }
   }
+  return true;
+}
+
+async function selectContract(id, options = {}) {
+  if (!options.skipPendingCheck && state.contractId !== id) {
+    const choice = await choosePendingNavigation({
+      destination: `opening contract ${id}`,
+    });
+    if (!(await applyPendingNavigation(choice))) return;
+  }
+  await loadContract(id, options.preserved, options.preserveOptions);
 }
 
 /* ------------------------------------------------------------------- policy */
@@ -478,13 +813,17 @@ function foldPolicyChange(change) {
     const tl = { ...(next[key] || {}) };
     // Accumulated as lists so a second click does not overwrite the first: the
     // whole payload is replayed against the file on every preview and save.
-    if (change.addModel) tl.addModels = [...(tl.addModels || []), change.addModel];
+    if (change.addModel && !(tl.addModels || []).includes(change.addModel)) {
+      tl.addModels = [...(tl.addModels || []), change.addModel];
+    }
     if (change.removeModel) {
       // Removing something this session added cancels the addition outright,
       // rather than queuing a removal for a branch the file never had.
       const pending = (tl.addModels || []).includes(change.removeModel);
       tl.addModels = (tl.addModels || []).filter((m) => m !== change.removeModel);
-      if (!pending) tl.removeModels = [...(tl.removeModels || []), change.removeModel];
+      if (!pending && !(tl.removeModels || []).includes(change.removeModel)) {
+        tl.removeModels = [...(tl.removeModels || []), change.removeModel];
+      }
     }
     if (change.perModel) {
       tl.perModel = { ...(tl.perModel || {}) };
@@ -565,13 +904,13 @@ async function refreshPolicyPreview() {
   }
 
   try {
-    const res = await api.previewPolicy(policy.path, state.policyChanges);
+    const res = await api.previewPolicy(policy.path, state.policyChanges, policy.hash);
     if (token !== policyPreviewToken) return;
     state.policyPreview = { text: res.after, controls: res.controls };
   } catch (err) {
     if (token !== policyPreviewToken) return;
     state.policyPreview = null;
-    state.status = err.message;
+    setStatus(err.message, 'error');
   }
   render();
 }
@@ -628,8 +967,7 @@ function policyContext() {
     contentSafetySpec: state.contentSafetySpec,
     onboardedModels: state.onboardedModels,
     onPolicyRaw: (text) => {
-      state.policyRaw = text;
-      state.policyChanges = {};
+      setRawPolicyDraft(state, text, renderActions);
     },
   };
 }
@@ -641,7 +979,7 @@ async function savePolicy() {
   const raw = state.policyRaw;
   const payload = {
     path: policy.path,
-    expectedMtimeMs: policy.mtimeMs,
+    expectedHash: policy.hash,
     ...(raw !== null ? { text: raw } : { changes: state.policyChanges }),
   };
 
@@ -649,7 +987,7 @@ async function savePolicy() {
     raw !== null
       ? { before: policy.text, after: raw, changed: raw !== policy.text }
       : await withStatus('Preparing preview\u2026', () =>
-          api.previewPolicy(policy.path, state.policyChanges)
+          api.previewPolicy(policy.path, state.policyChanges, policy.hash)
         );
   if (!preview) return;
   if (!preview.changed) {
@@ -664,6 +1002,7 @@ async function savePolicy() {
       'div',
       {},
       h('p', { class: 'hint' }, `${stats.added} added, ${stats.removed} removed in ${policy.name}.`),
+      writeContextNode({ file: policy.path }),
       node
     ),
     [
@@ -673,10 +1012,15 @@ async function savePolicy() {
         {
           class: 'btn btn-primary',
           onclick: async () => {
+            const preserved = captureContractEdits(state);
             const result = await withStatus('Saving\u2026', () => api.savePolicy(payload));
             if (!result) return;
             closeModal();
-            await selectContract(state.contractId);
+            await loadContract(
+              state.contractId,
+              preserved,
+              { parameters: true, policy: false }
+            );
             setStatus(
               result.changed
                 ? `Saved ${result.path}. Previous revision archived to ${result.archived}`
@@ -691,130 +1035,6 @@ async function savePolicy() {
   );
 }
 
-/* --------------------------------------------------------------- environment */
-
-function renderEnvironment() {
-  const catalog = state.catalog;
-  const meta = state.current.meta;
-  const vars = (meta && meta.envVars) || [];
-
-  const picker = h(
-    'div',
-    { class: 'env-picker' },
-    h('label', {}, 'Environment'),
-    h(
-      'select',
-      {
-        class: 'ctl',
-        onchange: async (e) => {
-          state.environment = e.target.value || null;
-          await loadEnvironment();
-          render();
-        },
-      },
-      h('option', { value: '' }, '\u2014 none selected \u2014'),
-      ...catalog.environments.map((env) =>
-        h('option', { value: env.name, selected: env.name === state.environment }, env.name)
-      )
-    ),
-    h('button', { class: 'btn btn-sm', onclick: createEnvironment }, 'New environment')
-  );
-
-  if (!vars.length) {
-    return h(
-      'div',
-      { class: 'env' },
-      picker,
-      h('p', { class: 'empty' }, 'This deployment does not read any environment variables.')
-    );
-  }
-
-  const rows = vars.map((v) => {
-    const hit = state.envEntries.find((e) => e.key === v.name);
-    return h(
-      'div',
-      { class: 'env-row' },
-      h('code', { class: 'env-key' }, v.name),
-      h('input', {
-        class: 'ctl',
-        value: hit ? hit.value : '',
-        placeholder: v.default === null || v.default === undefined ? '' : String(v.default),
-        dataset: { envKey: v.name },
-      }),
-      h('span', { class: `chip chip-${hit ? 'ok' : 'note'}` }, hit ? 'set' : 'default')
-    );
-  });
-
-  return h(
-    'div',
-    { class: 'env' },
-    picker,
-    h(
-      'p',
-      { class: 'hint' },
-      'These values live in ',
-      h('code', {}, `.azure/${state.environment || '<env>'}/.env`),
-      '. The parameter file reads them at deployment time, so this is the right place to change them.'
-    ),
-    h('div', { class: 'env-rows' }, rows),
-    h(
-      'button',
-      { class: 'btn btn-primary', disabled: !state.environment, onclick: saveEnvironment },
-      'Save environment'
-    )
-  );
-}
-
-async function loadEnvironment() {
-  if (!state.environment) {
-    state.envEntries = [];
-    return;
-  }
-  const env = await api.environment(state.environment);
-  state.envEntries = env.entries || [];
-}
-
-async function createEnvironment() {
-  const name = prompt('Environment name (e.g. dev)');
-  if (!name) return;
-  const ok = await withStatus('Creating\u2026', () => api.saveEnvironment(name, {}));
-  if (!ok) return;
-  state.catalog = await api.deployments();
-  state.environment = name;
-  await loadEnvironment();
-  setStatus(`Created .azure/${name}/.env`, 'ok');
-  render();
-}
-
-async function saveEnvironment() {
-  const updates = {};
-  els.workspace.querySelectorAll('[data-env-key]').forEach((input) => {
-    updates[input.dataset.envKey] = input.value;
-  });
-  const result = await withStatus('Saving\u2026', () =>
-    api.saveEnvironment(state.environment, updates)
-  );
-  if (!result) return;
-  await loadEnvironment();
-  setStatus(`Saved ${result.file} (${result.updated.length} variables)`, 'ok');
-  render();
-}
-
-function openEnvEditor(variable) {
-  state.tab = 'env';
-  render();
-  requestAnimationFrame(() => {
-    const target = els.workspace.querySelector(`[data-env-key="${variable}"]`);
-    if (target) {
-      target.focus();
-      target.scrollIntoView({
-        block: 'center',
-        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
-      });
-    }
-  });
-}
-
 /* -------------------------------------------------------------- review/save */
 
 async function openReview() {
@@ -822,13 +1042,13 @@ async function openReview() {
     setStatus('No pending changes.', 'info');
     return;
   }
-  const findings = validateDocument(viewOf(state.current));
+  const findings = blockingValidation();
   if (findings.length) {
     setStatus(`Resolve ${findings.length} validation ${findings.length === 1 ? 'error' : 'errors'} before review.`, 'error');
     return;
   }
   const preview = await withStatus('Preparing preview\u2026', () =>
-    api.preview(state.current.path, state.operations)
+    api.preview(state.current.path, state.operations, state.current.hash)
   );
   if (!preview) return;
 
@@ -843,6 +1063,7 @@ async function openReview() {
         { class: 'hint' },
         `${stats.added} added, ${stats.removed} removed. Comments and formatting outside these lines are preserved byte-for-byte.`
       ),
+      writeContextNode(),
       node
     ),
     [
@@ -853,19 +1074,27 @@ async function openReview() {
 }
 
 async function commitSave() {
-  const findings = validateDocument(viewOf(state.current));
+  const findings = blockingValidation();
   if (findings.length) {
     closeModal();
     setStatus('The document became invalid. Resolve validation errors before saving.', 'error');
     return;
   }
+  const preserved = captureContractEdits(state);
   const result = await withStatus('Saving\u2026', () =>
-    api.save(state.current.path, state.operations, state.current.mtimeMs)
+    api.save(state.current.path, state.operations, state.current.hash)
   );
   if (!result) return;
   closeModal();
   state.operations = [];
-  if (state.area === 'access-contracts') await selectContract(state.contractId);
+  await workspaceRegistry.removeDraft(activeWorkspace().environment.id, state.current.path);
+  if (state.area === 'access-contracts') {
+    await loadContract(
+      state.contractId,
+      preserved,
+      { parameters: false, policy: true }
+    );
+  }
   else await loadDocument(state.current.path);
   setStatus(
     result.changed
@@ -878,37 +1107,893 @@ async function commitSave() {
 /* --------------------------------------------------------------------- modal */
 
 function showModal(title, body, actions) {
-  mount(
-    els.modal,
-    h(
-      'div',
-      {
-        class: 'modal-backdrop',
-        onclick: (e) => e.target.classList.contains('modal-backdrop') && closeModal(),
-      },
-      h(
-        'div',
-        { class: 'modal' },
-        h(
-          'header',
-          { class: 'modal-head' },
-          h('h2', {}, title),
-          h('button', { class: 'btn btn-ghost', onclick: closeModal }, '\u2715')
-        ),
-        h('div', { class: 'modal-body' }, body),
-        h('footer', { class: 'modal-foot' }, actions)
-      )
-    )
-  );
-  els.modal.hidden = false;
+  showDialog(title, body, actions);
 }
 
 function closeModal() {
-  els.modal.hidden = true;
-  clear(els.modal);
+  closeDialog();
 }
 
 /* ----------------------------------------------------------------- rendering */
+
+async function switchEnvironment(environment) {
+  if (
+    !(await confirmPendingNavigation({
+      destination: `switching to ${environment.label}`,
+      leavesPage: true,
+    }))
+  ) return;
+  workspaceRegistry.setActive(environment.projectId, environment.id);
+  location.reload();
+}
+
+async function openHistory() {
+  const result = await withStatus('Loading history\u2026', () => api.history());
+  if (!result) return;
+  const transactions = Array.isArray(result) ? result : result.transactions || result.items || [];
+  showModal(
+    'Environment history',
+    h(
+      'div',
+      { class: 'history-view' },
+      writeContextNode(),
+      h('p', { class: 'hint' }, 'Backups, journals, and redacted audit records are stored under the isolated Citadel data directory. Source values and content are not shown here.'),
+      transactions.length
+        ? h(
+            'div',
+            { class: 'history-list' },
+            transactions.map((transaction) =>
+              h(
+                'section',
+                { class: `history-item history-${transactionTone(transaction)}` },
+                h(
+                  'div',
+                  { class: 'history-summary' },
+                  h('strong', {}, humanAction(transaction)),
+                  h(
+                    'span',
+                    { class: `chip chip-${transactionTone(transaction)}` },
+                    String(transaction.status || 'original').replace(/_/g, ' ')
+                  ),
+                  formatTimestamp(transaction.timestamp || transaction.createdAt)
+                ),
+                h(
+                  'code',
+                  { class: 'history-files' },
+                  (transaction.files || transaction.targets || []).map((target) => target.alias).join(', ') ||
+                    'No file aliases recorded'
+                ),
+                h(
+                  'details',
+                  { class: 'technical-details' },
+                  h('summary', {}, 'Technical details'),
+                  h('code', {}, transaction.transactionId || transaction.id || 'No transaction ID')
+                ),
+                transaction.recoveryRequired ||
+                transaction.status === 'committing' ||
+                transaction.status === 'reverting'
+                  ? h('button', {
+                      class: 'btn btn-sm',
+                      onclick: async () => {
+                        const id = transaction.transactionId || transaction.id;
+                        const inspection = await withStatus('Inspecting source hashes\u2026', () =>
+                          api.inspectRecovery(id)
+                        );
+                        if (!inspection) return;
+                        showModal(
+                          'Recover transaction',
+                          h(
+                            'div',
+                            { class: 'recovery-inspection' },
+                            writeContextNode({
+                              file:
+                                (transaction.files || transaction.targets || [])
+                                  .map((target) => target.alias)
+                                  .join(', ') || state.current?.path,
+                            }),
+                            h('p', { class: 'hint' }, 'Current source is compared by SHA-256. Values and content are not shown.'),
+                            inspection.files.map((file) =>
+                              h(
+                                'div',
+                                { class: `compare-row recovery-${file.state}` },
+                                h('code', {}, file.alias),
+                                h(
+                                  'span',
+                                  {
+                                    class: `chip chip-${
+                                      ['final', 'verified'].includes(file.state)
+                                        ? 'success'
+                                        : ['failed', 'hash-mismatch'].includes(file.state)
+                                          ? 'danger'
+                                          : file.state === 'original'
+                                            ? 'neutral'
+                                            : 'warning'
+                                    }`,
+                                  },
+                                  String(file.state).replace(/-/g, ' ')
+                                )
+                              )
+                            )
+                          ),
+                          [
+                            h('button', { class: 'btn', onclick: openHistory }, 'Back'),
+                            h('button', {
+                              class: 'btn',
+                              onclick: async () => {
+                                const result = await withStatus('Restoring verified backups\u2026', () =>
+                                  api.recoverTransaction(id, 'rollback')
+                                );
+                                if (result) await openHistory();
+                              },
+                            }, transaction.status === 'reverting' ? 'Continue removal' : 'Roll back'),
+                            h('button', {
+                              class: 'btn btn-primary',
+                              disabled: !inspection.canComplete,
+                              onclick: async () => {
+                                const result = await withStatus('Completing transaction\u2026', () =>
+                                  api.recoverTransaction(id, 'complete')
+                                );
+                                if (result) await openHistory();
+                              },
+                            }, transaction.status === 'reverting' ? 'Confirm removed' : 'Complete')
+                          ]
+                        );
+                      },
+                    }, 'Recover')
+                  : null
+                ,
+                ((['committed', 'rolled_back'].includes(transaction.status) &&
+                  (transaction.files || []).some((file) => file.existed)) ||
+                  (transaction.status === 'committed' &&
+                    transaction.targetLabel === 'contract-create' &&
+                    (transaction.files || []).every((file) => !file.existed)))
+                  ? h('button', {
+                       class: 'btn btn-sm btn-danger-ghost',
+                      onclick: async () => {
+                        const creation = (transaction.files || []).every((file) => !file.existed);
+                         if (
+                           !(await confirmDialog({
+                             title: creation ? 'Undo contract creation?' : 'Restore prior revision?',
+                             message: creation
+                               ? 'Remove the files created by this transaction? Every file must still match its committed hash.'
+                               : 'Restore the prior bytes from this transaction? Current source will be backed up first.',
+                             confirmLabel: creation ? 'Remove created files' : 'Back up and restore',
+                             tone: 'danger',
+                             context: writeContextNode({
+                               file:
+                                 (transaction.files || []).map((file) => file.alias).join(', ') ||
+                                 state.current?.path,
+                             }),
+                           }))
+                         ) return;
+                         const id = transaction.transactionId || transaction.id;
+                         const result = await withStatus('Backing up current source and restoring\u2026', () =>
+                           api.restoreTransaction(id)
+                        );
+                        if (!result) return;
+                        closeModal();
+                        if (creation) {
+                          state.contracts = await api.contracts();
+                          const fallback = state.contracts.contracts?.find((entry) => entry.isTemplate);
+                          if (fallback) await selectContract(fallback.id);
+                        } else if (state.current) {
+                          await loadDocument(state.current.path);
+                        }
+                        setStatus(
+                          creation
+                            ? `Removed the committed contract creation ${result.transactionId}.`
+                            : `Restored through new transaction ${result.transactionId}.`,
+                          'ok'
+                        );
+                      },
+                    }, (transaction.files || []).every((file) => !file.existed) ? 'Undo creation' : 'Restore prior')
+                  : null
+              )
+            )
+          )
+        : h('p', { class: 'empty' }, 'No transactions have been recorded for this environment.')
+    ),
+    [h('button', { class: 'btn', onclick: closeModal }, 'Close')]
+  );
+}
+
+async function openEnvironmentCompare(environments) {
+  if (!state.current?.path?.endsWith('.bicepparam')) {
+    setStatus('Open a parameter file before comparing environments.', 'info');
+    return;
+  }
+  const candidates = environments.filter((environment) => environment.id !== activeWorkspace().environment.id);
+  if (!candidates.length) {
+    setStatus('Attach another environment before comparing.', 'info');
+    return;
+  }
+  const select = h(
+    'select',
+    { id: 'compare-environment', name: 'compareEnvironment', class: 'ctl' },
+    candidates.map((environment) =>
+      h(
+        'option',
+        { value: environment.id },
+        `${environment.label} — ${environment.localPath || 'Reconnect folder'}`
+      )
+    )
+  );
+  const results = h('div', { class: 'compare-results', 'aria-live': 'polite' });
+  const selectedCount = h('strong', { class: 'compare-selected' }, '0 selected');
+  const contextSlot = h('div', { class: 'compare-context' });
+  const reviewButton = h(
+    'button',
+    {
+      class: 'btn btn-primary',
+      disabled: true,
+      onclick: async () => {
+        const names = [...results.querySelectorAll('input[data-copy]:checked')].map(
+          (input) => input.value
+        );
+        if (!names.length) return;
+        const targetEnvironment = candidates.find((environment) => environment.id === select.value);
+        const preview = await withStatus('Preparing target preview\u2026', () =>
+          api.previewCopy(select.value, state.current.path, names, state.current.hash)
+        );
+        if (!preview) return;
+        const { node, stats } = renderDiff(preview.before, preview.after);
+        showModal(
+          `Review copy to ${preview.targetLabel}`,
+          h(
+            'div',
+            {},
+            writeContextNode({
+              source: currentWriteContext(),
+              target: currentWriteContext(state.current.path, targetEnvironment),
+            }),
+            h('p', { class: 'hint' }, `${stats.added} added, ${stats.removed} removed in the target only.`),
+            node
+          ),
+          [
+            h('button', { class: 'btn', onclick: () => openEnvironmentCompare(environments) }, 'Back'),
+            h('button', {
+              class: 'btn btn-primary',
+              onclick: async () => {
+                const copied = await withStatus('Backing up and copying\u2026', () =>
+                  api.copyParameters(
+                    select.value,
+                    state.current.path,
+                    names,
+                    preview.sourceHash,
+                    preview.targetHash
+                  )
+                );
+                if (!copied) return;
+                closeModal();
+                setStatus(`Copied ${names.length} parameters in transaction ${copied.transactionId}.`, 'ok');
+              },
+            }, 'Back up target & copy')
+          ]
+        );
+      },
+    },
+    'Review selected copy'
+  );
+  const updateSelected = () => {
+    const count = results.querySelectorAll('input[data-copy]:checked').length;
+    selectedCount.textContent = `${count} selected`;
+    reviewButton.disabled = count === 0;
+  };
+  const load = async () => {
+    const comparison = await withStatus('Comparing\u2026', () =>
+      api.compareEnvironment(select.value, state.current.path)
+    );
+    if (!comparison) return;
+    const secure = comparison.source.schema?.parameters || {};
+    const differences = comparison.parameters.filter(
+      (parameter) =>
+        parameter.status === 'different' &&
+        secure[parameter.name] &&
+        !secure[parameter.name].secure
+    );
+    const deferred = comparison.parameters.filter(
+      (parameter) => !differences.includes(parameter)
+    );
+    const targetEnvironment = candidates.find((environment) => environment.id === select.value);
+    contextSlot.replaceChildren(
+      writeContextNode({
+        source: currentWriteContext(),
+        target: currentWriteContext(state.current.path, targetEnvironment),
+      })
+    );
+    const differenceRows = differences.map((parameter) =>
+      h(
+        'label',
+        { class: 'compare-row compare-different', for: `compare-${parameter.name}` },
+        h('input', {
+          id: `compare-${parameter.name}`,
+          name: 'compareParameter',
+          type: 'checkbox',
+          value: parameter.name,
+          checked: true,
+          dataset: { copy: 'true' },
+          onchange: updateSelected,
+        }),
+        h('code', {}, parameter.name),
+        h('span', { class: 'chip chip-brand' }, 'different')
+      )
+    );
+    const selectAll = h('input', {
+      id: 'compare-select-all',
+      name: 'compareSelectAll',
+      type: 'checkbox',
+      checked: Boolean(differences.length),
+      disabled: !differences.length,
+      onchange: (event) => {
+        for (const input of results.querySelectorAll('input[data-copy]')) {
+          input.checked = event.target.checked;
+        }
+        updateSelected();
+      },
+    });
+    const deferredRows = deferred.map((parameter) => {
+      const definition = secure[parameter.name];
+      const status = !definition
+        ? 'incompatible'
+        : definition.secure
+          ? 'secure'
+          : parameter.status;
+      return h(
+        'div',
+        { class: `compare-row compare-${status}` },
+        h('span', { class: 'compare-spacer', 'aria-hidden': 'true' }),
+        h('code', {}, parameter.name),
+        h('span', { class: `chip chip-${status === 'identical' ? 'neutral' : 'warning'}` }, status.replace(/-/g, ' '))
+      );
+    });
+    results.replaceChildren(
+      h(
+        'div',
+        { class: 'compare-toolbar' },
+        h(
+          'label',
+          { for: 'compare-select-all' },
+          selectAll,
+          h('span', {}, 'Select all copyable differences')
+        ),
+        selectedCount
+      ),
+      differences.length
+        ? h(
+            'section',
+            { class: 'compare-differences', 'aria-label': 'Copyable differences' },
+            differenceRows
+          )
+        : h('p', { class: 'empty-state' }, 'No compatible non-secret differences are available to copy.'),
+      deferredRows.length
+        ? h(
+            'details',
+            { class: 'compare-deferred' },
+            h('summary', {}, `Identical, secure, incompatible, or missing (${deferredRows.length})`),
+            h('div', {}, deferredRows)
+          )
+        : null
+    );
+    updateSelected();
+  };
+  select.addEventListener('change', load);
+  const body = h(
+    'div',
+    { class: 'compare-view' },
+    h('p', { class: 'hint' }, 'Compare by parameter contract. Folder names are never used for matching. Secure values are not copied.'),
+    h('label', { class: 'dialog-field', for: 'compare-environment' }, h('span', {}, 'Target environment'), select),
+    contextSlot,
+    results
+  );
+  showModal('Compare environments', body, [
+    h('button', { class: 'btn', onclick: closeModal }, 'Close'),
+    reviewButton,
+  ]);
+  await load();
+}
+
+async function openWorkspaceSettingsContent() {
+  const context = activeWorkspace();
+  const projects = await workspaceRegistry.listProjects();
+  const project = projects.find((item) => item.id === context.projectId);
+  const environments = await workspaceRegistry.listEnvironments(context.projectId);
+  const draftCounts = new Map(
+    await Promise.all(
+      environments.map(async (environment) => [
+        environment.id,
+        await workspaceRegistry.countDrafts(environment.id),
+      ])
+    )
+  );
+  const settingsNotice = h('p', {
+    class: 'hint',
+    role: 'status',
+    'aria-live': 'polite',
+  });
+  const environmentOperation = createEnvironmentOperation({
+    setInlineStatus(message, tone) {
+      settingsNotice.className = `operation-status operation-${tone}`;
+      settingsNotice.textContent = message;
+    },
+    setGlobalStatus: setStatus,
+  });
+  const list = h('div', { class: 'environment-list' });
+  const addDraftScope = `environment-${context.projectId}`;
+  const addDraft = workspaceRegistry.profileDraft(addDraftScope) || {};
+  const refresh = async () => {
+    closeModal();
+    await openWorkspaceSettings();
+  };
+  for (const environment of environments) {
+    const current = environment.id === context.environment.id;
+    const rowStatus = h('p', {
+      class: 'operation-status',
+      role: 'status',
+      'aria-live': 'polite',
+    });
+    let row = null;
+    const disabledState = new Map();
+    const rowOperation = createEnvironmentOperation({
+      setInlineStatus(message, tone) {
+        rowStatus.className = `operation-status operation-${tone}`;
+        rowStatus.textContent = message;
+      },
+      setGlobalStatus: setStatus,
+      setBusy(busy) {
+        row?.classList.toggle('is-busy', busy);
+        for (const button of row?.querySelectorAll('button') || []) {
+          if (busy) {
+            disabledState.set(button, button.disabled);
+            button.disabled = true;
+          } else {
+            button.disabled = disabledState.get(button) || false;
+          }
+        }
+        if (!busy) disabledState.clear();
+      },
+    });
+    row = h(
+        'section',
+        {
+          class: `environment-card${current ? ' is-active' : ''}`,
+          'aria-label': `${environment.label} environment`,
+        },
+        h(
+          'div',
+          { class: 'environment-summary' },
+          h('strong', {}, environment.label),
+          h(
+            'button',
+            {
+              class: 'environment-path',
+              type: 'button',
+              title: environment.localPath || 'Local path not recorded',
+              'aria-label': `Copy Local path for ${environment.label}: ${environment.localPath || 'not recorded'}`,
+              onclick: () =>
+                navigator.clipboard
+                  .writeText(environment.localPath || '')
+                  .then(() => {
+                    rowStatus.className = 'operation-status operation-success';
+                    rowStatus.textContent = 'Local path copied.';
+                  })
+                  .catch(() => {
+                    rowStatus.className = 'operation-status operation-error';
+                    rowStatus.textContent = 'Local path could not be copied. Select and copy it from the technical details.';
+                  }),
+            },
+            h('code', {}, environment.localPath || 'Local path not recorded')
+          ),
+          h(
+            'span',
+            { class: `chip chip-${environment.permission === 'granted' ? 'success' : 'warning'}` },
+            environment.permission === 'granted' ? 'Access granted' : 'Reconnect required'
+          ),
+          h(
+            'small',
+            {},
+            `${String(environment.compatibility || 'unavailable').replace(/-/g, ' ')} \u00b7 ${draftCounts.get(environment.id)} drafts`
+          )
+        ),
+        h(
+          'div',
+          { class: 'environment-actions' },
+          h('button', { class: 'btn btn-sm', disabled: current, onclick: () => switchEnvironment(environment) }, current ? 'Active' : 'Switch'),
+          h('button', {
+            class: 'btn btn-sm',
+            onclick: rowOperation('Renaming environment\u2026', async (onRollback) => {
+              const values = await promptDialog({
+                title: 'Rename environment',
+                fields: [{ name: 'label', label: 'Environment label', value: environment.label }],
+                submitLabel: 'Rename',
+                context: writeContextNode({ file: 'Environment profile' }),
+              });
+              const label = values?.label.trim();
+              if (!label) return false;
+              const snapshot = await workspaceRegistry.environmentSnapshot(environment.id);
+              onRollback(() => workspaceRegistry.restoreEnvironmentSnapshot(snapshot));
+              const updated = await workspaceRegistry.updateEnvironment(environment.id, { label });
+              if (current) activeWorkspace().environment = updated;
+              await syncRegistryMetadata();
+              await refresh();
+            }),
+          }, 'Rename'),
+          h('button', {
+            class: 'btn btn-sm',
+            onclick: rowOperation('Reconnecting environment\u2026', async (onRollback) => {
+              const handle = await showDirectoryPicker({ mode: 'readwrite' });
+              const values = await promptDialog({
+                title: 'Reconnect environment',
+                description: 'The Local path is display-only. The selected folder handle remains the file authority.',
+                fields: [{
+                  name: 'localPath',
+                  label: 'Local path',
+                  value: environment.localPath || '',
+                  placeholder: 'C:\\source\\citadel or /home/user/citadel',
+                }],
+                submitLabel: 'Continue',
+                context: writeContextNode({ file: 'Environment profile' }),
+              });
+              if (!values) return false;
+              const localPath = validateLocalPath(values.localPath);
+              if (
+                !localPathMatchesHandle(localPath, handle.name) &&
+                !(await confirmDialog({
+                  title: 'Local path differs from folder',
+                  message: `The Local path leaf does not match the selected folder "${handle.name}". The browser cannot verify this display-only path.`,
+                  confirmLabel: 'Use this folder',
+                  context: writeContextNode({ file: 'Environment profile' }),
+                }))
+              ) return false;
+              const provider = new BrowserDirectoryProvider(handle);
+              await provider.assertWritable({ request: true });
+              const scan = await scanProvider(provider);
+              assertSupportedScan(scan);
+              const pendingChoice = current
+                ? await choosePendingNavigation({
+                    allowPreserve: false,
+                    destination: `reconnecting ${environment.label} to another folder`,
+                  })
+                : 'continue';
+              if (!pendingChoice || pendingChoice === 'stay') return false;
+              const snapshot = current
+                ? await workspaceRegistry.projectSnapshot(environment.projectId)
+                : await workspaceRegistry.environmentSnapshot(environment.id);
+              const uiPending = current ? captureContractEdits(state) : null;
+              const storedPending = current
+                ? new Map(
+                    [...pendingByDocument].map(([key, value]) => [
+                      key,
+                      structuredClone(value),
+                    ])
+                  )
+                : null;
+              onRollback(async () => {
+                if (current) {
+                  await workspaceRegistry.restoreProjectSnapshot(snapshot);
+                  pendingByDocument.clear();
+                  for (const [key, value] of storedPending) {
+                    pendingByDocument.set(key, value);
+                  }
+                  restoreContractEdits(state, uiPending);
+                  render();
+                } else {
+                  await workspaceRegistry.restoreEnvironmentSnapshot(snapshot);
+                }
+              });
+              if (current && pendingChoice === 'discard') await discardAllPending();
+              await workspaceRegistry.reconnectEnvironment(environment.id, handle, localPath);
+              const updated = await workspaceRegistry.updateEnvironment(environment.id, {
+                permission: 'granted',
+                compatibility: scan.compatibility,
+                fingerprint: scan.fingerprint,
+                localPath,
+                lastScannedAt: scan.lastScannedAt,
+              });
+              if (current) {
+                await commitActiveWorkspaceReconnect(
+                  activeWorkspace(),
+                  {
+                    projectId: environment.projectId,
+                    environment: updated,
+                    handle,
+                    provider,
+                  },
+                  () => syncRegistryMetadata()
+                );
+                workspaceRegistry.setActive(environment.projectId, environment.id);
+                api.resetWorkspace();
+                location.reload();
+                return;
+              }
+              await syncRegistryMetadata();
+              await refresh();
+            }),
+          }, environment.permission === 'granted' ? 'Reconnect' : 'Reconnect & grant access'),
+          h('button', {
+            class: 'btn btn-sm',
+            onclick: rowOperation('Verifying access and compatibility\u2026', async (onRollback) => {
+              const provider = new BrowserDirectoryProvider(await workspaceRegistry.getHandle(environment.id));
+              await provider.assertWritable({ request: true });
+              const scan = await scanProvider(provider);
+              assertSupportedScan(scan);
+              const snapshot = await workspaceRegistry.environmentSnapshot(environment.id);
+              onRollback(() => workspaceRegistry.restoreEnvironmentSnapshot(snapshot));
+              await workspaceRegistry.updateEnvironment(environment.id, {
+                permission: 'granted',
+                compatibility: scan.compatibility,
+                fingerprint: scan.fingerprint,
+                lastScannedAt: scan.lastScannedAt,
+              });
+              await syncRegistryMetadata();
+              await refresh();
+            }),
+          }, 'Verify access'),
+          h('button', {
+            class: 'btn btn-sm btn-danger-ghost',
+            disabled: current,
+            onclick: rowOperation('Removing environment\u2026', async (onRollback) => {
+              if (
+                !(await confirmDialog({
+                  title: 'Remove environment profile?',
+                  message: `Remove the ${environment.label} profile? Repository files and history are not deleted.`,
+                  confirmLabel: 'Remove profile',
+                  tone: 'danger',
+                  context: writeContextNode({ file: 'Environment profile' }),
+                }))
+              ) return false;
+              const snapshot = await workspaceRegistry.environmentSnapshot(environment.id);
+              onRollback(() => workspaceRegistry.restoreEnvironmentSnapshot(snapshot));
+              await workspaceRegistry.removeEnvironment(environment.id);
+              await syncRegistryMetadata({ removedEnvironmentIds: [environment.id] });
+              await refresh();
+            }),
+          }, 'Remove profile')
+        ),
+        rowStatus
+      );
+    list.append(row);
+  }
+  const addLabel = h('input', {
+    id: 'new-environment-label',
+    name: 'newEnvironmentLabel',
+    class: 'ctl',
+    value: addDraft.environmentLabel || '',
+    placeholder: 'Environment label',
+    'aria-label': 'New environment label',
+  });
+  const addLocalPath = h('input', {
+    id: 'new-environment-path',
+    name: 'newEnvironmentPath',
+    class: 'ctl',
+    value: addDraft.localPath || '',
+    placeholder: 'C:\\source\\citadel or /home/user/citadel',
+    'aria-label': 'New environment Local path',
+  });
+  const persistAddDraft = () => {
+    try {
+      workspaceRegistry.saveProfileDraft(addDraftScope, {
+        environmentLabel: addLabel.value,
+        localPath: addLocalPath.value,
+      });
+      return true;
+    } catch (error) {
+      settingsNotice.className = 'operation-status operation-error';
+      settingsNotice.textContent = `Environment fields could not be retained for reload: ${error.message}`;
+      return false;
+    }
+  };
+  addLabel.addEventListener('input', persistAddDraft);
+  addLocalPath.addEventListener('input', persistAddDraft);
+  const add = h('button', {
+    class: 'btn btn-primary',
+    onclick: environmentOperation('Adding environment\u2026', async () => {
+      persistAddDraft();
+      const label = addLabel.value.trim();
+      if (!label) return;
+      const localPath = validateLocalPath(addLocalPath.value);
+      const handle = await showDirectoryPicker({ mode: 'readwrite' });
+      if (
+        !localPathMatchesHandle(localPath, handle.name) &&
+        !(await confirmDialog({
+          title: 'Local path differs from folder',
+          message: `The Local path leaf does not match the selected folder "${handle.name}". The browser cannot verify this display-only path.`,
+          confirmLabel: 'Use this folder',
+          context: writeContextNode({ file: 'New environment profile' }),
+        }))
+      ) return;
+      const provider = new BrowserDirectoryProvider(handle);
+      await provider.assertWritable({ request: true });
+      const scan = await scanProvider(provider);
+      assertSupportedScan(scan);
+      const duplicate = await workspaceRegistry.findSameHandle(handle);
+      const allowDuplicate = duplicate
+        ? await confirmDialog({
+            title: 'Attach folder again?',
+            message: `This folder is already attached as ${duplicate.label}. Attach it again as a separate logical context?`,
+            confirmLabel: 'Attach separately',
+            context: writeContextNode({ file: 'New environment profile' }),
+          })
+        : false;
+      if (duplicate && !allowDuplicate) return;
+      await attachEnvironment({
+        project,
+        environmentLabel: label,
+        localPath,
+        handle,
+        provider,
+        scan,
+        allowDuplicate,
+        activate: false,
+      });
+      if (!workspaceRegistry.clearProfileDraft(addDraftScope)) {
+        setStatus('Environment saved, but its pending form cache could not be cleared.', 'error');
+      }
+      await refresh();
+    }),
+  }, 'Add environment');
+  showModal(
+    'Projects and environments',
+    h(
+      'div',
+      {},
+      h(
+        'div',
+        { class: 'project-actions' },
+        h('strong', {}, project?.label || 'Project'),
+        h('button', {
+          class: 'btn btn-sm',
+          onclick: environmentOperation('Renaming project\u2026', async () => {
+            const values = await promptDialog({
+              title: 'Rename project',
+              fields: [{ name: 'label', label: 'Project label', value: project?.label || '' }],
+              submitLabel: 'Rename',
+              context: writeContextNode({ file: 'Project profile' }),
+            });
+            const label = values?.label.trim();
+            if (!label) return false;
+            await workspaceRegistry.renameProject(context.projectId, label);
+            state.projectLabel = label;
+            await syncRegistryMetadata();
+            await refresh();
+          }),
+        }, 'Rename project'),
+        h('button', {
+          class: 'btn btn-sm',
+          onclick: environmentOperation('Creating project\u2026', async () => {
+            const draftScope = 'new-project';
+            const draft = workspaceRegistry.profileDraft(draftScope) || {};
+            const values = await promptDialog({
+              title: 'New project',
+              description: 'Create the project and its first environment, then choose the exact Citadel repository folder.',
+              fields: [
+                { name: 'label', label: 'Project label', value: draft.projectLabel || '' },
+                {
+                  name: 'environmentLabel',
+                  label: 'First environment label',
+                  value: draft.environmentLabel || 'Development',
+                },
+                {
+                  name: 'localPath',
+                  label: 'Local path',
+                  value: draft.localPath || '',
+                  placeholder: 'C:\\source\\citadel or /home/user/citadel',
+                  hint: 'Display only; the browser folder handle remains authoritative.',
+                },
+              ],
+              submitLabel: 'Choose folder',
+              context: writeContextNode({ file: 'New project profile' }),
+            });
+            if (!values) return false;
+            const label = values.label.trim();
+            const environmentLabel = values.environmentLabel.trim();
+            if (!label || !environmentLabel) return;
+            workspaceRegistry.saveProfileDraft(draftScope, {
+              projectLabel: values.label,
+              environmentLabel: values.environmentLabel,
+              localPath: values.localPath,
+            });
+            const localPath = validateLocalPath(values.localPath);
+            const handle = await showDirectoryPicker({ mode: 'readwrite' });
+            if (
+              !localPathMatchesHandle(localPath, handle.name) &&
+              !(await confirmDialog({
+                title: 'Local path differs from folder',
+                message: `The Local path leaf does not match the selected folder "${handle.name}". The browser cannot verify this display-only path.`,
+                confirmLabel: 'Use this folder',
+                context: writeContextNode({ file: 'New project profile' }),
+              }))
+            ) return false;
+            const provider = new BrowserDirectoryProvider(handle);
+            await provider.assertWritable({ request: true });
+            const scan = await scanProvider(provider);
+            assertSupportedScan(scan);
+            await attachEnvironment({
+              projectLabel: label,
+              environmentLabel,
+              localPath,
+              handle,
+              provider,
+              scan,
+            });
+            if (!workspaceRegistry.clearProfileDraft(draftScope)) {
+              setStatus('Project saved, but its pending form cache could not be cleared.', 'error');
+            }
+            location.reload();
+          }),
+        }, 'New project'),
+        h('button', {
+          class: 'btn btn-sm btn-danger-ghost',
+          disabled: projects.length === 1,
+          onclick: environmentOperation('Removing project\u2026', async (onRollback) => {
+            if (
+              !(await confirmDialog({
+                title: 'Remove project profile?',
+                message: `Remove project ${project?.label}? Repository files and durable history are not deleted.`,
+                confirmLabel: 'Remove project',
+                tone: 'danger',
+                context: writeContextNode({ file: 'Project profile' }),
+              }))
+            ) return false;
+            const pendingChoice = await choosePendingNavigation({
+              allowPreserve: false,
+              destination: `removing project ${project?.label}`,
+            });
+            if (!pendingChoice || pendingChoice === 'stay') return false;
+            const snapshot = await workspaceRegistry.projectSnapshot(context.projectId);
+            const uiPending = captureContractEdits(state);
+            const storedPending = new Map(
+              [...pendingByDocument].map(([key, value]) => [
+                key,
+                structuredClone(value),
+              ])
+            );
+            onRollback(async () => {
+              await workspaceRegistry.restoreProjectSnapshot(snapshot);
+              pendingByDocument.clear();
+              for (const [key, value] of storedPending) {
+                pendingByDocument.set(key, value);
+              }
+              restoreContractEdits(state, uiPending);
+              render();
+            });
+            if (pendingChoice === 'discard') await discardAllPending();
+            await workspaceRegistry.removeProject(context.projectId);
+            await syncRegistryMetadata({ removedProjectIds: [context.projectId] });
+            const fallback = projects.find((item) => item.id !== context.projectId);
+            const fallbackEnvironments = fallback ? await workspaceRegistry.listEnvironments(fallback.id) : [];
+            if (fallback && fallbackEnvironments[0]) {
+              workspaceRegistry.setActive(fallback.id, fallbackEnvironments[0].id);
+            }
+            location.reload();
+          }),
+        }, 'Remove project')
+      ),
+      settingsNotice,
+      h('p', { class: 'hint' }, 'Labels and Local path are durable display metadata. Only the selected browser folder handle grants file access.'),
+      list,
+      h(
+        'div',
+        { class: 'environment-actions' },
+        h('label', { for: 'new-environment-label' }, 'Environment label', addLabel),
+        h(
+          'label',
+          { for: 'new-environment-path' },
+          'Local path',
+          addLocalPath,
+          h('small', { class: 'hint' }, 'Display only; the selected folder handle remains authoritative.')
+        ),
+        add,
+        h('button', { class: 'btn', onclick: () => openEnvironmentCompare(environments) }, 'Compare & copy'),
+        h('button', { class: 'btn', onclick: openHistory }, 'History')
+      )
+    ),
+    [h('button', { class: 'btn', onclick: closeModal }, 'Close')]
+  );
+}
+
+async function openWorkspaceSettings() {
+  await withStatus('Loading settings\u2026', openWorkspaceSettingsContent);
+}
 
 /**
  * Global actions.
@@ -920,7 +2005,7 @@ function closeModal() {
  */
 function renderActions() {
   if (!state.current) {
-    clear(els.tbActions);
+    mount(els.tbActions, h('button', { class: 'btn', onclick: openWorkspaceSettings }, 'Settings'));
     return;
   }
   const pending = pendingCount();
@@ -931,31 +2016,45 @@ function renderActions() {
   // button says where the work actually is and goes there, rather than sitting
   // inert next to a count that claims there is something to save.
   const savableHere = policyTab ? hasPolicyEdits() : state.operations.length > 0;
-  const validation = policyTab ? [] : validateDocument(viewOf(state.current));
+  const validation = policyTab ? [] : currentValidation();
+  const blocking = validation.filter((finding) => finding.severity === 'error');
+  const warnings = validation.filter((finding) => finding.severity === 'warning');
   const elsewhere = pending > 0 && !savableHere;
   const target = policyTab ? 'params' : 'policy';
   const targetLabel = policyTab ? 'parameters' : 'policy';
+  const pendingLabel = pending
+    ? `${pending} unsaved ${pending === 1 ? 'change' : 'changes'}`
+    : 'no pending changes';
+  const validationLabel = blocking.length
+    ? `${blocking.length} blocking ${blocking.length === 1 ? 'error' : 'errors'}${
+        warnings.length
+          ? ` · ${warnings.length} ${warnings.length === 1 ? 'warning' : 'warnings'}`
+          : ''
+      }`
+    : warnings.length
+      ? `${warnings.length} validation ${warnings.length === 1 ? 'warning' : 'warnings'}`
+      : '';
 
   mount(
     els.tbActions,
+    h('button', { class: 'btn', onclick: openWorkspaceSettings }, 'Settings'),
     h(
       'span',
       { class: `tb-pending${pending ? ' is-dirty' : ''}` },
-      validation.length
-        ? `${validation.length} validation ${validation.length === 1 ? 'error' : 'errors'}`
-        : pending ? `${pending} unsaved ${pending === 1 ? 'change' : 'changes'}` : 'no pending changes'
+      validationLabel ? `${pendingLabel} · ${validationLabel}` : pendingLabel
     ),
     h(
       'button',
       {
         class: 'btn',
         disabled: !pending,
-        onclick: () => {
-          state.operations = [];
-          state.policyChanges = {};
-          state.policyRaw = null;
-          state.policyPreview = null;
-          render();
+        onclick: async () => {
+          try {
+            await discardAllPending();
+            render();
+          } catch (error) {
+            setStatus(error.message, 'error');
+          }
         },
       },
       'Discard'
@@ -983,13 +2082,40 @@ function renderActions() {
             'button',
             {
               class: 'btn btn-primary',
-              disabled: !savableHere || validation.length > 0,
-              title: validation.length ? 'Resolve validation errors before review' : '',
+              disabled: !savableHere || blocking.length > 0,
+              title: blocking.length ? 'Resolve blocking validation errors before review' : '',
               onclick: openReview,
             },
             'Review & save'
           )
   );
+}
+
+function updateHeaderContext() {
+  let workspace = null;
+  try {
+    workspace = activeWorkspace();
+  } catch {
+    // Setup view intentionally keeps placeholder context.
+  }
+  const environment = workspace?.environment || {};
+  const overviewPath =
+    state.area === 'access-contracts' && state.contracts
+      ? `${state.contracts.root}/${state.contracts.parent}/`
+      : null;
+  els.projectName.textContent = state.projectLabel || 'Project';
+  els.environmentName.textContent = environment.label || 'Environment';
+  els.repoPath.textContent = state.current?.path || overviewPath || 'No file selected';
+  els.repoPath.title = state.current?.path || overviewPath || 'No file selected';
+  els.localPath.textContent = environment.localPath || 'Local path not recorded';
+  els.localPathCopy.title = environment.localPath || 'Local path not recorded';
+  els.localPathCopy.setAttribute(
+    'aria-label',
+    environment.localPath
+      ? `Copy full Local path: ${environment.localPath}`
+      : 'Local path not recorded'
+  );
+  els.localPathCopy.disabled = !environment.localPath;
 }
 
 /**
@@ -1014,8 +2140,7 @@ function sheetStrip(title, doc, tabs, extraMeta) {
         extraMeta || null,
         doc && doc.schema && doc.schema.available
           ? h('span', { class: 'chip chip-ok' }, 'schema')
-          : h('span', { class: 'chip chip-warn' }, 'no schema'),
-        meta.envVarCount ? h('span', { class: 'chip chip-env' }, `${meta.envVarCount} env`) : null
+          : h('span', { class: 'chip chip-warn' }, 'no schema')
       )
     ),
     tabs ? h('div', { class: 'strip-tabs' }, tabBar(tabs)) : null
@@ -1049,12 +2174,13 @@ function railDoc() {
  */
 const SECTIONS_IN_RAIL = window.matchMedia('(min-width: 100rem)');
 SECTIONS_IN_RAIL.addEventListener('change', () => render());
+COMPACT_NAV.addEventListener('change', () => render());
 
 function renderContextRail() {
   const area = state.areas.find((a) => a.id === state.area) || null;
   const blocks = [];
 
-  if (area && area.kind === 'contracts') {
+  if (area && area.kind === 'contracts' && state.contract) {
     blocks.push(h('div', { class: 'rail-block' }, contractList()));
     const policyNav = state.tab === 'policy' ? els.workspace.querySelector('.policy .pnav') : null;
     if (policyNav) {
@@ -1065,7 +2191,12 @@ function renderContextRail() {
 
   const doc = railDoc();
   const sections = (doc && doc.outline && doc.outline.sections) || [];
-  if (doc && state.tab === 'params' && sections.length >= 3 && SECTIONS_IN_RAIL.matches) {
+  if (
+    doc &&
+    state.tab === 'params' &&
+    sections.length >= 3 &&
+    (SECTIONS_IN_RAIL.matches || COMPACT_NAV.matches)
+  ) {
     const nav = renderOutlineNav(doc, editContext(doc), markCurrentSection);
     if (nav) {
       blocks.push(
@@ -1091,7 +2222,19 @@ function renderContextRail() {
   }
 
   els.shell.dataset.rail = 'on';
-  mount(els.contextRail, ...blocks);
+  mount(
+    els.contextRail,
+    h(
+      'details',
+      { class: 'context-disclosure', open: !COMPACT_NAV.matches },
+      h(
+        'summary',
+        { class: 'context-disclosure-summary' },
+        state.contract ? `Contract: ${state.contract.name}` : 'Page sections'
+      ),
+      h('div', { class: 'context-disclosure-body' }, blocks)
+    )
+  );
 }
 
 /**
@@ -1180,20 +2323,17 @@ function renderWorkspace() {
 
   const meta = doc.meta || {};
   const tabs = [
-    ['params', `Parameters (${doc.params.length})`],
-    meta.envVarCount ? ['env', `Environment (${meta.envVarCount})`] : null,
+    ['params', `Parameters (${doc.params.length + (doc.subscription ? 1 : 0)})`],
     ['raw', 'Raw file'],
   ].filter(Boolean);
 
   const body =
     state.tab === 'raw'
       ? h('pre', { class: 'raw' }, doc.text)
-      : state.tab === 'env'
-        ? renderEnvironment()
-        : renderParamDocument(doc, editContext(doc));
+      : renderParamDocument(doc, editContext(doc));
 
   const outlineStrip =
-    state.tab === 'params' && !SECTIONS_IN_RAIL.matches
+    state.tab === 'params' && !SECTIONS_IN_RAIL.matches && !COMPACT_NAV.matches
       ? renderOutlineNav(doc, editContext(doc), markCurrentSection, 'strip')
       : null;
 
@@ -1315,53 +2455,62 @@ function contractsOverview(area) {
       recoveryBanner(),
       rows.length
         ? h(
-            'table',
-            { class: 'otable' },
+            'div',
+            {
+              class: 'table-scroller',
+              role: 'region',
+              'aria-label': 'Access contracts',
+              tabindex: '0',
+            },
             h(
-              'thead',
-              {},
+              'table',
+              { class: 'otable' },
               h(
-                'tr',
+                'thead',
                 {},
-                h('th', { class: 'otable-name' }, 'Contract'),
-                h('th', {}, 'Parameters'),
-                h('th', {}, 'Policy'),
-                h('th', {}, 'Folder')
-              )
-            ),
-            h(
-              'tbody',
-              {},
-              rows.map((c) =>
                 h(
                   'tr',
-                  {
-                    class: `otable-row${c.isTemplate ? ' otable-template' : ''}`,
-                    tabindex: '0',
-                    role: 'link',
-                    onclick: () => selectContract(c.id),
-                    onkeydown: (e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        selectContract(c.id);
-                      }
+                  {},
+                  h('th', { class: 'otable-name' }, 'Contract'),
+                  h('th', {}, 'Parameters'),
+                  h('th', {}, 'Policy'),
+                  h('th', {}, 'Folder')
+                )
+              ),
+              h(
+                'tbody',
+                {},
+                rows.map((c) =>
+                  h(
+                    'tr',
+                    {
+                      class: `otable-row${c.isTemplate ? ' otable-template' : ''}`,
+                      tabindex: '0',
+                      role: 'link',
+                      onclick: () => selectContract(c.id),
+                      onkeydown: (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          selectContract(c.id);
+                        }
+                      },
                     },
-                  },
-                  h(
-                    'td',
-                    { class: 'otable-name' },
-                    h('span', { class: 'otable-link' }, c.name),
-                    c.isTemplate ? h('span', { class: 'chip chip-note' }, 'template') : null
-                  ),
-                  h('td', { class: 'otable-num' }, String(c.paramCount)),
-                  h(
-                    'td',
-                    {},
-                    c.hasPolicy
-                      ? h('span', { class: 'chip chip-ok' }, 'own policy')
-                      : h('span', { class: 'chip chip-warn' }, 'default')
-                  ),
-                  h('td', { class: 'otable-path' }, h('code', {}, c.dir))
+                    h(
+                      'td',
+                      { class: 'otable-name' },
+                      h('span', { class: 'otable-link' }, c.name),
+                      c.isTemplate ? h('span', { class: 'chip chip-note' }, 'template') : null
+                    ),
+                    h('td', { class: 'otable-num' }, String(c.paramCount)),
+                    h(
+                      'td',
+                      {},
+                      c.hasPolicy
+                        ? h('span', { class: 'chip chip-success' }, 'own policy')
+                        : h('span', { class: 'chip chip-neutral' }, 'default')
+                    ),
+                    h('td', { class: 'otable-path' }, h('code', {}, c.dir))
+                  )
                 )
               )
             )
@@ -1390,7 +2539,9 @@ function renderContractsArea(area) {
     state.tab === 'policy'
       ? decoratePolicy(
           renderPolicy(
-            state.policyPreview
+            state.policyRaw !== null
+              ? { ...contract.policy, text: state.policyRaw }
+              : state.policyPreview
               ? { ...contract.policy, text: state.policyPreview.text, controls: state.policyPreview.controls }
               : contract.policy,
             policyContext()
@@ -1428,6 +2579,7 @@ function renderContractsArea(area) {
 }
 
 function render() {
+  updateHeaderContext();
   renderSidebar();
   renderActions();
   renderWorkspace();
@@ -1441,16 +2593,26 @@ async function loadDocument(path) {
   const doc = await withStatus('Loading\u2026', () => api.deployment(path));
   if (!doc) return;
   state.current = doc;
-  state.operations = [];
+  state.baselineValidation = validateDocument(doc);
+  state.operations = await restoreParameterDraft(doc);
+  state.policyChanges = {};
+  state.policyRaw = null;
+  state.policyPreview = null;
+  restoreStashedPending();
   state.open = new Map();
   if (state.tab === 'policy') state.tab = 'params';
-  if (state.tab === 'env' && !(doc.meta && doc.meta.envVarCount)) state.tab = 'params';
   render();
 }
 
 async function selectArea(id) {
   const area = state.areas.find((a) => a.id === id);
   if (!area) return;
+  if (state.area === id) return;
+  if (
+    !(await confirmPendingNavigation({
+      destination: `opening ${area.title}`,
+    }))
+  ) return;
   state.area = id;
   state.tab = 'params';
   state.contract = null;
@@ -1470,6 +2632,12 @@ async function selectArea(id) {
 }
 
 async function openOther(path) {
+  if (state.current?.path === path) return;
+  if (
+    !(await confirmPendingNavigation({
+      destination: `opening ${path}`,
+    }))
+  ) return;
   state.area = 'other';
   state.contract = null;
   state.tab = 'params';
@@ -1481,9 +2649,24 @@ async function init() {
   els.sidebar = document.getElementById('sidebar');
   els.contextRail = document.getElementById('context-rail');
   els.tbActions = document.getElementById('tb-actions');
+  els.projectName = document.getElementById('project-name');
+  els.environmentName = document.getElementById('environment-name');
+  els.repoPath = document.getElementById('repo-path');
+  els.localPath = document.getElementById('local-path');
+  els.localPathCopy = document.getElementById('local-path-copy');
   els.workspace = document.getElementById('workspace');
   els.status = document.getElementById('status');
   els.modal = document.getElementById('modal');
+  els.localPathCopy.addEventListener('click', async () => {
+    const path = activeWorkspace().environment.localPath;
+    if (!path) return;
+    try {
+      await navigator.clipboard.writeText(path);
+      setStatus('Full Local path copied.', 'ok');
+    } catch {
+      setStatus('Local path could not be copied. Select it from Settings instead.', 'error');
+    }
+  });
 
   // Position feedback has to survive scrolling, so the rail marker is refreshed
   // from the sheet's own scroll rather than from renders.
@@ -1502,15 +2685,39 @@ async function init() {
   );
 
   try {
+    els.shell.dataset.workspace = 'setup';
+    const workspace = await ensureWorkspace();
+    els.shell.dataset.workspace = 'active';
     const health = await api.health();
-    document.getElementById('repo-path').textContent = health.repoRoot;
+    const projects = await workspaceRegistry.listProjects();
+    state.projectLabel =
+      projects.find((project) => project.id === workspace.projectId)?.label || 'Project';
 
     const [focus, catalog] = await Promise.all([api.focus(), api.deployments()]);
     state.areas = focus.areas;
     state.catalog = catalog;
 
     render();
-    await selectArea(state.areas[0].id);
+    const history = await api.history();
+    const recovery = (history.transactions || []).filter(
+      (transaction) =>
+        transaction.recoveryRequired ||
+        transaction.status === 'committing' ||
+        transaction.status === 'reverting'
+    );
+    if (recovery.length) {
+      setStatus(
+        `${recovery.length} transaction${recovery.length === 1 ? '' : 's'} require recovery. Open Settings > History before making another change.`,
+        'error',
+        true
+      );
+    }
+    if (state.areas.length) {
+      await selectArea(state.areas[0].id);
+    } else {
+      const generic = state.catalog.files.find((file) => !file.parseError);
+      if (generic) await openOther(generic.path);
+    }
 
   } catch (err) {
     setStatus(err.message, 'error');

@@ -1,0 +1,39 @@
+name: citadel-ui
+
+services:
+  app:
+    image: ${CITADEL_IMAGE:-citadel-ui:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NODE_IMAGE: ${CITADEL_NODE_IMAGE:-node:22.14.0-bookworm-slim@sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b}
+    environment:
+      CITADEL_UI_HOST: 0.0.0.0
+      CITADEL_UI_PORT: "4173"
+      CITADEL_DATA_ROOT: /data
+    ports:
+      - "127.0.0.1:4173:4173"
+    volumes:
+      - type: bind
+        source: ${CITADEL_DATA_PATH:-./.data}
+        target: /data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 100
+    mem_limit: 512m
+    cpus: 1.0
+    init: true
+    restart: unless-stopped
+    networks:
+      - local-only
+
+networks:
+  local-only:
+    driver: bridge

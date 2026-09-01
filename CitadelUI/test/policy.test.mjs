@@ -11,7 +11,12 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { readPolicyControls, applyPolicyChanges, POLICY_VARIABLES } from '../server/contracts.mjs';
+import {
+  applyPolicyChanges,
+  assertBalancedXml,
+  POLICY_VARIABLES,
+  readPolicyControls,
+} from '../shared/policy.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -391,6 +396,314 @@ const COMMENTS = (t) => (t.match(/<!--/g) || []).length;
   );
   check('tuning the cache preserves every comment', COMMENTS(tuned), COMMENTS(xml));
 }
+
+{
+  const source = applyPolicyChanges(xml, { semanticCache: { enable: true } })
+    .replace(
+      ' ignore-system-messages="true">',
+      ' ignore-system-messages="true" custom-lookup="preserve">'
+    )
+    .replace('</llm-semantic-cache-lookup>', '</llm-semantic-cache-lookup><!-- lookup-note -->')
+    .replace(
+      '<llm-semantic-cache-store duration="3600" />',
+      '<llm-semantic-cache-store duration="3600" custom-store="preserve" /><!-- store-note -->'
+    );
+  const tuned = applyPolicyChanges(source, {
+    semanticCache: {
+      lookup: {
+        'score-threshold': '0.17',
+        'embeddings-backend-id': 'embeddings-qa',
+        'embeddings-backend-auth': 'system-assigned',
+        'ignore-system-messages': 'false',
+        'max-message-count': '12',
+      },
+      store: { duration: '600' },
+      varyBy: { 0: '@(context.Request.IpAddress)' },
+    },
+  });
+  assertBalancedXml(tuned);
+  const cache = readPolicyControls(tuned).semanticCache;
+  const expectedLookup = {
+    'score-threshold': '0.17',
+    'embeddings-backend-id': 'embeddings-qa',
+    'embeddings-backend-auth': 'system-assigned',
+    'ignore-system-messages': 'false',
+    'max-message-count': '12',
+  };
+  for (const [key, value] of Object.entries(expectedLookup)) {
+    check(`semantic lookup ${key} survives reload`, cache.lookup.attributes[key].value, value);
+  }
+  check('semantic store duration survives reload', cache.store.attributes.duration.value, '600');
+  check('semantic lookup unknown attribute survives', cache.lookup.attributes['custom-lookup'].value, 'preserve');
+  check('semantic store unknown attribute survives', cache.store.attributes['custom-store'].value, 'preserve');
+  check('semantic comments survive all-field write', COMMENTS(tuned), COMMENTS(source));
+
+  const disabled = applyPolicyChanges(tuned, { semanticCache: { enabled: false } });
+  check('semantic lookup disables with store', readPolicyControls(disabled).semanticCache.lookup.enabled, false);
+  check('semantic store disables with lookup', readPolicyControls(disabled).semanticCache.store.enabled, false);
+  const enabled = applyPolicyChanges(disabled, { semanticCache: { enabled: true } });
+  check('semantic pair re-enables byte-for-byte', enabled, tuned);
+
+  const innerComment = source.replace('<vary-by>', '<!-- partition-note --><vary-by>');
+  check(
+    'semantic pair is not half-disabled when lookup contains a comment',
+    applyPolicyChanges(innerComment, { semanticCache: { enabled: false } }),
+    innerComment
+  );
+}
+
+// --- combined guided changes and all throttle shapes -------------------------
+
+{
+  const changes = {
+    allowedModels: 'gpt-4.1,gpt-4o',
+    responseHeaders: false,
+    variables: Object.fromEntries(
+      POLICY_VARIABLES.map((field, index) => [
+        field.key,
+        field.type === 'boolean' ? true : field.type === 'number' ? `0.${index + 1}` : `qa-${field.key}`,
+      ])
+    ),
+    contentSafety: {
+      enable: true,
+      attributes: {
+        'backend-id': 'qa-content-safety',
+        'shield-prompt': 'false',
+        'enforce-on-completions': 'true',
+        'window-size': '1200',
+        'window-overlap-size': '120',
+      },
+      categories: {
+        Hate: '1',
+        SelfHarm: '2',
+        Sexual: '3',
+        Violence: '4',
+      },
+      outputType: 'EightSeverityLevels',
+      addBlocklist: 'qa-blocklist',
+    },
+    semanticCache: {
+      enable: true,
+      lookup: {
+        'score-threshold': '0.19',
+        'embeddings-backend-id': 'embeddings-combined',
+        'embeddings-backend-auth': 'system-assigned',
+        'ignore-system-messages': 'false',
+        'max-message-count': '12',
+      },
+      store: { duration: '600' },
+      varyBy: { 0: '@(context.Request.IpAddress)' },
+    },
+    tokenLimit: {
+      attributes: {
+        'tokens-per-minute': '9000',
+        'remaining-tokens-header-name': 'x-token-remaining',
+      },
+    },
+    tokenLimits: {
+      addModel: 'gpt-4o',
+      perModel: {
+        'gpt-4o': {
+          'tokens-per-minute': '4500',
+          'tokens-consumed-header-name': 'x-token-used',
+        },
+      },
+    },
+    rateLimit: {
+      enable: true,
+      attributes: {
+        calls: '42',
+        'renewal-period': '120',
+        'counter-key': '@(context.Subscription.Id + ":rate")',
+        'increment-condition': '@(context.Response.StatusCode < 500)',
+        'increment-count': '2',
+        'retry-after-header-name': 'x-retry',
+        'remaining-calls-header-name': 'x-rate-remaining',
+        'total-calls-header-name': 'x-rate-total',
+      },
+    },
+    rateLimits: {
+      addModel: 'gpt-4o',
+      perModel: {
+        'gpt-4o': {
+          calls: '21',
+          'renewal-period': '30',
+          'counter-key': '@(context.Subscription.Id + ":rate:model")',
+        },
+      },
+    },
+    callQuota: {
+      enable: true,
+      attributes: {
+        calls: '42000',
+        bandwidth: '2048',
+        'renewal-period': '3600',
+        'counter-key': '@(context.Subscription.Id + ":quota")',
+        'first-period-start': '2026-01-01T00:00:00Z',
+        'increment-condition': '@(context.Response.StatusCode < 400)',
+        'increment-count': '3',
+      },
+    },
+    quotaLimits: {
+      addModel: 'gpt-4o',
+      perModel: {
+        'gpt-4o': {
+          calls: '21000',
+          'renewal-period': '7200',
+          'counter-key': '@(context.Subscription.Id + ":quota:model")',
+        },
+      },
+    },
+  };
+  const combined = applyPolicyChanges(xml, changes);
+  assertBalancedXml(combined);
+  const reloaded = readPolicyControls(combined);
+  check('combined allowed models survive reload', reloaded.allowedModels.models, ['gpt-4.1', 'gpt-4o']);
+  check('combined response header toggle survives reload', reloaded.responseHeaders.value, false);
+  for (const field of POLICY_VARIABLES.filter((item) => item.key !== 'enableResponseHeaders')) {
+    const expected =
+      field.type === 'boolean'
+        ? 'true'
+        : field.type === 'number'
+          ? `0.${POLICY_VARIABLES.indexOf(field) + 1}`
+          : `qa-${field.key}`;
+    check(`combined variable ${field.key} survives reload`, reloaded.variables[field.key].value, expected);
+  }
+  for (const [key, value] of Object.entries(changes.contentSafety.attributes)) {
+    check(`combined content safety ${key} survives reload`, reloaded.contentSafety.attributes[key].value, value);
+  }
+  for (const [name, value] of Object.entries(changes.contentSafety.categories)) {
+    check(
+      `combined content safety ${name} threshold survives reload`,
+      reloaded.contentSafety.categories.find((category) => category.name === name).threshold,
+      value
+    );
+  }
+  check('combined content safety output type survives reload', reloaded.contentSafety.outputType.value, 'EightSeverityLevels');
+  check('combined content safety blocklist survives reload', reloaded.contentSafety.blocklists.map((entry) => entry.id), ['qa-blocklist']);
+  for (const [key, value] of Object.entries(changes.semanticCache.lookup)) {
+    check(`combined semantic ${key} survives reload`, reloaded.semanticCache.lookup.attributes[key].value, value);
+  }
+  check('combined semantic duration survives reload', reloaded.semanticCache.store.attributes.duration.value, '600');
+  check('combined semantic max messages survives reload', reloaded.semanticCache.lookup.attributes['max-message-count'].value, '12');
+  check('combined token model value survives reload', reloaded.tokenLimits.perModel[0].attributes['tokens-per-minute'].value, '4500');
+  check('combined token fallback value survives reload', reloaded.tokenLimits.universal.attributes['tokens-per-minute'].value, '9000');
+  check('combined rate model calls survive reload', reloaded.rateLimits.perModel[0].attributes.calls.value, '21');
+  check('combined rate fallback calls survive reload', reloaded.rateLimits.universal.attributes.calls.value, '42');
+  check('combined rate fallback renewal survives reload', reloaded.rateLimits.universal.attributes['renewal-period'].value, '120');
+  check('combined rate counter entity survives reload', reloaded.rateLimits.universal.attributes['counter-key'].value, '@(context.Subscription.Id + &quot;:rate&quot;)');
+  check('combined quota model calls survive reload', reloaded.quotaLimits.perModel[0].attributes.calls.value, '21000');
+  check('combined quota fallback calls survive reload', reloaded.quotaLimits.universal.attributes.calls.value, '42000');
+  check('combined quota fallback renewal survives reload', reloaded.quotaLimits.universal.attributes['renewal-period'].value, '3600');
+  for (const [family, expected] of [
+    [reloaded.tokenLimits, {
+      universal: changes.tokenLimit.attributes,
+      perModel: changes.tokenLimits.perModel['gpt-4o'],
+    }],
+    [reloaded.rateLimits, {
+      universal: changes.rateLimit.attributes,
+      perModel: changes.rateLimits.perModel['gpt-4o'],
+    }],
+    [reloaded.quotaLimits, {
+      universal: changes.callQuota.attributes,
+      perModel: changes.quotaLimits.perModel['gpt-4o'],
+    }],
+  ]) {
+    for (const [key, value] of Object.entries(expected.universal)) {
+      check(`combined universal ${family.tag} ${key} survives reload`, family.universal.attributes[key].value, String(value).replaceAll('"', '&quot;').replaceAll('<', '&lt;'));
+    }
+    for (const [key, value] of Object.entries(expected.perModel)) {
+      check(`combined per-model ${family.tag} ${key} survives reload`, family.perModel[0].attributes[key].value, String(value).replaceAll('"', '&quot;').replaceAll('<', '&lt;'));
+    }
+  }
+  check('combined policy contains one semantic lookup', (combined.match(/<llm-semantic-cache-lookup\b/g) || []).length, 1);
+  check('combined policy contains one semantic store', (combined.match(/<llm-semantic-cache-store\b/g) || []).length, 1);
+  check('combined policy contains one rate model branch', reloaded.rateLimits.perModel.length, 1);
+  check('combined policy contains one quota model branch', reloaded.quotaLimits.perModel.length, 1);
+
+  const exactReload = readPolicyControls(applyPolicyChanges(xml, changes));
+  check(
+    'combined guided replay has stable reload values',
+    [
+      exactReload.semanticCache.lookup.attributes['score-threshold'].value,
+      exactReload.semanticCache.store.attributes.duration.value,
+      exactReload.rateLimits.perModel[0].attributes.calls.value,
+      exactReload.rateLimits.universal.attributes.calls.value,
+      exactReload.quotaLimits.perModel[0].attributes.calls.value,
+      exactReload.quotaLimits.universal.attributes.calls.value,
+    ],
+    ['0.19', '600', '21', '42', '21000', '42000']
+  );
+}
+
+for (const family of [
+  {
+    name: 'token',
+    enable: {},
+    key: 'tokenLimits',
+    control: 'tokenLimits',
+    valueKey: 'tokens-per-minute',
+    universalValue: '1000',
+  },
+  {
+    name: 'rate',
+    enable: { rateLimit: { enable: true } },
+    key: 'rateLimits',
+    control: 'rateLimits',
+    valueKey: 'calls',
+    universalValue: '60',
+  },
+  {
+    name: 'quota',
+    enable: { callQuota: { enable: true } },
+    key: 'quotaLimits',
+    control: 'quotaLimits',
+    valueKey: 'calls',
+    universalValue: '100000',
+  },
+]) {
+  const universal = applyPolicyChanges(xml, family.enable);
+  check(`${family.name} starts universal`, readPolicyControls(universal)[family.control].mode, 'universal');
+  const mixed = applyPolicyChanges(universal, {
+    [family.key]: {
+      addModels: ['gpt-4o', 'gpt-4.1'],
+      perModel: {
+        'gpt-4o': { [family.valueKey]: '11', 'custom-header-name': `x-${family.name}` },
+        'gpt-4.1': { [family.valueKey]: '22' },
+      },
+      universal: { [family.valueKey]: '33' },
+    },
+  });
+  assertBalancedXml(mixed);
+  let structure = readPolicyControls(mixed)[family.control];
+  check(`${family.name} mixed models reload`, structure.perModel.map((entry) => entry.model), ['gpt-4o', 'gpt-4.1']);
+  check(`${family.name} mixed first value reloads`, structure.perModel[0].attributes[family.valueKey].value, '11');
+  check(`${family.name} mixed unknown header reloads`, structure.perModel[0].attributes['custom-header-name'].value, `x-${family.name}`);
+  check(`${family.name} mixed fallback reloads`, structure.universal.attributes[family.valueKey].value, '33');
+
+  const pure = mixed
+    .replace('<choose>', '<choose><!-- preserve-pure-comment -->')
+    .replace(/<otherwise>[\s\S]*?<\/otherwise>/, '');
+  assertBalancedXml(pure);
+  check(`${family.name} pure per-model shape reads`, readPolicyControls(pure)[family.control].mode, 'per-model');
+  const pureEdited = applyPolicyChanges(pure, {
+    [family.key]: {
+      perModel: { 'gpt-4o': { [family.valueKey]: '44' } },
+      removeModels: ['gpt-4.1', 'gpt-4o'],
+    },
+  });
+  assertBalancedXml(pureEdited);
+  check(`${family.name} pure removal keeps comments`, pureEdited.includes('preserve-pure-comment'), true);
+
+  const one = applyPolicyChanges(mixed, { [family.key]: { removeModel: 'gpt-4o' } });
+  assertBalancedXml(one);
+  check(`${family.name} removes one balanced branch`, readPolicyControls(one)[family.control].perModel.map((entry) => entry.model), ['gpt-4.1']);
+  const collapsed = applyPolicyChanges(one, { [family.key]: { removeModel: 'gpt-4.1' } });
+  assertBalancedXml(collapsed);
+  structure = readPolicyControls(collapsed)[family.control];
+  check(`${family.name} collapses to universal`, structure.mode, 'universal');
+  check(`${family.name} collapse keeps edited fallback`, structure.universal.attributes[family.valueKey].value, '33');
+}
 // --- escaping ----------------------------------------------------------------
 // Counter keys contain quoted string literals, so a value that survives a
 // wrap/unwrap cycle must come back byte-identical rather than gaining a layer
@@ -414,6 +727,49 @@ const COMMENTS = (t) => (t.match(/<!--/g) || []).length;
     readPolicyControls(back).rateLimits.universal.attributes['counter-key'].value,
     '@(context.Subscription.Id + &quot;:tool&quot;)'
   );
+}
+
+{
+  const withRate = applyPolicyChanges(xml, { rateLimit: { enable: true } });
+  const cases = [
+    ['greater-than-or-equal', '@(context.Response.StatusCode >= 400)', '@(context.Response.StatusCode >= 400)'],
+    ['less-than-or-equal', '@(context.Response.StatusCode <= 399)', '@(context.Response.StatusCode &lt;= 399)'],
+    [
+      'equality and quoted strings',
+      '@(context.Response.Headers.GetValueOrDefault("x-result", "") == "billable")',
+      '@(context.Response.Headers.GetValueOrDefault(&quot;x-result&quot;, &quot;&quot;) == &quot;billable&quot;)',
+    ],
+    [
+      'quoted tag terminator',
+      '@(context.Response.Headers.GetValueOrDefault("x-marker", "") == "/>")',
+      '@(context.Response.Headers.GetValueOrDefault(&quot;x-marker&quot;, &quot;&quot;) == &quot;/>&quot;)',
+    ],
+    [
+      'logical and entities',
+      '@(context.Response.StatusCode >= 200 && context.Response.StatusCode < 400)',
+      '@(context.Response.StatusCode >= 200 &amp;&amp; context.Response.StatusCode &lt; 400)',
+    ],
+  ];
+  let current = withRate;
+  for (const [name, input, serialized] of cases) {
+    current = applyPolicyChanges(current, {
+      rateLimit: { attributes: { 'increment-condition': input } },
+    });
+    assertBalancedXml(current);
+    const reloaded = readPolicyControls(current);
+    check(`${name} keeps the flat rate limit configured`, reloaded.rateLimit.enabled, true);
+    check(
+      `${name} survives flat preview read`,
+      reloaded.rateLimit.attributes['increment-condition'].value,
+      serialized
+    );
+    check(`${name} keeps the guided rate structure configured`, reloaded.rateLimits.mode, 'universal');
+    check(
+      `${name} survives structural preview read`,
+      reloaded.rateLimits.universal.attributes['increment-condition'].value,
+      serialized
+    );
+  }
 }
 // --- content safety: output type and blocklist writes ------------------------
 

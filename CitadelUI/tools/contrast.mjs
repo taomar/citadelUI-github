@@ -45,12 +45,13 @@ const pairs = [
   ['ink-1', 'zebra'], ['ink-2', 'zebra'], ['ink-3', 'zebra'],
   ['ink-1', 'band'], ['ink-2', 'band'], ['ink-3', 'band'],
   ['ink-1', 'ground'], ['ink-2', 'ground'], ['ink-3', 'ground'],
-  ['ink-1', 'brass-wash'], ['brass', 'brass-wash'],
-  ['ink-1', 'prov-wash'], ['prov', 'prov-wash'],
-  ['ink-1', 'ok-wash'], ['ok', 'ok-wash'],
-  ['bad-ink', 'bad-wash'], ['bad', 'bad-wash'],
-  ['on-brass', 'brass'], ['on-brass', 'brass-2'],
-  ['nav-ink', 'nav'], ['nav-muted', 'nav'], ['nav-accent', 'nav-active'],
+  ['ink-1', 'brand-wash'], ['brand', 'brand-wash'],
+  ['ink-1', 'cloud-wash'], ['cloud', 'cloud-wash'],
+  ['ink-1', 'success-wash'], ['success', 'success-wash'],
+  ['ink-1', 'warning-wash'], ['warning', 'warning-wash'],
+  ['danger-ink', 'danger-wash'], ['danger', 'danger-wash'],
+  ['on-brand', 'brand'], ['on-brand', 'brand-hover'], ['on-brand', 'brand-pressed'],
+  ['nav-ink', 'nav'], ['nav-muted', 'nav'], ['nav-ink', 'nav-active'],
 ];
 
 const results = pairs.map(([foreground, background]) => ({

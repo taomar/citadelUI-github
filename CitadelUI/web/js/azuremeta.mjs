@@ -34,6 +34,11 @@ export const REGION_NAMES = Object.freeze({
   uksouth: 'UK South',
 });
 
+const NON_PRIMARY_REGIONS = new Set(['canadacentral', 'centralindia']);
+export const PRIMARY_REGIONS = Object.freeze(
+  Object.keys(REGION_NAMES).filter((region) => !NON_PRIMARY_REGIONS.has(region))
+);
+
 export const API_CENTER_REGIONS = Object.freeze([
   'australiaeast',
   'canadacentral',
@@ -44,6 +49,8 @@ export const API_CENTER_REGIONS = Object.freeze([
   'uksouth',
   'westeurope',
 ]);
+
+export const APIC_LOCATION_VALUES = Object.freeze(['', ...API_CENTER_REGIONS]);
 
 export const APIM_SKUS = Object.freeze({
   Developer: Object.freeze({

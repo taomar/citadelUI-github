@@ -27,7 +27,11 @@
 
 import { h } from './dom.mjs';
 import { picker } from './picker.mjs';
-import { REGION_NAMES } from './azuremeta.mjs';
+import {
+  APIC_LOCATION_VALUES,
+  PRIMARY_REGIONS,
+  REGION_NAMES,
+} from './azuremeta.mjs';
 
 const ENV_CALL = 'readEnvironmentVariable';
 const ARGS = '__args';
@@ -108,7 +112,7 @@ function widthClass(schema, value) {
  * A value the file does not supply.
  *
  * Roughly half of these ninety-seven parameters state nothing at all -- they
- * resolve entirely from the environment at deployment time. Drawing each one
+ * defer to a Bicepparam expression at deployment time. Drawing each one
  * as a filled control made the emptiest field the heaviest object in its row
  * and turned nineteen consecutive resource names into a wall of identical
  * blank boxes. Absence is stated in words instead, and the variable that will
@@ -257,8 +261,36 @@ function freeTextControl(current, known, commit, secure, width) {
   };
 }
 
-function isLocationSchema(schema) {
-  return /location|region/i.test((schema && schema.name) || '');
+function semanticFieldName(path = []) {
+  for (let index = path.length - 1; index >= 0; index -= 1) {
+    const segment = path[index];
+    if (typeof segment === 'string' && segment !== ARGS) return segment;
+  }
+  return '';
+}
+
+function isLocationSchema(schema, path = []) {
+  return /location|region/i.test((schema && schema.name) || semanticFieldName(path));
+}
+
+export function regionOptionsFor(schema, path = []) {
+  if (!isLocationSchema(schema, path)) return null;
+  if (schema && Array.isArray(schema.allowedValues) && schema.allowedValues.length) {
+    return schema.allowedValues.map(String);
+  }
+  const name = (schema && schema.name) || semanticFieldName(path);
+  return name === 'apicLocation' ? APIC_LOCATION_VALUES : PRIMARY_REGIONS;
+}
+
+function withRegionSchema(schema, path) {
+  const allowedValues = regionOptionsFor(schema, path);
+  if (!allowedValues) return schema;
+  return {
+    ...(schema || {}),
+    name: (schema && schema.name) || semanticFieldName(path),
+    type: (schema && schema.type) || 'string',
+    allowedValues,
+  };
 }
 
 function comboControl(value, allowed, commit, secure, schema) {
@@ -309,6 +341,7 @@ function comboControl(value, allowed, commit, secure, schema) {
  * and provenance appears nowhere in them.
  */
 function scalarControl(value, path, ctx, schema) {
+  schema = withRegionSchema(schema, path);
   const commit = (next) => ctx.onChange(path, next);
   const type = schema && schema.type;
   const label = valueLabel(path, schema);
@@ -377,21 +410,16 @@ function scalarControl(value, path, ctx, schema) {
 }
 
 /**
- * Expression line.
- *
- * readEnvironmentVariable() is the dominant shape in bicep/infra: the value the
- * user cares about lives in .azure/<env>/.env, not here. This states the whole
- * chain on one line -- source, variable, resolved value, where to change it --
- * because it repeats on dozens of parameters and a card for each one is what
- * made the old sheet unreadable.
+ * Expression line. Citadel UI treats readEnvironmentVariable() only as source
+ * syntax and edits its in-file fallback without resolving any external file.
  */
 /**
- * Casts that wrap an environment lookup.
+ * Casts that wrap a readEnvironmentVariable expression.
  *
  * `readEnvironmentVariable` always yields a string, so any parameter typed as a
  * number or a boolean has to be written `int(readEnvironmentVariable(...))`.
  * The cast is a language obligation, not a decision the user made, so the row
- * shows the same editable environment line as an unwrapped lookup and reports
+ * shows the same editable fallback as an unwrapped lookup and reports
  * the cast as a type note rather than hiding the value behind raw text.
  */
 const CASTS = new Set(['int', 'bool', 'string', 'json']);
@@ -431,13 +459,12 @@ function fallbackSchema(schema, cast) {
 }
 
 /**
- * Environment-backed value.
+ * Expression-backed value.
  *
  * `readEnvironmentVariable('VAR', 'fallback')` is the dominant shape in
- * bicep/infra, but only the fallback lives in this file -- the variable is
- * resolved at deployment time from the azd environment. Editing this file means
- * editing the fallback, so that is the whole row: one control holding the value
- * the file actually contains.
+ * bicep/infra, but only the fallback belongs to this editor. Citadel UI never
+ * resolves the variable from local environment files, so the row edits only the
+ * fallback that the selected Bicepparam file actually contains.
  *
  * The variable name and the cast are still true, just not worth a column each
  * on ninety-seven rows. They move into the parameter's explanation popover,
@@ -457,7 +484,7 @@ function exprCard(value, path, ctx, schema) {
     if (
       has &&
       fallback === '' &&
-      isLocationSchema(sub) &&
+      isLocationSchema(sub, path) &&
       Array.isArray(sub.allowedValues) &&
       sub.allowedValues.includes('')
     ) {

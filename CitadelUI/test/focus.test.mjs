@@ -240,10 +240,10 @@ check('contracts: creation rewires only `using` and `policyXml`', () => {
     assert(res.using === '../../main.bicep', `using not recomputed: ${res.using}`);
     assert(created.includes(`using '../../main.bicep'`), 'using statement not rewritten');
     assert(
-      created.includes(`policyXml: loadTextContent('ai-product-policy.xml')`),
+      created.includes(`policyXml: loadTextContent('./ai-product-policy.xml')`),
       'policyXml was not pointed at the copied policy'
     );
-    assert(!/loadTextContent\('ai-product-policy\.xml'\) {2,}/.test(created), 'stale padding left behind');
+    assert(!/loadTextContent\('\.\/ai-product-policy\.xml'\) {2,}/.test(created), 'stale padding left behind');
 
     const reread = readContract(`${scratchParent}/acceptance-test`);
     assert(reread.policy, 'created contract does not resolve its policy');

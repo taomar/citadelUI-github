@@ -8,14 +8,14 @@
  *
  * The sheet is a datasheet, not a stack of cards. A section is a sticky band
  * with ruled rows running under it; a parameter is one record across five
- * columns -- name, type, value, environment variable, description -- under a
+ * columns -- name, type, value, expression reference, description -- under a
  * sticky column header. Nothing is boxed, so ninety-seven parameters read as
  * one continuous table rather than ninety-seven containers. `llmBackendConfig`
  * is the exception: it takes the full width and renders through the guided
  * provider editor.
  *
  * Two columns exist because the sheet had the room and nothing to say in it.
- * Ninety of ninety-seven values resolve from the environment, and forty-nine of
+ * Many values use readEnvironmentVariable expressions, and forty-nine of
  * those hold no value in this file at all -- so a two-column layout printed
  * forty-nine identical empty boxes with no way to tell them apart. The variable
  * name is what distinguishes them and the description is what explains them;
@@ -39,8 +39,87 @@ import { explains } from './explain.mjs';
 import { foundryCatalog } from './llmschema.mjs';
 import { APIM_SKUS, API_CENTER_HELP, LOGIC_APPS_TEMPLATE } from './azuremeta.mjs';
 import { editableValue } from './validation.mjs';
+import { validateSubscriptionId } from './subscription-env.mjs';
 
 const ENV_CALL = 'readEnvironmentVariable';
+const MAIN_DEPLOYMENT_PATH = 'bicep/infra/main.bicepparam';
+
+export const FEATURE_DEPENDENCIES = Object.freeze({
+  aiSearchInstances: 'enableAzureAISearch',
+  apicLocation: 'enableAPICenter',
+  apicServiceName: 'enableAPICenter',
+  apicSku: 'enableAPICenter',
+  entraTenantId: 'entraAuth',
+  entraClientId: 'entraAuth',
+  entraAudience: 'entraAuth',
+  entraClientSecret: 'entraAuth',
+  redisCacheName: 'enableManagedRedis',
+  redisSkuName: 'enableManagedRedis',
+  redisSkuCapacity: 'enableManagedRedis',
+  redisMinimumTlsVersion: 'enableManagedRedis',
+  redisHighAvailability: 'enableManagedRedis',
+});
+
+function featureEnabled(value) {
+  if (value === false || value === 'false') return false;
+  if (value === true || value === 'true') return true;
+  return true;
+}
+
+function featureSection(section) {
+  return /^feature flags\b/i.test(String(section.title || '').trim());
+}
+
+function resourceNamesSection(section) {
+  return /^resource names\b/i.test(String(section.title || '').trim());
+}
+
+export function deploymentPresentation(doc, ctx) {
+  const source = doc.outline?.sections || [];
+  if (doc.path !== MAIN_DEPLOYMENT_PATH) return source;
+  const visible = (name) => {
+    const flag = FEATURE_DEPENDENCIES[name];
+    return !flag || ctx.pendingFor(name) || featureEnabled(ctx.paramValue(flag));
+  };
+  const sections = source
+    .map((section) => ({
+      ...section,
+      params: section.params.filter(visible),
+      groups: (section.groups || []).map((group) => ({
+        ...group,
+        params: group.params.filter(visible),
+      })).filter((group) => group.params.length > 0),
+      sourceParameterCount: section.params.length,
+    }))
+    .filter((section) => section.params.length > 0 || section.sourceParameterCount === 0);
+  if (doc.subscription && sections.length) {
+    const first = sections[0];
+    const insertAfter = first.params.indexOf('location');
+    const params = [...first.params];
+    params.splice(insertAfter < 0 ? params.length : insertAfter + 1, 0, 'subscriptionId');
+    const groups = first.groups.map((group, groupIndex) => {
+      if (groupIndex !== 0) return group;
+      const groupParams = [...group.params];
+      const groupInsertAfter = groupParams.indexOf('location');
+      groupParams.splice(
+        groupInsertAfter < 0 ? groupParams.length : groupInsertAfter + 1,
+        0,
+        'subscriptionId'
+      );
+      return { ...group, params: groupParams };
+    });
+    sections[0] = { ...first, params, groups };
+  }
+  const featureIndex = sections.findIndex(featureSection);
+  const resourceIndex = sections.findIndex(resourceNamesSection);
+  if (featureIndex < 0 || resourceIndex < 0 || featureIndex + 1 === resourceIndex) {
+    return sections;
+  }
+  const [flags] = sections.splice(featureIndex, 1);
+  const nextResourceIndex = sections.findIndex(resourceNamesSection);
+  sections.splice(nextResourceIndex, 0, flags);
+  return sections;
+}
 
 const FOUNDRY_MODELS = foundryCatalog().map((model) => ({
   value: model.name,
@@ -281,7 +360,7 @@ function targetAction(param, ctx) {
   const ready = definition.values.filter((value) => value.ready);
   const missing = [...new Set(definition.values.flatMap((value) => value.missingLocal || value.missing || []))];
   if (!ready.length) {
-    return h('p', { class: 'target-note finding-error' }, `${definition.label} unavailable. Missing local fields: ${missing.join(', ') || 'target definition'}.`);
+    return h('p', { class: 'target-note' }, `${definition.label} autofill unavailable. Missing local fields: ${missing.join(', ') || 'target definition'}. You can still save complete contract values entered directly.`);
   }
   const control = picker(
     ready.map((target, index) => ({ value: String(index), meta: definition.meta(target) })),
@@ -306,7 +385,7 @@ function requirementChip(requirement) {
 }
 
 /**
- * True when the value comes from the environment rather than from this file.
+ * True when the value is represented by a readEnvironmentVariable expression.
  * Mirrors the shape fields.mjs unwraps: a readEnvironmentVariable call, bare or
  * wrapped in a single int()/bool()/string() cast.
  */
@@ -321,7 +400,7 @@ function isEnvSourced(value) {
   return Boolean(envCall(value));
 }
 
-/** The environment variable a value reads, when it reads one. */
+/** The variable name encoded in a readEnvironmentVariable expression. */
 function envVarName(value) {
   const call = envCall(value);
   const name = call && call.args[0];
@@ -329,7 +408,7 @@ function envVarName(value) {
 }
 
 /**
- * The literal this file supplies, looking through an environment lookup to the
+ * The literal this file supplies, looking through an expression to the
  * fallback that is the only part of it the file actually owns.
  */
 function ownValue(value) {
@@ -340,7 +419,7 @@ function ownValue(value) {
 
 /**
  * Blank means the file states no value here -- the parameter resolves entirely
- * from the environment at deployment time. Forty-nine of ninety-seven rows are
+ * from the expression at deployment time. Many rows are
  * blank, so this is a layout-defining case, not an edge case.
  */
 function isBlank(value) {
@@ -392,7 +471,7 @@ function paramExplainer(param, schema, variable, type) {
       { class: 'explain-facts' },
       h('dt', {}, 'Type'),
       h('dd', {}, h('code', {}, type)),
-      variable ? h('dt', {}, 'From environment') : null,
+      variable ? h('dt', {}, 'Expression variable') : null,
       variable ? h('dd', { class: 'is-env' }, h('code', {}, variable)) : null
     ),
     schema && schema.description ? h('p', { class: 'doc-para' }, schema.description) : null,
@@ -415,7 +494,7 @@ function headRow() {
  * The type to show when the compiler has not told us one.
  *
  * `param.kind` describes the syntax that produced the value, so an
- * environment-backed parameter reports `call`. Unwrapping the cast recovers
+ * expression-backed parameter reports `call`. Unwrapping the cast recovers
  * something true: `int(...)` and `bool(...)` name the type outright, and a bare
  * lookup always yields a string.
  */
@@ -440,7 +519,86 @@ function declaredKind(param) {
  * width it was spending to say things twice. That width is what pays for the
  * second column.
  */
+function subscriptionRow(param, ctx) {
+  const subscription = param.subscription;
+  const input = h('input', {
+    class: 'ctl ctl-w-long',
+    value: subscription.value || '',
+    disabled: !subscription.available,
+    spellcheck: false,
+    autocomplete: 'off',
+    'aria-label': 'Azure subscription ID',
+  });
+  const save = h(
+    'button',
+    {
+      class: 'btn btn-sm',
+      disabled: !subscription.available || !subscription.valid,
+      onclick: async () => {
+        await ctx.saveSubscriptionId({
+          environmentName: subscription.environmentName,
+          value: input.value,
+          expectedHash: subscription.hash,
+        });
+      },
+    },
+    'Save to azd environment'
+  );
+  const initialProblem = subscription.error || (
+    subscription.available && !subscription.valid
+      ? subscription.configured
+        ? 'AZURE_SUBSCRIPTION_ID is not a complete Azure subscription GUID.'
+        : 'AZURE_SUBSCRIPTION_ID is missing. Enter a complete Azure subscription GUID.'
+      : null
+  );
+  const status = h('p', {
+    class: `param-guidance${initialProblem ? ' field-error' : ''}`,
+    role: initialProblem ? 'alert' : 'status',
+  }, initialProblem || (
+    subscription.available
+      ? `Only AZURE_SUBSCRIPTION_ID is read from and written to ${subscription.source}.`
+      : `Create ${subscription.source} with azd before setting the subscription here.`
+  ));
+  input.addEventListener('input', () => {
+    let valid = false;
+    try {
+      validateSubscriptionId(input.value);
+      valid = input.value.trim() !== subscription.value;
+      status.className = 'param-guidance';
+      status.textContent = `Only AZURE_SUBSCRIPTION_ID will change in ${subscription.source}.`;
+    } catch (error) {
+      status.className = 'param-guidance field-error';
+      status.textContent = error.message;
+    }
+    save.disabled = !subscription.available || !valid;
+  });
+
+  return h(
+    'div',
+    {
+      class: 'prow prow-env',
+      id: 'param-subscriptionId',
+      dataset: { kind: 'text' },
+    },
+    h('div', { class: 'pcell pcell-gut', title: 'Read from the selected azd environment' }),
+    h(
+      'div',
+      { class: 'pcell pcell-ident' },
+      h('h3', { class: 'prow-name' }, 'subscriptionId'),
+      h('span', { class: 'ptype' }, 'string'),
+      h('span', { class: 'chip chip-env' }, 'azd env')
+    ),
+    h(
+      'div',
+      { class: 'pcell pcell-val' },
+      h('div', { class: 'subscription-control' }, input, save),
+      status
+    )
+  );
+}
+
 function paramRow(param, ctx) {
+  if (param.subscription) return subscriptionRow(param, ctx);
   const schema = ctx.schemaFor(param.name);
   const pending = ctx.pendingFor(param.name);
 
@@ -491,7 +649,7 @@ function paramRow(param, ctx) {
       dataset: { kind },
     },
     // Provenance is a 2px spine in the gutter, not a column and not a chip on
-    // the control. Ninety of ninety-seven rows are environment-backed, so the
+    // the control. Many rows are expression-backed, so the
     // marker has to cost almost nothing and still be scannable down the run.
     h('div', {
       class: 'pcell pcell-gut',
@@ -504,7 +662,16 @@ function paramRow(param, ctx) {
       targetAction(param, ctx),
       renderValue(param.value, [param.name], ctx, schema, recordOptions(param.name, ctx)),
       guidanceFor(param, ctx),
-      findings.map((finding) => h('p', { class: 'field-error', role: 'alert' }, finding.message))
+      findings.map((finding) =>
+        h(
+          'p',
+          {
+            class: finding.severity === 'warning' ? 'field-warning' : 'field-error',
+            role: finding.severity === 'warning' ? 'status' : 'alert',
+          },
+          finding.message
+        )
+      )
     )
   );
 }
@@ -613,7 +780,7 @@ function sectionNode(section, byName, ctx) {  const params = section.params.map(
       isNote
         ? h('span', { class: 'chip chip-note' }, 'reference')
         : h('span', { class: 'chip chip-count' }, `${st.total}`),
-      st.env ? h('span', { class: 'chip chip-env' }, `${st.env} env`) : null,
+      st.env ? h('span', { class: 'chip chip-env' }, `${st.env} expr`) : null,
       st.dirty ? h('span', { class: 'chip chip-dirty' }, `${st.dirty} edited`) : null
     ),
     open
@@ -679,8 +846,7 @@ function sectionNode(section, byName, ctx) {  const params = section.params.map(
  * current section marked while the sheet moves.
  */
 export function renderOutlineNav(doc, ctx, onNavigate, variant) {
-  const outline = doc.outline || { sections: [] };
-  const sections = outline.sections || [];
+  const sections = deploymentPresentation(doc, ctx);
   if (!sections.length) return null;
 
   return h(
@@ -715,7 +881,7 @@ export function renderOutlineNav(doc, ctx, onNavigate, variant) {
             st.dirty ? h('span', { class: 'outline-badge outline-badge-dirty' }, '\u25cf') : null,
             s.params.length ? h('span', { class: 'outline-badge' }, s.params.length) : null,
             st.env
-              ? h('span', { class: 'outline-env', title: `${st.env} sourced from the environment` }, st.env)
+              ? h('span', { class: 'outline-env', title: `${st.env} expression-backed values` }, st.env)
               : null
           )
         );
@@ -725,14 +891,26 @@ export function renderOutlineNav(doc, ctx, onNavigate, variant) {
 }
 
 export function renderParamDocument(doc, ctx) {
-  const byName = new Map(doc.params.map((p) => [p.name, p]));
+  const parameters = [...doc.params];
+  if (doc.subscription) {
+    parameters.push({
+      name: 'subscriptionId',
+      kind: 'string',
+      value: doc.subscription.value || '',
+      subscription: doc.subscription,
+    });
+  }
+  const byName = new Map(parameters.map((p) => [p.name, p]));
   const outline = doc.outline || { intro: null, sections: [] };
-  const sections = outline.sections || [];
+  const sections = deploymentPresentation(doc, ctx);
 
   // Anything the outline missed still has to be editable -- presentation must
   // never be able to hide a parameter.
-  const covered = new Set(sections.flatMap((s) => s.params));
-  const orphans = doc.params.filter((p) => !covered.has(p.name));
+  const covered = new Set([
+    ...(outline.sections || []).flatMap((section) => section.params),
+    ...sections.flatMap((section) => section.params),
+  ]);
+  const orphans = parameters.filter((p) => !covered.has(p.name));
 
   return h(
     'div',

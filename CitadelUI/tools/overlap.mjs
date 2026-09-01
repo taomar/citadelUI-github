@@ -291,6 +291,14 @@ async function runCli() {
 
   const chrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
   if (!existsSync(chrome)) throw new Error(`Chrome not found at ${chrome}`);
+  const qaUrl = process.env.CITADEL_QA_URL;
+  if (!qaUrl || /^http:\/\/127\.0\.0\.1:4173(?:\/|$)/.test(qaUrl)) {
+    throw new Error('Set CITADEL_QA_URL to an isolated non-production QA origin.');
+  }
+  const qaNamespace = process.env.CITADEL_QA_REGISTRY_NAMESPACE;
+  if (!qaNamespace || qaNamespace === 'citadel-ui') {
+    throw new Error('Set CITADEL_QA_REGISTRY_NAMESPACE to an isolated QA namespace.');
+  }
 
   const port = 9333;
   const profile = path.resolve('tools/.overlap-chrome');
@@ -340,7 +348,12 @@ async function runCli() {
     });
     await send('Page.enable');
     await send('Runtime.enable');
-    await send('Page.navigate', { url: 'http://127.0.0.1:4173/' });
+    await send('Page.addScriptToEvaluateOnNewDocument', {
+      source:
+        `globalThis.__CITADEL_TEST_RUNTIME__ = true;` +
+        `globalThis.__CITADEL_REGISTRY_NAMESPACE__ = ${JSON.stringify(qaNamespace)};`,
+    });
+    await send('Page.navigate', { url: qaUrl });
 
     const evaluate = async (expression) => {
       const result = await send('Runtime.evaluate', {

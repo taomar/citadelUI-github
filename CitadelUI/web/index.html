@@ -14,8 +14,8 @@
       dashboard. Every screen is a sheet of rows whose columns are declared once
       and shared, so a value is never squeezed while its row runs half empty.
       OWN-WORLD: Midnight drafting studio. A deep ink navigation rail frames a
-      bright working canvas; warm copper carries action and position, while
-      teal marks values sourced outside the file. Crisp table rules, quiet
+      bright working canvas; Fluent blue carries action and position, while
+      Azure teal marks values sourced outside the file. Crisp table rules, quiet
       mist surfaces and strong Segoe/Cascadia hierarchy make the dense editor
       feel authored without spending space on decoration.
       SIZING: No layout is written in pixels. Columns are declared in ch and fr
@@ -36,9 +36,18 @@
           <span class="tb-name">Citadel</span>
         </a>
 
-        <div class="tb-doc">
-          <span class="tb-key">repo</span>
-          <code id="repo-path" class="tb-path">&#8230;</code>
+        <div class="tb-context">
+          <nav class="tb-doc" aria-label="Current write context">
+            <span id="project-name" class="tb-crumb">Project</span>
+            <span class="tb-chevron" aria-hidden="true">&#8250;</span>
+            <span id="environment-name" class="tb-crumb">Environment</span>
+            <span class="tb-chevron" aria-hidden="true">&#8250;</span>
+            <code id="repo-path" class="tb-path">&#8230;</code>
+          </nav>
+          <button id="local-path-copy" class="tb-local" type="button">
+            <span aria-hidden="true">Local</span>
+            <code id="local-path">Path not recorded</code>
+          </button>
         </div>
 
         <div id="tb-actions" class="tb-actions"></div>
@@ -51,7 +60,7 @@
       <main id="workspace" class="sheet" tabindex="-1"></main>
 
       <div id="status" class="status" role="status" hidden></div>
-      <div id="modal" hidden></div>
+      <dialog id="modal" class="modal" aria-modal="true"></dialog>
     </div>
 
     <script type="module" src="/js/app.mjs"></script>

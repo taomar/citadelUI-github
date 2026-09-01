@@ -13,13 +13,8 @@
      --sheet / --well / --zebra     the paper: working surface, control, banding
      --ink-1 / --ink-2 / --ink-3    one ink at three weights
 
-   COLOUR IS RATIONED to four meanings and nothing else:
-     --brass  action, current position, focus — never decoration, never a chip
-     --prov   provenance: this value is sourced outside this file
-     --ok     valid
-     --bad    invalid
-   Brass rather than indigo: indigo is the single most common accent in
-   light-mode developer tooling, which is precisely why it reads as generic.
+   COLOUR IS SEMANTIC: Azure blue carries action and position; cloud cyan
+   identifies values sourced outside the file; status hues communicate outcome.
 
    SIZING: two rules, and they are the whole control system.
      1. Control TYPE is a function of the declared Bicep type, never of the
@@ -43,16 +38,15 @@
 
 :root {
   /* --- the chrome ------------------------------------------------------- */
-  --ground: #edf1f5;
-  --band: #f1f4f7;
+  --ground: #f3f6f9;
+  --band: #f7f9fc;
   --sunk: #d8e0e8;
   --nav: #17212c;
-  --nav-hover: #202d3a;
-  --nav-active: #263544;
+  --nav-hover: #1f2d3a;
+  --nav-active: #243447;
   --nav-rule: #334353;
   --nav-ink: #f7f9fb;
   --nav-muted: #bdc8d3;
-  --nav-accent: #ffc07a;
 
   /* --- the paper -------------------------------------------------------- */
   --sheet: #ffffff;
@@ -63,40 +57,43 @@
   --rule: #dce3ea;
   --rule-strong: #b9c5d0;
   --rule-soft: #e8edf2;
+  --control-stroke: #6b7785;
 
   /* --- ink -------------------------------------------------------------- */
-  --ink-1: #121820;
+  --ink-1: #111827;
   --ink-2: #344150;
   --ink-3: #526171;
 
-  /* --- action, current position, focus ---------------------------------- */
-  --brass: #914800;
-  --brass-2: #713800;
-  --brass-wash: #fbf0e5;
-  --brass-line: #d7aa7d;
-  --on-brass: #ffffff;
+  /* --- brand action, current position, focus ---------------------------- */
+  --brand: #0f6cbd;
+  --brand-hover: #115ea3;
+  --brand-pressed: #0c3b5e;
+  --brand-wash: #eaf3fc;
+  --brand-line: #b4d6f4;
+  --on-brand: #ffffff;
 
   /* --- provenance: sourced outside this file ---------------------------- */
-  --prov: #0b5e75;
-  --prov-wash: #e6f0f3;
-  --prov-line: #a6cad4;
+  --cloud: #006b8f;
+  --cloud-wash: #e6f4f8;
+  --cloud-line: #a4d5e3;
 
   /* --- validity --------------------------------------------------------- */
-  --ok: #146b33;
-  --ok-wash: #e8f2eb;
-  --ok-line: #a8ceb6;
+  --success: #107c10;
+  --success-wash: #e8f5e9;
+  --success-line: #9fd39f;
 
-  --bad: #b3261e;
-  --bad-wash: #f9eae9;
-  --bad-line: #e2b2af;
+  --warning: #8a3707;
+  --warning-wash: #fff4ce;
+  --warning-line: #e6c96c;
+
+  --danger: #c50f1f;
+  --danger-wash: #fde7e9;
+  --danger-line: #e7a7ad;
   /* An alpha wash without a matching ink is how the recovery alert landed at
-     4.17:1. Text on --bad-wash uses this, not the secondary ink. */
-  --bad-ink: #0f1216;
+     4.17:1. Text on --danger-wash uses this, not the secondary ink. */
+  --danger-ink: #111827;
 
-  /* --- legacy aliases ---------------------------------------------------
-     The component layer addresses these names in ~300 rules. They are mapped
-     onto the ramp above rather than renamed in place, so there is exactly one
-     source of truth for every colour and no rule can drift off it. */
+  /* --- structural surface aliases -------------------------------------- */
   --casing: var(--band);
   --casing-2: var(--sunk);
   --sheet-2: var(--zebra);
@@ -104,16 +101,6 @@
   --field-2: var(--zebra);
   --rule-2: var(--rule-strong);
   --ink: var(--ink-1);
-  --act: var(--brass);
-  --act-2: var(--brass-2);
-  --act-tint: var(--brass-wash);
-  --act-line: var(--brass-line);
-  --on-act: var(--on-brass);
-  --env: var(--prov);
-  --env-tint: var(--prov-wash);
-  --env-line: var(--prov-line);
-  --ok-tint: var(--ok-wash);
-  --bad-tint: var(--bad-wash);
 
   /* --- type ------------------------------------------------------------- */
   --sans: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
@@ -174,9 +161,9 @@
   --lift-1: none;
   --lift-2: 0 6px 20px -6px rgba(15, 18, 22, 0.18), 0 1px 3px rgba(15, 18, 22, 0.1);
   --lift: var(--lift-2);
-  /* Solid brass at full opacity on a surface-coloured spacer, so the ring
+  /* Solid brand blue at full opacity on a surface-coloured spacer, so the ring
      reads identically on sheet, zebra, band and ground. */
-  --focus-ring: 0 0 0 2px var(--sheet), 0 0 0 4px var(--brass);
+  --focus-ring: 0 0 0 2px var(--sheet), 0 0 0 4px var(--brand);
   --sink: inset 0 1px 0 rgba(15, 18, 22, 0.06);
 
   /* --- motion ----------------------------------------------------------- */
@@ -243,7 +230,7 @@ ol {
 }
 
 a {
-  color: var(--act);
+  color: var(--brand);
   text-decoration: none;
 }
 
@@ -266,7 +253,7 @@ textarea {
 }
 
 ::selection {
-  background: var(--act-line);
+  background: var(--brand-line);
   color: var(--ink);
 }
 
@@ -327,6 +314,17 @@ textarea {
   display: none;
 }
 
+.shell[data-workspace='setup'] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    'title'
+    'sheet';
+}
+
+.shell[data-workspace='setup'] .rail {
+  display: none;
+}
+
 /* Under ~1100px the two rails cannot both hold their labels at full width, so
    both tracks step down proportionally rather than one of them collapsing. */
 @media (max-width: 68rem) {
@@ -340,7 +338,8 @@ textarea {
 
 .titleblock {
   grid-area: title;
-  display: flex;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
   align-items: center;
   gap: var(--sp-5);
   min-height: 2.5rem;
@@ -357,6 +356,7 @@ textarea {
   color: var(--ink);
   text-decoration: none;
   border-radius: var(--r-2);
+  min-height: var(--ctl-h);
 }
 
 .tb-brand:hover {
@@ -367,7 +367,7 @@ textarea {
   width: 0.625rem;
   height: 0.625rem;
   flex: none;
-  background: var(--act);
+  background: var(--brand);
   transform: rotate(45deg);
   border-radius: 2px;
 }
@@ -387,12 +387,22 @@ textarea {
   flex: 1 1 auto;
 }
 
-.tb-key {
-  flex: none;
-  font-family: var(--sans-small);
-  font-size: var(--t-micro);
+.tb-context {
+  display: grid;
+  min-width: 0;
+  gap: var(--sp-1);
+}
+
+.tb-crumb {
+  min-width: 0;
+  color: var(--ink-2);
+  font-size: var(--t-small);
   font-weight: 600;
-  letter-spacing: 0.03em;
+  overflow-wrap: anywhere;
+}
+
+.tb-chevron {
+  flex: none;
   color: var(--ink-3);
 }
 
@@ -403,6 +413,39 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tb-local {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  max-width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  text-align: left;
+  cursor: copy;
+  min-height: var(--ctl-h);
+}
+
+.tb-local code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tb-local:hover:not(:disabled) code {
+  color: var(--brand-hover);
+  text-decoration: underline;
+}
+
+.tb-local:disabled {
+  cursor: default;
 }
 
 .tb-actions {
@@ -440,12 +483,12 @@ textarea {
 }
 
 .tb-pending.is-dirty {
-  color: var(--act);
+  color: var(--brand);
   font-weight: 600;
 }
 
 .tb-pending.is-dirty::before {
-  background: var(--act);
+  background: var(--brand);
 }
 
 /* ------------------------------------------------------------------ rails */
@@ -508,6 +551,21 @@ textarea {
   letter-spacing: 0;
 }
 
+.area-disclosure,
+.context-disclosure {
+  display: contents;
+}
+
+.area-disclosure-summary,
+.context-disclosure-summary {
+  display: none;
+}
+
+.area-disclosure-body,
+.context-disclosure-body {
+  display: contents;
+}
+
 /* ------------------------------------------------------------- areas nav */
 
 .areas {
@@ -541,7 +599,7 @@ textarea {
   inset-block: 0;
   left: 0;
   width: 2px;
-  background: var(--act);
+  background: var(--brand);
 }
 
 .area-title {
@@ -553,7 +611,7 @@ textarea {
 }
 
 .area.active .area-title {
-  color: var(--nav-accent);
+  color: var(--nav-ink);
 }
 
 .area-sub {
@@ -646,7 +704,7 @@ textarea {
   inset-block: 0;
   left: 0;
   width: 2px;
-  background: var(--act);
+  background: var(--brand);
 }
 
 .nav-name {
@@ -707,17 +765,33 @@ textarea {
 }
 
 .btn-primary {
-  background: var(--act);
-  border-color: var(--act);
-  color: var(--on-act);
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--on-brand);
 }
 
-.btn-primary:hover:not(:disabled),
+.btn-primary:hover:not(:disabled) {
+  background: var(--brand-hover);
+  border-color: var(--brand-hover);
+  color: var(--on-brand);
+}
+
 .btn-primary:active:not(:disabled),
 .btn-primary.active {
-  background: var(--act-2);
-  border-color: var(--act-2);
-  color: var(--on-act);
+  background: var(--brand-pressed);
+  border-color: var(--brand-pressed);
+  color: var(--on-brand);
+}
+
+.btn-danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--sheet);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger);
+  border-color: var(--danger);
 }
 
 .btn-ghost {
@@ -736,14 +810,14 @@ textarea {
 .btn-danger-ghost {
   background: transparent;
   border-color: transparent;
-  color: var(--bad);
+  color: var(--danger);
   font-weight: 500;
 }
 
 .btn-danger-ghost:hover:not(:disabled) {
-  background: var(--bad-tint);
-  border-color: var(--bad-line);
-  color: var(--bad);
+  background: var(--danger-wash);
+  border-color: var(--danger-line);
+  color: var(--danger);
 }
 
 .btn-sm {
@@ -757,7 +831,7 @@ textarea {
   padding: 0;
   border: 0;
   background: none;
-  color: var(--act);
+  color: var(--brand);
   font: inherit;
   font-weight: 600;
   cursor: pointer;
@@ -765,7 +839,7 @@ textarea {
 }
 
 .btn-link:hover {
-  color: var(--act-2);
+  color: var(--brand-hover);
   text-decoration: underline;
 }
 
@@ -796,9 +870,9 @@ textarea {
 
 .btn-destructive:hover,
 .btn-destructive:focus-visible {
-  border-color: var(--bad-line);
-  background: var(--bad-wash);
-  color: var(--bad);
+  border-color: var(--danger-line);
+  background: var(--danger-wash);
+  color: var(--danger);
 }
 
 /* ---------------------------------------------------------------- inputs
@@ -820,7 +894,7 @@ textarea {
   min-width: 0;
   min-height: var(--ctl-h);
   padding: 0 var(--sp-4);
-  border: 1px solid var(--rule-strong);
+  border: 1px solid var(--control-stroke);
   border-radius: var(--r-2);
   background: var(--well);
   box-shadow: var(--sink);
@@ -875,7 +949,7 @@ select.ctl {
 .ctl:focus {
   outline: none;
   background: var(--sheet);
-  border-color: var(--brass);
+  border-color: var(--brand);
   box-shadow: var(--focus-ring);
 }
 
@@ -887,9 +961,9 @@ select.ctl {
 }
 
 .ctl:user-invalid {
-  border-color: var(--bad);
-  background: var(--bad-wash);
-  color: var(--bad-ink);
+  border-color: var(--danger);
+  background: var(--danger-wash);
+  color: var(--danger-ink);
 }
 
 .ctl-sm {
@@ -914,7 +988,7 @@ input[type='search'].ctl {
   width: 0.9375rem;
   height: 0.9375rem;
   margin: 0;
-  accent-color: var(--act);
+  accent-color: var(--brand);
   cursor: pointer;
 }
 
@@ -985,8 +1059,8 @@ input[type='search'].ctl {
 }
 
 .toggle input:checked + .toggle-track {
-  background: var(--act);
-  border-color: var(--act);
+  background: var(--brand);
+  border-color: var(--brand);
 }
 
 .toggle input:checked + .toggle-track::after {
@@ -1042,34 +1116,66 @@ input[type='search'].ctl {
 }
 
 .chip-env {
-  background: var(--env-tint);
-  border-color: var(--env-line);
-  color: var(--env);
+  background: var(--cloud-wash);
+  border-color: var(--cloud-line);
+  color: var(--cloud);
 }
 
 .chip-secure,
 .chip-bad {
-  background: var(--bad-tint);
-  border-color: var(--bad-line);
-  color: var(--bad);
+  background: var(--danger-wash);
+  border-color: var(--danger-line);
+  color: var(--danger);
 }
 
 .chip-dirty,
 .chip-provider {
-  background: var(--act-tint);
-  border-color: var(--act-line);
-  color: var(--act);
+  background: var(--brand-wash);
+  border-color: var(--brand-line);
+  color: var(--brand);
 }
 
 .chip-ok {
-  background: var(--ok-tint);
-  border-color: var(--ok-line);
-  color: var(--ok);
+  background: var(--success-wash);
+  border-color: var(--success-line);
+  color: var(--success);
 }
 
 .chip-warn {
-  border-color: var(--rule-2);
+  border-color: var(--warning-line);
+  background: var(--warning-wash);
+  color: var(--warning);
+}
+
+.chip-brand {
+  border-color: var(--brand-line);
+  background: var(--brand-wash);
+  color: var(--brand);
+}
+
+.chip-neutral,
+.chip-degraded {
+  border-color: var(--rule);
+  background: var(--band);
   color: var(--ink-2);
+}
+
+.chip-warning {
+  border-color: var(--warning-line);
+  background: var(--warning-wash);
+  color: var(--warning);
+}
+
+.chip-danger {
+  border-color: var(--danger-line);
+  background: var(--danger-wash);
+  color: var(--danger);
+}
+
+.chip-success {
+  border-color: var(--success-line);
+  background: var(--success-wash);
+  color: var(--success);
 }
 
 .chip-count,
@@ -1088,9 +1194,9 @@ input[type='search'].ctl {
 }
 
 .chip-expr {
-  background: var(--env-tint);
-  border-color: var(--env-line);
-  color: var(--env);
+  background: var(--cloud-wash);
+  border-color: var(--cloud-line);
+  color: var(--cloud);
   font-family: var(--mono);
 }
 
@@ -1098,8 +1204,8 @@ input[type='search'].ctl {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 0.875rem;
-  height: 0.875rem;
+  width: var(--ctl-h);
+  height: var(--ctl-h);
   margin-right: calc(var(--sp-2) * -1);
   border: 0;
   border-radius: var(--r-1);
@@ -1143,7 +1249,7 @@ input[type='search'].ctl {
 }
 
 .tab.active {
-  color: var(--act);
+  color: var(--brand);
 }
 
 .tab.active::after {
@@ -1153,7 +1259,7 @@ input[type='search'].ctl {
   bottom: 0;
   height: 2px;
   border-radius: 1px 1px 0 0;
-  background: var(--act);
+  background: var(--brand);
 }
 
 .tab-sm {
@@ -1174,7 +1280,7 @@ input[type='search'].ctl {
 }
 
 .hint-warn {
-  color: var(--bad);
+  color: var(--danger);
 }
 
 .hint-preview {
@@ -1239,9 +1345,9 @@ input[type='search'].ctl {
 }
 
 .banner-warn {
-  background: var(--bad-tint);
-  border-color: var(--bad-line);
-  color: var(--bad);
+  background: var(--warning-wash);
+  border-color: var(--warning-line);
+  color: var(--warning);
 }
 
 .welcome {
@@ -1333,20 +1439,20 @@ input[type='search'].ctl {
 }
 
 .status-ok::before {
-  background: var(--ok);
+  background: var(--success);
 }
 
 .status-warn::before {
-  background: var(--act);
+  background: var(--warning);
 }
 
 .status-error::before {
-  background: var(--bad);
+  background: var(--danger);
 }
 
 .status-error {
-  border-color: var(--bad-line);
-  color: var(--bad);
+  border-color: var(--danger-line);
+  color: var(--danger);
 }
 
 .status-x {
@@ -1366,35 +1472,31 @@ input[type='search'].ctl {
   color: var(--ink);
 }
 
-/* ----------------------------------------------------------------- modal */
-
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 70;
-  display: grid;
-  place-items: center;
-  padding: var(--sp-7);
-  background: rgba(20, 23, 29, 0.42);
-  animation: fade var(--slow) var(--ease-out);
-}
-
-@keyframes fade {
-  from {
-    opacity: 0;
-  }
-}
+/* ----------------------------------------------------------------- dialog */
 
 .modal {
-  display: flex;
   flex-direction: column;
   width: min(72rem, 100%);
+  max-width: calc(100vw - 2 * var(--sp-7));
   max-height: min(90dvh, 60rem);
+  margin: auto;
+  padding: 0;
+  border: 1px solid var(--rule-strong);
   border-radius: var(--r-3);
   background: var(--sheet);
+  color: var(--ink-1);
   box-shadow: var(--lift-2);
   overflow: hidden;
+  overscroll-behavior: contain;
   animation: modal-in var(--slow) var(--ease-out);
+}
+
+.modal[open] {
+  display: flex;
+}
+
+.modal::backdrop {
+  background: rgba(17, 24, 39, 0.52);
 }
 
 @keyframes modal-in {
@@ -1425,6 +1527,7 @@ input[type='search'].ctl {
   align-content: start;
   padding: var(--sp-6);
   overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .modal-foot {
@@ -1435,6 +1538,340 @@ input[type='search'].ctl {
   padding: var(--sp-5) var(--sp-6);
   border-top: 1px solid var(--rule);
   background: var(--band);
+}
+
+.modal-close {
+  margin-left: auto;
+  min-width: var(--ctl-h);
+  padding-inline: var(--sp-3);
+  font-size: 1rem;
+}
+
+.dialog-message,
+.dialog-form,
+.dialog-field,
+.write-context {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.dialog-field {
+  justify-items: start;
+  font-weight: 600;
+}
+
+.dialog-field > .ctl {
+  width: min(32rem, 100%);
+}
+
+.write-context {
+  padding: var(--sp-4);
+  border: 1px solid var(--brand-line);
+  border-radius: var(--r-2);
+  background: var(--brand-wash);
+}
+
+.write-context-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-4);
+  align-items: baseline;
+}
+
+.write-context-row > strong {
+  color: var(--ink-2);
+  font-size: var(--t-small);
+}
+
+.write-context-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  min-width: 0;
+  color: var(--ink-1);
+}
+
+.write-context-breadcrumb code,
+.write-context-local {
+  overflow-wrap: anywhere;
+}
+
+/* --------------------------------------------------------- compact workspace */
+
+@media (max-width: 48rem) {
+  :root {
+    --ctl-h: 2.75rem;
+    --ctl-h-sm: 2.75rem;
+    --row-h: 2.75rem;
+    --gutter: 0.75rem;
+  }
+
+  body {
+    touch-action: manipulation;
+  }
+
+  .shell,
+  .shell[data-workspace='setup'] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    grid-template-areas:
+      'title'
+      'areas'
+      'context'
+      'sheet';
+  }
+
+  .shell[data-rail='off'] {
+    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-areas:
+      'title'
+      'areas'
+      'sheet';
+  }
+
+  .shell[data-workspace='setup'] {
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas:
+      'title'
+      'sheet';
+  }
+
+  .titleblock {
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: var(--sp-3) var(--sp-4);
+    padding: var(--sp-3) var(--gutter);
+  }
+
+  .tb-name {
+    display: none;
+  }
+
+  .tb-brand {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+    justify-content: center;
+  }
+
+  .tb-context {
+    grid-column: 2;
+  }
+
+  .tb-doc {
+    gap: var(--sp-2);
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .tb-path {
+    flex: 1 1 100%;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .tb-local code {
+    max-width: 58vw;
+  }
+
+  .tb-actions {
+    grid-column: 1 / -1;
+    align-items: stretch;
+    gap: var(--sp-3);
+    padding-top: var(--sp-3);
+    border-top: 1px solid var(--rule);
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
+  }
+
+  .tb-actions > * {
+    min-height: 2.75rem;
+    flex: 0 0 auto;
+  }
+
+  .rail {
+    overflow: visible;
+  }
+
+  .rail-areas,
+  .rail-context {
+    padding: 0;
+    border: 0;
+  }
+
+  .rail-areas {
+    background: var(--nav);
+  }
+
+  .rail-context {
+    max-height: min(48dvh, 24rem);
+    overflow: auto;
+    background: var(--band);
+    border-bottom: 1px solid var(--rule-strong);
+  }
+
+  .area-disclosure,
+  .context-disclosure {
+    display: block;
+  }
+
+  .area-disclosure-summary,
+  .context-disclosure-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-4);
+    min-height: 2.75rem;
+    padding: var(--sp-3) var(--gutter);
+    list-style: none;
+    cursor: pointer;
+  }
+
+  .area-disclosure-summary {
+    color: var(--nav-ink);
+  }
+
+  .context-disclosure-summary {
+    color: var(--ink-1);
+    font-weight: 600;
+  }
+
+  .area-disclosure-summary::-webkit-details-marker,
+  .context-disclosure-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .area-disclosure-summary::after,
+  .context-disclosure-summary::after {
+    content: '+';
+    font-size: var(--t-lead);
+  }
+
+  .area-disclosure[open] > .area-disclosure-summary::after,
+  .context-disclosure[open] > .context-disclosure-summary::after {
+    content: '\2212';
+  }
+
+  .area-disclosure-body,
+  .context-disclosure-body {
+    display: block;
+  }
+
+  .area-disclosure:not([open]) > .area-disclosure-body,
+  .context-disclosure:not([open]) > .context-disclosure-body {
+    display: none;
+  }
+
+  .areas {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border-top: 1px solid var(--nav-rule);
+  }
+
+  .area,
+  .nav-item,
+  .all-deployments > summary {
+    min-height: 2.75rem;
+  }
+
+  .area {
+    padding: var(--sp-3);
+    text-align: center;
+  }
+
+  .area.active::before {
+    inset: auto 0 0;
+    width: auto;
+    height: 2px;
+  }
+
+  .area-sub {
+    display: none;
+  }
+
+  .all-deployments {
+    margin: 0;
+    padding: 0;
+  }
+
+  .all-deployments > summary {
+    padding-inline: var(--gutter);
+  }
+
+  .all-deployments .ctl-sm {
+    width: calc(100% - 2 * var(--gutter));
+    margin-inline: var(--gutter);
+  }
+
+  .modal {
+    width: calc(100vw - 1rem);
+    max-width: none;
+    max-height: calc(100dvh - 1rem);
+    border-radius: var(--r-2);
+  }
+
+  .modal-head,
+  .modal-body,
+  .modal-foot {
+    padding: var(--sp-4);
+  }
+
+  .modal-close,
+  .status-x {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+
+  .modal-foot {
+    flex-wrap: wrap;
+  }
+
+  .modal-foot > .btn {
+    flex: 1 1 10rem;
+  }
+
+  .dialog-field,
+  .dialog-field > .ctl {
+    width: 100%;
+  }
+
+  .write-context-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .write-context-local {
+    grid-column: 1;
+  }
+
+  .status {
+    inset-inline: var(--sp-4);
+    right: auto;
+    bottom: var(--sp-4);
+    max-width: none;
+  }
+
+  .btn,
+  .btn-sm,
+  .btn-quiet,
+  .tab,
+  .check,
+  .toggle,
+  .unset,
+  input,
+  select,
+  textarea,
+  summary {
+    min-height: 2.75rem;
+  }
+
+  .btn {
+    min-width: 2.75rem;
+  }
+}
+
+.write-context-local {
+  grid-column: 2;
+  color: var(--ink-3);
+  font-size: var(--t-small);
 }
 
 /* ------------------------------------------------------------------ diff */
@@ -1481,21 +1918,21 @@ input[type='search'].ctl {
 }
 
 .diff-add {
-  background: var(--ok-tint);
+  background: var(--success-wash);
 }
 
 .diff-add .diff-sign,
 .diff-add .diff-text {
-  color: var(--ok);
+  color: var(--success);
 }
 
 .diff-del {
-  background: var(--bad-tint);
+  background: var(--danger-wash);
 }
 
 .diff-del .diff-sign,
 .diff-del .diff-text {
-  color: var(--bad);
+  color: var(--danger);
 }
 
 .diff-gap {

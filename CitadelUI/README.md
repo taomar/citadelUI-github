@@ -1,39 +1,79 @@
 # Citadel UI
 
-A local, browser-based editor for the Bicep parameter files in this repository.
+A fully local, containerized editor for user-selected Citadel repositories.
+Citadel UI presents `.bicepparam` files and their associated APIM policy XML as
+explained forms and writes surgical changes without disturbing unrelated
+comments or formatting.
 
-Bicep parameter files are the real configuration surface of this accelerator, and
-they are edited by hand. They are also long, densely commented, and unforgiving:
-a mistyped provider name or a missing `modelPath` is not discovered until a
-deployment fails. Citadel UI reads those files straight from the repository,
-presents them as explained forms, and writes changes back **without disturbing a
-single comment**.
-
-It runs entirely on your machine. It never contacts Azure, never authenticates,
-and never deploys anything.
+One container manages any number of user-labeled environments. Microsoft Edge
+or Google Chrome grants repository access through the File System Access API;
+the container never receives a source mount, Docker socket, cloud
+credential, or broad host filesystem access. Citadel UI never contacts Azure,
+authenticates, deploys, sends telemetry, or checks for updates.
 
 ---
 
-## Running it
+## Run the supported container
 
-Requires **Node.js 20 or newer**. There are no dependencies to install — the
-server and the frontend use only platform built-ins.
+Requirements:
 
-```bash
+- Docker Desktop/Engine 29 or newer with Compose.
+- Microsoft Edge or Google Chrome desktop.
+- A user-owned directory for durable Citadel UI data.
+
+From PowerShell:
+
+```powershell
 cd CitadelUI
-node server/index.mjs
+Copy-Item container.env.example container.env
+.\scripts\start.ps1
 ```
 
-Then open <http://127.0.0.1:4173>.
+Open <http://127.0.0.1:4173>. The origin and port are fixed because retained
+directory handles are origin-bound. If the port is occupied, stop the conflicting
+process rather than changing ports.
 
-Set `PORT` to use a different port. The server only binds to `127.0.0.1`.
+On first use, create a project, enter an environment label and display-only
+**Local path**, and choose the exact Citadel repository through the in-app folder
+picker. Repeat from **Settings** for Development, Test, Production, or any other
+labels. Labels, folder names, and Local paths are informational. Normal attachment
+requires the Main deployment,
+LLM onboarding, and Access Contracts template paths and signatures; an incomplete
+tree is rejected with the missing capability names and is never activated.
+
+Directory handles remain in the browser profile because they cannot be moved
+into a container. Non-sensitive project and environment metadata, including the
+user-entered display-only Local path, is mirrored to
+`/data/settings/registry.json`. After a container restart, retained browser
+handles reopen normally. After browser-profile loss, labels and fingerprints
+remain visible with their Local paths and each profile asks the user to reconnect
+its folder.
+
+Use `scripts\status.ps1`, `scripts\logs.ps1`, and `scripts\stop.ps1` for local
+operation. Direct `node server/index.mjs` execution is developer-only.
 
 ---
 
-## What it edits
+## What it can access
 
-The app scans the whole repository for `.bicepparam` files, but it puts three
-deployments front and centre — the three you actually change.
+The browser traverses only a directory explicitly selected by the user. The
+source scope is:
+
+- `.bicepparam` files.
+- Bicep templates referenced by those parameter files for editor schema.
+- APIM policy XML associated with an access contract.
+
+Generated and unrelated directories are ignored. Generic `.azure` and `.env`
+access is denied before any file handle is requested. The sole exception is a
+dedicated browser-only bridge for `AZURE_SUBSCRIPTION_ID` in the exact
+`.azure/<environmentName>/.env` selected by Main deployment syntax. It returns
+and rewrites only that key; every other byte stays opaque and never leaves the
+browser. The browser sends
+only relative aliases, hashes, sizes, transaction metadata, and backup bytes to
+source and transaction APIs. The Local path string is accepted only by the
+registry metadata API; it is never used to open, read, or write a repository.
+
+Capability signatures, not folder names, identify the guided areas below.
 
 ### 1. Main deployment
 
@@ -87,25 +127,34 @@ template pair at the module root:
 - `citadel-access-contracts/main.bicepparam`
 - `citadel-access-contracts/policies/default-ai-product-policy.xml`
 
-> **Note.** The `contracts/` directory is listed in `.gitignore`. Contracts you
-> create here are real files on disk, but Git will not track them unless that
-> rule is changed. The UI says so where it matters.
-
 ---
 
-## How saving works
+## Verified saves, backup, and recovery
 
-Every save is **archive, then replace**:
+Every parameter edit, policy edit, contract creation, environment copy, and
+restore uses one transaction protocol:
 
-1. The current file is copied to `CitadelUI/.backups/<original path>/<timestamp>`.
-2. The new content is written to the original path.
+1. The browser reads and hashes every current target.
+2. The container creates a journal under `/data`.
+3. Original bytes are stored and hash-verified under `/data` before any source
+   write is authorized.
+4. The browser re-reads each target to detect external edits, writes through its
+   retained directory handle, and verifies final SHA-256 hashes.
+5. The container accepts a final receipt and appends a redacted hash-chained
+   audit event.
+6. A failed multi-file write restores completed targets from verified backup
+   bytes and removes newly created targets.
 
-Nothing is overwritten without a copy being kept first, and the file keeps its
-original location and name so Bicep tooling is unaffected.
+The subscription-only azd environment bridge is intentionally outside this
+backup protocol: `.env` may contain unrelated sensitive values, so its bytes
+never leave the browser. The browser uses the File System Access API's atomic
+writable, rejects stale whole-file hashes, replaces only
+`AZURE_SUBSCRIPTION_ID`, and verifies the resulting file and value locally.
 
-Before writing, the app shows you a line-by-line diff of exactly what will
-change. Edits accumulate as a pending queue until you review them, so you can
-change several parameters and commit them as one revision.
+The UI always previews the exact text first. **History** shows transaction state
+without values or source content. Backups may contain sensitive configuration;
+protect the host directory mounted at `/data` and exclude it from support
+bundles.
 
 ---
 
@@ -138,12 +187,14 @@ comments.
 
 ---
 
-## Environment variables
+## `readEnvironmentVariable` expressions
 
-Many parameters call `readEnvironmentVariable('NAME', 'fallback')`. The app
-resolves those against your current environment and shows the effective value
-next to the expression, so you can tell what a deployment would actually use —
-and edit either the fallback or the reference itself.
+`readEnvironmentVariable('NAME', 'fallback')` is treated only as Bicepparam
+syntax. Citadel UI may edit the fallback span in the selected `.bicepparam`.
+The sole exception is `AZURE_SUBSCRIPTION_ID`: the Main editor may read and
+replace that one value in `.azure/<environmentName>/.env`. Generic environment
+file discovery remains disabled, no other key is parsed or returned, and the
+environment file is never sent to the container, backed up, or logged.
 
 ---
 
@@ -151,25 +202,35 @@ and edit either the fallback or the reference itself.
 
 ```
 CitadelUI/
+  Dockerfile           hardened non-root OCI image
+  compose.yaml         loopback-only, read-only runtime with /data
   server/
-    index.mjs          HTTP server, JSON API, static files
-    discovery.mjs      finds and classifies .bicepparam files
-    doclayer.mjs       turns banner comments into sections and prose
-    contracts.mjs      access-contract discovery, creation, policy editing
+    index.mjs          hardened loopback API and static files
+    registry-store.mjs durable non-sensitive project/environment metadata
+    transactions.mjs   backup, journal, audit, retention, recovery
+  shared/
+    citadel-core.mjs   provider-neutral discovery and document behavior
+    policy.mjs         pure APIM policy parser/editor
     bicepparam/        lexer, parser, serializer, span editor
   web/
     index.html
     css/               design tokens and component styles
     js/
-      app.mjs          shell, state, routing, review and save
+      app.mjs          shell, projects/environments, routing, review and save
+      registry.mjs     IndexedDB labels, metadata, drafts, retained handles
+      directory-provider.mjs
+                       selected-folder I/O and exclusion boundary
+      transaction-client.mjs
+                       browser half of verified backup-before-write
       paramview.mjs    sections and parameter rows
       llmview.mjs      guided LLM backend editor
       llmschema.mjs    provider, model and validation knowledge
       policyview.mjs   APIM policy editor
       fields.mjs       generic value controls
   test/
-  .backups/            archived revisions, created on first save
+  scripts/             start, stop, status, and local logs
 ```
 
-No build step. The browser loads the ES modules directly; edit a file and
-reload.
+The production image has no package install or build step. It contains only the
+application runtime and serves ES modules directly. It has no Azure CLI, Bicep
+CLI, `azd`, Git, deployment tooling, telemetry, or runtime Internet dependency.

@@ -1,0 +1,500 @@
+const DB_NAME = 'citadel-ui';
+const DB_VERSION = 2;
+const PROJECTS = 'projects';
+const ENVIRONMENTS = 'environments';
+const HANDLES = 'handles';
+const DRAFTS = 'drafts';
+const PROFILE_DRAFT_FIELDS = Object.freeze({
+  projectLabel: 160,
+  environmentLabel: 160,
+  localPath: 1024,
+});
+
+function profileDraftScope(value) {
+  const scope = String(value || '');
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(scope)) {
+    throw new Error('Invalid profile draft scope.');
+  }
+  return scope;
+}
+
+function normalizeProfileDraft(value = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Invalid profile draft.');
+  }
+  const unsupported = Object.keys(value).find((key) => !(key in PROFILE_DRAFT_FIELDS));
+  if (unsupported) throw new Error(`Unsupported profile draft field: ${unsupported}.`);
+  const draft = {};
+  for (const [key, maximum] of Object.entries(PROFILE_DRAFT_FIELDS)) {
+    if (value[key] === undefined) continue;
+    if (typeof value[key] !== 'string' || value[key].length > maximum) {
+      throw new Error(`Invalid ${key} profile draft value.`);
+    }
+    draft[key] = value[key];
+  }
+  return draft;
+}
+
+function uuid() {
+  return globalThis.crypto.randomUUID();
+}
+
+function openDatabase(indexedDB = globalThis.indexedDB, dbName = DB_NAME) {
+  if (!indexedDB) throw new Error('IndexedDB is unavailable in this browser.');
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(dbName, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(PROJECTS)) db.createObjectStore(PROJECTS, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(ENVIRONMENTS)) {
+        const store = db.createObjectStore(ENVIRONMENTS, { keyPath: 'id' });
+        store.createIndex('projectId', 'projectId');
+      }
+      if (!db.objectStoreNames.contains(HANDLES)) db.createObjectStore(HANDLES);
+      if (!db.objectStoreNames.contains(DRAFTS)) db.createObjectStore(DRAFTS, { keyPath: 'key' });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function requestResult(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function transaction(storeNames, mode, run, indexedDB, dbName) {
+  const db = await openDatabase(indexedDB, dbName);
+  try {
+    const tx = db.transaction(storeNames, mode);
+    const result = await run(tx);
+    await new Promise((resolve, reject) => {
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction aborted.'));
+    });
+    return result;
+  } finally {
+    db.close();
+  }
+}
+
+export class WorkspaceRegistry {
+  constructor(options = {}) {
+    this.indexedDB = options.indexedDB || globalThis.indexedDB;
+    this.storage = options.storage || globalThis.localStorage;
+    this.dbName = options.dbName || DB_NAME;
+    const testRuntime = options.testMode || globalThis.__CITADEL_TEST_RUNTIME__;
+    const runtimeOrigin = options.origin || globalThis.location?.origin;
+    if (testRuntime) {
+      if (this.dbName === DB_NAME) {
+        throw new Error('Tests must use an isolated Citadel registry namespace.');
+      }
+      if (runtimeOrigin === 'http://127.0.0.1:4173') {
+        throw new Error('Tests must not use the production Citadel origin.');
+      }
+    }
+    this.stateKey = options.stateKey || `${this.dbName}.active-context`;
+    this.profileDraftPrefix = options.profileDraftPrefix || `${this.dbName}.profile-draft`;
+  }
+
+  run(storeNames, mode, callback) {
+    return transaction(storeNames, mode, callback, this.indexedDB, this.dbName);
+  }
+
+  async listProjects() {
+    return this.run([PROJECTS], 'readonly', async (tx) => {
+      const rows = await requestResult(tx.objectStore(PROJECTS).getAll());
+      return rows.sort((a, b) => a.label.localeCompare(b.label));
+    });
+  }
+
+  async createProject(label) {
+    const value = String(label || '').trim();
+    if (!value) throw new Error('Project label is required.');
+    const timestamp = new Date().toISOString();
+    const project = { id: uuid(), label: value, createdAt: timestamp, updatedAt: timestamp };
+    await this.run([PROJECTS], 'readwrite', (tx) => {
+      tx.objectStore(PROJECTS).add(project);
+    });
+    return project;
+  }
+
+  async renameProject(id, label) {
+    const value = String(label || '').trim();
+    if (!value) throw new Error('Project label is required.');
+    return this.run([PROJECTS], 'readwrite', async (tx) => {
+      const store = tx.objectStore(PROJECTS);
+      const project = await requestResult(store.get(id));
+      if (!project) throw new Error('Unknown project.');
+      const updated = { ...project, label: value, updatedAt: new Date().toISOString() };
+      store.put(updated);
+      return updated;
+    });
+  }
+
+  async listEnvironments(projectId = null) {
+    return this.run([ENVIRONMENTS], 'readonly', async (tx) => {
+      const store = tx.objectStore(ENVIRONMENTS);
+      const rows = projectId
+        ? await requestResult(store.index('projectId').getAll(projectId))
+        : await requestResult(store.getAll());
+      return rows.sort((a, b) => a.label.localeCompare(b.label));
+    });
+  }
+
+  async addEnvironment(projectId, label, handle, fingerprint = null, options = {}) {
+    const value = String(label || '').trim();
+    if (!value) throw new Error('Environment label is required.');
+    if (!handle || handle.kind !== 'directory') throw new Error('A directory must be selected.');
+    const localPath = String(options.localPath || '').trim();
+    if (!localPath) throw new Error('Local path is required.');
+    const duplicate = await this.findSameHandle(handle);
+    if (duplicate && !options.allowDuplicate) {
+      throw new Error(`This folder is already attached as "${duplicate.label}". Reconnect that profile instead.`);
+    }
+    const environment = {
+      id: uuid(),
+      projectId,
+      label: value,
+      folderName: handle.name || 'Selected folder',
+      localPath,
+      permission: 'prompt',
+      compatibility: 'unscanned',
+      fingerprint,
+      toolVersion: '1.0.0-local',
+      settingsVersion: DB_VERSION,
+      fingerprintVersion: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastOpenedAt: null,
+      lastScannedAt: null,
+    };
+    await this.run([ENVIRONMENTS, HANDLES], 'readwrite', (tx) => {
+      tx.objectStore(ENVIRONMENTS).add(environment);
+      tx.objectStore(HANDLES).add(handle, environment.id);
+    });
+    return environment;
+  }
+
+  async updateEnvironment(id, updates) {
+    return this.run([ENVIRONMENTS], 'readwrite', async (tx) => {
+      const store = tx.objectStore(ENVIRONMENTS);
+      const prior = await requestResult(store.get(id));
+      if (!prior) throw new Error('Unknown environment.');
+      const next = {
+        ...prior,
+        ...updates,
+        id: prior.id,
+        projectId: prior.projectId,
+        updatedAt: new Date().toISOString(),
+      };
+      store.put(next);
+      return next;
+    });
+  }
+
+  async environmentSnapshot(id) {
+    const environments = await this.listEnvironments();
+    const environment = environments.find((item) => item.id === id);
+    if (!environment) throw new Error('Unknown environment.');
+    return { environment, handle: await this.getHandle(id) };
+  }
+
+  async restoreEnvironmentSnapshot(snapshot) {
+    const { environment, handle } = snapshot || {};
+    if (!environment?.id) throw new Error('Invalid environment snapshot.');
+    await this.run([ENVIRONMENTS, HANDLES], 'readwrite', (tx) => {
+      tx.objectStore(ENVIRONMENTS).put(environment);
+      if (handle) tx.objectStore(HANDLES).put(handle, environment.id);
+      else tx.objectStore(HANDLES).delete(environment.id);
+    });
+  }
+
+  async reconnectEnvironment(id, handle, localPath = null) {
+    const duplicate = await this.findSameHandle(handle, id);
+    if (duplicate) throw new Error(`This folder is already attached as "${duplicate.label}".`);
+    await this.run([ENVIRONMENTS, HANDLES], 'readwrite', async (tx) => {
+      const envStore = tx.objectStore(ENVIRONMENTS);
+      const prior = await requestResult(envStore.get(id));
+      if (!prior) throw new Error('Unknown environment.');
+      tx.objectStore(HANDLES).put(handle, id);
+      envStore.put({
+        ...prior,
+        folderName: handle.name || prior.folderName,
+        localPath: localPath || prior.localPath || null,
+        permission: 'prompt',
+        updatedAt: new Date().toISOString(),
+      });
+    });
+  }
+
+  async removeEnvironment(id) {
+    await this.run([ENVIRONMENTS, HANDLES], 'readwrite', (tx) => {
+      tx.objectStore(ENVIRONMENTS).delete(id);
+      tx.objectStore(HANDLES).delete(id);
+    });
+    const active = this.active();
+    if (active && active.environmentId === id) this.storage?.removeItem(this.stateKey);
+  }
+
+  async removeProject(id) {
+    await this.run([PROJECTS, ENVIRONMENTS, HANDLES, DRAFTS], 'readwrite', async (tx) => {
+      const environmentStore = tx.objectStore(ENVIRONMENTS);
+      const environments = (await requestResult(environmentStore.getAll())).filter(
+        (environment) => environment.projectId === id
+      );
+      tx.objectStore(PROJECTS).delete(id);
+      const drafts = await requestResult(tx.objectStore(DRAFTS).getAll());
+      for (const environment of environments) {
+        environmentStore.delete(environment.id);
+        tx.objectStore(HANDLES).delete(environment.id);
+        for (const draft of drafts) {
+          if (draft.environmentId === environment.id) tx.objectStore(DRAFTS).delete(draft.key);
+        }
+      }
+    });
+    const active = this.active();
+    if (active?.projectId === id) this.storage?.removeItem(this.stateKey);
+  }
+
+  async projectSnapshot(id) {
+    const snapshot = await this.run(
+      [PROJECTS, ENVIRONMENTS, HANDLES, DRAFTS],
+      'readonly',
+      async (tx) => {
+        const project = await requestResult(tx.objectStore(PROJECTS).get(id));
+        if (!project) throw new Error('Unknown project.');
+        const environments = (await requestResult(tx.objectStore(ENVIRONMENTS).getAll())).filter(
+          (environment) => environment.projectId === id
+        );
+        const environmentIds = new Set(environments.map((environment) => environment.id));
+        const handles = await Promise.all(
+          environments.map(async (environment) => ({
+            environmentId: environment.id,
+            handle: await requestResult(tx.objectStore(HANDLES).get(environment.id)),
+          }))
+        );
+        const drafts = (await requestResult(tx.objectStore(DRAFTS).getAll())).filter(
+          (draft) => environmentIds.has(draft.environmentId)
+        );
+        return { project, environments, handles, drafts };
+      }
+    );
+    return { ...snapshot, active: this.active() };
+  }
+
+  async restoreProjectSnapshot(snapshot) {
+    if (!snapshot?.project?.id) throw new Error('Invalid project snapshot.');
+    await this.run(
+      [PROJECTS, ENVIRONMENTS, HANDLES, DRAFTS],
+      'readwrite',
+      (tx) => {
+        tx.objectStore(PROJECTS).put(snapshot.project);
+        for (const environment of snapshot.environments || []) {
+          tx.objectStore(ENVIRONMENTS).put(environment);
+        }
+        for (const entry of snapshot.handles || []) {
+          if (entry.handle) tx.objectStore(HANDLES).put(entry.handle, entry.environmentId);
+          else tx.objectStore(HANDLES).delete(entry.environmentId);
+        }
+        for (const draft of snapshot.drafts || []) {
+          tx.objectStore(DRAFTS).put(draft);
+        }
+      }
+    );
+    if (snapshot.active) {
+      this.setActive(snapshot.active.projectId, snapshot.active.environmentId);
+    } else {
+      this.storage?.removeItem(this.stateKey);
+    }
+  }
+
+  async getHandle(id) {
+    return this.run([HANDLES], 'readonly', (tx) =>
+      requestResult(tx.objectStore(HANDLES).get(id)));
+  }
+
+  async findSameHandle(handle, exceptId = null) {
+    const environments = await this.listEnvironments();
+    for (const environment of environments) {
+      if (environment.id === exceptId) continue;
+      const retained = await this.getHandle(environment.id);
+      if (retained && typeof retained.isSameEntry === 'function' && await retained.isSameEntry(handle)) {
+        return environment;
+      }
+
+    }
+    return null;
+  }
+
+  async saveDraft(environmentId, alias, sourceHash, operations) {
+    const key = `${environmentId}:${alias}`;
+    const draft = {
+      key,
+      environmentId,
+      alias,
+      sourceHash,
+      operations,
+      updatedAt: new Date().toISOString(),
+    };
+    await this.run([DRAFTS], 'readwrite', (tx) => {
+      tx.objectStore(DRAFTS).put(draft);
+    });
+    return draft;
+  }
+
+  async getDraft(environmentId, alias) {
+    return this.run([DRAFTS], 'readonly', (tx) =>
+      requestResult(tx.objectStore(DRAFTS).get(`${environmentId}:${alias}`)));
+  }
+
+  async removeDraft(environmentId, alias) {
+    await this.run([DRAFTS], 'readwrite', (tx) => {
+      tx.objectStore(DRAFTS).delete(`${environmentId}:${alias}`);
+    });
+  }
+
+  async countDrafts(environmentId) {
+    return this.run([DRAFTS], 'readonly', async (tx) => {
+      const drafts = await requestResult(tx.objectStore(DRAFTS).getAll());
+      return drafts.filter((draft) => draft.environmentId === environmentId).length;
+    });
+  }
+
+  async replaceMetadata(snapshot) {
+    const projects = Array.isArray(snapshot?.projects) ? snapshot.projects : [];
+    const environments = Array.isArray(snapshot?.environments) ? snapshot.environments : [];
+    const projectIds = new Set(projects.map((project) => project.id));
+    const environmentIds = new Set(environments.map((environment) => environment.id));
+    await this.run([PROJECTS, ENVIRONMENTS, HANDLES, DRAFTS], 'readwrite', async (tx) => {
+      const projectStore = tx.objectStore(PROJECTS);
+      const environmentStore = tx.objectStore(ENVIRONMENTS);
+      const handleStore = tx.objectStore(HANDLES);
+      const draftStore = tx.objectStore(DRAFTS);
+      for (const existing of await requestResult(projectStore.getAll())) {
+        if (!projectIds.has(existing.id)) projectStore.delete(existing.id);
+      }
+      for (const existing of await requestResult(environmentStore.getAll())) {
+        if (!environmentIds.has(existing.id)) {
+          environmentStore.delete(existing.id);
+          handleStore.delete(existing.id);
+        }
+      }
+      for (const draft of await requestResult(draftStore.getAll())) {
+        if (!environmentIds.has(draft.environmentId)) draftStore.delete(draft.key);
+      }
+      for (const item of projects) projectStore.put(item);
+      for (const item of environments) {
+        const existing = await requestResult(environmentStore.get(item.id));
+        environmentStore.put({
+          ...item,
+          permission: existing?.permission || 'reconnect-required',
+        });
+      }
+    });
+    const selected = this.active();
+    if (
+      selected &&
+      (!projectIds.has(selected.projectId) || !environmentIds.has(selected.environmentId))
+    ) {
+      this.storage?.removeItem(this.stateKey);
+    }
+  }
+
+  async metadataSnapshot() {
+    const [projects, environments] = await Promise.all([
+      this.listProjects(),
+      this.listEnvironments(),
+    ]);
+    return {
+      version: 1,
+      projects: projects.map(({ id, label, createdAt, updatedAt }) => ({
+        id,
+        label,
+        createdAt,
+        updatedAt,
+      })),
+      environments: environments.map((environment) => ({
+        id: environment.id,
+        projectId: environment.projectId,
+        label: environment.label,
+        folderName: environment.folderName,
+        localPath: environment.localPath || null,
+        fingerprint: environment.fingerprint,
+        toolVersion: environment.toolVersion,
+        settingsVersion: environment.settingsVersion,
+        fingerprintVersion: environment.fingerprintVersion,
+        compatibility: environment.compatibility,
+        createdAt: environment.createdAt,
+        updatedAt: environment.updatedAt,
+        lastOpenedAt: environment.lastOpenedAt,
+        lastScannedAt: environment.lastScannedAt,
+      })),
+    };
+  }
+
+  profileDraft(scope) {
+    const key = `${this.profileDraftPrefix}.${profileDraftScope(scope)}`;
+    const raw = this.storage?.getItem?.(key);
+    if (!raw) return null;
+    try {
+      return normalizeProfileDraft(JSON.parse(raw));
+    } catch {
+      this.storage?.removeItem?.(key);
+      return null;
+    }
+  }
+
+  saveProfileDraft(scope, value) {
+    const key = `${this.profileDraftPrefix}.${profileDraftScope(scope)}`;
+    const draft = normalizeProfileDraft(value);
+    this.storage?.setItem?.(key, JSON.stringify(draft));
+    return draft;
+  }
+
+  clearProfileDraft(scope) {
+    const key = `${this.profileDraftPrefix}.${profileDraftScope(scope)}`;
+    try {
+      this.storage?.removeItem?.(key);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  setActive(projectId, environmentId) {
+    this.storage?.setItem(this.stateKey, JSON.stringify({ projectId, environmentId }));
+  }
+
+  active() {
+    try {
+      return JSON.parse(this.storage?.getItem(this.stateKey) || 'null');
+    } catch {
+      return null;
+    }
+  }
+}
+
+export function browserCapabilities(scope = globalThis) {
+  const brave = Boolean(scope.navigator?.brave);
+  const userAgent = scope.navigator?.userAgent || '';
+  const chromium =
+    /(Chrome|Edg)\//.test(userAgent) &&
+    !/(OPR|Vivaldi)\//.test(userAgent) &&
+    !brave;
+  return {
+    secureContext: Boolean(scope.isSecureContext),
+    directoryPicker: typeof scope.showDirectoryPicker === 'function',
+    indexedDB: Boolean(scope.indexedDB),
+    chromium,
+    brave,
+    supported:
+      Boolean(scope.isSecureContext) &&
+      typeof scope.showDirectoryPicker === 'function' &&
+      Boolean(scope.indexedDB) &&
+      chromium,
+  };
+}

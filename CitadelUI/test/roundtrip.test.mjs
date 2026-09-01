@@ -22,7 +22,7 @@ const SKIP_DIRS = new Set(['.git', 'node_modules', '.azure', '.backups']);
 
 function findParamFiles(dir, out = []) {
   for (const entry of readdirSync(dir)) {
-    if (SKIP_DIRS.has(entry)) continue;
+    if (SKIP_DIRS.has(entry) || entry.startsWith('.')) continue;
     const full = join(dir, entry);
     let st;
     try {
