@@ -913,6 +913,7 @@ export function sectionNavTitle(raw) {
 
 function sectionNode(section, byName, ctx) {  const params = section.params.map((n) => byName.get(n)).filter(Boolean);
   const isNote = params.length === 0;
+  const isFeatureSection = featureSection(section);
   const st = sectionState(params, ctx);
   // Reference appendices stay folded; sections carrying controls open, because a
   // collapsed accordion showed four of ninety-seven rows on a full screen.
@@ -980,7 +981,11 @@ function sectionNode(section, byName, ctx) {  const params = section.params.map(
 
   const el = h(
     'details',
-    { class: `sec${isNote ? ' sec-note' : ''}`, id: `section-${section.id}`, open },
+    {
+      class: `sec${isNote ? ' sec-note' : ''}${isFeatureSection ? ' sec-features' : ''}`,
+      id: `section-${section.id}`,
+      open,
+    },
     head,
     body
   );
@@ -1023,6 +1028,7 @@ export function renderOutlineNav(doc, ctx, onNavigate, variant) {
                 target.open = true;
                 const sheet = target.closest('.sheet');
                 const sticky = target.closest('.sheetwrap')?.querySelector('.sheet-sticky');
+                const behavior = tabs ? 'auto' : scrollBehavior();
                 if (sheet && sticky) {
                   const top =
                     sheet.scrollTop +
@@ -1030,9 +1036,9 @@ export function renderOutlineNav(doc, ctx, onNavigate, variant) {
                     sheet.getBoundingClientRect().top -
                     sticky.getBoundingClientRect().height -
                     8;
-                  sheet.scrollTo({ top: Math.max(0, top), behavior: scrollBehavior() });
+                  sheet.scrollTo({ top: Math.max(0, top), behavior });
                 } else {
-                  target.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
+                  target.scrollIntoView({ block: 'start', behavior });
                 }
               }
               if (onNavigate) onNavigate(s.id);

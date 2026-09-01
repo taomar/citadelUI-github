@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   deploymentPresentation,
@@ -397,6 +398,21 @@ assert.equal(
     pendingFor: () => false,
   }),
   sections
+);
+
+const viewSource = readFileSync(new URL('../web/js/paramview.mjs', import.meta.url), 'utf8');
+const componentStyles = readFileSync(
+  new URL('../web/css/components.css', import.meta.url),
+  'utf8'
+);
+assert.match(viewSource, /isFeatureSection \? ' sec-features' : ''/);
+assert.match(
+  componentStyles,
+  /\.sec-features \.sec-body\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/
+);
+assert.match(
+  componentStyles,
+  /@container \(max-width: 64rem\)\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\)/
 );
 
 console.log('Feature grouping, predicates, and conditional visibility checks passed.');

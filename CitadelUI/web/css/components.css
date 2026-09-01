@@ -286,6 +286,45 @@
   color: var(--ink-3);
 }
 
+/* Feature controls are four purpose-built groups, not one fifteen-row run.
+   Two columns keep all groups in the first viewport when the sheet can support
+   them; the section's own inline size collapses the layout before either record
+   column becomes cramped. */
+.sec-features {
+  container-type: inline-size;
+}
+
+.sec-features .sec-body {
+  --p-ident: 15rem;
+  --stack-min: 100%;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-7) var(--sp-8);
+}
+
+.sec-features .sec-body > :not(.grp) {
+  grid-column: 1 / -1;
+}
+
+.sec-features .sec-body > .prow-head {
+  display: none;
+}
+
+.sec-features .grp {
+  align-content: start;
+}
+
+.sec-features .grp-label {
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--rule);
+  font-size: var(--t-meta);
+}
+
+@container (max-width: 64rem) {
+  .sec-features .sec-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* ==================================================== the parameter sheet */
 
 /*

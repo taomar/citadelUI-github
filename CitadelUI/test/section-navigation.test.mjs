@@ -42,6 +42,10 @@ assert.match(paramviewSource, /class: `outline\$\{tabs \? ' outline-tabs' : ''\}
 assert.doesNotMatch(paramviewSource, /outline-drawer/);
 assert.match(appSource, /class: 'sheet-sticky'/);
 assert.match(appSource, /renderOutlineNav\(doc, editContext\(doc\), markCurrentSection, 'tabs'\)/);
+assert.match(appSource, /function markCurrentSection\(requestedId = null\)/);
+assert.match(appSource, /link\.dataset\.section === requestedId/);
+assert.match(appSource, /sticky\.getBoundingClientRect\(\)\.bottom[\s\S]*?\+\s*32/);
+assert.match(paramviewSource, /const behavior = tabs \? 'auto' : scrollBehavior\(\)/);
 assert.match(componentStyles, /\.sheet-sticky\s*\{[\s\S]*?position:\s*sticky/);
 assert.match(componentStyles, /\.outline-tabs \.outline-list\s*\{[\s\S]*?overflow-x:\s*auto/);
 assert.doesNotMatch(componentStyles, /\.outline-drawer/);

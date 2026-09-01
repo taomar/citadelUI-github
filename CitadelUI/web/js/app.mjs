@@ -2245,7 +2245,7 @@ function renderContextRail() {
  * collapsible, so the observed set changes constantly and re-registering
  * observers on every toggle costs more than measuring on demand.
  */
-function markCurrentSection() {
+function markCurrentSection(requestedId = null) {
   const links = [
     ...els.contextRail.querySelectorAll('.outline-link'),
     ...els.workspace.querySelectorAll('.outline-link'),
@@ -2253,13 +2253,18 @@ function markCurrentSection() {
   if (!links.length) return;
   const sticky = els.workspace.querySelector('.sheet-sticky');
   const line =
-    els.workspace.getBoundingClientRect().top +
-    (sticky ? sticky.getBoundingClientRect().height : 96) +
-    8;
-  let current = links[0];
-  for (const link of links) {
-    const sec = document.getElementById(`section-${link.dataset.section}`);
-    if (sec && sec.getBoundingClientRect().top <= line) current = link;
+    (sticky
+      ? sticky.getBoundingClientRect().bottom
+      : els.workspace.getBoundingClientRect().top + 96) +
+    32;
+  let current = requestedId
+    ? links.find((link) => link.dataset.section === requestedId) || links[0]
+    : links[0];
+  if (!requestedId) {
+    for (const link of links) {
+      const sec = document.getElementById(`section-${link.dataset.section}`);
+      if (sec && sec.getBoundingClientRect().top <= line) current = link;
+    }
   }
   for (const link of links) {
     const selected = link === current;
