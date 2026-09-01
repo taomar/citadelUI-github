@@ -881,10 +881,34 @@ function sectionTitle(raw) {
  * every rail entry wrap onto a second line and then truncate mid-word. The
  * name alone fits; the full text stays on the title attribute.
  */
-function shortTitle(raw) {
+const SECTION_NAV_NAMES = Object.freeze([
+  [/^basic parameters\b/i, 'Basics'],
+  [/^feature flags\b/i, 'Features'],
+  [/^resource names\b/i, 'Resources'],
+  [/^monitoring\b/i, 'Monitoring'],
+  [/^networking parameters\b/i, 'Networking'],
+  [/^inference api diagnostic log settings\b/i, 'Inference logs'],
+  [/^compute sku\s*&\s*size\b/i, 'Compute'],
+  [/^accelerator specific parameters\b/i, 'Accelerator'],
+  [/^entra id authentication\b/i, 'Entra ID'],
+  [/^deployment notes\b/i, 'Notes'],
+  [/^api management \(apim\) configuration\b/i, 'APIM'],
+  [/^apim managed identity configuration\b/i, 'Managed identity'],
+  [/^llm backend configuration array\b/i, 'Backends'],
+  [/^circuit breaker configuration\b/i, 'Circuit breaker'],
+  [/^circuit breaker defaults\b/i, 'Breaker defaults'],
+  [/^session affinity \(sticky routing\)/i, 'Session affinity'],
+  [/^session affinity defaults\b/i, 'Affinity defaults'],
+  [/^model aliases\b/i, 'Model aliases'],
+]);
+
+export function sectionNavTitle(raw) {
   const text = String(raw || '');
-  const cut = text.split(/\s+[-\u2013\u2014:]\s+/)[0];
-  return cut && cut.length >= 4 ? cut : text;
+  const known = SECTION_NAV_NAMES.find(([pattern]) => pattern.test(text));
+  if (known) return known[1];
+  const cut = text.split(/\s+[-\u2013\u2014:]\s+/)[0] || text;
+  const short = cut.length <= 24 ? cut : cut.split(/\s+/).slice(0, 3).join(' ');
+  return sectionTitle(short);
 }
 
 function sectionNode(section, byName, ctx) {  const params = section.params.map((n) => byName.get(n)).filter(Boolean);
@@ -976,44 +1000,87 @@ export function renderOutlineNav(doc, ctx, onNavigate, variant) {
   const sections = deploymentPresentation(doc, ctx);
   if (!sections.length) return null;
 
-  return h(
-    'nav',
-    { class: `outline${variant === 'strip' ? ' outline-strip' : ''}`, 'aria-label': 'Sections' },
-    h(
-      'ul',
-      { class: 'outline-list' },
-      sections.map((s) => {
-        const params = s.params.map((n) => (doc.params || []).find((p) => p.name === n)).filter(Boolean);
-        const st = sectionState(params, ctx);
-        return h(
-          'li',
-          {},
-          h(
-            'button',
-            {
-              class: `outline-link${s.params.length ? '' : ' outline-note'}`,
-              dataset: { section: s.id },
-              title: s.title,
-              onclick: () => {
-                ctx.setOpen(s.id, true);
-                const target = document.getElementById(`section-${s.id}`);
-                if (target) {
-                  target.open = true;
-                  target.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
-                }
-                if (onNavigate) onNavigate(s.id);
-              },
+  const drawer = variant === 'strip';
+  const list = h(
+    'ul',
+    { class: 'outline-list' },
+    sections.map((s) => {
+      const params = s.params.map((n) => (doc.params || []).find((p) => p.name === n)).filter(Boolean);
+      const st = sectionState(params, ctx);
+      return h(
+        'li',
+        {},
+        h(
+          'button',
+          {
+            class: `outline-link${s.params.length ? '' : ' outline-note'}`,
+            dataset: { section: s.id },
+            title: s.title,
+            onclick: (event) => {
+              ctx.setOpen(s.id, true);
+              const target = document.getElementById(`section-${s.id}`);
+              if (target) {
+                target.open = true;
+                target.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
+              }
+              const drawerRoot = event.currentTarget.closest('.outline-drawer');
+              if (drawerRoot) {
+                const current = drawerRoot.querySelector('.outline-drawer-current');
+                if (current) current.textContent = sectionNavTitle(s.title);
+                drawerRoot.removeAttribute('open');
+                drawerRoot.querySelector(':scope > summary')?.focus({ preventScroll: true });
+              }
+              if (onNavigate) onNavigate(s.id);
             },
-            h('span', { class: 'outline-label' }, sectionTitle(shortTitle(s.title))),
-            st.dirty ? h('span', { class: 'outline-badge outline-badge-dirty' }, '\u25cf') : null,
-            s.params.length ? h('span', { class: 'outline-badge' }, s.params.length) : null,
-            st.env
-              ? h('span', { class: 'outline-env', title: `${st.env} expression-backed values` }, st.env)
-              : null
-          )
-        );
-      })
-    )
+          },
+          h('span', { class: 'outline-label' }, sectionNavTitle(s.title)),
+          st.dirty
+            ? h(
+                'span',
+                { class: `outline-badge outline-badge-dirty${drawer ? ' outline-badge-text' : ''}` },
+                drawer ? `${st.dirty} edited` : '\u25cf'
+              )
+            : null,
+          s.params.length
+            ? h(
+                'span',
+                { class: 'outline-badge' },
+                drawer ? `${s.params.length} field${s.params.length === 1 ? '' : 's'}` : s.params.length
+              )
+            : null,
+          st.env
+            ? h(
+                'span',
+                { class: 'outline-env', title: `${st.env} expression-backed values` },
+                drawer ? `${st.env} env` : st.env
+              )
+            : null
+        )
+      );
+    })
+  );
+  const nav = h(
+    'nav',
+    { class: `outline${drawer ? ' outline-drawer-body' : ''}`, 'aria-label': 'Sections' },
+    list
+  );
+  if (!drawer) return nav;
+  return h(
+    'details',
+    { class: 'outline-drawer' },
+    h(
+      'summary',
+      {},
+      h('span', { class: 'outline-drawer-label' }, 'Sections'),
+      h('span', { class: 'outline-drawer-current' }, sectionNavTitle(sections[0].title)),
+      h(
+        'span',
+        { class: 'outline-drawer-count' },
+        `${sections.length} section${sections.length === 1 ? '' : 's'}`
+      ),
+      h('span', { class: 'outline-drawer-caret', 'aria-hidden': 'true' }, '\u203a')
+    ),
+    nav
   );
 }
 

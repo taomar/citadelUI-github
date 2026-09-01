@@ -2245,7 +2245,10 @@ function renderContextRail() {
  * observers on every toggle costs more than measuring on demand.
  */
 function markCurrentSection() {
-  const links = els.contextRail.querySelectorAll('.outline-link');
+  const links = [
+    ...els.contextRail.querySelectorAll('.outline-link'),
+    ...els.workspace.querySelectorAll('.outline-link'),
+  ];
   if (!links.length) return;
   const line = els.workspace.getBoundingClientRect().top + 96;
   let current = links[0];
@@ -2253,7 +2256,16 @@ function markCurrentSection() {
     const sec = document.getElementById(`section-${link.dataset.section}`);
     if (sec && sec.getBoundingClientRect().top <= line) current = link;
   }
-  for (const link of links) link.classList.toggle('current', link === current);
+  for (const link of links) {
+    const selected = link === current;
+    link.classList.toggle('current', selected);
+    if (selected) link.setAttribute('aria-current', 'true');
+    else link.removeAttribute('aria-current');
+  }
+  const label = current.querySelector('.outline-label')?.textContent || 'Sections';
+  for (const node of els.workspace.querySelectorAll('.outline-drawer-current')) {
+    node.textContent = label;
+  }
 }
 
 function tabBar(tabs) {

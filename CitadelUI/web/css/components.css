@@ -1087,9 +1087,9 @@
   font-size: var(--t-meta);
   line-height: 1.35;
   color: var(--ink-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+  white-space: normal;
 }
 
 .outline-link.current .outline-label {
@@ -1122,49 +1122,115 @@
 }
 
 /*
-   The same index, laid on its side.
-
-   Below ~1600px the section rail is worth less than the sheet column it
-   occupies, so it moves here rather than being duplicated: one nav element,
-   one set of handlers, one current-section marker. It wraps rather than
-   scrolls sideways, because a horizontal scroller hides exactly the sections
-   you have not visited yet.
+   At intermediate widths a row of seven pseudo-tabs consumed two lines before
+   the first field and truncated the longest labels. The same section index now
+   becomes one native disclosure. Its panel overlays the sheet rather than
+   shifting it, and a content-sized grid lets labels wrap without horizontal
+   scrolling.
 */
-.outline-strip {
-  padding: var(--sp-4) var(--gutter) 0;
+.outline-drawer {
+  position: relative;
+  z-index: 25;
+  margin: var(--sp-4) var(--gutter) 0;
 }
 
-.outline-strip .outline-list {
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-}
-
-.outline-strip .outline-link {
-  width: auto;
+.outline-drawer > summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
   gap: var(--sp-3);
+  min-height: var(--ctl-h);
   padding: var(--sp-2) var(--sp-4);
-  border: 1px solid var(--rule);
-  border-radius: var(--r-1);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-2);
   background: var(--sheet);
+  cursor: pointer;
+  list-style: none;
 }
 
-.outline-strip .outline-link:hover {
-  background: var(--zebra);
-  border-color: var(--rule-strong);
-}
-
-.outline-strip .outline-link.current {
-  border-color: var(--brand-line);
-  background: var(--brand-wash);
-}
-
-.outline-strip .outline-link.current::before {
+.outline-drawer > summary::-webkit-details-marker {
   display: none;
 }
 
-.outline-strip .outline-label {
-  max-width: 24ch;
+.outline-drawer > summary:hover {
+  background: var(--zebra);
+  border-color: var(--control-stroke);
+}
+
+.outline-drawer-label {
+  font-family: var(--sans-small);
+  font-size: var(--t-meta);
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.outline-drawer-current {
+  min-width: 0;
+  font-family: var(--sans);
+  font-size: var(--t-body);
+  font-weight: 600;
+  color: var(--brand);
+  overflow-wrap: anywhere;
+}
+
+.outline-drawer-count {
+  font-family: var(--sans-small);
+  font-size: var(--t-meta);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.outline-drawer-caret {
+  color: var(--ink-3);
+  font-size: var(--t-lead);
+  line-height: 1;
+  transition: transform var(--fast) var(--ease);
+}
+
+.outline-drawer[open] .outline-drawer-caret {
+  transform: rotate(90deg);
+}
+
+.outline-drawer-body {
+  position: absolute;
+  inset: calc(100% + var(--sp-2)) 0 auto;
+  max-height: min(28rem, calc(100dvh - 12rem));
+  padding: var(--sp-3);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-2);
+  background: var(--sheet);
+  box-shadow: var(--lift);
+}
+
+.outline-drawer-body .outline-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: var(--sp-1) var(--sp-4);
+}
+
+.outline-drawer-body .outline-link {
+  border-radius: var(--r-1);
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.outline-drawer-body .outline-link:hover {
+  background: var(--zebra);
+}
+
+.outline-drawer-body .outline-link.current {
+  background: var(--brand-wash);
+}
+
+.outline-drawer-body .outline-link.current::before {
+  display: none;
+}
+
+.outline-drawer-body .outline-badge-text {
+  font-family: var(--sans-small);
+  font-size: var(--t-mark);
+  color: var(--brand);
 }
 
 /* ============================================================ environment */
