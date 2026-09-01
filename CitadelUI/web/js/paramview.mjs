@@ -38,6 +38,7 @@ import { renderLlmBackends } from './llmview.mjs';
 import { explains } from './explain.mjs';
 import { foundryCatalog } from './llmschema.mjs';
 import { APIM_SKUS, API_CENTER_HELP, LOGIC_APPS_TEMPLATE } from './azuremeta.mjs';
+import { Ipv4Cidr } from './cidr.mjs';
 import { editableValue } from './validation.mjs';
 import { validateSubscriptionId } from './subscription-env.mjs';
 
@@ -428,7 +429,34 @@ export function logicAppsWorkerGuidance(skuName) {
     : 'Choose WS1, WS2, or WS3.';
 }
 
+function networkPrefixGuidance(param) {
+  const value = editableValue(param.value);
+  let cidr;
+  try {
+    cidr = new Ipv4Cidr(value);
+  } catch {
+    return null;
+  }
+  if (param.name === 'vnetAddressPrefix') {
+    return h(
+      'p',
+      { class: 'param-guidance' },
+      `${cidr.canonical} covers ${cidr.size.toLocaleString()} IPv4 addresses. ` +
+        'Every deployed subnet must fit inside it without overlap.'
+    );
+  }
+  if (!/SubnetPrefix$/.test(param.name)) return null;
+  return h(
+    'p',
+    { class: 'param-guidance' },
+    `${cidr.size.toLocaleString()} total addresses · ${cidr.usableAddresses.toLocaleString()} usable ` +
+      'after Azure reserves the first four and last address.'
+  );
+}
+
 function guidanceFor(param, ctx) {
+  const network = networkPrefixGuidance(param);
+  if (network) return network;
   if (param.name === 'apimSku') {
     return h('p', { class: 'param-guidance' }, 'Template-supported APIM tiers only. Capacity and capabilities vary by tier.');
   }

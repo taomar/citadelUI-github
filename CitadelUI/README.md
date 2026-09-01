@@ -95,6 +95,19 @@ exclusive to it by the Bicep module graph. Bidirectional choices such as existin
 versus new VNet/Log Analytics and APIM classic versus v2 show the matching input
 set, while shared settings and unsaved dependent edits remain visible.
 
+New-VNet address fields are checked when the user leaves a control. The editor
+shows field-level errors for malformed or noncanonical IPv4 CIDRs, Azure-
+prohibited ranges, subnets outside the VNet, overlapping deployed subnets,
+unsupported prefix sizes, and insufficient service/private-endpoint capacity.
+Unused agent-subnet conflicts remain warnings until Microsoft.App network
+injection is enabled. These checks follow Azure's
+[IP planning](https://learn.microsoft.com/azure/networking/design-guide/ip-planning),
+[VNet](https://learn.microsoft.com/azure/virtual-network/virtual-networks-faq),
+[API Management](https://learn.microsoft.com/azure/api-management/virtual-network-injection-resources),
+[Functions/App Service](https://learn.microsoft.com/azure/azure-functions/functions-networking-options),
+and [Microsoft.App](https://learn.microsoft.com/azure/container-apps/custom-virtual-networks)
+guidance.
+
 ### 2. LLM onboarding
 
 `bicep/infra/llm-backend-onboarding/main.bicepparam` — registers model providers
