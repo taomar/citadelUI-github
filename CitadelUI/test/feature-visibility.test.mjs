@@ -2,85 +2,401 @@ import assert from 'node:assert/strict';
 
 import {
   deploymentPresentation,
-  FEATURE_DEPENDENCIES,
+  FEATURE_GROUPS,
+  PARAMETER_VISIBILITY,
+  parameterVisible,
 } from '../web/js/paramview.mjs';
 
+const group = (params) => ({ label: null, blocks: [], params });
+const section = (id, title, params) => ({
+  id,
+  title,
+  params,
+  groups: [group(params)],
+  blocks: [],
+});
+
 const sections = [
-  {
-    id: 'basic',
-    title: 'BASIC PARAMETERS',
-    params: ['environmentName', 'apicLocation'],
-    groups: [{ params: ['environmentName', 'apicLocation'] }],
-  },
-  {
-    id: 'resources',
-    title: 'RESOURCE NAMES - Assign custom names',
-    params: ['resourceGroupName', 'apicServiceName', 'redisCacheName'],
-    groups: [{ params: ['resourceGroupName', 'apicServiceName', 'redisCacheName'] }],
-  },
-  {
-    id: 'features',
-    title: 'FEATURE FLAGS - Deploy specific capabilities',
-    params: ['enableAPICenter', 'enableManagedRedis', 'entraAuth', 'enableAzureAISearch'],
-    groups: [{
-      params: ['enableAPICenter', 'enableManagedRedis', 'entraAuth', 'enableAzureAISearch'],
-    }],
-  },
-  {
-    id: 'entra',
-    title: 'ENTRA ID AUTHENTICATION',
-    params: ['entraTenantId', 'entraClientId', 'entraAudience', 'entraClientSecret'],
-    groups: [{
-      params: ['entraTenantId', 'entraClientId', 'entraAudience', 'entraClientSecret'],
-    }],
-  },
-  {
-    id: 'accelerator',
-    title: 'ACCELERATOR SPECIFIC PARAMETERS',
-    params: ['aiSearchInstances', 'aiFoundryInstances'],
-    groups: [{ params: ['aiSearchInstances', 'aiFoundryInstances'] }],
-  },
+  section('basic', 'BASIC PARAMETERS', [
+    'environmentName',
+    'apicLocation',
+  ]),
+  section('resources', 'RESOURCE NAMES - Assign custom names', [
+    'resourceGroupName',
+    'apicServiceName',
+    'redisCacheName',
+    'apimApplicationInsightsDashboardName',
+    'funcApplicationInsightsDashboardName',
+    'foundryApplicationInsightsDashboardName',
+    'apimApplicationInsightsName',
+    'funcApplicationInsightsName',
+    'foundryApplicationInsightsName',
+  ]),
+  section('monitoring', 'MONITORING - Log Analytics configuration', [
+    'useExistingLogAnalytics',
+    'logAnalyticsName',
+    'existingLogAnalyticsName',
+    'existingLogAnalyticsRG',
+    'existingLogAnalyticsSubscriptionId',
+  ]),
+  section('networking', 'NETWORKING PARAMETERS - Network configuration', [
+    'vnetName',
+    'useExistingVnet',
+    'existingVnetRG',
+    'apimSubnetName',
+    'privateEndpointSubnetName',
+    'functionAppSubnetName',
+    'agentSubnetName',
+    'vnetAddressPrefix',
+    'apimSubnetPrefix',
+    'privateEndpointSubnetPrefix',
+    'functionAppSubnetPrefix',
+    'agentSubnetPrefix',
+    'apimNsgName',
+    'privateEndpointNsgName',
+    'functionAppNsgName',
+    'agentSubnetNsgName',
+    'apimRouteTableName',
+    'dnsZoneRG',
+    'dnsSubscriptionId',
+    'existingPrivateDnsZones',
+    'apimNetworkType',
+    'apimV2UsePrivateEndpoint',
+    'apimV2PublicNetworkAccess',
+    'apimV2PrivateEndpointName',
+    'cosmosDbPublicAccess',
+    'cosmosDbPrivateEndpointName',
+    'eventHubNetworkAccess',
+    'eventHubPrivateEndpointName',
+    'aiFoundryExternalNetworkAccess',
+    'aiFoundryPrivateEndpointName',
+    'keyVaultExternalNetworkAccess',
+    'keyVaultPrivateEndpointName',
+    'useAzureMonitorPrivateLinkScope',
+    'redisPublicNetworkAccess',
+    'redisPrivateEndpointName',
+  ]),
+  section('features', 'FEATURE FLAGS - Deploy specific capabilities', [
+    'createAppInsightsDashboards',
+    'enableAIModelInference',
+    'enableDocumentIntelligence',
+    'enableAzureAISearch',
+    'enableAIGatewayPiiRedaction',
+    'enableOpenAIRealtime',
+    'entraAuth',
+    'enableAPICenter',
+    'enableManagedRedis',
+    'enableUnifiedAiApi',
+  ]),
+  section('compute', 'COMPUTE SKU & SIZE', [
+    'apimSku',
+    'apimSkuUnits',
+    'apicSku',
+    'redisSkuName',
+    'redisSkuCapacity',
+    'redisHighAvailability',
+  ]),
+  section('accelerator', 'ACCELERATOR SPECIFIC PARAMETERS', [
+    'aiSearchInstances',
+    'aiFoundryInstances',
+  ]),
+  section('entra', 'ENTRA ID AUTHENTICATION', [
+    'entraTenantId',
+    'entraClientId',
+    'entraAudience',
+    'entraClientSecret',
+  ]),
 ];
 
-function presentation(values) {
+const baseline = {
+  createAppInsightsDashboards: false,
+  enableAIModelInference: true,
+  enableDocumentIntelligence: false,
+  enableAzureAISearch: false,
+  enableAIGatewayPiiRedaction: true,
+  enableOpenAIRealtime: true,
+  entraAuth: false,
+  enableAPICenter: false,
+  enableManagedRedis: false,
+  enableUnifiedAiApi: true,
+  useExistingLogAnalytics: true,
+  useAzureMonitorPrivateLinkScope: false,
+  useExistingVnet: false,
+  apimSku: 'StandardV2',
+  apimV2UsePrivateEndpoint: true,
+  apimV2PublicNetworkAccess: true,
+};
+
+function presentation(overrides = {}, pending = []) {
+  const values = { ...baseline, ...overrides };
+  const dirty = new Set(pending);
   return deploymentPresentation(
     {
       path: 'bicep/infra/main.bicepparam',
       outline: { sections },
     },
-    { paramValue: (name) => values[name], pendingFor: () => false }
+    {
+      paramValue: (name) => values[name],
+      pendingFor: (name) => dirty.has(name),
+    }
   );
 }
 
-const disabled = presentation({
-  enableAPICenter: false,
-  enableManagedRedis: 'false',
-  entraAuth: false,
-  enableAzureAISearch: false,
-});
-assert.deepEqual(disabled.map((section) => section.id), [
+function params(result) {
+  return result.flatMap((item) => item.params);
+}
+
+function paramsIn(result, id) {
+  return result.find((item) => item.id === id)?.params || [];
+}
+
+function expectVisible(result, names) {
+  const visible = new Set(params(result));
+  for (const name of names) assert(visible.has(name), `${name} should be visible`);
+}
+
+function expectHidden(result, names) {
+  const visible = new Set(params(result));
+  for (const name of names) assert(!visible.has(name), `${name} should be hidden`);
+}
+
+const disabled = presentation();
+assert.deepEqual(disabled.map((item) => item.id), [
   'basic',
   'features',
   'resources',
+  'monitoring',
+  'networking',
+  'compute',
   'accelerator',
 ]);
-assert.deepEqual(disabled.find((section) => section.id === 'basic').params, ['environmentName']);
-assert.deepEqual(disabled.find((section) => section.id === 'resources').params, ['resourceGroupName']);
-assert.equal(disabled.some((section) => section.id === 'entra'), false);
-assert.deepEqual(disabled.find((section) => section.id === 'accelerator').params, ['aiFoundryInstances']);
-const coveredSource = new Set(sections.flatMap((section) => section.params));
-assert(coveredSource.has('apicLocation'));
 
-const enabled = presentation({
-  enableAPICenter: true,
-  enableManagedRedis: true,
-  entraAuth: true,
+const feature = disabled.find((item) => item.id === 'features');
+assert.deepEqual(
+  feature.groups.map((item) => item.label),
+  FEATURE_GROUPS.map((item) => item.label)
+);
+assert.deepEqual(feature.groups.map((item) => item.params), [
+  [
+    'enableAIModelInference',
+    'enableDocumentIntelligence',
+    'enableOpenAIRealtime',
+    'enableUnifiedAiApi',
+  ],
+  [
+    'enableAzureAISearch',
+    'enableManagedRedis',
+    'enableAIGatewayPiiRedaction',
+    'enableAPICenter',
+  ],
+  [
+    'entraAuth',
+    'createAppInsightsDashboards',
+    'useExistingLogAnalytics',
+    'useAzureMonitorPrivateLinkScope',
+  ],
+  [
+    'useExistingVnet',
+    'apimV2UsePrivateEndpoint',
+    'apimV2PublicNetworkAccess',
+  ],
+]);
+
+for (const moved of [
+  'useExistingLogAnalytics',
+  'useExistingVnet',
+  'useAzureMonitorPrivateLinkScope',
+  'apimV2UsePrivateEndpoint',
+  'apimV2PublicNetworkAccess',
+]) {
+  assert(feature.params.includes(moved), `${moved} was not moved into Feature Flags`);
+  assert.equal(
+    disabled.filter((item) => item.id !== 'features').some((item) => item.params.includes(moved)),
+    false,
+    `${moved} is duplicated outside Feature Flags`
+  );
+}
+assert.equal(params(disabled).length, new Set(params(disabled)).size, 'visible parameters are duplicated');
+
+expectHidden(disabled, [
+  'apicLocation',
+  'apicServiceName',
+  'apicSku',
+  'redisCacheName',
+  'redisPrivateEndpointName',
+  'redisPublicNetworkAccess',
+  'redisSkuName',
+  'redisSkuCapacity',
+  'redisHighAvailability',
+  'entraTenantId',
+  'entraClientId',
+  'entraAudience',
+  'entraClientSecret',
+  'aiSearchInstances',
+  'apimApplicationInsightsDashboardName',
+  'funcApplicationInsightsDashboardName',
+  'foundryApplicationInsightsDashboardName',
+  'logAnalyticsName',
+  'existingVnetRG',
+  'dnsZoneRG',
+  'dnsSubscriptionId',
+  'existingPrivateDnsZones',
+  'apimNetworkType',
+]);
+expectVisible(disabled, [
+  'existingLogAnalyticsName',
+  'existingLogAnalyticsRG',
+  'existingLogAnalyticsSubscriptionId',
+  'vnetAddressPrefix',
+  'apimSubnetPrefix',
+  'privateEndpointSubnetPrefix',
+  'functionAppSubnetPrefix',
+  'agentSubnetPrefix',
+  'apimNsgName',
+  'privateEndpointNsgName',
+  'functionAppNsgName',
+  'agentSubnetNsgName',
+  'apimRouteTableName',
+  'apimV2PrivateEndpointName',
+]);
+
+// These fields are shared or independently meaningful and must never follow a
+// similarly named feature/public-access selector by guesswork.
+expectVisible(disabled, [
+  'resourceGroupName',
+  'apimApplicationInsightsName',
+  'funcApplicationInsightsName',
+  'foundryApplicationInsightsName',
+  'vnetName',
+  'apimSubnetName',
+  'privateEndpointSubnetName',
+  'functionAppSubnetName',
+  'agentSubnetName',
+  'cosmosDbPublicAccess',
+  'cosmosDbPrivateEndpointName',
+  'eventHubNetworkAccess',
+  'eventHubPrivateEndpointName',
+  'aiFoundryExternalNetworkAccess',
+  'aiFoundryPrivateEndpointName',
+  'keyVaultExternalNetworkAccess',
+  'keyVaultPrivateEndpointName',
+  'aiFoundryInstances',
+]);
+
+const servicesOn = presentation({
+  createAppInsightsDashboards: true,
   enableAzureAISearch: true,
+  enableManagedRedis: true,
+  enableAPICenter: true,
+  entraAuth: true,
 });
-assert(enabled.find((section) => section.id === 'basic').params.includes('apicLocation'));
-assert(enabled.find((section) => section.id === 'resources').params.includes('redisCacheName'));
-assert.equal(enabled.find((section) => section.id === 'entra').params.length, 4);
-assert(enabled.find((section) => section.id === 'accelerator').params.includes('aiSearchInstances'));
-assert.equal(FEATURE_DEPENDENCIES.aiFoundryInstances, undefined);
+expectVisible(servicesOn, [
+  'apicLocation',
+  'apicServiceName',
+  'apicSku',
+  'redisCacheName',
+  'redisPrivateEndpointName',
+  'redisPublicNetworkAccess',
+  'redisSkuName',
+  'redisSkuCapacity',
+  'redisHighAvailability',
+  'entraTenantId',
+  'entraClientId',
+  'entraAudience',
+  'entraClientSecret',
+  'aiSearchInstances',
+  'apimApplicationInsightsDashboardName',
+  'funcApplicationInsightsDashboardName',
+  'foundryApplicationInsightsDashboardName',
+]);
 
-console.log('Feature ordering and conditional visibility checks passed.');
+const newLogAnalytics = presentation({ useExistingLogAnalytics: false });
+expectVisible(newLogAnalytics, ['logAnalyticsName']);
+expectHidden(newLogAnalytics, [
+  'existingLogAnalyticsName',
+  'existingLogAnalyticsRG',
+  'existingLogAnalyticsSubscriptionId',
+]);
+
+const existingVnet = presentation({ useExistingVnet: true });
+expectVisible(existingVnet, [
+  'existingVnetRG',
+  'dnsZoneRG',
+  'dnsSubscriptionId',
+  'existingPrivateDnsZones',
+  'vnetName',
+  'apimSubnetName',
+  'privateEndpointSubnetName',
+  'functionAppSubnetName',
+  'agentSubnetName',
+]);
+expectHidden(existingVnet, [
+  'vnetAddressPrefix',
+  'apimSubnetPrefix',
+  'privateEndpointSubnetPrefix',
+  'functionAppSubnetPrefix',
+  'agentSubnetPrefix',
+  'apimNsgName',
+  'privateEndpointNsgName',
+  'functionAppNsgName',
+  'agentSubnetNsgName',
+  'apimRouteTableName',
+]);
+
+const classicApim = presentation({ apimSku: 'Developer' });
+expectVisible(classicApim, ['apimNetworkType']);
+expectHidden(classicApim, [
+  'apimV2UsePrivateEndpoint',
+  'apimV2PublicNetworkAccess',
+  'apimV2PrivateEndpointName',
+]);
+assert.deepEqual(
+  classicApim.find((item) => item.id === 'features').groups.at(-1).params,
+  ['useExistingVnet']
+);
+
+const v2WithoutPrivateEndpoint = presentation({
+  apimSku: 'PremiumV2',
+  apimV2UsePrivateEndpoint: false,
+});
+expectVisible(v2WithoutPrivateEndpoint, [
+  'apimV2UsePrivateEndpoint',
+  'apimV2PublicNetworkAccess',
+]);
+expectHidden(v2WithoutPrivateEndpoint, ['apimNetworkType', 'apimV2PrivateEndpointName']);
+
+for (const [name, overrides] of [
+  ['apicLocation', { enableAPICenter: false }],
+  ['redisSkuName', { enableManagedRedis: false }],
+  ['existingVnetRG', { useExistingVnet: false }],
+  ['vnetAddressPrefix', { useExistingVnet: true }],
+  ['apimV2PrivateEndpointName', { apimV2UsePrivateEndpoint: false }],
+  ['apimV2UsePrivateEndpoint', { apimSku: 'Developer' }],
+]) {
+  expectVisible(presentation(overrides, [name]), [name]);
+}
+
+// Compatibility fails open when an older repository has a dependent field but
+// not the newer controller.
+assert.equal(
+  parameterVisible('redisCacheName', {
+    paramValue: () => undefined,
+    pendingFor: () => false,
+  }),
+  true
+);
+
+assert.equal(PARAMETER_VISIBILITY.redisMinimumTlsVersion, undefined);
+assert.equal(PARAMETER_VISIBILITY.aiFoundryInstances, undefined);
+assert(paramsIn(disabled, 'networking').includes('cosmosDbPublicAccess'));
+
+const untouched = { path: 'other/main.bicepparam', outline: { sections } };
+assert.equal(
+  deploymentPresentation(untouched, {
+    paramValue: () => false,
+    pendingFor: () => false,
+  }),
+  sections
+);
+
+console.log('Feature grouping, predicates, and conditional visibility checks passed.');

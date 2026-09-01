@@ -44,26 +44,139 @@ import { validateSubscriptionId } from './subscription-env.mjs';
 const ENV_CALL = 'readEnvironmentVariable';
 const MAIN_DEPLOYMENT_PATH = 'bicep/infra/main.bicepparam';
 
-export const FEATURE_DEPENDENCIES = Object.freeze({
-  aiSearchInstances: 'enableAzureAISearch',
-  apicLocation: 'enableAPICenter',
-  apicServiceName: 'enableAPICenter',
-  apicSku: 'enableAPICenter',
-  entraTenantId: 'entraAuth',
-  entraClientId: 'entraAuth',
-  entraAudience: 'entraAuth',
-  entraClientSecret: 'entraAuth',
-  redisCacheName: 'enableManagedRedis',
-  redisSkuName: 'enableManagedRedis',
-  redisSkuCapacity: 'enableManagedRedis',
-  redisMinimumTlsVersion: 'enableManagedRedis',
-  redisHighAvailability: 'enableManagedRedis',
+const condition = (parameter, rule) => Object.freeze({ parameter, ...rule });
+const enabled = (parameter, value = true) => condition(parameter, { equals: value });
+const oneOf = (parameter, values) => condition(parameter, { oneOf: Object.freeze(values) });
+
+/**
+ * Controls that decide whether a capability or infrastructure mode exists.
+ *
+ * Several live outside the source file's Feature Flags banner. The presentation
+ * moves them here without changing source order or creating a second editor.
+ */
+export const FEATURE_GROUPS = Object.freeze([
+  Object.freeze({
+    label: 'Gateway APIs',
+    params: Object.freeze([
+      'enableAIModelInference',
+      'enableDocumentIntelligence',
+      'enableOpenAIRealtime',
+      'enableUnifiedAiApi',
+    ]),
+  }),
+  Object.freeze({
+    label: 'Data, safety & governance',
+    params: Object.freeze([
+      'enableAzureAISearch',
+      'enableManagedRedis',
+      'enableAIGatewayPiiRedaction',
+      'enableAPICenter',
+    ]),
+  }),
+  Object.freeze({
+    label: 'Identity & observability',
+    params: Object.freeze([
+      'entraAuth',
+      'createAppInsightsDashboards',
+      'useExistingLogAnalytics',
+      'useAzureMonitorPrivateLinkScope',
+    ]),
+  }),
+  Object.freeze({
+    label: 'Network topology',
+    params: Object.freeze([
+      'useExistingVnet',
+      'apimV2UsePrivateEndpoint',
+      'apimV2PublicNetworkAccess',
+    ]),
+  }),
+]);
+
+const FEATURE_CONTROLS = new Set(FEATURE_GROUPS.flatMap((group) => group.params));
+const APIM_V2_SKUS = Object.freeze(['StandardV2', 'PremiumV2']);
+const APIM_CLASSIC_NETWORK_SKUS = Object.freeze(['Developer', 'Premium']);
+
+/**
+ * Visibility is an AND of explicit repository-proven conditions.
+ *
+ * A missing controller fails open: older compatible repositories may expose a
+ * dependent without carrying the newer flag, and hiding it would make the file
+ * impossible to edit. A pending dependent also stays visible so toggling its
+ * controller cannot conceal unsaved work.
+ */
+export const PARAMETER_VISIBILITY = Object.freeze({
+  aiSearchInstances: Object.freeze([enabled('enableAzureAISearch')]),
+
+  apicLocation: Object.freeze([enabled('enableAPICenter')]),
+  apicServiceName: Object.freeze([enabled('enableAPICenter')]),
+  apicSku: Object.freeze([enabled('enableAPICenter')]),
+
+  entraTenantId: Object.freeze([enabled('entraAuth')]),
+  entraClientId: Object.freeze([enabled('entraAuth')]),
+  entraAudience: Object.freeze([enabled('entraAuth')]),
+  entraClientSecret: Object.freeze([enabled('entraAuth')]),
+
+  redisCacheName: Object.freeze([enabled('enableManagedRedis')]),
+  redisPrivateEndpointName: Object.freeze([enabled('enableManagedRedis')]),
+  redisPublicNetworkAccess: Object.freeze([enabled('enableManagedRedis')]),
+  redisSkuName: Object.freeze([enabled('enableManagedRedis')]),
+  redisSkuCapacity: Object.freeze([enabled('enableManagedRedis')]),
+  redisHighAvailability: Object.freeze([enabled('enableManagedRedis')]),
+
+  apimApplicationInsightsDashboardName: Object.freeze([enabled('createAppInsightsDashboards')]),
+  funcApplicationInsightsDashboardName: Object.freeze([enabled('createAppInsightsDashboards')]),
+  foundryApplicationInsightsDashboardName: Object.freeze([enabled('createAppInsightsDashboards')]),
+
+  logAnalyticsName: Object.freeze([enabled('useExistingLogAnalytics', false)]),
+  existingLogAnalyticsName: Object.freeze([enabled('useExistingLogAnalytics')]),
+  existingLogAnalyticsRG: Object.freeze([enabled('useExistingLogAnalytics')]),
+  existingLogAnalyticsSubscriptionId: Object.freeze([enabled('useExistingLogAnalytics')]),
+
+  existingVnetRG: Object.freeze([enabled('useExistingVnet')]),
+  dnsZoneRG: Object.freeze([enabled('useExistingVnet')]),
+  dnsSubscriptionId: Object.freeze([enabled('useExistingVnet')]),
+  existingPrivateDnsZones: Object.freeze([enabled('useExistingVnet')]),
+
+  vnetAddressPrefix: Object.freeze([enabled('useExistingVnet', false)]),
+  apimSubnetPrefix: Object.freeze([enabled('useExistingVnet', false)]),
+  privateEndpointSubnetPrefix: Object.freeze([enabled('useExistingVnet', false)]),
+  functionAppSubnetPrefix: Object.freeze([enabled('useExistingVnet', false)]),
+  agentSubnetPrefix: Object.freeze([enabled('useExistingVnet', false)]),
+  apimNsgName: Object.freeze([enabled('useExistingVnet', false)]),
+  privateEndpointNsgName: Object.freeze([enabled('useExistingVnet', false)]),
+  functionAppNsgName: Object.freeze([enabled('useExistingVnet', false)]),
+  agentSubnetNsgName: Object.freeze([enabled('useExistingVnet', false)]),
+  apimRouteTableName: Object.freeze([enabled('useExistingVnet', false)]),
+
+  apimNetworkType: Object.freeze([oneOf('apimSku', APIM_CLASSIC_NETWORK_SKUS)]),
+  apimV2UsePrivateEndpoint: Object.freeze([oneOf('apimSku', APIM_V2_SKUS)]),
+  apimV2PublicNetworkAccess: Object.freeze([oneOf('apimSku', APIM_V2_SKUS)]),
+  apimV2PrivateEndpointName: Object.freeze([
+    oneOf('apimSku', APIM_V2_SKUS),
+    enabled('apimV2UsePrivateEndpoint'),
+  ]),
 });
 
-function featureEnabled(value) {
-  if (value === false || value === 'false') return false;
-  if (value === true || value === 'true') return true;
+function comparable(value) {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return value;
+}
+
+function conditionMatches(rule, ctx) {
+  const value = comparable(ctx.paramValue(rule.parameter));
+  if (value === undefined || value === null) return true;
+  if (Object.prototype.hasOwnProperty.call(rule, 'equals')) {
+    return value === rule.equals;
+  }
+  if (rule.oneOf) return rule.oneOf.includes(value);
   return true;
+}
+
+export function parameterVisible(name, ctx) {
+  if (ctx.pendingFor(name)) return true;
+  const rules = PARAMETER_VISIBILITY[name];
+  return !rules || rules.every((rule) => conditionMatches(rule, ctx));
 }
 
 function featureSection(section) {
@@ -77,20 +190,34 @@ function resourceNamesSection(section) {
 export function deploymentPresentation(doc, ctx) {
   const source = doc.outline?.sections || [];
   if (doc.path !== MAIN_DEPLOYMENT_PATH) return source;
-  const visible = (name) => {
-    const flag = FEATURE_DEPENDENCIES[name];
-    return !flag || ctx.pendingFor(name) || featureEnabled(ctx.paramValue(flag));
-  };
+  const sourceNames = new Set(source.flatMap((section) => section.params));
+  const visible = (name) => parameterVisible(name, ctx);
   const sections = source
-    .map((section) => ({
-      ...section,
-      params: section.params.filter(visible),
-      groups: (section.groups || []).map((group) => ({
-        ...group,
-        params: group.params.filter(visible),
-      })).filter((group) => group.params.length > 0),
-      sourceParameterCount: section.params.length,
-    }))
+    .map((section) => {
+      if (featureSection(section)) {
+        const groups = FEATURE_GROUPS.map((group) => ({
+          label: group.label,
+          blocks: [],
+          params: group.params.filter((name) => sourceNames.has(name) && visible(name)),
+        })).filter((group) => group.params.length > 0);
+        return {
+          ...section,
+          params: groups.flatMap((group) => group.params),
+          groups,
+          sourceParameterCount: section.params.length,
+        };
+      }
+      const include = (name) => !FEATURE_CONTROLS.has(name) && visible(name);
+      return {
+        ...section,
+        params: section.params.filter(include),
+        groups: (section.groups || []).map((group) => ({
+          ...group,
+          params: group.params.filter(include),
+        })).filter((group) => group.params.length > 0),
+        sourceParameterCount: section.params.length,
+      };
+    })
     .filter((section) => section.params.length > 0 || section.sourceParameterCount === 0);
   if (doc.subscription && sections.length) {
     const first = sections[0];

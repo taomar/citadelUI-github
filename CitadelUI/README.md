@@ -87,6 +87,14 @@ reads those banners and turns them into sections, explanations, and badges. The
 documentation you see is the documentation that is in the file — nothing is
 duplicated into the UI, so it cannot drift.
 
+For operation, every top-level boolean capability/mode control is presented once
+under **Feature Flags**, grouped as Gateway APIs, Data/Safety/Governance,
+Identity/Observability, or Network Topology. This is presentation only; the
+`.bicepparam` order is unchanged. A disabled capability hides only inputs proven
+exclusive to it by the Bicep module graph. Bidirectional choices such as existing
+versus new VNet/Log Analytics and APIM classic versus v2 show the matching input
+set, while shared settings and unsaved dependent edits remain visible.
+
 ### 2. LLM onboarding
 
 `bicep/infra/llm-backend-onboarding/main.bicepparam` — registers model providers
