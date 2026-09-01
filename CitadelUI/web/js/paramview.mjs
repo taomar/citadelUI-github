@@ -524,7 +524,7 @@ function subscriptionRow(param, ctx) {
   const input = h('input', {
     class: 'ctl ctl-w-long',
     value: subscription.value || '',
-    disabled: !subscription.available,
+    disabled: Boolean(subscription.error || !subscription.environmentName),
     spellcheck: false,
     autocomplete: 'off',
     'aria-label': 'Azure subscription ID',
@@ -533,7 +533,7 @@ function subscriptionRow(param, ctx) {
     'button',
     {
       class: 'btn btn-sm',
-      disabled: !subscription.available || !subscription.valid,
+      disabled: !subscription.valid,
       onclick: async () => {
         await ctx.saveSubscriptionId({
           environmentName: subscription.environmentName,
@@ -557,7 +557,7 @@ function subscriptionRow(param, ctx) {
   }, initialProblem || (
     subscription.available
       ? `Only AZURE_SUBSCRIPTION_ID is read from and written to ${subscription.source}.`
-      : `Create ${subscription.source} with azd before setting the subscription here.`
+      : `Saving creates ${subscription.source} with only AZURE_SUBSCRIPTION_ID.`
   ));
   input.addEventListener('input', () => {
     let valid = false;
@@ -570,7 +570,7 @@ function subscriptionRow(param, ctx) {
       status.className = 'param-guidance field-error';
       status.textContent = error.message;
     }
-    save.disabled = !subscription.available || !valid;
+    save.disabled = Boolean(subscription.error || !subscription.environmentName || !valid);
   });
 
   return h(

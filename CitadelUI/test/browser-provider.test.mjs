@@ -218,6 +218,35 @@ await assert.rejects(
   /changed outside/
 );
 
+const createTrace = [];
+const createProvider = new BrowserDirectoryProvider(
+  new MockDirectoryHandle('subscription-create', {}, createTrace)
+);
+const missingSubscription = await createProvider.readSubscriptionId('citadel-dev');
+assert.equal(missingSubscription.available, false);
+const createdSubscription = await createProvider.writeSubscriptionId(
+  'citadel-dev',
+  '44444444-4444-4444-4444-444444444444',
+  null
+);
+assert.equal(createdSubscription.available, true);
+assert.equal(createdSubscription.value, '44444444-4444-4444-4444-444444444444');
+const createdEnv = await (await (await createProvider.root.getDirectoryHandle('.azure'))
+  .getDirectoryHandle('citadel-dev')).getFileHandle('.env');
+const createdBytes = new Uint8Array(await (await createdEnv.getFile()).arrayBuffer());
+assert.equal(
+  new TextDecoder().decode(createdBytes),
+  'AZURE_SUBSCRIPTION_ID="44444444-4444-4444-4444-444444444444"\n'
+);
+await assert.rejects(
+  () => createProvider.writeSubscriptionId(
+    'another-env',
+    '55555555-5555-5555-5555-555555555555',
+    'a'.repeat(64)
+  ),
+  /changed outside/
+);
+
 const source = await provider.read('bicep/infra/main.bicepparam');
 const replacement = new TextEncoder().encode(source.text.replace('Developer', 'Basic'));
 const written = await provider.write('bicep/infra/main.bicepparam', replacement, {

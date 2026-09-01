@@ -27,7 +27,9 @@ validation allows only `.bicepparam`, `.bicep`, and `.xml`; it rejects
 traversal, absolute paths, `.azure` segments, and `.env` names before requesting
 a handle. A separate, non-generic browser method may open only
 `.azure/<environmentName>/.env`, return only `AZURE_SUBSCRIPTION_ID`, and replace
-only that value span after a full-file hash precondition. Other values remain
+only that value span after a full-file hash precondition. When the exact file is
+absent, it may create the environment directory and a new `.env` containing
+only that key. Other values remain
 opaque, and no environment bytes are sent to the server, transaction backup,
 registry, audit, or logs.
 

@@ -150,6 +150,8 @@ backup protocol: `.env` may contain unrelated sensitive values, so its bytes
 never leave the browser. The browser uses the File System Access API's atomic
 writable, rejects stale whole-file hashes, replaces only
 `AZURE_SUBSCRIPTION_ID`, and verifies the resulting file and value locally.
+If the exact `.azure/<environmentName>/.env` does not exist yet, entering a
+valid subscription ID creates it with only that one key.
 
 The UI always previews the exact text first. **History** shows transaction state
 without values or source content. Backups may contain sensitive configuration;

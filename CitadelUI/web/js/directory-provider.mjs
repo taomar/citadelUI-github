@@ -116,12 +116,13 @@ export class BrowserDirectoryProvider {
     return files;
   }
 
-  async subscriptionEnvironmentFile(environmentName) {
+  async subscriptionEnvironmentFile(environmentName, options = {}) {
     const name = validateAzdEnvironmentName(environmentName);
+    const create = Boolean(options.create);
     try {
-      const azure = await this.root.getDirectoryHandle('.azure');
-      const environment = await azure.getDirectoryHandle(name);
-      const handle = await environment.getFileHandle('.env');
+      const azure = await this.root.getDirectoryHandle('.azure', { create });
+      const environment = await azure.getDirectoryHandle(name, { create });
+      const handle = await environment.getFileHandle('.env', { create });
       return { name, handle, alias: `.azure/${name}/.env` };
     } catch (error) {
       if (error?.name === 'NotFoundError') return { name, handle: null, alias: `.azure/${name}/.env` };
@@ -174,14 +175,21 @@ export class BrowserDirectoryProvider {
     const id = validateSubscriptionId(value);
     await this.assertWritable();
     const before = await this.readSubscriptionId(environmentName);
-    if (!before.available) throw new Error(`No azd environment file exists at ${before.source}.`);
-    if (typeof expectedHash !== 'string' || before.hash !== expectedHash) {
+    if (
+      (before.available && (typeof expectedHash !== 'string' || before.hash !== expectedHash)) ||
+      (!before.available && expectedHash !== null)
+    ) {
       throw new Error('The azd environment file changed outside Citadel UI. Reload before saving.');
     }
-    const target = await this.subscriptionEnvironmentFile(before.environmentName);
+    const target = await this.subscriptionEnvironmentFile(before.environmentName, {
+      create: !before.available,
+    });
     const file = await target.handle.getFile();
     const bytes = new Uint8Array(await file.arrayBuffer());
-    if (await sha256(bytes) !== expectedHash) {
+    if (
+      (before.available && await sha256(bytes) !== expectedHash) ||
+      (!before.available && bytes.byteLength > 0)
+    ) {
       throw new Error('The azd environment file changed outside Citadel UI. Reload before saving.');
     }
     const text = new TextDecoder().decode(bytes);
