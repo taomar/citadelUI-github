@@ -2121,8 +2121,9 @@ function updateHeaderContext() {
 /**
  * The sheet's masthead: what this file is, where it lives, and its tabs.
  *
- * Sticky, and deliberately short -- two rows -- because every pixel it takes is
- * a parameter the user cannot see. Section headers stick underneath it.
+ * Deliberately short -- two rows -- because every pixel it takes is a parameter
+ * the user cannot see. Callers place it in `.sheet-sticky` with any section tabs
+ * that must remain attached beneath it.
  */
 function sheetStrip(title, doc, tabs, extraMeta) {
   const meta = (doc && doc.meta) || {};
@@ -2250,7 +2251,11 @@ function markCurrentSection() {
     ...els.workspace.querySelectorAll('.outline-link'),
   ];
   if (!links.length) return;
-  const line = els.workspace.getBoundingClientRect().top + 96;
+  const sticky = els.workspace.querySelector('.sheet-sticky');
+  const line =
+    els.workspace.getBoundingClientRect().top +
+    (sticky ? sticky.getBoundingClientRect().height : 96) +
+    8;
   let current = links[0];
   for (const link of links) {
     const sec = document.getElementById(`section-${link.dataset.section}`);
@@ -2262,9 +2267,20 @@ function markCurrentSection() {
     if (selected) link.setAttribute('aria-current', 'true');
     else link.removeAttribute('aria-current');
   }
-  const label = current.querySelector('.outline-label')?.textContent || 'Sections';
-  for (const node of els.workspace.querySelectorAll('.outline-drawer-current')) {
-    node.textContent = label;
+  const tabList = current.closest('.outline-tabs .outline-list');
+  if (tabList) {
+    const item = current.getBoundingClientRect();
+    const viewport = tabList.getBoundingClientRect();
+    const delta = item.left < viewport.left
+      ? item.left - viewport.left
+      : item.right > viewport.right
+        ? item.right - viewport.right
+        : 0;
+    if (delta) {
+      // This runs during vertical scroll. An immediate correction avoids
+      // composing a queue of horizontal smooth-scroll animations.
+      tabList.scrollBy({ left: delta, behavior: 'auto' });
+    }
   }
 }
 
@@ -2344,9 +2360,9 @@ function renderWorkspace() {
       ? h('pre', { class: 'raw' }, doc.text)
       : renderParamDocument(doc, editContext(doc));
 
-  const outlineStrip =
+  const sectionTabs =
     state.tab === 'params' && !SECTIONS_IN_RAIL.matches && !COMPACT_NAV.matches
-      ? renderOutlineNav(doc, editContext(doc), markCurrentSection, 'strip')
+      ? renderOutlineNav(doc, editContext(doc), markCurrentSection, 'tabs')
       : null;
 
   mount(
@@ -2354,9 +2370,13 @@ function renderWorkspace() {
     h(
       'div',
       { class: 'sheetwrap' },
-      sheetStrip(area ? area.title : doc.path, doc, tabs),
+      h(
+        'div',
+        { class: 'sheet-sticky' },
+        sheetStrip(area ? area.title : doc.path, doc, tabs),
+        sectionTabs
+      ),
       area && area.blurb ? h('p', { class: 'sheet-blurb' }, area.blurb) : null,
-      outlineStrip,
       h('div', { class: 'sheet-body' }, body)
     )
   );
@@ -2442,20 +2462,24 @@ function contractsOverview(area) {
     'div',
     { class: 'sheetwrap' },
     h(
-      'header',
-      { class: 'sheet-strip' },
+      'div',
+      { class: 'sheet-sticky' },
       h(
-        'div',
-        { class: 'strip-top' },
-        h('h2', { class: 'strip-title' }, area.title),
-        h('code', { class: 'strip-path' }, `${data.root}/${data.parent}/`),
+        'header',
+        { class: 'sheet-strip' },
         h(
           'div',
-          { class: 'strip-meta' },
+          { class: 'strip-top' },
+          h('h2', { class: 'strip-title' }, area.title),
+          h('code', { class: 'strip-path' }, `${data.root}/${data.parent}/`),
           h(
-            'button',
-            { class: 'btn btn-primary btn-sm', onclick: openCreateContract },
-            'New contract'
+            'div',
+            { class: 'strip-meta' },
+            h(
+              'button',
+              { class: 'btn btn-primary btn-sm', onclick: openCreateContract },
+              'New contract'
+            )
           )
         )
       )
@@ -2572,11 +2596,15 @@ function renderContractsArea(area) {
     h(
       'div',
       { class: 'sheetwrap' },
-      sheetStrip(
-        contract.name,
-        doc,
-        tabs,
-        contract.isTemplate ? h('span', { class: 'chip chip-note' }, 'template') : null
+      h(
+        'div',
+        { class: 'sheet-sticky' },
+        sheetStrip(
+          contract.name,
+          doc,
+          tabs,
+          contract.isTemplate ? h('span', { class: 'chip chip-note' }, 'template') : null
+        )
       ),
       contract.isTemplate
         ? h(

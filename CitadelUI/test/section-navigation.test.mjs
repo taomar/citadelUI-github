@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import { sectionNavTitle } from '../web/js/paramview.mjs';
 
@@ -30,5 +31,19 @@ assert.equal(
   sectionNavTitle('Extremely long custom section name without a delimiter'),
   'Extremely long custom'
 );
+
+const paramviewSource = readFileSync(new URL('../web/js/paramview.mjs', import.meta.url), 'utf8');
+const appSource = readFileSync(new URL('../web/js/app.mjs', import.meta.url), 'utf8');
+const componentStyles = readFileSync(
+  new URL('../web/css/components.css', import.meta.url),
+  'utf8'
+);
+assert.match(paramviewSource, /class: `outline\$\{tabs \? ' outline-tabs' : ''\}`/);
+assert.doesNotMatch(paramviewSource, /outline-drawer/);
+assert.match(appSource, /class: 'sheet-sticky'/);
+assert.match(appSource, /renderOutlineNav\(doc, editContext\(doc\), markCurrentSection, 'tabs'\)/);
+assert.match(componentStyles, /\.sheet-sticky\s*\{[\s\S]*?position:\s*sticky/);
+assert.match(componentStyles, /\.outline-tabs \.outline-list\s*\{[\s\S]*?overflow-x:\s*auto/);
+assert.doesNotMatch(componentStyles, /\.outline-drawer/);
 
 console.log('Section navigation labels are concise and deterministic.');

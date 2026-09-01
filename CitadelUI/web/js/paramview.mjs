@@ -1000,7 +1000,7 @@ export function renderOutlineNav(doc, ctx, onNavigate, variant) {
   const sections = deploymentPresentation(doc, ctx);
   if (!sections.length) return null;
 
-  const drawer = variant === 'strip';
+  const tabs = variant === 'tabs';
   const list = h(
     'ul',
     { class: 'outline-list' },
@@ -1016,19 +1016,24 @@ export function renderOutlineNav(doc, ctx, onNavigate, variant) {
             class: `outline-link${s.params.length ? '' : ' outline-note'}`,
             dataset: { section: s.id },
             title: s.title,
-            onclick: (event) => {
+            onclick: () => {
               ctx.setOpen(s.id, true);
               const target = document.getElementById(`section-${s.id}`);
               if (target) {
                 target.open = true;
-                target.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
-              }
-              const drawerRoot = event.currentTarget.closest('.outline-drawer');
-              if (drawerRoot) {
-                const current = drawerRoot.querySelector('.outline-drawer-current');
-                if (current) current.textContent = sectionNavTitle(s.title);
-                drawerRoot.removeAttribute('open');
-                drawerRoot.querySelector(':scope > summary')?.focus({ preventScroll: true });
+                const sheet = target.closest('.sheet');
+                const sticky = target.closest('.sheetwrap')?.querySelector('.sheet-sticky');
+                if (sheet && sticky) {
+                  const top =
+                    sheet.scrollTop +
+                    target.getBoundingClientRect().top -
+                    sheet.getBoundingClientRect().top -
+                    sticky.getBoundingClientRect().height -
+                    8;
+                  sheet.scrollTo({ top: Math.max(0, top), behavior: scrollBehavior() });
+                } else {
+                  target.scrollIntoView({ block: 'start', behavior: scrollBehavior() });
+                }
               }
               if (onNavigate) onNavigate(s.id);
             },
@@ -1037,22 +1042,21 @@ export function renderOutlineNav(doc, ctx, onNavigate, variant) {
           st.dirty
             ? h(
                 'span',
-                { class: `outline-badge outline-badge-dirty${drawer ? ' outline-badge-text' : ''}` },
-                drawer ? `${st.dirty} edited` : '\u25cf'
+                {
+                  class: 'outline-badge outline-badge-dirty',
+                  title: `${st.dirty} unsaved ${st.dirty === 1 ? 'change' : 'changes'}`,
+                },
+                '\u25cf'
               )
             : null,
-          s.params.length
-            ? h(
-                'span',
-                { class: 'outline-badge' },
-                drawer ? `${s.params.length} field${s.params.length === 1 ? '' : 's'}` : s.params.length
-              )
+          !tabs && s.params.length
+            ? h('span', { class: 'outline-badge' }, s.params.length)
             : null,
-          st.env
+          !tabs && st.env
             ? h(
                 'span',
                 { class: 'outline-env', title: `${st.env} expression-backed values` },
-                drawer ? `${st.env} env` : st.env
+                st.env
               )
             : null
         )
@@ -1061,27 +1065,10 @@ export function renderOutlineNav(doc, ctx, onNavigate, variant) {
   );
   const nav = h(
     'nav',
-    { class: `outline${drawer ? ' outline-drawer-body' : ''}`, 'aria-label': 'Sections' },
+    { class: `outline${tabs ? ' outline-tabs' : ''}`, 'aria-label': 'Sections' },
     list
   );
-  if (!drawer) return nav;
-  return h(
-    'details',
-    { class: 'outline-drawer' },
-    h(
-      'summary',
-      {},
-      h('span', { class: 'outline-drawer-label' }, 'Sections'),
-      h('span', { class: 'outline-drawer-current' }, sectionNavTitle(sections[0].title)),
-      h(
-        'span',
-        { class: 'outline-drawer-count' },
-        `${sections.length} section${sections.length === 1 ? '' : 's'}`
-      ),
-      h('span', { class: 'outline-drawer-caret', 'aria-hidden': 'true' }, '\u203a')
-    ),
-    nav
-  );
+  return nav;
 }
 
 export function renderParamDocument(doc, ctx) {
