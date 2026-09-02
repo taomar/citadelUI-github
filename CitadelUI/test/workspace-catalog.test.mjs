@@ -24,6 +24,7 @@ const {
   workspaceRow,
   workspaceStatus,
 } = await import('../web/js/workspace-catalog.mjs');
+const { RESUME_STAGES } = await import('../web/js/stage-progress.mjs');
 
 const styles = readFileSync(new URL('../web/css/components.css', import.meta.url), 'utf8');
 const catalogSource = readFileSync(new URL('../web/js/workspace-catalog.mjs', import.meta.url), 'utf8');
@@ -395,12 +396,68 @@ test('recent activity reads as a sentence, with time, action and target', async 
 test('the stepper asks for a connection name before it enables the token field', () => {
   assert.match(
     catalogSource,
-    /nameInput\.addEventListener\('input', \(\) => \{\s*\n\s*tokenInput\.disabled = !nameInput\.value\.trim\(\);/
+    /nameInput\.addEventListener\('input', \(\) => \{\s*\n\s*state\.newConnectionName = nameInput\.value;\s*\n\s*tokenInput\.disabled = !nameInput\.value\.trim\(\);/
   );
-  assert.match(catalogSource, /disabled: true,\s*\n\s*'aria-label': 'GitHub fine-grained/);
+  assert.match(catalogSource, /disabled: mode === 'new' && !\(state\.newConnectionName \|\| ''\)\.trim\(\)/);
   assert.match(catalogSource, /if \(!name\) throw new Error\('Give this connection a name first\.'\);/);
   // The token never lingers in a live input.
   assert.match(catalogSource, /const token = tokenInput\.value;\s*\n\s*tokenInput\.value = '';/);
+});
+
+test('new-connection fields exist only in new mode', () => {
+  // The reported defect: a saved, encrypted connection was selected and the
+  // step still rendered "New connection name", a token field and the
+  // persistence checkbox. The fields are now one arm of a four-way choice.
+  assert.match(
+    catalogSource,
+    /\.\.\.\(mode === 'new' \? newFields : needsToken \? reconnectFields : live \? liveFields : idleFields\)/
+  );
+  assert.match(catalogSource, /const mode = selected \? 'existing' : 'new';/);
+  assert.match(catalogSource, /const needsToken = Boolean\(selected\) && !live && !idle;/);
+  // Creating a connection happens only in new mode.
+  assert.match(catalogSource, /if \(mode === 'new'\) \{[^}]*actions\.createConnection/s);
+});
+
+test('a live connection is used as-is, and an idle one restores itself', () => {
+  // Live: no token, no resume, just the credential the application already has.
+  assert.match(catalogSource, /state\.account = live\s*\n\s*\? await actions\.useConnection\(selected\.id\)\s*\n\s*: await actions\.resumeConnection\(selected\.id\);/);
+  assert.match(catalogSource, /This connection already has a credential\./);
+  // Idle: restored automatically, with staged progress and no user step.
+  assert.match(catalogSource, /Citadel is restoring it from the encrypted credential \\u2014 no token needed\./);
+  assert.match(catalogSource, /new StageTracker\(RESUME_STAGES/);
+  assert.match(catalogSource, /if \(idle && !state\.resumeFailed && !state\.working\) \{\s*\n\s*next\.click\(\);/);
+  assert.deepEqual(
+    RESUME_STAGES.map((stage) => stage.label),
+    ['Restoring encrypted connection', 'Loading authorized repositories', 'Connected']
+  );
+});
+
+test('a connection with no usable credential reconnects itself, keeping its name and account', () => {
+  // Not "add a new connection": the existing profile is reconnected, its name is
+  // fixed, and the server verifies the immutable account id.
+  assert.match(catalogSource, /field\('catalog-connection-token', `Reconnect \$\{selected\?\.name\}`, tokenInput\)/);
+  assert.match(catalogSource, /actions\.reconnectConnection\(selected\.id, \{/);
+  assert.match(catalogSource, /A token for any other account is refused/);
+  assert.match(catalogSource, /needsToken \? `Reconnect and continue` : 'Continue'/);
+  // The persistence checkbox is offered only when ticking it could change
+  // something.
+  assert.match(catalogSource, /vault\.available \? persistRow : null/);
+  // A credential that will not open is a recovery state for that connection.
+  assert.match(catalogSource, /if \(selected && !needsToken\) state\.resumeFailed = true;/);
+});
+
+test('the dropdown lists every saved connection and defaults to a usable one', () => {
+  // Every profile, including ones that need reconnecting — otherwise a
+  // disconnected session-only connection would be unreachable and the user would
+  // be pushed into creating a duplicate.
+  assert.match(catalogSource, /const profiles = connections;/);
+  assert.match(catalogSource, /profiles\.map\(\(profile\) =>\s*\n\s*h\(\s*\n\s*'option',/);
+  assert.match(
+    catalogSource,
+    /profileId:\s*\n\s*connections\.find\(\(item\) => isConnectionLive\(item\)\)\?\.id \|\|\s*\n\s*connections\.find\(\(item\) => isConnectionResumable\(item\)\)\?\.id \|\|\s*\n\s*connections\[0\]\?\.id \|\|\s*\n\s*null,/
+  );
+  // Switching clears only the secret belonging to the mode being left.
+  assert.match(catalogSource, /state\.newConnectionName = '';\s*\n\s*state\.resumeFailed = false;/);
 });
 
 test('no branch is preselected, and the local path is a shorter flow', () => {

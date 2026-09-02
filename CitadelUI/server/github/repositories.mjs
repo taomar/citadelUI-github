@@ -76,6 +76,28 @@ export function workingBranchName(environmentId) {
   return validateBranchName(`${WORKING_BRANCH_PREFIX}${id}`);
 }
 
+/**
+ * Where a commit goes when its branch would not take it.
+ *
+ * Two properties matter, and both come from the name:
+ *
+ *   - It is derived from the commit, so retrying the same save converges on the
+ *     same branch instead of littering the repository with one branch per
+ *     attempt. Recovery has to be idempotent or it is not recovery.
+ *   - It is a *sibling* of the working branch, never a child. Git refs are
+ *     paths, so `citadel-ui/<id>/save-x` cannot exist while `citadel-ui/<id>`
+ *     does — one cannot be both a file and a directory. A nested name would fail
+ *     precisely in the case this exists to handle.
+ */
+export function rescueBranchName(environmentId, commitSha) {
+  const id = String(environmentId ?? '');
+  if (!/^[A-Za-z0-9._-]{1,80}$/.test(id)) {
+    throw githubError(400, 'INVALID_ENVIRONMENT', 'Invalid environment id.');
+  }
+  const sha = validateCommitSha(commitSha);
+  return validateBranchName(`${WORKING_BRANCH_PREFIX}${id}-save-${sha.slice(0, 12)}`);
+}
+
 /** Public, non-sensitive projection of a GitHub repository. */
 export function describeRepository(repository) {
   return {

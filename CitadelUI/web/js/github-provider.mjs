@@ -19,7 +19,21 @@ export class GitHubRepositoryProvider {
     this.instrument = options.instrument || (() => {});
     this.snapshot = null;
     this.blobs = new Map();
+    // In-flight reads keyed by blob SHA, so concurrent readers of the same
+    // content share one request rather than racing each other.
+    this.pending = new Map();
   }
+
+  /**
+   * Every read here crosses a network.
+   *
+   * Discovery reads this to decide whether to scope itself to what Citadel's
+   * three editors need. It is stated by the provider rather than passed by the
+   * caller because it is a fact about this source, not a preference of whoever
+   * happens to be opening it — and because the eight call sites that open a
+   * workspace all forgot to pass it when it was an option.
+   */
+  remote = true;
 
   base() {
     return `/api/github/workspaces/${encodeURIComponent(this.environmentId)}`;
@@ -68,7 +82,10 @@ export class GitHubRepositoryProvider {
   async tree(options = {}) {
     if (!this.snapshot || options.refresh) {
       const snapshot = await this.request(`${this.base()}/tree`);
-      if (this.snapshot && this.snapshot.head !== snapshot.head) this.blobs.clear();
+      if (this.snapshot && this.snapshot.head !== snapshot.head) {
+        this.blobs.clear();
+        this.pending.clear();
+      }
       this.snapshot = snapshot;
       this.instrument({
         operation: 'enumerate',
@@ -82,6 +99,7 @@ export class GitHubRepositoryProvider {
   reset() {
     this.snapshot = null;
     this.blobs.clear();
+    this.pending.clear();
   }
 
   /** Current branch head, used as the optimistic concurrency token for saves. */
@@ -115,7 +133,36 @@ export class GitHubRepositoryProvider {
   async read(alias) {
     const file = await this.entry(alias);
     const cached = this.blobs.get(file.sha);
-    if (cached) return { ...cached, bytes: cached.bytes.slice() };
+    if (cached) return this.copy(cached, alias);
+    // Two aliases can name the same blob — a contract copied from another, a
+    // template shared by every instance. Caching the finished record alone only
+    // deduplicates readers that happen to be sequential; discovery reads with
+    // several requests in flight, so without sharing the in-flight promise the
+    // same bytes are fetched twice by whichever two callers raced. This is the
+    // same correction `discoverWorkspace` makes for aliases, applied to the
+    // content those aliases resolve to.
+    const pending = this.pending.get(file.sha);
+    if (pending) return this.copy(await pending, alias);
+    const work = this.fetch(alias, file);
+    this.pending.set(file.sha, work);
+    try {
+      return this.copy(await work, alias);
+    } finally {
+      this.pending.delete(file.sha);
+    }
+  }
+
+  /**
+   * A private copy, named for the alias that asked.
+   *
+   * The bytes are shared content, but the alias is the caller's — a record
+   * cached under one path must not tell the next caller it is a different file.
+   */
+  copy(record, alias) {
+    return { ...record, alias, bytes: record.bytes.slice() };
+  }
+
+  async fetch(alias, file) {
     const payload = await this.request(
       `${this.base()}/blob?alias=${encodeURIComponent(alias)}&sha=${encodeURIComponent(file.sha)}`
     );
@@ -142,7 +189,7 @@ export class GitHubRepositoryProvider {
     // IndexedDB or /data.
     this.blobs.set(file.sha, record);
     this.instrument({ operation: 'read', alias, size: record.size, hash });
-    return { ...record, bytes: record.bytes.slice() };
+    return record;
   }
 
   /**

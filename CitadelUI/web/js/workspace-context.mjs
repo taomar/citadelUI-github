@@ -201,7 +201,15 @@ async function retainedWorkspace() {
       lastScannedAt: scan.lastScannedAt,
     });
     await syncRegistryMetadata();
-    return { projectId: selected.projectId, environment: updated, handle, provider };
+    // The catalog this scan already produced, handed to `WorkspaceService` so
+    // opening does not immediately scan the same repository a second time.
+    return {
+      projectId: selected.projectId,
+      environment: updated,
+      handle,
+      provider,
+      catalog: scan.catalog,
+    };
   } catch {
     await registry.updateEnvironment(environment.id, {
       permission: 'reconnect-required',
@@ -221,8 +229,22 @@ function compatibilityMessage(capabilities) {
   return `Citadel UI needs ${missing.join(', ')}. No folder was accessed.`;
 }
 
-export async function scanProvider(provider) {
-  const catalog = await discoverWorkspace(provider);
+/**
+ * Scan a provider and describe what was found.
+ *
+ * The read scope is not decided here. `discoverWorkspace` narrows a remote
+ * provider to what Citadel's three editors need, because that is the one
+ * function that performs the reads; deciding it a second time in this wrapper
+ * would be two places holding one policy, and the two would eventually disagree.
+ * `options.scope` is still forwarded for the callers that legitimately want
+ * something narrower.
+ */
+export async function scanProvider(provider, options = {}) {
+  const catalog = await discoverWorkspace(provider, {
+    ...(options.scope ? { scope: options.scope } : {}),
+    ...(options.purpose ? { purpose: options.purpose } : {}),
+    ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+  });
   return {
     catalog,
     compatibility: catalog.compatibility,
@@ -288,7 +310,7 @@ export async function attachEnvironment(options) {
     });
     await mirror();
     if (activate) targetRegistry.setActive(project.id, updated.id);
-    return { projectId: project.id, environment: updated, handle, provider };
+    return { projectId: project.id, environment: updated, handle, provider, catalog: scan.catalog };
   } catch (error) {
     if (environment) await targetRegistry.removeEnvironment(environment.id);
     if (createdProject && project) await targetRegistry.removeProject(project.id);
@@ -465,7 +487,14 @@ export async function attachGitHubEnvironment(options) {
       environmentIds: [updated.id],
     });
     stage('ready');
-    return { projectId: project.id, environment: updated, handle: null, provider, attachment };
+    return {
+      projectId: project.id,
+      environment: updated,
+      handle: null,
+      provider,
+      attachment,
+      catalog: scan.catalog,
+    };
   } catch (error) {
     // The step that was actually running, so a retry resumes there rather than
     // at the beginning. A metadata failure after the branch succeeded must never
@@ -787,6 +816,7 @@ function catalogActions() {
         environment: updated,
         handle: source.kind === 'local' ? await registry.getHandle(environment.id) : null,
         provider,
+        catalog: scan.catalog,
       };
       return active;
     },

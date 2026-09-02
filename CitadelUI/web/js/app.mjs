@@ -48,6 +48,7 @@ import { environmentLocation, environmentSourceOf, isGitHubEnvironment } from '.
 import { createProvider } from './source-factory.mjs';
 import { historyEntry } from './history-entry.mjs';
 import { createCompareSession } from './compare-session.mjs';
+import { saveStatusLine } from './save-resolution.mjs';
 
 /**
  * GitHub's compare view for the environment's working branch.
@@ -1120,16 +1121,55 @@ async function commitSave() {
   else await loadDocument(state.current.path);
   // A warning here always describes something the source could not confirm
   // *after* the write landed, so the save is reported as done and the caveat is
-  // appended rather than replacing it with a failure.
-  const caveats = (result.warnings || []).join(' ');
-  setStatus(
-    result.changed
-      ? `Saved ${result.path}. Previous revision archived to ${result.archived}${
-          caveats ? ` ${caveats}` : ''
-        }`
-      : 'Nothing changed.',
-    caveats ? 'warn' : 'ok'
-  );
+  // appended rather than replacing it with a failure. A rescued save is the
+  // same shape: it happened, it is just not where it was aimed.
+  const line = saveStatusLine(result, environmentSourceOf(activeWorkspace().environment));
+  setStatus(line.text, line.tone);
+  if (line.rescued) await announceRescuedSave(line.rescued);
+}
+
+/**
+ * Show where a refused save actually went.
+ *
+ * The status bar carries the sentence, but a branch name and a compare link are
+ * things the user has to be able to click, so they get a dialog too. It is
+ * informational — there is nothing to confirm, because the change is already
+ * committed.
+ */
+async function announceRescuedSave(rescued) {
+  await new Promise((resolve) => {
+    const done = () => {
+      dismissDialog(true);
+      resolve();
+    };
+    showDialog(
+      rescued.title,
+      h(
+        'div',
+        { class: 'dialog-message' },
+        h('p', {}, rescued.message),
+        rescued.compareUrl
+          ? h(
+              'p',
+              {},
+              h(
+                'a',
+                {
+                  // A plain link: the browser opens GitHub directly and Citadel
+                  // UI performs no outbound request for the compare view.
+                  href: rescued.compareUrl,
+                  target: '_blank',
+                  rel: 'noreferrer noopener',
+                },
+                rescued.linkLabel
+              )
+            )
+          : null
+      ),
+      [h('button', { class: 'btn btn-primary', type: 'button', onclick: done }, 'Got it')],
+      { stack: true, onDismiss: () => resolve() }
+    );
+  });
 }
 
 /* --------------------------------------------------------------------- modal */

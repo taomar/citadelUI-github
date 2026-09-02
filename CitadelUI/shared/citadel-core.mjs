@@ -1,10 +1,18 @@
 import { parseBicepParam, nodeToValue } from './bicepparam/parser.mjs';
 import { applyEdits } from './bicepparam/edit.mjs';
 import { buildOutline } from './doclayer.mjs';
+// One definition of where Citadel's sources live. The interest policy and the
+// discovery that honours it must agree by construction, not by coincidence.
+import {
+  CONTRACT_ROOT_MARKER,
+  LLM_PATH,
+  MAIN_PATH,
+  citadelSourcePlan,
+  contractRootOf,
+  isContractAlias,
+  planScope,
+} from './source-plan.mjs';
 
-const CONTRACT_ROOT_MARKER = 'citadel-access-contracts';
-const MAIN_PATH = 'bicep/infra/main.bicepparam';
-const LLM_PATH = 'bicep/infra/llm-backend-onboarding/main.bicepparam';
 const MAIN_SIGNATURE = new Set([
   'environmentName',
   'location',
@@ -108,13 +116,37 @@ function expressionReferences(doc) {
   );
 }
 
+/**
+ * What a contract's *path* proves, without reading it.
+ *
+ * The subtree marker, the instance id and the default policy location are all
+ * conventions of the layout, so they are knowable from the alias alone. This is
+ * what lets a contract appear in the catalogue while its content stays
+ * undownloaded until the user opens that area.
+ */
+function pathContract(alias) {
+  const parts = alias.split('/');
+  const rootIndex = parts.lastIndexOf(CONTRACT_ROOT_MARKER);
+  if (rootIndex < 0) return null;
+  const root = parts.slice(0, rootIndex + 1).join('/');
+  const relative = parts.slice(rootIndex + 1, -1);
+  if (!isContractAlias(alias)) return null;
+  return {
+    root,
+    id: relative.join('/') || '__template',
+    dir: dirname(alias),
+    policyAlias: relative.length === 0 ? `${root}/policies/default-ai-product-policy.xml` : null,
+    isTemplate: relative.length === 0,
+  };
+}
+
 function contractMetadata(alias, doc) {
   const parts = alias.split('/');
   const rootIndex = parts.lastIndexOf(CONTRACT_ROOT_MARKER);
   if (rootIndex < 0) return null;
   const root = parts.slice(0, rootIndex + 1).join('/');
   const relative = parts.slice(rootIndex + 1, -1);
-  if (['modules', 'policies', 'base-contracts'].includes(relative[0])) return null;
+  if (!isContractAlias(alias)) return null;
   const id = relative.join('/') || '__template';
   const policyCall = doc.params
     .flatMap((parameter) => collectCalls(parameter.value, 'loadTextContent'))
@@ -252,65 +284,192 @@ function capabilityKind(document) {
   return 'generic';
 }
 
-export async function discoverWorkspace(provider) {
-  const entries = await provider.entries();
-  const aliases = new Set(entries.map((entry) => entry.alias));
-  const files = [];
-  for (const entry of entries.filter((item) => item.kind === 'bicepparam')) {
-    try {
-      const source = await provider.read(entry.alias);
-      const document = documentFromText(entry.alias, source.text, source);
-      const contract = contractMetadata(entry.alias, document.parsed);
-      document.contract = contract;
-      const references = expressionReferences(document.parsed);
-      let template = null;
-      let schema = { available: false, parameters: {}, error: 'No template resolved' };
-      if (document.using) {
-        template = resolveAlias(entry.alias, document.using);
-        if (aliases.has(template)) {
-          const templateSource = await provider.read(template);
-          const parameters = extractSchema(templateSource.text);
-          schema = {
-            available: Object.keys(parameters).length > 0,
-            parameters,
-            error: Object.keys(parameters).length ? null : 'No Bicep parameter declarations found',
-            source: 'selected-directory',
-          };
-        }
-      }
-      const item = {
-        id: entry.alias,
-        path: entry.alias,
-        name: basename(entry.alias),
-        unit: dirname(entry.alias) || '(root)',
-        archetype: references.length ? 'expression-backed' : 'declarative',
-        paramCount: document.params.length,
-        expressionCount: references.length,
-        envVarCount: 0,
-        envVars: [],
-        expressions: references,
-        template,
-        usingRaw: document.using,
-        contract,
-        bytes: source.size,
-        hash: source.hash,
-        parseError: null,
-        capability: null,
-        schema,
-      };
-      item.capability = capabilityKind({ ...document, contract });
-      files.push(item);
-    } catch (error) {
-      files.push({
-        id: entry.alias,
-        path: entry.alias,
-        name: basename(entry.alias),
-        unit: dirname(entry.alias) || '(root)',
-        parseError: error.message,
-        capability: 'generic',
-      });
+/**
+ * How many source reads may be in flight at once during discovery.
+ *
+ * Measured against a real 170-file Citadel repository over GitHub: the
+ * sequential loop this replaces took 38 seconds for 32 reads, because every one
+ * of them paid a full round trip in series. Six is enough to hide that latency
+ * without behaving like a crawler against one repository, and it is a parameter
+ * rather than a constant so a slower or stricter deployment can lower it.
+ */
+export const DEFAULT_DISCOVERY_CONCURRENCY = 6;
+
+/**
+ * Run `work` over `items` with at most `limit` in flight.
+ *
+ * Results are written by index, never pushed, so the output order is the input
+ * order regardless of which read finishes first. `Promise.all` over the whole
+ * list would be simpler and would open 32 sockets against one repository; the
+ * point of the bound is that it is a bound.
+ */
+async function mapWithLimit(items, limit, work) {
+  const results = new Array(items.length);
+  let next = 0;
+  const runners = new Array(Math.max(1, Math.min(limit, items.length))).fill(null).map(async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await work(items[index], index);
     }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+/**
+ * Discover the Citadel workspace behind a provider.
+ *
+ * Three properties beyond the obvious one:
+ *
+ *   - Every distinct alias is read exactly once. Sixteen parameter files
+ *     referenced ten templates and produced sixteen template reads; caching the
+ *     read *promise* deduplicates concurrent readers as well as sequential ones.
+ *   - A file that fails to parse or read produces a record rather than aborting
+ *     the scan, and its failure cannot affect its neighbours, which is why each
+ *     unit of work owns its own try/catch.
+ *   - A provider whose reads cross a network is scoped to what Citadel's three
+ *     editors actually need, and that decision is made *here*.
+ *
+ * ## Why the scope decision lives in this function
+ *
+ * It used to be an option every caller had to remember to pass, and the eight
+ * call sites that open a workspace all forgot — so the policy existed and did
+ * nothing. Worse, `WorkspaceService.deployments()` has no call site to fix: it
+ * rescans after a save, and would have gone back to reading the whole
+ * repository at the one moment the user is waiting.
+ *
+ * A read that costs a round trip is a fact about the *provider*, not about the
+ * caller, so the provider states it (`remote`) and the one function that
+ * performs the reads acts on it. There is nowhere left to forget.
+ *
+ * An explicit `options.scope` still wins, which is how the compatibility scan
+ * narrows further to just the signature set.
+ */
+export async function discoverWorkspace(provider, options = {}) {
+  const concurrency = options.concurrency ?? DEFAULT_DISCOVERY_CONCURRENCY;
+  const onProgress = options.onProgress || null;
+  const entries = await provider.entries();
+  // When a scope is in force, only these aliases may be downloaded. Everything
+  // else is described from its path. Citadel has three editors and knows where
+  // their sources live; reading the rest of the repository to discover that is
+  // work the product never needed.
+  //
+  // A local folder keeps the full scan: reading a directory already on the
+  // machine costs nothing worth optimising, and narrowing it would change
+  // behaviour the local edition has always had.
+  const scope =
+    options.scope instanceof Set
+      ? options.scope
+      : provider?.remote
+        ? planScope(citadelSourcePlan(entries), options.purpose)
+        : null;
+  const aliases = new Set(entries.map((entry) => entry.alias));
+  const candidates = entries.filter((item) => item.kind === 'bicepparam');
+  const targets = scope ? candidates.filter((entry) => scope.has(entry.alias)) : candidates;
+  const deferred = scope ? candidates.filter((entry) => !scope.has(entry.alias)) : [];
+  // Keyed by alias and holding the in-flight promise, so two parameter files
+  // that share a template wait on one read instead of issuing two.
+  const reads = new Map();
+  const readOnce = (alias) => {
+    if (!reads.has(alias)) reads.set(alias, provider.read(alias));
+    return reads.get(alias);
+  };
+  let completed = 0;
+  const announce = () => {
+    completed += 1;
+    onProgress?.({ done: completed, total: targets.length });
+  };
+
+  const files = (
+    await mapWithLimit(targets, concurrency, async (entry) => {
+      try {
+        const source = await readOnce(entry.alias);
+        const document = documentFromText(entry.alias, source.text, source);
+        const contract = contractMetadata(entry.alias, document.parsed);
+        document.contract = contract;
+        const references = expressionReferences(document.parsed);
+        let template = null;
+        let schema = { available: false, parameters: {}, error: 'No template resolved' };
+        if (document.using) {
+          template = resolveAlias(entry.alias, document.using);
+          if (aliases.has(template)) {
+            const templateSource = await readOnce(template);
+            const parameters = extractSchema(templateSource.text);
+            schema = {
+              available: Object.keys(parameters).length > 0,
+              parameters,
+              error: Object.keys(parameters).length ? null : 'No Bicep parameter declarations found',
+              source: 'selected-directory',
+            };
+          }
+        }
+        const item = {
+          id: entry.alias,
+          path: entry.alias,
+          name: basename(entry.alias),
+          unit: dirname(entry.alias) || '(root)',
+          archetype: references.length ? 'expression-backed' : 'declarative',
+          paramCount: document.params.length,
+          expressionCount: references.length,
+          envVarCount: 0,
+          envVars: [],
+          expressions: references,
+          template,
+          usingRaw: document.using,
+          contract,
+          bytes: source.size,
+          hash: source.hash,
+          parseError: null,
+          capability: null,
+          schema,
+        };
+        item.capability = capabilityKind({ ...document, contract });
+        return item;
+      } catch (error) {
+        return {
+          id: entry.alias,
+          path: entry.alias,
+          name: basename(entry.alias),
+          unit: dirname(entry.alias) || '(root)',
+          parseError: error.message,
+          capability: 'generic',
+        };
+      } finally {
+        announce();
+      }
+    })
+  ).filter(Boolean);
+
+  // Out-of-scope parameter files are still *listed*, so counts and navigation
+  // are complete, but nothing about them was downloaded. They carry what their
+  // path proves and say plainly that they were not read.
+  for (const entry of deferred) {
+    const contract = contractRootOf(entry.alias) ? pathContract(entry.alias) : null;
+    files.push({
+      id: entry.alias,
+      path: entry.alias,
+      name: basename(entry.alias),
+      unit: dirname(entry.alias) || '(root)',
+      archetype: 'declarative',
+      paramCount: null,
+      expressionCount: null,
+      envVarCount: 0,
+      envVars: [],
+      expressions: [],
+      template: null,
+      usingRaw: null,
+      contract,
+      bytes: null,
+      hash: null,
+      parseError: null,
+      // Derived from the path, which is what makes a contract a contract.
+      capability: contract ? 'access-contract' : 'generic',
+      schema: { available: false, parameters: {}, error: 'Not loaded yet' },
+      deferred: true,
+    });
   }
+
   files.sort((left, right) => left.path.localeCompare(right.path));
   const unitMap = new Map();
   for (const file of files) {

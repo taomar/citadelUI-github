@@ -180,8 +180,17 @@ export class WorkspaceService {
   }
 
   async deployments(options = {}) {
-    if (!this.catalog || options.refresh) {
-      this.catalog = await discoverWorkspace(this.provider);
+    if (options.refresh) this.catalog = null;
+    if (!this.catalog) {
+      // Adopt the catalog the open path already produced for this exact
+      // context, once. Opening scanned every parameter file and every template
+      // to decide the workspace was usable at all; discarding that and doing it
+      // again doubled the cost of opening a 170-file repository over the
+      // network. The handoff is consumed rather than kept, so a later refresh —
+      // after a save, an undo or an explicit reload — really does rescan.
+      const handed = this.context.catalog || null;
+      if (handed) this.context.catalog = null;
+      this.catalog = handed || (await discoverWorkspace(this.provider));
     }
     return this.catalog;
   }
@@ -301,6 +310,8 @@ export class WorkspaceService {
       // Anything the source could not confirm after the write landed. Never a
       // failure, so the caller reports it alongside a successful save.
       warnings: result.warnings || [],
+      // Where the change went when the intended branch refused it.
+      resolution: result.resolution || null,
     };
   }
 

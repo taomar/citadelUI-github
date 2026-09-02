@@ -13,6 +13,7 @@ import {
   filterSourceTree,
   isLfsPointer,
   MAX_TREE_ENTRIES,
+  rescueBranchName,
   validateBranchName,
   validateCommitSha,
 } from './repositories.mjs';
@@ -559,6 +560,49 @@ async function reconcileAmbiguousRefUpdate(client, token, options) {
   );
 }
 
+/**
+ * Give a commit a branch of its own when its intended branch refuses it.
+ *
+ * The commit already exists at this point; all that is missing is a name. This
+ * only ever *creates* a ref — never a force-update, never an overwrite — so it
+ * cannot destroy a collaborator's work no matter what state the repository is
+ * in. A `422 Reference already exists` is the success case of a retry: the name
+ * is derived from the commit, so the ref that already exists is the one this
+ * call was about to make.
+ *
+ * If the create fails for any other reason, the outcome is genuinely unknown
+ * and is reported as such, carrying the commit SHA. The commit is real and
+ * reachable by SHA even with no branch pointing at it, so the honest answer is
+ * "it exists, here is its identifier" — never "your edits were not applied".
+ */
+async function rescueCommit(client, token, options) {
+  const { fullName, environmentId, commitSha, warnings } = options;
+  const branch = rescueBranchName(environmentId, commitSha);
+  try {
+    await client.request(`/repos/${fullName}/git/refs`, {
+      token,
+      method: 'POST',
+      body: { ref: `refs/heads/${branch}`, sha: commitSha },
+    });
+    return branch;
+  } catch (error) {
+    if (error.status === 422) {
+      // Already there. Either this exact save was retried, or the first attempt
+      // created it and lost the answer. Both converge here.
+      warnings.push(`${branch} already held this change.`);
+      return branch;
+    }
+    throw githubError(
+      503,
+      'INDETERMINATE_RESCUE',
+      `Your change was committed as ${commitSha}, but Citadel UI could not put it on a branch: ${redactSecrets(
+        error.message
+      )} The commit exists and is not lost. Reload the environment before saving again; retrying now could duplicate the change.`,
+      { commit: commitSha, branch, indeterminate: true }
+    );
+  }
+}
+
 export async function commitChangeSet(client, token, options) {
   const {
     fullName,
@@ -731,6 +775,8 @@ export async function commitChangeSet(client, token, options) {
     }
   }
   const warnings = [];
+  let resolution = null;
+  let rescueBranch = null;
 
   try {
     await client.request(`/repos/${fullName}/git/refs/heads/${encodePath(branch)}`, {
@@ -739,49 +785,76 @@ export async function commitChangeSet(client, token, options) {
       body: { sha: commitSha, force: false },
     });
   } catch (error) {
-    if (error.status === 422) {
-      throw githubError(
-        409,
-        'STALE_WORKSPACE',
-        'The branch moved while saving. Your edits were not applied; reload and review again.'
+    if (error.status === 422 || error.status === 403 || error.status === 409) {
+      // The branch will not take this commit — it moved, or it is protected.
+      //
+      // That is not a failed save. The blob, the tree, the commit with the
+      // reviewed parent and the audit record all exist by now; only the ref
+      // update was refused. Reporting "your edits were not applied" would be
+      // false, and telling the user to reload would destroy work that is
+      // already durable in the repository. So the commit is given a name of its
+      // own and the user is told where it went.
+      rescueBranch = await rescueCommit(client, token, {
+        fullName,
+        environmentId,
+        commitSha,
+        warnings,
+      });
+      resolution = {
+        kind: error.status === 422 ? 'branch-moved' : 'branch-protected',
+        branch: rescueBranch,
+        reason:
+          error.status === 422
+            ? `${branch} moved while you were saving, so it would not accept this change.`
+            : `${redactSecrets(error.message)}`,
+      };
+      if (audit) {
+        // Recorded on a best-effort basis: the save is already durable, and a
+        // log failure must not be reported as a lost change.
+        try {
+          await audit.record({ ...record, branch: rescueBranch, baseCommit: head });
+        } catch {
+          warnings.push('The rescue branch could not be added to the change log.');
+        }
+      }
+    } else {
+      // Anything else — a transport failure, a timeout, a 5xx — means the update
+      // may have been applied before the answer was lost. Saying "not applied"
+      // would invite a retry that duplicates a commit that already landed, so the
+      // branch is asked what actually happened.
+      await reconcileAmbiguousRefUpdate(client, token, {
+        fullName,
+        branch,
+        commitSha,
+        cause: error,
+      });
+      warnings.push(
+        `The branch confirmed your change, but the update itself did not answer: ${redactSecrets(
+          error.message
+        )}`
       );
     }
-    if (error.status === 403 || error.status === 409) {
-      throw githubError(
-        403,
-        'BRANCH_PROTECTED',
-        `${redactSecrets(error.message)} Open a pull request from ${branch} instead.`
-      );
-    }
-    // Anything else — a transport failure, a timeout, a 5xx — means the update
-    // may have been applied before the answer was lost. Saying "not applied"
-    // would invite a retry that duplicates a commit that already landed, so the
-    // branch is asked what actually happened.
-    await reconcileAmbiguousRefUpdate(client, token, {
-      fullName,
-      branch,
-      commitSha,
-      cause: error,
-    });
-    warnings.push(
-      `The branch confirmed your change, but the update itself did not answer: ${redactSecrets(
-        error.message
-      )}`
-    );
   }
 
-  // Past this line the commit is durably on the branch. Nothing below may throw:
-  // reporting a failure for work that already landed would invite the user to
-  // re-apply it, and a retry would duplicate the commit.
+  // Past this line the commit is durably in the repository, on `branch` or on a
+  // rescue branch. Nothing below may throw: reporting a failure for work that
+  // already landed would invite the user to re-apply it, and a retry would
+  // duplicate the commit.
   const result = {
     transactionId,
     commit: commitSha,
     baseCommit: head,
-    branch,
+    branch: rescueBranch || branch,
     author: authorName || null,
     files: tree.map((entry) => ({ alias: entry.path, sha: entry.sha, mode: entry.mode })),
     warnings,
+    ...(resolution ? { resolution } : {}),
   };
+  if (resolution) {
+    // The working branch is untouched, so there is no head of "this save" to
+    // re-read. What the user needs is where the change went.
+    return result;
+  }
   try {
     const finalHead = await requireBranchHead(client, token, fullName, branch);
     if (finalHead !== commitSha) {

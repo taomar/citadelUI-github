@@ -6054,3 +6054,22 @@
     width: 100%;
   }
 }
+
+/* A saved connection stated compactly: what it is, whose it is, and whether it
+   can be used. It replaces three input fields, so it has to answer the question
+   those fields were wrongly asking. */
+.catalog-connection-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-3) var(--sp-5);
+  padding: var(--sp-4) var(--sp-5);
+  border-radius: var(--r-2);
+  background: var(--band);
+}
+
+.catalog-connection-summary code {
+  font-family: var(--mono);
+  font-size: var(--t-meta);
+  color: var(--ink-3);
+}

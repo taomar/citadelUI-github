@@ -36,7 +36,7 @@ import { environmentSourceOf } from './registry.mjs';
 import { connectionStatusLabel, isConnectionLive, isConnectionResumable } from './github-connections.mjs';
 import { activityLabel, activityReason } from './activity.mjs';
 import { isRepositorySelectable, repositoryBlockedReason } from './github-selection.mjs';
-import { ATTACH_STAGES, StageTracker, createStageRegion } from './stage-progress.mjs';
+import { ATTACH_STAGES, RESUME_STAGES, StageTracker, createStageRegion } from './stage-progress.mjs';
 
 /**
  * The status vocabulary, in the order of how much attention a row deserves.
@@ -172,6 +172,14 @@ export function relativeTime(value, now = Date.now()) {
 
 function chip(label, variant) {
   return h('span', { class: `chip ${variant}` }, label);
+}
+
+/** One mapping from a connection's status word to its chip, used by both surfaces. */
+function statusChipFor(status) {
+  if (status === 'persistent' || status === 'session') return 'chip-ok';
+  if (status === 'persistent-idle') return 'chip-brand';
+  if (status === 'unavailable') return 'chip-danger';
+  return 'chip-warn';
 }
 
 /**
@@ -612,13 +620,6 @@ export function presentWorkspaceCatalog(options) {
         );
         return [main, detail];
       });
-    }
-
-    function statusChipFor(status) {
-      if (status === 'persistent' || status === 'session') return 'chip-ok';
-      if (status === 'persistent-idle') return 'chip-brand';
-      if (status === 'unavailable') return 'chip-danger';
-      return 'chip-warn';
     }
 
     function openReconnectDialog(profile) {
@@ -1179,7 +1180,17 @@ export function runAddWorkspace(options) {
   const state = {
     step: 'source',
     kind: null,
-    profileId: connections.find((item) => isConnectionLive(item))?.id || null,
+    // Default to a connection the user can actually proceed with. Falling back
+    // to any saved connection rather than to "new" matters: a profile that needs
+    // reconnecting should offer to reconnect *itself*, not ask for a second
+    // connection to the same account.
+    profileId:
+      connections.find((item) => isConnectionLive(item))?.id ||
+      connections.find((item) => isConnectionResumable(item))?.id ||
+      connections[0]?.id ||
+      null,
+    newConnectionName: '',
+    resumeFailed: false,
     account: null,
     projectId: null,
     projectLabel: 'Citadel',
@@ -1295,16 +1306,70 @@ export function runAddWorkspace(options) {
     );
   }
 
+  /**
+   * Choose a GitHub connection.
+   *
+   * This step has four states, and the defect it was rebuilt to fix was showing
+   * all of them at once: a user with a saved, encrypted connection selected was
+   * still shown "New connection name", "GitHub token" and the persistence
+   * checkbox, and reasonably asked why the product wanted a token it already
+   * had. Fields that belong to creating a connection are now rendered only when
+   * a connection is being created.
+   *
+   *   new              — no saved connection, or "Add a new connection" chosen.
+   *   live             — the connection already has a credential; nothing to ask.
+   *   idle             — the credential is saved and sealed; it is restored
+   *                      automatically, with progress, and no token field.
+   *   needs a token    — no usable credential; the *existing* connection is
+   *                      reconnected, its name fixed, its account id verified.
+   */
   function connectionStep() {
     const error = alertLine();
-    const progress = statusLine();
-    const usable = connections.filter(
-      (profile) => isConnectionLive(profile) || isConnectionResumable(profile)
-    );
+    const profiles = connections;
+    const selected = profiles.find((profile) => profile.id === state.profileId) || null;
+    const mode = selected ? 'existing' : 'new';
+    const live = selected ? isConnectionLive(selected) : false;
+    const idle = selected ? isConnectionResumable(selected) : false;
+    const needsToken = Boolean(selected) && !live && !idle;
+
+    const stages = new StageTracker(RESUME_STAGES, { onChange: () => region.update(stages) });
+    const region = createStageRegion({ label: 'Connection progress' });
+
+    const chooser = profiles.length
+      ? h(
+          'select',
+          {
+            id: 'catalog-connection-select',
+            class: 'ctl',
+            'aria-label': 'GitHub connection',
+            onchange: (event) => {
+              // Switching clears only the secret belonging to the mode being
+              // left. A token typed for one connection must never be submitted
+              // for another.
+              state.profileId = event.target.value || null;
+              state.newConnectionName = '';
+              state.resumeFailed = false;
+              go('connection');
+            },
+          },
+          h('option', { value: '' }, 'Add a new connection\u2026'),
+          profiles.map((profile) =>
+            h(
+              'option',
+              { value: profile.id, selected: state.profileId === profile.id },
+              `${profile.name} (@${profile.accountLogin}) \u2014 ${connectionStatusLabel(profile.status)}`
+            )
+          )
+        )
+      : null;
+
+    // ---- new connection ---------------------------------------------------
+
     const nameInput = h('input', {
       id: 'catalog-connection-name',
       class: 'ctl',
       maxlength: '80',
+      value: state.newConnectionName || '',
       placeholder: 'Work account',
       'aria-label': 'Connection name',
     });
@@ -1315,43 +1380,103 @@ export function runAddWorkspace(options) {
       autocomplete: 'off',
       spellcheck: 'false',
       placeholder: 'github_pat_...',
-      disabled: true,
-      'aria-label': 'GitHub fine-grained personal access token',
+      // In new mode the token stays closed until the connection has a name; when
+      // reconnecting, the name already exists and there is nothing to gate on.
+      disabled: mode === 'new' && !(state.newConnectionName || '').trim(),
+      'aria-label': needsToken
+        ? `Replacement token for ${selected.name}`
+        : 'GitHub fine-grained personal access token',
     });
     const persistInput = h('input', {
       id: 'catalog-connection-persist',
       type: 'checkbox',
       class: 'ctl-check',
+      checked: needsToken ? selected.credentialMode === 'persistent' : false,
       disabled: !vault.available,
     });
-    // The token field stays closed until the connection has a name. A credential
-    // pasted into an unnamed form produces a connection nobody can identify
-    // later, and the name cannot be added afterwards without another paste.
     nameInput.addEventListener('input', () => {
+      state.newConnectionName = nameInput.value;
       tokenInput.disabled = !nameInput.value.trim();
     });
 
-    const chooser = usable.length
+    const persistRow = h(
+      'label',
+      { class: 'catalog-persist', for: 'catalog-connection-persist' },
+      persistInput,
+      h('span', {}, 'Persist this connection on this device (encrypted)')
+    );
+    const persistHint = vault.available
       ? h(
-          'select',
-          {
-            id: 'catalog-connection-select',
-            class: 'ctl',
-            'aria-label': 'Existing connection',
-            onchange: (event) => {
-              state.profileId = event.target.value || null;
-            },
-          },
-          h('option', { value: '' }, 'Add a new connection\u2026'),
-          usable.map((profile) =>
-            h(
-              'option',
-              { value: profile.id, selected: state.profileId === profile.id },
-              `${profile.name} (@${profile.accountLogin}) \u2014 ${connectionStatusLabel(profile.status)}`
-            )
-          )
+          'p',
+          { class: 'hint' },
+          'Encrypted with a key mounted outside this container and outside the data volume. It protects a stolen data volume, not a compromised host. Leave it unticked to keep the credential in memory only.'
+        )
+      : h(
+          'p',
+          { class: 'hint' },
+          'No credential key is mounted on this deployment, so connections cannot be saved here.'
+        );
+
+    const newFields = [
+      field(
+        'catalog-connection-name',
+        'New connection name',
+        nameInput,
+        'Required. This is how the connection appears in the catalogue.'
+      ),
+      field(
+        'catalog-connection-token',
+        'GitHub token',
+        tokenInput,
+        'Fine-grained token. Repository access: Only select repositories. Repository permissions: Contents \u2014 Read and write.'
+      ),
+      persistRow,
+      persistHint,
+    ];
+
+    // ---- an existing connection -------------------------------------------
+
+    const summary = selected
+      ? h(
+          'div',
+          { class: 'catalog-connection-summary' },
+          h('strong', {}, selected.name),
+          h('code', {}, `@${selected.accountLogin}`),
+          chip(connectionStatusLabel(selected.status), statusChipFor(selected.status))
         )
       : null;
+
+    const reconnectFields = [
+      h(
+        'p',
+        { class: 'hint' },
+        `The saved credential for "${selected?.name}" is not usable. Paste a replacement fine-grained token for ${selected?.accountLogin}. A token for any other account is refused, because every workspace saved under this connection was chosen with this account's access.`
+      ),
+      field('catalog-connection-token', `Reconnect ${selected?.name}`, tokenInput),
+      // Offered only when it can change something: with no key mounted there is
+      // nothing to tick, and a control that does nothing is worse than none.
+      vault.available ? persistRow : null,
+      vault.available ? null : persistHint,
+    ].filter(Boolean);
+
+    const liveFields = [
+      h(
+        'p',
+        { class: 'hint' },
+        'This connection already has a credential. Continue to choose a repository \u2014 you can attach as many repositories and branches through it as you like.'
+      ),
+    ];
+
+    const idleFields = [
+      h(
+        'p',
+        { class: 'hint' },
+        'This connection is saved on this device. Citadel is restoring it from the encrypted credential \u2014 no token needed.'
+      ),
+      region.root,
+    ];
+
+    // ---- continue ---------------------------------------------------------
 
     const next = h(
       'button',
@@ -1359,24 +1484,16 @@ export function runAddWorkspace(options) {
         class: 'btn btn-primary',
         type: 'button',
         onclick: async () => {
-          const chosen = chooser ? chooser.value : '';
           next.disabled = true;
           state.working = true;
           say(error, '');
           try {
-            if (chosen) {
-              const profile = usable.find((item) => item.id === chosen);
-              say(progress, `Connecting ${profile.name}\u2026`);
-              state.account = isConnectionLive(profile)
-                ? await actions.useConnection(profile.id)
-                : await actions.resumeConnection(profile.id);
-              state.profileId = profile.id;
-            } else {
-              const name = nameInput.value.trim();
+            if (mode === 'new') {
+              const name = (nameInput.value || '').trim();
               if (!name) throw new Error('Give this connection a name first.');
               const token = tokenInput.value;
               tokenInput.value = '';
-              say(progress, 'Validating the token with GitHub\u2026');
+              stages.begin('restore', 'Validating the token with GitHub');
               const created = await actions.createConnection({
                 name,
                 token,
@@ -1390,74 +1507,75 @@ export function runAddWorkspace(options) {
                   'Connected, but the credential could not be encrypted on this device. This connection lasts for this session only.'
                 );
               }
+            } else if (needsToken) {
+              const token = tokenInput.value;
+              tokenInput.value = '';
+              stages.begin('restore', `Reconnecting ${selected.name}`);
+              state.account = await actions.reconnectConnection(selected.id, {
+                token,
+                persist: vault.available ? persistInput.checked : undefined,
+              });
+            } else {
+              // Live or idle: the server already holds, or can unseal, the
+              // credential. Nothing is asked of the user.
+              stages.begin('restore', live ? `Using ${selected.name}` : `Restoring ${selected.name}`);
+              state.account = live
+                ? await actions.useConnection(selected.id)
+                : await actions.resumeConnection(selected.id);
             }
-            say(progress, 'Loading repositories\u2026');
+            stages.begin('repos');
             await selection.connect(state.account);
+            stages.succeed();
             state.working = false;
             go('repository');
           } catch (failure) {
             state.working = false;
-            say(progress, '');
+            stages.fail(failure?.message || String(failure));
+            // A saved credential that will not open is a recovery state for that
+            // specific connection, not a reason to ask for a new connection.
+            if (selected && !needsToken) state.resumeFailed = true;
             say(error, failure?.message || String(failure));
             next.disabled = false;
+            if (state.resumeFailed) go('connection');
           }
         },
       },
-      'Continue'
+      needsToken ? `Reconnect and continue` : 'Continue'
+    );
+
+    const body = h(
+      'div',
+      { class: 'catalog-form' },
+      chooser
+        ? field(
+            'catalog-connection-select',
+            'Connection',
+            chooser,
+            'Pick a saved connection, or choose "Add a new connection" to enter a token.'
+          )
+        : h(
+            'p',
+            { class: 'hint' },
+            'No connection is saved yet. Name this one, then paste a fine-grained personal access token for the account that owns the repositories.'
+          ),
+      summary,
+      ...(mode === 'new' ? newFields : needsToken ? reconnectFields : live ? liveFields : idleFields),
+      error
     );
 
     present(
-      'Choose a GitHub connection',
-      h(
-        'div',
-        { class: 'catalog-form' },
-        chooser
-          ? field(
-              'catalog-connection-select',
-              'Use an existing connection',
-              chooser,
-              'Pick a saved connection, or choose "Add a new connection" to enter a token.'
-            )
-          : h(
-              'p',
-              { class: 'hint' },
-              'No connection is saved yet. Name this one, then paste a fine-grained personal access token for the account that owns the repositories.'
-            ),
-        field(
-          'catalog-connection-name',
-          'New connection name',
-          nameInput,
-          'Required. This is how the connection appears in the catalogue.'
-        ),
-        field(
-          'catalog-connection-token',
-          'GitHub token',
-          tokenInput,
-          'Fine-grained token. Repository access: Only select repositories. Repository permissions: Contents \u2014 Read and write.'
-        ),
-        h(
-          'label',
-          { class: 'catalog-persist', for: 'catalog-connection-persist' },
-          persistInput,
-          h('span', {}, 'Persist this connection on this device (encrypted)')
-        ),
-        vault.available
-          ? h(
-              'p',
-              { class: 'hint' },
-              'Encrypted with a key mounted outside this container and outside the data volume. It protects a stolen data volume, not a compromised host. Leave it unticked to keep the credential in memory only.'
-            )
-          : h(
-              'p',
-              { class: 'hint' },
-              'No credential key is mounted on this deployment, so connections cannot be saved here.'
-            ),
-        progress,
-        error
-      ),
+      mode === 'new' ? 'Add a GitHub connection' : `Use ${selected.name}`,
+      body,
       [backButton('source'), next],
-      chooser || nameInput
+      mode === 'new' ? chooser || nameInput : needsToken ? tokenInput : next
     );
+
+    // An idle connection restores itself. Kicking it off after `present` keeps
+    // the dialog painted first, and the attempt is tried once per entry so a
+    // refused credential does not spin.
+    if (idle && !state.resumeFailed && !state.working) {
+      next.click();
+    }
   }
 
   function repositoryStep() {

@@ -78,6 +78,10 @@ export class GitHubCommitCoordinator extends MutationCoordinator {
       // Anything the server could not confirm *after* the commit landed. These
       // never mean "retry"; they mean "applied, with something to know".
       headUnknown: Boolean(result.headUnknown),
+      // Present when the intended branch would not take the commit and it was
+      // given a branch of its own instead. The save succeeded; it just did not
+      // land where it was aimed, and the user has to be told where it went.
+      resolution: result.resolution || null,
       warnings: result.warnings || [],
       files: files.map((file) => ({ alias: file.alias, hash: file.afterHash || null })),
     };

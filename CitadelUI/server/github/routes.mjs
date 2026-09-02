@@ -125,6 +125,10 @@ export class GitHubRoutes {
     // and keeps an alias-scoped blob read from refetching the tree per file.
     this.treeCache = new Map();
     this.treeCacheLimit = options.treeCacheLimit ?? 8;
+    // Blobs are content-addressed, so a SHA hit is the same bytes by
+    // definition. Bounded, in memory only, and never written to `/data`.
+    this.blobCache = new Map();
+    this.blobCacheLimit = options.blobCacheLimit ?? 512;
   }
 
   /** Governance events never fail the operation they describe. */
@@ -162,6 +166,50 @@ export class GitHubRoutes {
       }
     }
     return this.treeCache.get(key);
+  }
+
+  /**
+   * Read one in-scope source, reusing an identical blob already in memory.
+   *
+   * A Git blob SHA is a hash of its bytes, so a hit is the same bytes by
+   * construction — this is a content-addressed cache, not a guess about
+   * freshness. Which blob a *path* points to still comes from the tree for the
+   * exact head every time, so the cache can never answer with a stale revision
+   * of a file: the key changes the moment the content does.
+   *
+   * It matters because ten templates were being fetched sixteen times for one
+   * scan, and the whole scan ran again on reopen. The bytes live only in this
+   * process and are never written to `/data`.
+   */
+  async blob(token, fullName, head, alias, sha, snapshot, repositoryId) {
+    const entry = snapshot?.files?.find((file) => file.alias === alias) || null;
+    // Only an entry the alias resolves to in this exact tree may be served from
+    // cache. Anything else falls through to the authoritative read, which
+    // performs the scope and precondition checks.
+    const key = entry ? `${repositoryId}:${entry.sha}` : null;
+    if (key && this.blobCache.has(key)) {
+      const hit = this.blobCache.get(key);
+      // Refresh recency: a Map preserves insertion order, so re-inserting is
+      // what makes the bounded eviction least-recently-used rather than
+      // first-in.
+      this.blobCache.delete(key);
+      this.blobCache.set(key, hit);
+      return hit;
+    }
+    const blob = await readSourceBlob(this.client, token, fullName, head, alias, sha, snapshot);
+    if (key && blob?.sha === entry.sha) {
+      this.blobCache.set(key, blob);
+      while (this.blobCache.size > this.blobCacheLimit) {
+        this.blobCache.delete(this.blobCache.keys().next().value);
+      }
+    }
+    return blob;
+  }
+
+  /** Forget cached trees and blobs, on disconnect or an identity change. */
+  forgetCaches() {
+    this.treeCache.clear();
+    this.blobCache.clear();
   }
 
   session(req) {
@@ -620,7 +668,7 @@ export class GitHubRoutes {
       throw githubError(404, 'UNKNOWN_CONNECTION', 'That GitHub connection is not saved.');
     }
     const removed = this.sessions.destroyProfile(profile.id);
-    this.treeCache.clear();
+    this.forgetCaches();
     const persisted = this.vault ? await this.vault.has(profile.id) : false;
     this.note({
       action: 'connection.disconnect',
@@ -658,7 +706,7 @@ export class GitHubRoutes {
       throw githubError(404, 'UNKNOWN_CONNECTION', 'That GitHub connection is not saved.');
     }
     this.sessions.destroyProfile(profile.id);
-    this.treeCache.clear();
+    this.forgetCaches();
     await this.vault?.remove(profile.id);
     this.note({
       action: 'connection.remove',
@@ -689,7 +737,7 @@ export class GitHubRoutes {
       // once the credential is confirmed gone, so a transport failure surfaces
       // rather than silently leaving a live session behind.
       const disconnected = this.sessions.destroy(tail[1]);
-      this.treeCache.clear();
+      this.forgetCaches();
       return { disconnected, erased: true };
     }
 
@@ -1103,17 +1151,19 @@ export class GitHubRoutes {
 
     if (req.method === 'GET' && operation === 'blob') {
       const head = await requireBranchHead(this.client, token, fullName, branch);
-      const blob = await readSourceBlob(
-        this.client,
+      const alias = url.searchParams.get('alias');
+      const snapshot = await this.tree(token, fullName, head);
+      const blob = await this.blob(
         token,
         fullName,
         head,
-        url.searchParams.get('alias'),
+        alias,
         url.searchParams.get('sha'),
-        await this.tree(token, fullName, head)
+        snapshot,
+        repository.id
       );
       return {
-        alias: url.searchParams.get('alias'),
+        alias,
         sha: blob.sha,
         size: blob.size,
         hash: blob.hash,

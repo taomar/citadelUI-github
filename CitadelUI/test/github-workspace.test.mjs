@@ -509,27 +509,30 @@ test('a branch that moved after review is rejected and leaves the branch unchang
   assert.equal(context.repository.refs.get(branch), moved);
 });
 
-test('a non-fast-forward ref update is reported as a conflict, never forced', async () => {
+test('a non-fast-forward ref update never forces, and rescues the commit instead', async () => {
   const context = fixture();
   const id = await attached(context);
   const branch = 'citadel-ui/env-github-one';
   const head = context.repository.refs.get(branch);
   context.github.failNextRefUpdate = true;
-  await assert.rejects(
-    context.routes.workspace({
-      req: request(id, { method: 'POST' }),
-      url: url(),
-      environmentId: ENVIRONMENT_ID,
-      operation: 'commits',
-      readBody: async () => ({
-        action: 'parameter-edit',
-        expectedHead: head,
-        transactionId: '11111111-2222-3333-4444-555555555555',
-        files: [{ alias: 'bicep/infra/new.bicepparam', create: true, after: Buffer.from('x\n').toString('base64') }],
-      }),
+  const result = await context.routes.workspace({
+    req: request(id, { method: 'POST' }),
+    url: url(),
+    environmentId: ENVIRONMENT_ID,
+    operation: 'commits',
+    readBody: async () => ({
+      action: 'parameter-edit',
+      expectedHead: head,
+      transactionId: '11111111-2222-3333-4444-555555555555',
+      files: [{ alias: 'bicep/infra/new.bicepparam', create: true, after: Buffer.from('x\n').toString('base64') }],
     }),
-    (error) => error.code === 'STALE_WORKSPACE'
-  );
+  });
+  // The commit exists and is reachable; it simply is not on the working branch.
+  assert.equal(result.resolution.kind, 'branch-moved');
+  assert.equal(result.branch, result.resolution.branch);
+  assert.equal(context.repository.refs.get(result.resolution.branch), result.commit);
+  // The original guarantees still hold: the branch is untouched and no update
+  // was ever forced.
   assert.equal(context.repository.refs.get(branch), head);
   assert.equal(
     context.github.calls.some((call) => call.method === 'PATCH' && call.path.includes('force')),
@@ -537,26 +540,32 @@ test('a non-fast-forward ref update is reported as a conflict, never forced', as
   );
 });
 
-test('a protected branch is surfaced as a permission error with a pull request hint', async () => {
+test('a protected branch keeps the change on a branch the user can open a PR from', async () => {
   const context = fixture();
   const id = await attached(context);
   const branch = 'citadel-ui/env-github-one';
   context.github.protectedBranches.add(branch);
   const head = context.repository.refs.get(branch);
-  await assert.rejects(
-    context.routes.workspace({
-      req: request(id, { method: 'POST' }),
-      url: url(),
-      environmentId: ENVIRONMENT_ID,
-      operation: 'commits',
-      readBody: async () => ({
-        action: 'parameter-edit',
-        expectedHead: head,
-        transactionId: '11111111-2222-3333-4444-555555555555',
-        files: [{ alias: 'bicep/infra/new.bicepparam', create: true, after: Buffer.from('x\n').toString('base64') }],
-      }),
+  const result = await context.routes.workspace({
+    req: request(id, { method: 'POST' }),
+    url: url(),
+    environmentId: ENVIRONMENT_ID,
+    operation: 'commits',
+    readBody: async () => ({
+      action: 'parameter-edit',
+      expectedHead: head,
+      transactionId: '11111111-2222-3333-4444-555555555555',
+      files: [{ alias: 'bicep/infra/new.bicepparam', create: true, after: Buffer.from('x\n').toString('base64') }],
     }),
-    (error) => error.code === 'BRANCH_PROTECTED' && /pull request/.test(error.message)
+  });
+  assert.equal(result.resolution.kind, 'branch-protected');
+  // The old advice was "open a pull request from <branch>" — from a branch that
+  // did not contain the change. The branch named now actually does.
+  assert.equal(context.repository.refs.get(result.resolution.branch), result.commit);
+  assert(
+    context.github
+      .treeOf(result.commit)
+      .some((entry) => entry.path === 'bicep/infra/new.bicepparam')
   );
   assert.equal(context.repository.refs.get(branch), head);
 });

@@ -16,6 +16,7 @@
  * in it. It creates no branch, no commit, and no registry record.
  */
 import { discoverWorkspace } from '../../shared/citadel-core.mjs';
+import { citadelSourcePlan, planScope } from '../../shared/source-plan.mjs';
 import { githubError } from './api.mjs';
 import { loadTree, readBlob, requireBranchHead } from './workspace.mjs';
 
@@ -32,6 +33,10 @@ export function githubScanProvider(client, token, fullName, snapshot) {
   const blobs = new Map();
   let reads = 0;
   return {
+    // Reads cross a network, so discovery scopes itself. This scan passes an
+    // explicit narrower scope as well; stating it here keeps the provider
+    // honest if that ever stops being true.
+    remote: true,
     async entries() {
       return snapshot.files.map((file) => ({ alias: file.alias, kind: file.kind }));
     },
@@ -89,7 +94,14 @@ function detectedCapabilities(catalog) {
  */
 export async function inspectRepositoryCompatibility(client, token, fullName, commitSha, branch = null) {
   const snapshot = await loadTree(client, token, fullName, commitSha);
-  const catalog = await discoverWorkspace(githubScanProvider(client, token, fullName, snapshot));
+  const provider = githubScanProvider(client, token, fullName, snapshot);
+  // Only the files that prove the three capabilities. Reading every parameter
+  // file in the repository to answer "is this a Citadel repository" downloaded
+  // the whole product to check its name plate.
+  const plan = citadelSourcePlan(snapshot.files);
+  const catalog = await discoverWorkspace(provider, {
+    scope: planScope(plan, 'capabilities'),
+  });
   return {
     fullName,
     branch,

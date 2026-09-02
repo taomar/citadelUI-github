@@ -171,6 +171,20 @@ export const ATTACH_STAGES = Object.freeze([
 ]);
 
 /**
+ * Bringing a saved connection back from its encrypted credential.
+ *
+ * There is no token stage, because there is no token to enter: that is the whole
+ * point of having saved it. Naming the steps anyway matters, because unsealing
+ * and then listing repositories is two round trips and only one of them can be
+ * slow.
+ */
+export const RESUME_STAGES = Object.freeze([
+  { id: 'restore', label: 'Restoring encrypted connection' },
+  { id: 'repos', label: 'Loading authorized repositories' },
+  { id: 'ready', label: 'Connected' },
+]);
+
+/**
  * Render a tracker into a compact inline region.
  *
  * Two live regions, not one: progress is polite so it does not interrupt, and a
