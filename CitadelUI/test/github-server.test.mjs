@@ -245,11 +245,15 @@ test('a GitHub environment is mirrored to /data without any credential', async (
   assert.equal(saved.status, 200);
   assert.deepEqual(saved.json().environments[0].source, {
     kind: 'github',
+    connectionProfileId: null,
     repositoryId: 9001,
     fullName: 'taomar/citadelQA',
     sourceBranch: 'main',
     workingBranch: 'citadel-ui/env-github-one',
     writeMode: 'working-branch',
+    lastKnownHead: null,
+    capabilities: null,
+    validatedAt: null,
   });
 
   const raw = await readFile(join(fixture.dataRoot, 'settings', 'registry.json'), 'utf8');
@@ -512,7 +516,7 @@ test('project and GitHub environment settings survive a container restart', asyn
   const restarted = await start({ dataRoot, root: fixture.root });
   t.after(() => close(restarted));
   const durable = (await restarted.call('/api/registry')).json();
-  assert.equal(durable.version, 3);
+  assert.equal(durable.version, 4);
   assert.deepEqual(
     durable.environments.map((item) => [item.label, item.source.kind]),
     [
@@ -521,7 +525,16 @@ test('project and GitHub environment settings survive a container restart', asyn
     ]
   );
   const github = durable.environments.find((item) => item.source.kind === 'github');
-  assert.deepEqual(github.source, environments[0].source);
+  // v4 normalises the connection-ownership fields onto every GitHub source. A
+  // record written without them keeps nulls rather than acquiring a connection
+  // it was never attached through.
+  assert.deepEqual(github.source, {
+    ...environments[0].source,
+    connectionProfileId: null,
+    lastKnownHead: null,
+    capabilities: null,
+    validatedAt: null,
+  });
   assert.equal(durable.projects[0].label, 'Citadel');
 
   // No credential of any kind is on the volume, so GitHub must be reconnected.

@@ -1,9 +1,19 @@
 const DB_NAME = 'citadel-ui';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const PROJECTS = 'projects';
 const ENVIRONMENTS = 'environments';
 const HANDLES = 'handles';
 const DRAFTS = 'drafts';
+/**
+ * Local read-only mirror of the server's connection profiles.
+ *
+ * The server owns these records: it is the only side that can bind one to a
+ * credential. The mirror exists so the catalogue can render a workspace's
+ * connection name in the same paint as the workspace itself, instead of showing
+ * every row as "unknown connection" until a fetch returns.
+ */
+const CONNECTIONS = 'connections';
+const VIEW_PREFERENCE_KEYS = Object.freeze(['search', 'source', 'status', 'sort', 'direction']);
 const PROFILE_DRAFT_FIELDS = Object.freeze({
   projectLabel: 160,
   environmentLabel: 160,
@@ -40,7 +50,7 @@ function uuid() {
 }
 
 /**
- * Registry v3 tagged source union.
+ * Registry v4 tagged source union.
  *
  * `source` is the authority for where an environment's files come from. The
  * flat `folderName` and `localPath` fields are kept on the browser record only
@@ -55,9 +65,42 @@ export function localSource(folderName, localPath) {
   };
 }
 
+/**
+ * Normalise a GitHub source to the v4 shape.
+ *
+ * The connection-ownership fields are always present, as nulls when unknown. A
+ * v3 record migrated forward has no recorded account identity, so it cannot be
+ * given a connection here without guessing which credential owns it — that
+ * record surfaces as `Reconnect` and is bound on the first reconnection.
+ */
+export function githubSource(source) {
+  return {
+    kind: 'github',
+    connectionProfileId: source.connectionProfileId ?? null,
+    repositoryId: source.repositoryId,
+    fullName: source.fullName,
+    sourceBranch: source.sourceBranch,
+    workingBranch: source.workingBranch,
+    writeMode: source.writeMode || 'working-branch',
+    lastKnownHead: source.lastKnownHead ?? null,
+    capabilities: Array.isArray(source.capabilities) ? source.capabilities : null,
+    validatedAt: source.validatedAt ?? null,
+  };
+}
+
 export function environmentSourceOf(environment) {
+  if (environment?.source?.kind === 'github') return githubSource(environment.source);
   if (environment?.source) return environment.source;
   return localSource(environment?.folderName, environment?.localPath);
+}
+
+/** Labels are compared case- and accent-insensitively, as the server does. */
+export function labelKey(value) {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
 }
 
 export function isGitHubEnvironment(environment) {
@@ -103,6 +146,11 @@ function openDatabase(indexedDB = globalThis.indexedDB, dbName = DB_NAME) {
       }
       if (!db.objectStoreNames.contains(HANDLES)) db.createObjectStore(HANDLES);
       if (!db.objectStoreNames.contains(DRAFTS)) db.createObjectStore(DRAFTS, { keyPath: 'key' });
+      // v4. Added, never populated here: the server owns these records and the
+      // mirror is replaced wholesale on the next fetch.
+      if (!db.objectStoreNames.contains(CONNECTIONS)) {
+        db.createObjectStore(CONNECTIONS, { keyPath: 'id' });
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -151,6 +199,7 @@ export class WorkspaceRegistry {
     this.profileDraftPrefix = options.profileDraftPrefix || `${this.dbName}.profile-draft`;
     this.pendingAttachmentKey = options.pendingAttachmentKey || `${this.dbName}.pending-attachment`;
     this.tombstoneKey = options.tombstoneKey || `${this.dbName}.pending-removals`;
+    this.viewPreferenceKey = options.viewPreferenceKey || `${this.dbName}.catalog-view`;
   }
 
   run(storeNames, mode, callback) {
@@ -204,6 +253,7 @@ export class WorkspaceRegistry {
     if (!handle || handle.kind !== 'directory') throw new Error('A directory must be selected.');
     const localPath = String(options.localPath || '').trim();
     if (!localPath) throw new Error('Local path is required.');
+    await this.assertLabelAvailable(projectId, value);
     const duplicate = await this.findSameHandle(handle);
     if (duplicate && !options.allowDuplicate) {
       throw new Error(`This folder is already attached as "${duplicate.label}". Reconnect that profile instead.`);
@@ -234,39 +284,72 @@ export class WorkspaceRegistry {
   }
 
   /**
+   * Refuse a workspace name already used inside the same project.
+   *
+   * Enforced here as well as on the server because the catalogue, the command
+   * bar and every activity line identify a workspace by its label. Two rows
+   * reading "Development" is not a cosmetic problem: it is an unanswerable
+   * question about which one a save just went to.
+   */
+  async assertLabelAvailable(projectId, label, exceptId = null) {
+    const wanted = labelKey(label);
+    const clash = (await this.listEnvironments(projectId)).find(
+      (item) => item.id !== exceptId && labelKey(item.label) === wanted
+    );
+    if (clash) {
+      throw new Error(`This project already has a workspace named "${clash.label}".`);
+    }
+  }
+
+  /**
+   * The workspace already attached for this repository, branch and connection,
+   * if there is one.
+   *
+   * Exposed rather than kept private because the catalogue offers "Open
+   * existing" instead of an error: the user asked for that branch, and they
+   * already have it.
+   */
+  async findAttachedGitHubEnvironment(projectId, source) {
+    return (
+      (await this.listEnvironments()).find(
+        (item) =>
+          item.source?.kind === 'github' &&
+          item.projectId === projectId &&
+          (item.source.connectionProfileId ?? null) === (source.connectionProfileId ?? null) &&
+          item.source.repositoryId === source.repositoryId &&
+          item.source.sourceBranch === source.sourceBranch
+      ) || null
+    );
+  }
+
+  /**
    * Attach a GitHub repository and branch as an environment.
    *
    * No credential, credential session id, or token-derived value is stored. The
    * record holds only the immutable repository id, the name GitHub returned for
-   * that id, and the two branch names.
+   * that id, the branch the user explicitly chose, the head it was validated
+   * at, and the id of the connection it was reached through.
    */
   async addGitHubEnvironment(projectId, label, source, options = {}) {
     const value = String(label || '').trim();
     if (!value) throw new Error('Environment label is required.');
     if (source?.kind !== 'github') throw new Error('A GitHub source is required.');
-    const duplicate = (await this.listEnvironments()).find(
-      (item) =>
-        item.source?.kind === 'github' &&
-        item.source.repositoryId === source.repositoryId &&
-        item.source.workingBranch === source.workingBranch
-    );
+    const normalized = githubSource(source);
+    await this.assertLabelAvailable(projectId, value);
+    const duplicate = await this.findAttachedGitHubEnvironment(projectId, normalized);
     if (duplicate) {
-      throw new Error(
-        `That repository and working branch are already attached as "${duplicate.label}".`
+      throw Object.assign(
+        new Error(
+          `${normalized.fullName} on ${normalized.sourceBranch} is already attached to this project as "${duplicate.label}". Open it instead.`
+        ),
+        { code: 'DUPLICATE_ENVIRONMENT_SOURCE', environmentId: duplicate.id }
       );
     }
     const environment = withSourceProjection({
       id: options.id || uuid(),
       projectId,
       label: value,
-      source: {
-        kind: 'github',
-        repositoryId: source.repositoryId,
-        fullName: source.fullName,
-        sourceBranch: source.sourceBranch,
-        workingBranch: source.workingBranch,
-        writeMode: source.writeMode || 'working-branch',
-      },
+      source: normalized,
       permission: 'granted',
       compatibility: 'unscanned',
       fingerprint: null,
@@ -544,7 +627,7 @@ export class WorkspaceRegistry {
       this.listEnvironments(),
     ]);
     return {
-      version: 3,
+      version: 4,
       projects: projects.map(({ id, label, createdAt, updatedAt }) => ({
         id,
         label,
@@ -567,6 +650,79 @@ export class WorkspaceRegistry {
         lastScannedAt: environment.lastScannedAt,
       })),
     };
+  }
+
+  /**
+   * Replace the local mirror of the server's connection profiles.
+   *
+   * Wholesale, not merged: the server is the only authority, so a profile absent
+   * from its answer is a profile that no longer exists. Only display fields are
+   * kept — nothing here unlocks anything.
+   */
+  async replaceConnections(profiles = []) {
+    const rows = profiles.map((profile) => ({
+      id: String(profile.id),
+      name: String(profile.name || ''),
+      accountLogin: String(profile.accountLogin || ''),
+      accountType: profile.accountType === 'Organization' ? 'Organization' : 'User',
+      credentialMode: profile.credentialMode === 'persistent' ? 'persistent' : 'session',
+      status: String(profile.status || 'reconnect'),
+      persisted: Boolean(profile.persisted),
+      connected: Boolean(profile.connected),
+      lastConnectedAt: profile.lastConnectedAt || null,
+    }));
+    const keep = new Set(rows.map((row) => row.id));
+    await this.run([CONNECTIONS], 'readwrite', async (tx) => {
+      const store = tx.objectStore(CONNECTIONS);
+      for (const existing of await requestResult(store.getAll())) {
+        if (!keep.has(existing.id)) store.delete(existing.id);
+      }
+      for (const row of rows) store.put(row);
+    });
+    return rows;
+  }
+
+  async listConnections() {
+    return this.run([CONNECTIONS], 'readonly', async (tx) => {
+      const rows = await requestResult(tx.objectStore(CONNECTIONS).getAll());
+      return rows.sort((a, b) => a.name.localeCompare(b.name));
+    });
+  }
+
+  /**
+   * Catalogue view state: search text, filters and sort order.
+   *
+   * Deliberately the only thing retained about the catalogue. It describes how
+   * the user likes to look at their own list and reveals nothing about what is
+   * in it, so it is safe in `localStorage` where the records themselves are not.
+   */
+  viewPreferences() {
+    try {
+      const value = JSON.parse(this.storage?.getItem(this.viewPreferenceKey) || 'null');
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+      const preferences = {};
+      for (const key of VIEW_PREFERENCE_KEYS) {
+        if (typeof value[key] === 'string' && value[key].length <= 120) {
+          preferences[key] = value[key];
+        }
+      }
+      return preferences;
+    } catch {
+      return {};
+    }
+  }
+
+  saveViewPreferences(value = {}) {
+    const preferences = {};
+    for (const key of VIEW_PREFERENCE_KEYS) {
+      if (typeof value[key] === 'string' && value[key].length <= 120) preferences[key] = value[key];
+    }
+    try {
+      this.storage?.setItem(this.viewPreferenceKey, JSON.stringify(preferences));
+      return preferences;
+    } catch {
+      return preferences;
+    }
   }
 
   profileDraft(scope) {

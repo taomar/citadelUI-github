@@ -134,6 +134,10 @@ export class GitHubSessionStore {
       accountId: identity.id,
       accountType: identity.type,
       tokenKind: meta.tokenKind || 'fine-grained',
+      // Which saved connection this credential belongs to, or null for a
+      // credential entered without one. Never leaves the process except as part
+      // of a status word.
+      profileId: meta.profileId || null,
       createdAt: now,
       lastUsedAt: now,
     });
@@ -146,10 +150,50 @@ export class GitHubSessionStore {
       accountId: session.accountId,
       accountType: session.accountType,
       tokenKind: session.tokenKind,
+      profileId: session.profileId || null,
       connectedAt: new Date(session.createdAt).toISOString(),
       idleExpiresAt: new Date(session.lastUsedAt + this.idleTimeoutMs).toISOString(),
       absoluteExpiresAt: new Date(session.createdAt + this.absoluteTimeoutMs).toISOString(),
     };
+  }
+
+  /**
+   * Is a saved connection currently live?
+   *
+   * The opaque id is not retained anywhere, by design, so this answers only the
+   * question the catalogue asks. Recovering a usable id for a profile means
+   * minting a new session from the stored credential.
+   */
+  hasProfile(profileId) {
+    if (!profileId) return false;
+    this.prune();
+    for (const session of this.sessions.values()) {
+      if (session.profileId === profileId) return true;
+    }
+    return false;
+  }
+
+  /** The live credential for a saved connection, or null. */
+  findByProfile(profileId) {
+    if (!profileId) return null;
+    this.prune();
+    for (const session of this.sessions.values()) {
+      if (session.profileId === profileId) return session;
+    }
+    return null;
+  }
+
+  /** Drop every session belonging to one saved connection. */
+  destroyProfile(profileId) {
+    if (!profileId) return 0;
+    let removed = 0;
+    for (const [key, session] of [...this.sessions]) {
+      if (session.profileId === profileId) {
+        this.forget(key);
+        removed += 1;
+      }
+    }
+    return removed;
   }
 
   /**

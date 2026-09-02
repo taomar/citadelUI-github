@@ -77,31 +77,106 @@ Capability signatures, not folder names, identify the guided areas below.
 
 ## GitHub repositories
 
-An environment can be a selected local folder or a GitHub repository. The GitHub
-source is chosen on the landing page next to **Local folder**:
+An environment can be a selected local folder or a GitHub repository. Both are
+reached the same way: from **Saved workspaces** on the landing page, or through
+**Add workspace** for a new one.
 
-1. Paste a **fine-grained personal access token** scoped to only the intended
+### Saved workspaces
+
+The landing page is a catalogue, not a form. Every workspace you have attached is
+listed with its source, repository or folder, branch, connection, detected
+capabilities, status and when it was last opened, and each row opens in one
+click. The list is searchable and filterable by source and status; only the
+search text, filters and sort order are remembered, never the list itself.
+
+A row's status is one word:
+
+| Status | Meaning |
+| --- | --- |
+| Ready | Openable now. |
+| Reconnect | Needs a credential or folder permission first. |
+| Missing | Its folder handle, or the connection it was attached through, is gone. |
+| Incompatible | The last validation found it is not a Citadel workspace. |
+| Stale | Attached but never validated or scanned. |
+
+**Detach** removes Citadel's record of a workspace from this device. It never
+deletes a branch, a commit or a file.
+
+### GitHub connections
+
+A connection is one GitHub account, under a name you choose. Workspaces reference
+the connection they were attached through, so a repository reached with two
+different credentials is two workspaces rather than one ambiguous row.
+
+Connections are managed in their own section, which shows the account, status,
+when it was last connected, and the repository-and-branch workspaces it reaches.
+
+1. Give the connection a **name**. The token field stays closed until you do: a
+   nameless connection cannot be told apart later, and the name cannot be added
+   afterwards without pasting the token again.
+2. Paste a **fine-grained personal access token** scoped to only the intended
    repositories, with `Contents: Read and write` (and `Metadata: Read-only`,
    which GitHub adds automatically). Classic tokens are refused, and no Pull
    requests permission is needed — Citadel only opens a compare URL that
    github.com's own session authorises.
-2. Citadel UI validates it, keeps it **only in server memory**, and hands the
-   browser an opaque session id. The token is never written to disk, browser
-   storage, a log, an audit record, or a response. Connecting reports its real
-   stages — validating, authenticating, loading repositories — and any failure
-   appears beside the token field, not only in the status bar.
-3. Pick a repository from the list the credential can actually reach, then pick a
-   branch. You never type an owner/repository path, and **no branch is chosen for
-   you**: the branch decides which tree Citadel edits, so it has to be selected.
-4. Citadel UI checks that the selected repository and branch really are a Citadel
+3. Citadel UI validates it, keeps it **only in server memory** unless you ask
+   otherwise, and hands the browser an opaque session id. The token is never
+   returned to the browser, and never written to a log, an audit record, the
+   registry, or the activity log.
+
+Reconnecting a connection requires a token for the **same GitHub account**. A
+token for a different account is refused and you are offered a separate
+connection instead — rebinding would silently point every workspace under that
+connection at repositories you did not choose. Removing a connection deletes its
+saved credential on this device; it revokes no token and deletes no branch, and
+the workspaces that used it stay listed as **Reconnect**.
+
+### Saving a connection on this device (optional)
+
+One checkbox: **Persist this connection on this device (encrypted)**, unticked by
+default. There is no passphrase, no unlock screen and no key-rotation ceremony.
+
+- **Unticked** — exactly the previous behaviour. The credential lives in server
+  memory and a container restart requires reconnecting.
+- **Ticked** — the credential is sealed at rest, and the server restores it by
+  itself on the next start. The browser never sees the token, before or after.
+
+It is available only when a key file is mounted (see **Encrypted credential
+persistence** in `SECURITY.md`). Without one the checkbox is disabled and says
+so, and session-only connections keep working normally.
+
+### Attaching a repository
+
+**Add workspace** is a guided sequence, because the decisions depend on each
+other: source, then connection, then repository, then branch, then names, then
+review.
+
+1. Pick a repository from the list the credential can actually reach. You never
+   type an owner/repository path.
+2. Pick a branch. **No branch is chosen for you**: the branch decides which tree
+   Citadel edits, so it has to be selected.
+3. Citadel UI checks that the selected repository and branch really are a Citadel
    workspace, using the same discovery the local folder editor is judged by, and
    names the capabilities it found. **Attach stays disabled until that check
    passes**, and the server repeats it against the exact branch head immediately
    before it creates anything — so a repository that is not a Citadel repository
    never gets a working branch or a registry record.
-5. Citadel UI creates or reuses the working branch `citadel-ui/<environment-id>`
+4. Citadel UI creates or reuses the working branch `citadel-ui/<environment-id>`
    from the branch you chose, and every save commits there. Direct writes to the
    selected branch are an explicit opt-in.
+
+The same repository and branch, through the same connection, cannot be attached
+to one project twice; the existing workspace is offered instead. Workspace names
+are unique inside their project.
+
+### Workspace activity
+
+Connection, attachment, validation and workspace-open events are recorded in a
+bounded, redacted log under `/data/settings/activity.json` and shown in **Recent
+activity** on the landing page. It holds an action, an outcome, an optional
+reason from a fixed list, and the names you chose. It has no free-text field, so
+it can never contain a token, a session id, a path, a parameter value, or file
+contents. Git commit **History** is separate and unchanged.
 
 Every Citadel operation is exactly one Git commit built from one tree:
 
@@ -126,9 +201,10 @@ oversized blobs, and unsupported file modes are refused rather than edited. The
 container talks only to `https://api.github.com`, accepts no API base URL from
 the user, and never follows a redirect.
 
-GitHub credentials are cleared when the container restarts, so GitHub
-environments stay listed and show **Reconnect GitHub** until a new session is
-established.
+GitHub credentials that were not saved on this device are cleared when the
+container restarts, so those workspaces stay listed and show **Reconnect** until
+a new session is established. A connection saved with the encrypted option is
+restored by the server on the next start, with no user step.
 
 If a save's branch update fails in transport, Citadel UI asks GitHub what
 actually happened rather than guessing. A commit that is the branch head or an
@@ -292,7 +368,11 @@ CitadelUI/
   compose.yaml         loopback-only, read-only runtime with /data
   server/
     index.mjs          hardened loopback API and static files
-    registry-store.mjs durable non-sensitive project/environment metadata
+    atomic-json.mjs    one durable, 0600, rename-based JSON write
+    registry-store.mjs durable non-sensitive project/environment metadata (v4)
+    connections.mjs    named GitHub connection profiles, server-owned
+    credentials.mjs    optional envelope-encrypted credential store
+    activity.mjs       bounded, redacted governance activity log
     transactions.mjs   backup, journal, audit, retention, recovery
     github/
       api.mjs          fixed-host api.github.com client, the only egress
@@ -325,7 +405,12 @@ CitadelUI/
                        the only place that dispatches on source kind
       github-session.mjs
                        opaque session id, never a token
+      github-connections.mjs
+                       named connections: create, resume, persist, remove
       github-setup.mjs repository and branch selection panel
+      workspace-catalog.mjs
+                       saved-workspace catalogue and guided attach flow
+      activity.mjs     browser half of the redacted activity log
       transaction-client.mjs
                        browser half of verified backup-before-write
       paramview.mjs    sections and parameter rows

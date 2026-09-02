@@ -17,6 +17,9 @@ import { nodeToValue, parseBicepParam } from './bicepparam/parser.mjs';
 import { buildOutline } from './doclayer.mjs';
 import { TransactionStore, transactionError } from './transactions.mjs';
 import { RegistryStore } from './registry-store.mjs';
+import { ConnectionProfileStore } from './connections.mjs';
+import { CredentialVault } from './credentials.mjs';
+import { ActivityStore, ACTIVITY_ACTIONS } from './activity.mjs';
 import { GitHubRoutes } from './github/routes.mjs';
 import { GitHubAuditStore } from './github/audit.mjs';
 import {
@@ -49,6 +52,20 @@ const BACKUP_BODY_LIMIT = 32 * 1024 * 1024;
  * in the change-set validator.
  */
 const GITHUB_COMMIT_BODY_LIMIT = 12 * 1024 * 1024;
+
+/**
+ * The activity actions a browser may append.
+ *
+ * Opening and detaching a workspace happen entirely in the browser, so the
+ * server would otherwise never learn of them. Everything a credential touches is
+ * recorded server-side instead, where it cannot be forged or omitted — a browser
+ * cannot claim a connection was created, reconnected or persisted.
+ */
+const CLIENT_ACTIVITY_ACTIONS = new Set(
+  ['environment.open', 'repository.detach', 'validation.failure'].filter((action) =>
+    Object.hasOwn(ACTIVITY_ACTIONS, action)
+  )
+);
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -263,6 +280,7 @@ async function handleApi(context) {
     correlationId,
     store,
     registryStore,
+    activityStore,
     allowedHost,
     allowedOrigin,
     sessionToken,
@@ -319,6 +337,34 @@ async function handleApi(context) {
 
   if (req.method === 'GET' && url.pathname === '/api/registry') {
     return sendJson(res, 200, await registryStore.read(), correlationId);
+  }
+
+  /**
+   * Workspace governance activity.
+   *
+   * The browser may append, because opening and detaching a workspace happen
+   * entirely in the browser and the server never learns of them otherwise. What
+   * it may append is deliberately narrow: an action from the fixed vocabulary,
+   * an outcome, and names the user themselves chose. There is no free-text
+   * field, so nothing a caller holds — a path, a parameter, a credential — has a
+   * place to travel in.
+   */
+  if (req.method === 'GET' && url.pathname === '/api/activity') {
+    if (!activityStore) throw transactionError(404, 'ROUTE_NOT_FOUND', 'API route not found.');
+    const requested = Number(url.searchParams.get('limit'));
+    const limit = Number.isInteger(requested) && requested > 0 ? Math.min(requested, 200) : 50;
+    return sendJson(res, 200, { events: await activityStore.list(limit) }, correlationId);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/activity') {
+    if (!activityStore) throw transactionError(404, 'ROUTE_NOT_FOUND', 'API route not found.');
+    const body = await readLimitedBody(req, context.jsonBodyLimit, true);
+    assertBodyKeys(body, new Set(['action', 'outcome', 'reason', 'target', 'account']));
+    if (!CLIENT_ACTIVITY_ACTIONS.has(String(body.action))) {
+      throw transactionError(400, 'INVALID_ACTIVITY_ACTION', 'That activity action is not accepted.');
+    }
+    const event = await activityStore.record({ ...body, origin: 'client' });
+    return sendJson(res, 200, { recorded: Boolean(event), event }, correlationId);
   }
 
   if (req.method === 'PUT' && url.pathname === '/api/registry') {
@@ -564,6 +610,14 @@ export async function createCitadelServer(options = {}) {
   const maxConcurrency = options.maxConcurrency ?? 32;
   const store = options.store || new TransactionStore({ dataRoot, ...(options.transactionOptions || {}) });
   const registryStore = options.registryStore || new RegistryStore({ dataRoot });
+  const connectionStore = options.connectionStore || new ConnectionProfileStore({ dataRoot });
+  const activityStore = options.activityStore || new ActivityStore({ dataRoot });
+  // The key is read from a path, never from an environment value: a variable is
+  // visible in `docker inspect`, in a process listing, and in a crash report,
+  // and would put the master key in all three.
+  const credentialVault =
+    options.credentialVault ||
+    new CredentialVault({ dataRoot, keyFile: options.credentialKeyFile });
   const githubRoutes =
     options.githubRoutes === null
       ? null
@@ -571,10 +625,15 @@ export async function createCitadelServer(options = {}) {
         new GitHubRoutes({
           registryStore,
           audit: new GitHubAuditStore({ dataRoot }),
+          profiles: connectionStore,
+          vault: credentialVault,
+          activity: activityStore,
           ...(options.githubOptions || {}),
         });
   await store.initialize();
   await registryStore.initialize();
+  await connectionStore.initialize();
+  await credentialVault.initialize();
   const indexHtml = await readFile(resolve(webRoot, 'index.html'), 'utf8');
   const bootstrapHtml = injectBootstrapMetadata(
     indexHtml,
@@ -627,6 +686,7 @@ export async function createCitadelServer(options = {}) {
         bootstrapHtml,
         store,
         registryStore,
+        activityStore,
         githubRoutes,
         allowedHost,
         allowedOrigin,
@@ -664,6 +724,11 @@ export async function createCitadelServer(options = {}) {
       // credential detail: the browser needs it to tell an unresolved attach
       // apart from a definite rejection, whatever the status says.
       if (error.attachUnconfirmed) detail.attachUnconfirmed = true;
+      // The local id of a saved connection the user should act on. Not a
+      // credential and not a session: it is a value the browser already holds
+      // for every connection in its own list, and without it "reconnect that
+      // one instead" is advice the UI cannot carry out.
+      if (disclosable && typeof error.profileId === 'string') detail.profileId = error.profileId;
       if (status >= 500) {
         // Correlation and error class only: never log paths, bodies, source text, or tokens.
         console.error(
@@ -688,7 +753,7 @@ export async function createCitadelServer(options = {}) {
   server.requestTimeout = options.requestTimeout ?? 30_000;
   server.keepAliveTimeout = options.keepAliveTimeout ?? 5_000;
 
-  return { server, store, registryStore, githubRoutes };
+  return { server, store, registryStore, connectionStore, credentialVault, activityStore, githubRoutes };
 }
 
 export async function startCitadelServer(options = {}) {

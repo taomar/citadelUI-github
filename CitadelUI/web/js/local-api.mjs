@@ -36,6 +36,9 @@ export async function localRequest(path, options = {}) {
       ...(detail.indeterminate ? { indeterminate: true } : {}),
       ...(detail.commit ? { commit: detail.commit } : {}),
       ...(detail.attachUnconfirmed ? { attachUnconfirmed: true } : {}),
+      // Which saved connection the user should act on. Not a credential: it is
+      // the same local id the connections list already shows.
+      ...(detail.profileId ? { profileId: detail.profileId } : {}),
     });
   }
   return body;

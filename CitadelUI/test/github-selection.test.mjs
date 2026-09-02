@@ -258,12 +258,21 @@ test('attachment carries the immutable repository id and the selected branch', a
   );
   assert.deepEqual(attached.source, {
     kind: 'github',
+    // Ownership comes from the credential that performed the attach. This
+    // session was created without a saved connection, so there is none — and it
+    // is recorded as null rather than invented.
+    connectionProfileId: null,
     repositoryId: 502,
     fullName: 'taomar/ai-hub-gateway-solution-accelerator',
     sourceBranch: 'CitadelDev',
     workingBranch: 'citadel-ui/env-accel',
     writeMode: 'working-branch',
+    lastKnownHead: fixture.accelerator.refs.get('citadel-ui/env-accel'),
+    capabilities: attached.source.capabilities,
+    validatedAt: attached.source.validatedAt,
   });
+  assert.ok(Array.isArray(attached.source.capabilities));
+  assert.ok(!Number.isNaN(Date.parse(attached.source.validatedAt)));
   // The chosen source branch is the parent of the working branch and is not moved.
   assert.equal(
     fixture.accelerator.refs.get('citadel-ui/env-accel'),

@@ -25,6 +25,17 @@ export function githubSessionId() {
   return storage()?.getItem(STORAGE_KEY) || null;
 }
 
+/**
+ * Forget the browser's opaque id without contacting the server.
+ *
+ * Exported so a caller that has just revoked a specific session can drop the id
+ * that pointed at it. Forgetting without revoking would leave a live credential
+ * on the server that nothing can address.
+ */
+export function forgetGitHubSession() {
+  forgetSessionId();
+}
+
 function assertUsableSessionId(id) {
   if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(id)) {
     throw new Error('GitHub returned an unusable session identifier.');

@@ -448,3 +448,10 @@ CitadelUI/.srv.log
 
 # Local agent recovery checkpoint
 /AGENT_PROGRESS.md
+
+# Citadel UI credential keys. The master key lives outside this repository by
+# design; these patterns are a second line of defence against a stray copy.
+*.key
+credential.key
+CitadelUI/container.env
+CitadelUI/.data/

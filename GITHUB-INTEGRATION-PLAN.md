@@ -2,7 +2,10 @@
 
 ## Status
 
-Proposed architecture for `taomar/citadelUI-github`.
+Shipped. Phase 1 delivered the GitHub source, atomic commits and undo. Phase 2
+delivered named connection profiles, registry v4, the saved-workspace catalogue,
+the guided attach flow, the redacted activity log, and optional encrypted
+credential persistence.
 
 This edition keeps the existing local-folder product intact in
 `taomar/Citadel-UI`. It adds a separate GitHub-backed source mode so a user can
@@ -129,7 +132,7 @@ flowchart LR
   API --> SM[In-memory credential sessions]
   API --> GH[api.github.com]
 
-  WS --> REG[WorkspaceRegistry v3]
+  WS --> REG[WorkspaceRegistry v4]
   REG --> IDB[Browser IndexedDB]
   REG --> DATA[/data metadata mirror]
 ```
@@ -541,7 +544,7 @@ Citadel-Transaction: <uuid>
   blobs. If later edits touched them, reject instead of overwriting.
 - Never reset, force-update, delete, or rewrite a shared branch.
 
-## Registry v3
+## Registry v4
 
 Replace local-only environment shape with a tagged source union:
 
@@ -567,10 +570,15 @@ or:
   label,
   source: {
     kind: 'github',
+    connectionProfileId,   // which saved connection reached it, or null
     repositoryId,
     fullName,
-    sourceBranch,
-    workingBranch
+    sourceBranch,          // the branch the user explicitly chose
+    workingBranch,
+    writeMode,
+    lastKnownHead,         // the commit the attach validated
+    capabilities,          // what Citadel detected there
+    validatedAt
   }
 }
 ```
@@ -578,10 +586,59 @@ or:
 Migration:
 
 - Existing v2 records become `kind: local`.
+- v3 GitHub records gain the connection-ownership fields as nulls. They are not
+  invented: a v3 record has no recorded account identity, so binding it to a
+  connection would be a guess about which credential owns a repository — exactly
+  what this schema exists to prevent. Those records surface as **Reconnect** and
+  are bound on the first reconnection.
+- Environment labels become unique per project. Existing data may violate that,
+  and refusing to start would strand a whole registry behind a rule added for the
+  user's benefit, so migration suffixes duplicates deterministically.
 - Local directory handles remain in the handles store.
 - GitHub records never carry a token or opaque credential session ID.
-- After restart, GitHub environments remain visible but show
-  **Reconnect GitHub** until a new in-memory credential session is established.
+- After restart, GitHub environments remain visible. One whose connection was
+  saved with the encrypted option is restored by the server automatically;
+  everything else shows **Reconnect** until a credential is established.
+
+## Connection profiles
+
+Connection profiles live in their own document, `/data/settings/connections.json`,
+rather than inside the registry.
+
+Projects and environments are browser-owned metadata mirrored into `/data` under
+an epoch/revision handshake the browser drives. A connection profile is the
+opposite: the server owns it, because it is the thing a stored credential is
+bound to and the browser must never be able to rebind it. One document with one
+revision counter would give two owners one lock, and every server-side reconnect
+would invalidate the browser's next save.
+
+The registry refers to a profile by id and tolerates the id being gone. A removed
+connection leaves its workspaces visible and marked **Reconnect** rather than
+deleting them: removing a connection is a metadata action and must never destroy
+work.
+
+Identity is the immutable numeric account id, never the login. Reconnecting
+compares account ids; a token for a different account is refused and a separate
+profile is offered.
+
+## Encrypted credential persistence
+
+One checkbox, `Persist this connection on this device (encrypted)`, unticked by
+default, with no passphrase and no unlock step. See `CitadelUI/SECURITY.md` for
+the envelope construction and the stated threat model: it protects a stolen
+`/data` volume from someone who does not also hold the key file, and nothing
+else.
+
+The key is read from a path named by `CITADEL_CREDENTIAL_KEY_FILE`, generated
+outside the repository and outside `/data`, and mounted read-only. A missing or
+malformed key disables the option rather than failing startup.
+
+## Workspace activity
+
+A bounded, redacted governance log at `/data/settings/activity.json`, separate
+from both the commit audit that authorises undo and from Git History. Its schema
+is closed — a fixed action vocabulary, a fixed reason vocabulary, and no
+free-text field — so a token, a path or a parameter value has nowhere to travel.
 
 ## User experience
 
@@ -694,7 +751,7 @@ Exit criteria: local-folder edition behaves byte-for-byte as before.
 - Add in-memory credential sessions.
 - Add PAT validation, logout, expiry, and redaction.
 - List repositories and branches.
-- Add GitHub environment registry v3 migration.
+- Add GitHub environment registry migration.
 - Implement read-only GitHub provider.
 
 Exit criteria: restart-safe metadata, reconnect-required credential state, and

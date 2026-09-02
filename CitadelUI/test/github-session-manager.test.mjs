@@ -167,7 +167,12 @@ test('the panel clears the token field before it awaits anything', () => {
   assert.ok(cleared < awaited, 'the token field is cleared only after awaiting');
   // The value is read once, into a local, before being cleared.
   assert.match(handler, /const token = tokenInput\.value;\s*\n\s*tokenInput\.value = '';/);
-  assert.match(handler, /beginConnect\(connect, token\)/);
+  assert.match(handler, /beginConnect\(connect, token, \{/);
+  // Every credential this panel accepts belongs to a named connection: either a
+  // saved one being resumed, or a new one whose name was required before the
+  // token could be entered.
+  assert.match(handler, /sessions\.resumeProfile\(existing\.id\)/);
+  assert.match(handler, /sessions\.connectProfile\(\{/);
   // And the guard is the application-wide lock, not just this panel's — and it
   // covers a restore still in flight, whose answer would otherwise land after
   // this connect and replace it.

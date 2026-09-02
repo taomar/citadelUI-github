@@ -313,11 +313,22 @@ test('the token dialog contains its own overflow instead of clipping prose', () 
 
 test('a hidden source panel never narrates the visible one', () => {
   const context = readFileSync(new URL('../web/js/workspace-context.mjs', import.meta.url), 'utf8');
-  // Routing the GitHub panel's status into the page description described the
-  // local source in terms of an access token.
-  assert.match(context, /githubStatusLine\.textContent = text/);
+  const catalog = readFileSync(new URL('../web/js/workspace-catalog.mjs', import.meta.url), 'utf8');
+  // The original defect: two source panels rendered at once, one hidden, with
+  // the hidden one's status line routed into the shared page description — so
+  // the local source was described in terms of an access token.
+  //
+  // v4 removes the condition rather than handling it. The landing screen has no
+  // source toggle and no hidden panel: it is a catalogue, and choosing a source
+  // happens inside a stepper that renders exactly one step at a time. So the
+  // assertions are structural — the panels are gone, and the step function is
+  // selected by name rather than by hiding its siblings.
+  assert.doesNotMatch(context, /setup-source-github/);
+  assert.doesNotMatch(context, /githubWrapper|localPanel/);
   assert.doesNotMatch(context, /onMessage: \(text\) => \{\s*\n\s*message\.textContent = text/);
-  assert.match(context, /'Choose the exact Citadel repository folder for this label\.'/);
+  assert.match(catalog, /\}\)\[state\.step\]\(\);/);
+  // One source is chosen, and the flow branches on it rather than showing both.
+  assert.match(catalog, /state\.kind === 'local' \? \['source', 'details', 'review'\] : steps/);
 });
 
 test('the wide setup layout keeps its two-column datasheet', () => {

@@ -119,8 +119,15 @@ export class RepositorySelection {
    * The manager serialises across every panel and owns which credential is
    * active. This panel additionally binds its own generation, so a response it
    * started before losing the race cannot publish repositories.
+   *
+   * `options.exchange` replaces what is sent without changing any of the
+   * concurrency rules around it. A named connection and a bare token differ only
+   * in their request body; duplicating the generation, supersession and
+   * stage-boundary logic per call site is how two of the three end up subtly
+   * wrong. `options.skipTokenShape` exists for the one exchange that carries no
+   * token at all — resuming a connection the server already holds.
    */
-  async beginConnect(connect, token) {
+  async beginConnect(connect, token, options = {}) {
     const manager = this.sessions;
     const stage = this.onStage || (() => {});
     if (this.connecting || manager?.busy) {
@@ -134,9 +141,13 @@ export class RepositorySelection {
       // Stage boundaries are the awaits themselves, so a stage can never be
       // reported as reached before the work it names has actually started.
       stage('token');
-      assertTokenShape(token);
+      if (!options.skipTokenShape) assertTokenShape(token);
       stage('auth');
-      const outcome = manager ? await manager.connect(token) : { account: await connect(token) };
+      const outcome = options.exchange
+        ? await options.exchange(token)
+        : manager
+          ? await manager.connect(token)
+          : { account: await connect(token) };
       // `null` means the manager superseded this attempt and already revoked the
       // credential it obtained.
       const account = outcome?.account || null;
@@ -299,29 +310,39 @@ export class RepositorySelection {
     if (!this.checkCompatibility || !this.repository || !this.branch) return null;
     const generation = (this.validationId += 1);
     const connection = this.connectionId;
+    // The pair this verdict will be *about*, captured before the request. The
+    // answer is bound to these rather than to whatever the response echoes: a
+    // normalisation difference between what was asked and what came back would
+    // otherwise make a successful check look permanently stale, leaving Continue
+    // disabled and the line reading "Checking" forever.
+    const repositoryId = this.repository.id;
+    const branch = this.branch;
     this.validating = true;
     this.validation = null;
     this.validationError = null;
     this.onChange(this);
     try {
-      const result = await this.checkCompatibility(this.repository.id, this.branch);
+      const result = await this.checkCompatibility(repositoryId, branch);
       // A verdict that arrived after the user moved on, or under a credential
       // that has since been replaced, is discarded rather than shown.
       if (generation !== this.validationId || connection !== this.connectionId) return null;
-      this.validation = result;
+      this.validation = { ...result, repositoryId, branch };
       if (!result.supported) {
         this.validationError = `${
           this.repository.fullName
-        } is not a Citadel repository on ${this.branch}. Missing: ${
+        } is not a Citadel repository on ${branch}. Missing: ${
           (result.missingCapabilities || []).join(', ') || 'the Citadel source layout'
         }.`;
       }
-      return result;
+      return this.validation;
     } catch (error) {
       if (generation !== this.validationId || connection !== this.connectionId) return null;
       this.validationError = error.message;
       return null;
     } finally {
+      // Cleared when this attempt is still the current one. A superseded attempt
+      // must not clear the flag its successor set, and the successor always runs
+      // its own `finally`, so the flag cannot be stranded.
       if (generation === this.validationId) {
         this.validating = false;
         this.onChange(this);
@@ -350,9 +371,11 @@ export class RepositorySelection {
         this.branch &&
         // A repository the token can push to is not automatically a Citadel
         // repository. Attach is offered only for a branch the server has
-        // confirmed holds the Citadel source layout.
+        // confirmed holds the Citadel source layout — and only for the exact
+        // repository and branch that verdict was requested for.
         this.validation?.supported === true &&
-        this.validation.branch === this.branch
+        this.validation.branch === this.branch &&
+        this.validation.repositoryId === this.repository.id
     );
   }
 

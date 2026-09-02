@@ -30,6 +30,12 @@ import {
 } from './github-selection.mjs';
 import { closeDialog, showDialog } from './dialog.mjs';
 import { CONNECT_STAGES, StageTracker, createStageRegion } from './stage-progress.mjs';
+import {
+  connectionStatusLabel,
+  isConnectionLive,
+  isConnectionResumable,
+  listConnections,
+} from './github-connections.mjs';
 
 function element(name, attributes = {}, ...children) {
   const node = document.createElement(name);
@@ -418,6 +424,69 @@ export function createGitHubPanel(options = {}) {
     'aria-label': 'GitHub fine-grained personal access token',
     'aria-describedby': 'setup-github-account setup-github-progress setup-github-error',
   });
+  /**
+   * Which saved connection this panel is using, and what to call a new one.
+   *
+   * Every credential this product accepts now belongs to a named connection.
+   * Leaving one path that produces an anonymous session would leave workspaces
+   * attached through nothing — visible in the catalogue, permanently marked
+   * "Reconnect", and impossible to attribute to an account.
+   */
+  const connectionSelect = element('select', {
+    id: 'setup-github-connection',
+    class: 'ctl',
+    'aria-label': 'GitHub connection',
+  });
+  const connectionName = element('input', {
+    id: 'setup-github-connection-name',
+    class: 'ctl',
+    maxlength: '80',
+    placeholder: 'Work account',
+    'aria-label': 'New connection name',
+  });
+  const persistInput = element('input', {
+    id: 'setup-github-persist',
+    type: 'checkbox',
+    class: 'ctl-check',
+  });
+  let savedConnections = [];
+  let vaultAvailable = false;
+
+  /** The chosen saved connection, or null when the user is adding one. */
+  function chosenConnection() {
+    return savedConnections.find((profile) => profile.id === connectionSelect.value) || null;
+  }
+
+  function renderConnections() {
+    connectionSelect.replaceChildren(
+      element('option', { value: '' }, 'Add a new connection\u2026'),
+      ...savedConnections.map((profile) =>
+        element(
+          'option',
+          { value: profile.id },
+          `${profile.name} (@${profile.accountLogin}) \u2014 ${connectionStatusLabel(profile.status)}`
+        )
+      )
+    );
+    connectionSelect.hidden = savedConnections.length === 0;
+    persistInput.disabled = !vaultAvailable;
+  }
+
+  async function loadConnections() {
+    try {
+      const result = await listConnections();
+      savedConnections = (result?.profiles || []).filter(
+        (profile) => isConnectionLive(profile) || isConnectionResumable(profile)
+      );
+      vaultAvailable = Boolean(result?.vault?.available);
+    } catch {
+      savedConnections = [];
+      vaultAvailable = false;
+    }
+    renderConnections();
+    render();
+  }
+
   const searchInput = element('input', {
     id: 'setup-github-search',
     name: 'repositorySearch',
@@ -514,8 +583,13 @@ export function createGitHubPanel(options = {}) {
         : 'Connect GitHub';
     connectButton.setAttribute('aria-busy', String(selection.connecting || restoring));
 
-    tokenInput.disabled = busy || selection.connected;
+    tokenInput.disabled = busy || selection.connected || Boolean(chosenConnection());
     connectButton.disabled = busy || selection.connected;
+    connectionSelect.disabled = busy || selection.connected;
+    connectionName.disabled = busy || selection.connected || Boolean(chosenConnection());
+    connectionName.hidden = Boolean(chosenConnection());
+    persistInput.disabled =
+      busy || selection.connected || !vaultAvailable || Boolean(chosenConnection());
     disconnectButton.disabled = busy || !selection.connected;
     searchInput.disabled = busy || !selection.connected;
     repositorySelect.disabled = busy || !selection.connected;
@@ -642,6 +716,8 @@ export function createGitHubPanel(options = {}) {
         // panel happened to be restoring or connecting.
         const token = tokenInput.value;
         tokenInput.value = '';
+        const existing = chosenConnection();
+        const name = connectionName.value.trim();
         // Connecting is serialised application-wide, so two panels cannot both
         // exchange a credential and overwrite one browser session. A restore
         // still in flight counts: its answer would otherwise land afterwards and
@@ -654,14 +730,35 @@ export function createGitHubPanel(options = {}) {
           render();
           return;
         }
+        if (!existing && !name) {
+          // Refused before the token is spent: a nameless connection cannot be
+          // told apart from any other one later, and the name cannot be added
+          // afterwards without another paste.
+          selection.error = 'Name this connection before connecting.';
+          onMessage(selection.error);
+          render();
+          connectionName.focus();
+          return;
+        }
         connectStages.reset();
         try {
-          const account = await selection.beginConnect(connect, token);
+          const account = await selection.beginConnect(connect, token, {
+            skipTokenShape: Boolean(existing),
+            exchange: existing
+              ? () => sessions.resumeProfile(existing.id)
+              : (value) =>
+                  sessions.connectProfile({
+                    name,
+                    token: value,
+                    persist: persistInput.checked,
+                  }),
+          });
           // A superseded attempt resolves to `null` without throwing and without
           // reaching the final stage. Left alone the tracker stays "running", so
           // the 1 Hz refresh never stops and the list sits on "Authenticating"
           // for the rest of the session.
           if (!account) connectStages.reset();
+          else await loadConnections();
         } catch (error) {
           connectStages.fail(`Connection failed: ${error.message}`);
           onMessage(error.message);
@@ -739,6 +836,23 @@ export function createGitHubPanel(options = {}) {
   root.replaceChildren(
     element(
       'label',
+      { for: 'setup-github-connection' },
+      'Connection',
+      element(
+        'span',
+        { class: 'setup-stack' },
+        connectionSelect,
+        connectionName,
+        element(
+          'span',
+          { class: 'setup-github-mode' },
+          persistInput,
+          element('span', {}, 'Persist this connection on this device (encrypted)')
+        )
+      )
+    ),
+    element(
+      'label',
       { for: 'setup-github-token' },
       'Access token',
       element(
@@ -795,6 +909,8 @@ export function createGitHubPanel(options = {}) {
   );
 
   render();
+  renderConnections();
+  loadConnections().catch(() => {});
 
   // Every panel follows the one credential. Without this a panel that was open
   // when another one disconnected would keep showing its account and repository

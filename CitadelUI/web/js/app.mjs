@@ -2451,19 +2451,23 @@ function updateHeaderContext() {
     // No active workspace: the setup screen's own context is used instead.
   }
   if (!workspace && setupContext) {
-    const { projectLabel, environmentLabel, repository, branch, account, sourceKind } = setupContext;
+    const { projectLabel, environmentLabel, repository, branch, account, sourceKind, location: stated } =
+      setupContext;
     els.projectName.textContent = projectLabel || 'Project';
     els.environmentName.textContent = environmentLabel || 'Environment';
     const target = repository ? (branch ? `${repository} @ ${branch}` : repository) : null;
-    const detail = target || (account ? `Connected as ${account}` : 'Not attached');
+    const detail = stated || target || (account ? `Connected as ${account}` : 'Not attached');
     els.repoPath.textContent = detail;
     els.repoPath.title = detail;
     // In GitHub mode the source is a repository, never a filesystem path, so
-    // "Path not recorded" would be both wrong and alarming.
+    // "Path not recorded" would be both wrong and alarming. The catalogue has no
+    // source at all yet and states its own line, because neither a repository
+    // nor a local path is the truth on that screen.
     const location =
-      sourceKind === 'github'
+      stated ||
+      (sourceKind === 'github'
         ? target || (account ? `Connected as ${account}` : 'GitHub not connected')
-        : 'Local path not recorded';
+        : 'Local path not recorded');
     els.localPath.textContent = location;
     els.localPathCopy.title = location;
     els.localPathCopy.setAttribute('aria-label', `Source: ${location}`);
@@ -2996,7 +3000,21 @@ function renderContractsArea(area) {
   );
 }
 
+/**
+ * Repaint the workspace.
+ *
+ * Refuses to run while the setup screen owns `#workspace`. `render()` is called
+ * from breakpoint listeners, so a viewport change used to paint the empty
+ * workspace over the catalogue — leaving a screen with no controls and a
+ * promise, inside `ensureWorkspace`, that could never resolve. The header is
+ * still refreshed, because the setup screen publishes its own context and that
+ * remains correct.
+ */
 function render() {
+  if (els.shell.dataset.workspace !== 'active') {
+    updateHeaderContext();
+    return;
+  }
   updateHeaderContext();
   renderSidebar();
   renderActions();

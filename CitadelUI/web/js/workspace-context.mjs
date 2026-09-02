@@ -2,16 +2,30 @@ import { BrowserDirectoryProvider, sha256 } from './directory-provider.mjs';
 import { WorkspaceRegistry, browserCapabilities, environmentSourceOf } from './registry.mjs';
 import { discoverWorkspace } from '../../shared/citadel-core.mjs';
 import { localRequest } from './local-api.mjs';
-import { confirmDialog } from './dialog.mjs';
+import { confirmDialog, promptDialog } from './dialog.mjs';
 import { createProvider } from './source-factory.mjs';
-import { createGitHubPanel } from './github-setup.mjs';
 import {
   abandonGitHubAttachment,
   attachGitHubRepository,
+  checkGitHubCompatibility,
   githubStatus,
   isSessionError,
+  listGitHubBranches,
+  listGitHubRepositories,
 } from './github-session.mjs';
 import { githubSessions } from './github-session-manager.mjs';
+import { RepositorySelection } from './github-selection.mjs';
+import {
+  disconnectConnection,
+  isConnectionLive,
+  isConnectionResumable,
+  listConnections,
+  removeConnection,
+  renameConnection,
+  setConnectionPersistence,
+} from './github-connections.mjs';
+import { listActivity, note } from './activity.mjs';
+import { presentWorkspaceCatalog } from './workspace-catalog.mjs';
 
 const bootstrapNamespace =
   typeof document !== 'undefined'
@@ -547,363 +561,314 @@ export async function ensureWorkspace() {
   active = await retainedWorkspace();
   if (active) return active;
 
-  const projects = await registry.listProjects();
-  const environments = await registry.listEnvironments();
-  const setupDraft = registry.profileDraft('setup') || {};
-  const workspace = document.getElementById('workspace');
+  return presentWorkspaceCatalog({
+    container: document.getElementById('workspace'),
+    preferences: registry.viewPreferences(),
+    savePreferences: (value) => registry.saveViewPreferences(value),
+    sessions: githubSessions,
+    onContext: (context) => publishSetupContext(context),
+    actions: catalogActions(),
+  });
+}
 
-  return new Promise((resolve, reject) => {
-    const projectInput = element('input', {
-      id: 'setup-project-label',
-      name: 'projectLabel',
-      class: 'ctl',
-      value: setupDraft.projectLabel || projects[0]?.label || 'Citadel',
-      'aria-label': 'Project label',
-    });
-    const environmentInput = element('input', {
-      id: 'setup-environment-label',
-      name: 'environmentLabel',
-      class: 'ctl',
-      value: setupDraft.environmentLabel || 'Development',
-      'aria-label': 'Environment label',
-    });
-    const localPathInput = element('input', {
-      id: 'setup-local-path',
-      name: 'localPath',
-      class: 'ctl',
-      value: setupDraft.localPath || '',
-      placeholder: 'C:\\source\\citadel or /home/user/citadel',
-      'aria-label': 'Local path',
-    });
-    const message = element(
-      'p',
-      { class: 'hint' },
-      'Choose the exact Citadel repository folder for this label.'
-    );
-    const attach = element('button', { class: 'btn btn-primary' }, 'Choose Citadel folder');
-    const persistSetupDraft = () => {
-      try {
-        registry.saveProfileDraft('setup', {
-          projectLabel: projectInput.value,
-          environmentLabel: environmentInput.value,
-          localPath: localPathInput.value,
-        });
-        return true;
-      } catch (error) {
-        message.textContent = `Profile fields could not be retained for reload: ${error.message}`;
-        return false;
-      }
-    };
-    for (const input of [projectInput, environmentInput, localPathInput]) {
-      input.addEventListener('input', persistSetupDraft);
-    }
+/**
+ * The catalogue's effects, in one place.
+ *
+ * The catalogue renders and sequences; every consequence lives here, on the side
+ * that already owns the registry, the mirror and the provider factory. Handing
+ * it a plain object of functions rather than importing it into the view keeps
+ * the dependency pointing one way and lets the whole flow be driven in a test
+ * without IndexedDB or a network.
+ */
+function catalogActions() {
+  const state = { projects: [] };
+  const actions = {
+    projects: state.projects,
 
-    attach.addEventListener('click', async () => {
-      persistSetupDraft();
-      attach.disabled = true;
-      try {
-        const handle = await globalThis.showDirectoryPicker({ mode: 'readwrite' });
-        const localPath = validateLocalPath(localPathInput.value);
-        if (
-          !localPathMatchesHandle(localPath, handle.name) &&
-          !(await confirmDialog({
-            title: 'Local path differs from folder',
-            message: `The Local path leaf does not match the selected folder "${handle.name}". The browser cannot verify this display-only path.`,
-            confirmLabel: 'Use this folder',
-          }))
-        ) {
-          attach.disabled = false;
-          return;
-        }
-        const provider = new BrowserDirectoryProvider(handle);
+    async listProjects() {
+      const projects = await registry.listProjects();
+      state.projects.length = 0;
+      state.projects.push(...projects);
+      return projects;
+    },
+
+    listEnvironments: () => registry.listEnvironments(),
+
+    hasHandle: (environmentId) => registry.getHandle(environmentId),
+
+    projectName(projectId) {
+      return state.projects.find((project) => project.id === projectId)?.label || projectId;
+    },
+
+    async listConnections() {
+      const result = await listConnections();
+      // Mirrored locally so a later paint can name a workspace's connection
+      // without waiting for the network again.
+      await registry.replaceConnections(result?.profiles || []).catch(() => {});
+      return result;
+    },
+
+    listActivity: () => listActivity(25),
+
+    createSelection: () =>
+      new RepositorySelection({
+        listRepositories: listGitHubRepositories,
+        listBranches: listGitHubBranches,
+        checkCompatibility: checkGitHubCompatibility,
+        sessions: githubSessions,
+      }),
+
+    async createConnection({ name, token, persist }) {
+      const outcome = await githubSessions.connectProfile({ name, token, persist });
+      if (!outcome?.account) throw new Error('The GitHub connection was superseded. Try again.');
+      return outcome.account;
+    },
+
+    async reconnectConnection(profileId, { token, persist }) {
+      const outcome = await githubSessions.reconnectProfile(profileId, { token, persist });
+      if (!outcome?.account) throw new Error('The GitHub connection was superseded. Try again.');
+      return outcome.account;
+    },
+
+    async resumeConnection(profileId) {
+      const outcome = await githubSessions.resumeProfile(profileId);
+      if (!outcome?.account) throw new Error('The GitHub connection was superseded. Try again.');
+      return outcome.account;
+    },
+
+    /**
+     * Adopt a connection that is already live.
+     *
+     * A live session already has a credential on the server; asking it to resume
+     * would tear that session down and mint another for no reason. The match has
+     * to be exact — a session with no profile is not this profile's credential,
+     * and treating it as one is how a repository chosen under one account gets
+     * edited under another.
+     */
+    async useConnection(profileId) {
+      const current = await githubSessions.restore().catch(() => null);
+      if (current?.profileId === profileId) return current;
+      return actions.resumeConnection(profileId);
+    },
+
+    renameConnection: (profileId, name) => renameConnection(profileId, name),
+    setConnectionPersistence: (profileId, persist) =>
+      setConnectionPersistence(profileId, persist),
+    disconnectConnection: (profileId) => disconnectConnection(profileId),
+    removeConnection: (profileId) => removeConnection(profileId),
+
+    async promptLabel({ title, message, value }) {
+      const values = await promptDialog({
+        title,
+        description: message,
+        fields: [{ name: 'label', label: 'Name', value, required: true }],
+        submitLabel: 'Save',
+      });
+      return values?.label?.trim() || null;
+    },
+
+    async pickFolder() {
+      return globalThis.showDirectoryPicker({ mode: 'readwrite' });
+    },
+
+    /**
+     * Open a saved workspace.
+     *
+     * A GitHub workspace whose connection is saved-but-idle is resumed first, so
+     * the common case after a container restart is one click rather than a
+     * detour through the connections table.
+     */
+    async openEnvironment(environment) {
+      const source = environmentSourceOf(environment);
+      if (source.kind === 'github') await ensureGitHubSessionFor(source);
+      const provider = await createProvider(environment, {
+        getHandle: (id) => registry.getHandle(id),
+      });
+      if (source.kind === 'local') {
         await provider.assertWritable({ request: true });
-        const scan = await scanProvider(provider);
-        assertSupportedScan(scan);
-        active = await attachEnvironment({
-          project: projects[0],
-          projectLabel: projectInput.value,
-          environmentLabel: environmentInput.value,
-          localPath,
-          handle,
-          scan,
-          provider,
-        });
-        if (!registry.clearProfileDraft('setup')) {
-          message.textContent = 'The environment was saved, but the setup form cache could not be cleared.';
-        }
-        resolve(active);
-      } catch (error) {
-        if (error.name !== 'AbortError') message.textContent = error.message;
-        attach.disabled = false;
       }
-    });
+      const scan = await scanProvider(provider);
+      assertSupportedScan(scan);
+      const updated = await registry.updateEnvironment(environment.id, {
+        permission: 'granted',
+        compatibility: scan.compatibility,
+        fingerprint: scan.fingerprint,
+        lastOpenedAt: new Date().toISOString(),
+        lastScannedAt: scan.lastScannedAt,
+      });
+      await syncRegistryMetadata();
+      registry.setActive(environment.projectId, environment.id);
+      note({ action: 'environment.open', target: updated.label });
+      active = {
+        projectId: environment.projectId,
+        environment: updated,
+        handle: source.kind === 'local' ? await registry.getHandle(environment.id) : null,
+        provider,
+      };
+      return active;
+    },
 
-    const reconnects = environments.map((environment) => {
+    /**
+     * Bring a workspace back into a usable state, then open it.
+     *
+     * Local reconnection re-picks the folder handle; GitHub reconnection
+     * establishes a credential for the connection the workspace was attached
+     * through. Both end in the same place, because "Reconnect" and "Open" differ
+     * only in what has to happen first.
+     */
+    async reconnectEnvironment(environment, { connections = [], onProgress = () => {} } = {}) {
       const source = environmentSourceOf(environment);
       if (source.kind === 'github') {
-        return element(
-          'section',
-          { class: 'setup-reconnect' },
-          element('strong', {}, environment.label),
-          element('code', {}, `${source.fullName} @ ${source.workingBranch}`),
-          element(
-            'button',
-            {
-              class: 'btn btn-sm',
-              onclick: async () => {
-                try {
-                  if (!(await githubStatus()).connected) {
-                    githubSessions.reset();
-                    throw new Error(
-                      'Connect GitHub above first. The credential is memory-only and is cleared on restart.'
-                    );
-                  }
-                  const provider = await createProvider(environment, {
-                    getHandle: (id) => registry.getHandle(id),
-                  });
-                  const scan = await scanProvider(provider);
-                  assertSupportedScan(scan);
-                  const updated = await registry.updateEnvironment(environment.id, {
-                    permission: 'granted',
-                    compatibility: scan.compatibility,
-                    fingerprint: scan.fingerprint,
-                    lastOpenedAt: new Date().toISOString(),
-                    lastScannedAt: scan.lastScannedAt,
-                  });
-                  await syncRegistryMetadata();
-                  registry.setActive(environment.projectId, environment.id);
-                  active = {
-                    projectId: environment.projectId,
-                    environment: updated,
-                    handle: null,
-                    provider,
-                  };
-                  resolve(active);
-                } catch (error) {
-                  message.textContent = isSessionError(error)
-                    ? 'The GitHub session expired. Connect GitHub again.'
-                    : error.message;
-                }
-              },
-            },
-            `Reconnect GitHub (${source.fullName})`
-          )
+        onProgress('Reconnecting GitHub\u2026');
+        // A record migrated from v3 has no recorded connection. This is the
+        // moment the documented binding happens: the connection the user is
+        // actually holding is written onto the environment, once, so every later
+        // open and every commit is attributed to it rather than to whatever
+        // session happens to be live.
+        let target = environment;
+        if (!source.connectionProfileId) {
+          const current = await githubSessions.restore().catch(() => null);
+          if (!current?.profileId) {
+            throw new Error(
+              'Connect a GitHub connection first, then reconnect this workspace to bind it to that connection.'
+            );
+          }
+          target = await registry.updateEnvironment(environment.id, {
+            source: { ...source, connectionProfileId: current.profileId },
+          });
+          await syncRegistryMetadata();
+        }
+        await ensureGitHubSessionFor(environmentSourceOf(target), { connections });
+        return actions.openEnvironment(target);
+      }
+      onProgress('Choose the Citadel folder\u2026');
+      let handle = await registry.getHandle(environment.id);
+      if (!handle) handle = await globalThis.showDirectoryPicker({ mode: 'readwrite' });
+      const localPath = validateLocalPath(source.localPath || handle.name);
+      await registry.reconnectEnvironment(environment.id, handle, localPath);
+      return actions.openEnvironment(environment);
+    },
+
+    async renameEnvironment(environment, label) {
+      await registry.assertLabelAvailable(environment.projectId, label, environment.id);
+      await registry.updateEnvironment(environment.id, { label });
+      await syncRegistryMetadata();
+    },
+
+    /**
+     * Forget a workspace on this device.
+     *
+     * Metadata only. No branch is deleted and no file is touched: destroying a
+     * Git branch is a separate, explicitly confirmed operation that this product
+     * does not offer, and removing a row must never be a way to reach it by
+     * accident.
+     */
+    async detachEnvironment(environment) {
+      const snapshot = { id: environment.id, label: environment.label };
+      await registry.removeEnvironment(environment.id);
+      registry.addTombstones?.({ environmentIds: [snapshot.id] });
+      try {
+        await syncRegistryMetadata({ removedEnvironmentIds: [snapshot.id] });
+        registry.removeTombstones?.({ environmentIds: [snapshot.id] });
+      } catch (error) {
+        // The tombstone survives: the next start retries the removal before
+        // anything reads the registry, so /data cannot resurrect this row.
+        throw new Error(
+          `The workspace was removed here, but the container did not confirm it: ${error.message} It will be retried on the next start.`
         );
       }
-      const localPathInput = element('input', {
-        id: `reconnect-local-path-${environment.id}`,
-        name: 'localPath',
-        class: 'ctl',
-        value: source.localPath || '',
-        placeholder: 'Enter the absolute local path',
-        'aria-label': `Local path for ${environment.label}`,
-      });
-      return element(
-        'section',
-        { class: 'setup-reconnect' },
-        element('strong', {}, environment.label),
-        element('code', {}, source.localPath || 'Local path not recorded'),
-        element('label', {}, 'Local path', localPathInput),
-        element(
-          'button',
-          {
-            class: 'btn btn-sm',
-            onclick: async () => {
-              try {
-                const localPath = validateLocalPath(localPathInput.value);
-                let handle = await registry.getHandle(environment.id);
-                if (!handle) {
-                  handle = await globalThis.showDirectoryPicker({ mode: 'readwrite' });
-                }
-                if (
-                  !localPathMatchesHandle(localPath, handle.name) &&
-                  !(await confirmDialog({
-                    title: 'Local path differs from folder',
-                    message: `The Local path leaf does not match the selected folder "${handle.name}". The browser cannot verify this display-only path.`,
-                    confirmLabel: 'Use this folder',
-                  }))
-                ) {
-                  return;
-                }
-                await registry.reconnectEnvironment(environment.id, handle, localPath);
-                const provider = new BrowserDirectoryProvider(handle);
-                await provider.assertWritable({ request: true });
-                const scan = await scanProvider(provider);
-                assertSupportedScan(scan);
-                const updated = await registry.updateEnvironment(environment.id, {
-                  permission: 'granted',
-                  compatibility: scan.compatibility,
-                  fingerprint: scan.fingerprint,
-                  localPath,
-                  lastOpenedAt: new Date().toISOString(),
-                  lastScannedAt: scan.lastScannedAt,
-                });
-                await syncRegistryMetadata();
-                registry.setActive(environment.projectId, environment.id);
-                active = {
-                  projectId: environment.projectId,
-                  environment: updated,
-                  handle,
-                  provider,
-                };
-                resolve(active);
-              } catch (error) {
-                message.textContent = error.message;
-              }
-            },
-          },
-          `Reconnect folder (${source.folderName})`
-        )
-      );
-    });
+      note({ action: 'repository.detach', target: snapshot.label });
+    },
 
-    const localPanel = element(
-      'section',
-      { class: 'setup-source-panel', id: 'setup-source-local' },
-      element(
-        'label',
-        { for: 'setup-local-path' },
-        'Local path',
-        localPathInput,
-        element(
-          'small',
-          { class: 'hint' },
-          'Display only. The browser cannot verify it against the selected folder.'
-        )
-      ),
-      element('div', { class: 'setup-actions' }, attach)
-    );
-
-    // The panel's own status line lives inside the panel. Routing it into the
-    // page description let a hidden GitHub panel narrate the local screen, so
-    // the local source was described in terms of an access token.
-    const githubStatusLine = element('p', { class: 'hint setup-source-status' });
-    const githubPanel = createGitHubPanel({
-      onMessage: (text) => {
-        githubStatusLine.textContent = text;
-      },
-      // The masthead is the product's "where am I", and during setup it used to
-      // say nothing at all. The panel reports its state as the user moves
-      // through it, so the header names the account, repository and branch being
-      // chosen instead of a placeholder path.
-      onContext: (context) => {
-        publishSetupContext({
-          sourceKind: 'github',
-          projectLabel: projectInput.value,
-          environmentLabel: environmentInput.value,
-          ...context,
-        });
-      },
-      onAttach: async (selection) => {
-        persistSetupDraft();
-        active = await attachGitHubEnvironment({
-          project: projects[0],
-          projectLabel: projectInput.value,
-          environmentLabel: environmentInput.value,
-          repositoryId: selection.repositoryId,
-          sourceBranch: selection.sourceBranch,
-          writeMode: selection.writeMode,
-          expectedHead: selection.expectedHead,
-        });
-        registry.clearProfileDraft('setup');
-        resolve(active);
-      },
-    });
-
-    const githubWrapper = element(
-      'section',
-      { class: 'setup-source-panel', id: 'setup-source-github', hidden: true },
-      githubPanel.root,
-      githubStatusLine
-    );
-
-    async function selectSource(kind) {
-      localPanel.hidden = kind !== 'local';
-      githubWrapper.hidden = kind !== 'github';
-      localChoice.setAttribute('aria-pressed', String(kind === 'local'));
-      githubChoice.setAttribute('aria-pressed', String(kind === 'github'));
-      localChoice.classList.toggle('btn-primary', kind === 'local');
-      githubChoice.classList.toggle('btn-primary', kind === 'github');
-      message.textContent =
-        kind === 'github'
-          ? 'Connect a fine-grained token, then choose a repository and branch.'
-          : 'Choose the exact Citadel repository folder for this label.';
-      if (kind === 'github') {
-        // Awaited so the panel cannot offer Connect while the manager is still
-        // asking the server whether a session survives.
-        await githubPanel.restore().catch(() => {});
-        githubPanel.publishContext?.();
-      } else {
-        publishSetupContext({
-          sourceKind: 'local',
-          projectLabel: projectInput.value,
-          environmentLabel: environmentInput.value,
-        });
+    async attachLocal({ projectId, projectLabel, environmentLabel, localPath, handle, onProgress }) {
+      const path = validateLocalPath(localPath);
+      if (
+        !localPathMatchesHandle(path, handle.name) &&
+        !(await confirmDialog({
+          title: 'Local path differs from folder',
+          message: `The Local path leaf does not match the selected folder "${handle.name}". The browser cannot verify this display-only path.`,
+          confirmLabel: 'Use this folder',
+        }))
+      ) {
+        throw new Error('Attach cancelled.');
       }
-    }
+      onProgress?.('Reading the Citadel folder\u2026');
+      const provider = new BrowserDirectoryProvider(handle);
+      await provider.assertWritable({ request: true });
+      const scan = await scanProvider(provider);
+      assertSupportedScan(scan);
+      onProgress?.('Saving the workspace\u2026');
+      active = await attachEnvironment({
+        project: projectId ? state.projects.find((project) => project.id === projectId) : null,
+        projectLabel,
+        environmentLabel,
+        localPath: path,
+        handle,
+        scan,
+        provider,
+      });
+      return active;
+    },
 
-    const localChoice = element(
-      'button',
-      {
-        class: 'btn btn-primary',
-        type: 'button',
-        'aria-pressed': 'true',
-        onclick: () => selectSource('local'),
-      },
-      'Local folder'
-    );
-    const githubChoice = element(
-      'button',
-      {
-        class: 'btn',
-        type: 'button',
-        'aria-pressed': 'false',
-        onclick: () => selectSource('github'),
-      },
-      'GitHub repository'
-    );
+    async attachGitHub({
+      projectId,
+      projectLabel,
+      environmentLabel,
+      repositoryId,
+      sourceBranch,
+      writeMode,
+      expectedHead,
+      onProgress,
+    }) {
+      onProgress?.('Validating the branch and preparing the working branch\u2026');
+      active = await attachGitHubEnvironment({
+        project: projectId ? state.projects.find((project) => project.id === projectId) : null,
+        projectLabel,
+        environmentLabel,
+        repositoryId,
+        sourceBranch,
+        writeMode,
+        expectedHead,
+      });
+      return active;
+    },
+  };
+  return actions;
+}
 
-    workspace.replaceChildren(
-      element(
-        'section',
-        { class: 'workspace-setup' },
-        element(
-          'header',
-          { class: 'setup-head' },
-          element('h1', {}, 'Attach an environment'),
-          message
-        ),
-        element(
-          'section',
-          { class: 'setup-group' },
-          element('h2', {}, 'Identity'),
-          element('label', { for: 'setup-project-label' }, 'Project label', projectInput),
-          element('label', { for: 'setup-environment-label' }, 'Environment label', environmentInput)
-        ),
-        element(
-          'section',
-          { class: 'setup-group' },
-          element('h2', {}, 'Source'),
-          element(
-            'div',
-            { class: 'setup-source-choice', role: 'group', 'aria-label': 'Source' },
-            localChoice,
-            githubChoice
-          ),
-          localPanel,
-          githubWrapper
-        ),
-        reconnects.length
-          ? element(
-              'section',
-              { class: 'setup-group' },
-              element('h2', {}, 'Saved environments'),
-              element('div', { class: 'setup-reconnect-list' }, reconnects)
-            )
-          : ''
-      )
+/**
+ * Make sure a credential exists for the connection this workspace belongs to.
+ *
+ * The rule is strict on purpose: a live credential may open this workspace only
+ * if it belongs to the very connection the workspace was attached through.
+ * Accepting "any live session" would open a repository that was chosen under one
+ * account using a different account's credential — the rebinding the schema
+ * exists to prevent, arriving through the read path instead of the write path.
+ *
+ * Otherwise the connection is resumed. That is silent when the credential was
+ * saved with the encrypted option, which is the whole point of the checkbox, and
+ * fails with an actionable sentence when it was not.
+ */
+async function ensureGitHubSessionFor(source, { connections = [] } = {}) {
+  const wanted = source.connectionProfileId || null;
+  if (!wanted) {
+    throw new Error(
+      'This workspace predates named connections. Reconnect it from GitHub connections to bind it to one.'
     );
-  });
+  }
+  const current = await githubSessions.restore().catch(() => null);
+  if (current && current.profileId === wanted) return current;
+  const known = connections.find((profile) => profile.id === wanted) || null;
+  const name = known?.name ? `"${known.name}"` : 'this workspace\u2019s GitHub connection';
+  try {
+    const outcome = await githubSessions.resumeProfile(wanted);
+    if (outcome?.account) return outcome.account;
+    throw new Error('The GitHub connection was superseded.');
+  } catch (error) {
+    throw new Error(
+      `${error.message} Reconnect ${name} in GitHub connections, then open this workspace.`
+    );
+  }
 }
 
 export function activeWorkspace() {

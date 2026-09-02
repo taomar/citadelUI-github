@@ -80,11 +80,19 @@ function detectedCapabilities(catalog) {
  * commit. Attachment revalidates against the head it is about to branch from,
  * so a repository that changed between the check and the attach is refused
  * rather than silently accepted on stale evidence.
+ *
+ * The verdict also names the repository and branch it is *about*. A verdict that
+ * does not say what it describes forces every caller to re-derive that from its
+ * own state, and a caller whose state has moved on cannot tell a fresh answer
+ * from a stale one — which is how a successful validation ends up unable to
+ * enable the button it exists to enable.
  */
-export async function inspectRepositoryCompatibility(client, token, fullName, commitSha) {
+export async function inspectRepositoryCompatibility(client, token, fullName, commitSha, branch = null) {
   const snapshot = await loadTree(client, token, fullName, commitSha);
   const catalog = await discoverWorkspace(githubScanProvider(client, token, fullName, snapshot));
   return {
+    fullName,
+    branch,
     head: commitSha,
     compatibility: catalog.compatibility,
     supported: catalog.compatibility === 'supported',
@@ -102,7 +110,7 @@ export async function inspectRepositoryCompatibility(client, token, fullName, co
  */
 export async function inspectBranchCompatibility(client, token, fullName, branch) {
   const head = await requireBranchHead(client, token, fullName, branch);
-  return inspectRepositoryCompatibility(client, token, fullName, head);
+  return inspectRepositoryCompatibility(client, token, fullName, head, branch);
 }
 
 /**
@@ -123,7 +131,7 @@ export async function assertAttachableRepository(client, token, fullName, branch
       { head }
     );
   }
-  const result = await inspectRepositoryCompatibility(client, token, fullName, head);
+  const result = await inspectRepositoryCompatibility(client, token, fullName, head, branch);
   if (!result.supported) {
     throw githubError(
       422,

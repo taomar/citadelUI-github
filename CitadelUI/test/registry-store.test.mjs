@@ -187,7 +187,7 @@ test('registry metadata survives a store restart without handles', async (t) => 
   const persisted = await second.read();
   assert.deepEqual(persisted.projects, [project]);
   assert.deepEqual(persisted.environments, [migrated(environment)]);
-  assert.equal(persisted.version, 3);
+  assert.equal(persisted.version, 4);
   const raw = await readFile(join(root, 'settings', 'registry.json'), 'utf8');
   assert.equal(persisted.environments[0].source.localPath, environment.localPath);
   for (const forbidden of ['handle', '.azure', '.env']) {
@@ -241,7 +241,7 @@ test('a registry written by a newer Citadel UI is refused and left byte-identica
   await mkdir(join(root, 'settings'), { recursive: true });
   const future = `${JSON.stringify(
     {
-      version: 4,
+      version: 5,
       epoch: 'future-epoch',
       revision: 7,
       projects: [project],
@@ -272,11 +272,11 @@ test('a registry written by a newer Citadel UI is refused and left byte-identica
   const after = createHash('sha256').update(await readFile(path)).digest('hex');
   assert.equal(after, before);
   const raw = JSON.parse(await readFile(path, 'utf8'));
-  assert.equal(raw.version, 4);
+  assert.equal(raw.version, 5);
   assert.deepEqual(raw.environments[0].somethingThisVersionDoesNotKnow, { retained: true });
 });
 
-test('a v1 registry migrates to the v3 source union', async (t) => {
+test('a v1 registry migrates to the v4 source union', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'citadel-registry-v1-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'settings'), { recursive: true });
@@ -293,7 +293,7 @@ test('a v1 registry migrates to the v3 source union', async (t) => {
   const store = new RegistryStore({ dataRoot: root });
   await store.initialize();
   const current = await store.read();
-  assert.equal(current.version, 3);
+  assert.equal(current.version, 4);
   assert.deepEqual(current.environments[0].source, {
     kind: 'local',
     folderName: 'citadel-dev',

@@ -5479,3 +5479,578 @@
     grid-template-columns: 2.75rem minmax(0, 1fr);
   }
 }
+
+/* ================================================== workspace catalogue ====
+   THE RETURNING USER'S SCREEN.
+
+   Phase 1 met every visit with the attach form. The catalogue puts what the
+   user already has first and makes creating one a single button, because
+   attaching is the rarest thing they do here and opening is the most common.
+
+   FORM: an Azure resource list. Columns, not cards: the real question is
+   comparative -- which of these is ready, and which one do I want -- and columns
+   answer it in one scan. Nothing here gets a border; the sections are separated
+   by the same hairline rules the rest of the sheet uses.
+   ========================================================================== */
+
+.workspace-catalog {
+  display: grid;
+  gap: var(--sp-8);
+  align-content: start;
+  width: min(100%, 82rem);
+  margin: var(--sp-8) auto var(--sp-9);
+  padding-inline: var(--gutter);
+}
+
+.catalog-head {
+  display: grid;
+  gap: var(--sp-4);
+  padding-bottom: var(--sp-5);
+  border-bottom: 1px solid var(--rule);
+}
+
+.catalog-head h1 {
+  margin: 0;
+  font-family: var(--sans-display);
+  font-size: var(--t-h1);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink-1);
+}
+
+.catalog-head > .hint {
+  max-width: 72ch;
+}
+
+.catalog-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+}
+
+.catalog-section {
+  display: grid;
+  gap: var(--sp-5);
+  align-content: start;
+}
+
+/* More space above a heading than below it. */
+.catalog-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  margin-top: var(--sp-4);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.catalog-section-head h2 {
+  margin: 0;
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+}
+
+.catalog-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(2, minmax(8rem, max-content));
+  gap: var(--sp-4);
+  align-items: center;
+}
+
+.catalog-filters .ctl {
+  width: 100%;
+}
+
+/* The table keeps its declared column relationships and scrolls inside its own
+   region rather than widening the sheet. */
+.catalog-scroller {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.catalog-scroller:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--r-1);
+}
+
+.catalog-table {
+  min-width: 0;
+  width: 100%;
+}
+
+.catalog-table th:last-child,
+.catalog-table td:last-child {
+  padding-inline-end: 0;
+}
+
+/* The actions column is right-aligned. A full-width cell is not that column: it
+   is an empty state or a connection's detail row, and end-aligning its prose
+   reads as a layout mistake rather than as emphasis. */
+.catalog-table td:last-child:not([colspan]) {
+  text-align: end;
+}
+
+.catalog-table td {
+  vertical-align: top;
+  padding-block: var(--sp-4);
+}
+
+.catalog-table td .hint {
+  display: block;
+  font-size: var(--t-mark);
+}
+
+.catalog-row:hover {
+  background: var(--zebra);
+}
+
+.catalog-actions {
+  display: flex;
+  /* One row of verbs. Wrapping "Detach" onto its own line reads as a second,
+     more serious action than the two above it, which is exactly the wrong
+     emphasis for the only destructive-sounding control in the row. */
+  flex-wrap: nowrap;
+  gap: var(--sp-3);
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+.catalog-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* A connection name is an identifier the user chose; broken across two lines it
+   stops looking like one. Applied to the child as well: `.hint` sets the
+   `text-wrap` shorthand, which resets the wrap mode the cell just set. */
+.catalog-connection-cell,
+.catalog-connection-cell > * {
+  white-space: nowrap;
+  text-wrap-mode: nowrap;
+}
+
+/* Text plus a mark. A two-value distinction carried by a glyph alone is
+   unreadable to anyone who has not already learned the glyph. */
+.catalog-source-mark {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.catalog-source-github {
+  border-color: var(--brand-line);
+  background: var(--brand-wash);
+  color: var(--brand);
+}
+
+.catalog-source-local {
+  border-color: var(--cloud-line);
+  background: var(--cloud-wash);
+  color: var(--cloud);
+}
+
+.catalog-sort {
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  padding: 0;
+}
+
+.catalog-sort-active {
+  color: var(--brand);
+}
+
+.catalog-connection-detail td {
+  padding-top: 0;
+  border-block-end: 1px solid var(--rule-soft);
+}
+
+.catalog-attached {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.catalog-attached li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+
+.catalog-persist {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+  font-size: var(--t-meta);
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
+.catalog-empty {
+  display: grid;
+  gap: var(--sp-4);
+  padding: var(--sp-7) 0;
+}
+
+/* The button hugs its label; the prose keeps its measure. `justify-items: start`
+   on the grid would shrink every paragraph to max-content and wrap it at an
+   arbitrary width instead of a chosen one. */
+.catalog-empty > .btn {
+  justify-self: start;
+}
+
+.catalog-empty p {
+  margin: 0;
+  max-width: 68ch;
+}
+
+.catalog-empty > p:first-child {
+  font-size: var(--t-lead);
+  font-weight: 600;
+  color: var(--ink-1);
+}
+
+.catalog-empty-inline {
+  padding-block: var(--sp-5);
+}
+
+.catalog-progress,
+.catalog-error {
+  margin: 0;
+  font-size: var(--t-meta);
+}
+
+.catalog-progress {
+  color: var(--ink-3);
+}
+
+.catalog-progress[hidden],
+.catalog-error[hidden] {
+  display: none;
+}
+
+/* ---------------------------------------------------------- activity ---- */
+
+.catalog-activity-toggle {
+  display: flex;
+  /* `.btn` centres its content; a full-width section header must not. */
+  justify-content: flex-start;
+  align-items: baseline;
+  gap: var(--sp-4);
+  width: 100%;
+  margin-top: var(--sp-4);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--rule-soft);
+  text-align: start;
+}
+
+.catalog-activity-toggle h2 {
+  margin: 0;
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+}
+
+.catalog-activity-items {
+  display: grid;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: var(--sp-4) 0 0;
+  list-style: none;
+}
+
+.catalog-activity-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2) var(--sp-4);
+  font-size: var(--t-meta);
+  color: var(--ink-2);
+}
+
+.catalog-activity-item time {
+  min-width: 9rem;
+  font-family: var(--sans-small);
+  color: var(--ink-3);
+}
+
+.catalog-activity-action {
+  font-weight: 600;
+  color: var(--ink-1);
+}
+
+.catalog-activity-target {
+  font-weight: 600;
+}
+
+.catalog-activity-failed .catalog-activity-action,
+.catalog-activity-refused .catalog-activity-action {
+  color: var(--danger);
+}
+
+.catalog-activity-item code {
+  font-family: var(--mono);
+  font-size: var(--t-mark);
+  color: var(--ink-3);
+}
+
+/* ------------------------------------------------ add-workspace stepper -- */
+
+.catalog-dialog {
+  display: grid;
+  gap: var(--sp-6);
+  /* The modal already caps itself at 72rem and at the viewport. The dialog fills
+     what it is given rather than re-capping at 46rem, because the values in it
+     are owner/repository paths and branch refs — the two things this product
+     must never truncate. */
+  width: 100%;
+  min-width: 0;
+}
+
+.catalog-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-5);
+  margin: 0;
+  padding: 0 0 var(--sp-4);
+  border-bottom: 1px solid var(--rule-soft);
+  list-style: none;
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+}
+
+.catalog-step-done {
+  color: var(--ink-2);
+}
+
+.catalog-step-current {
+  font-weight: 700;
+  color: var(--brand);
+}
+
+.catalog-form {
+  display: grid;
+  gap: var(--sp-5);
+}
+
+.catalog-form > .hint {
+  max-width: 68ch;
+}
+
+.catalog-field {
+  display: grid;
+  gap: var(--sp-3);
+  justify-items: start;
+  font-weight: 600;
+}
+
+.catalog-field > .ctl,
+.catalog-field > select.ctl {
+  /* The global `select.ctl` clamps to `--w-id` (20rem), which is a sensible
+     default for a value control and the wrong one for a list of full repository
+     names and branch refs. Width alone does not lift that clamp, so the maximum
+     is released explicitly. */
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+}
+
+.catalog-field > select[size] {
+  /* A list box, not a dropdown: it wants height and the full measure. */
+  height: auto;
+  padding-block: var(--sp-3);
+}
+
+.catalog-field > .hint {
+  font-weight: 400;
+  max-width: 68ch;
+}
+
+.catalog-field-label {
+  font-size: var(--t-meta);
+}
+
+.catalog-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.catalog-choice {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.catalog-choice-option {
+  display: grid;
+  gap: var(--sp-2);
+  justify-items: start;
+  /* `.btn` centres its content. On a full-width option that pushes a heading and
+     its explanation into the middle of a wide empty gutter. */
+  justify-content: start;
+  height: auto;
+  padding: var(--sp-5);
+  text-align: start;
+  white-space: normal;
+}
+
+.catalog-choice-option .hint {
+  font-weight: 400;
+  max-width: 60ch;
+}
+
+.catalog-summary {
+  display: grid;
+  gap: var(--sp-3);
+  margin: 0;
+}
+
+.catalog-summary-row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr);
+  gap: var(--sp-4);
+  align-items: baseline;
+}
+
+.catalog-summary-row dt {
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+}
+
+.catalog-summary-row dd {
+  margin: 0;
+  color: var(--ink-1);
+  overflow-wrap: anywhere;
+}
+
+.catalog-verdict:empty {
+  display: none;
+}
+
+.catalog-verdict-ok {
+  margin: 0 0 var(--sp-3);
+  font-size: var(--t-meta);
+  color: var(--success);
+}
+
+/* Announced but not painted. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* At a phone width the columns stop being a comparison and start being a
+   squeeze, so each row becomes a labelled block. The header is dropped rather
+   than repeated, because the labels now carry the column names. */
+@media (max-width: 52rem) {
+  .catalog-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .catalog-table,
+  .catalog-table tbody,
+  .catalog-table tr,
+  .catalog-table td {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .catalog-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .catalog-table tr {
+    padding-block: var(--sp-5);
+    border-block-end: 1px solid var(--rule);
+  }
+
+  .catalog-table td {
+    display: grid;
+    grid-template-columns: minmax(6.5rem, 9rem) minmax(0, 1fr);
+    gap: var(--sp-4);
+    align-items: baseline;
+    /* Badges, chips and buttons are content-sized things. As grid items they
+       would otherwise stretch to the full value column, turning a status chip
+       into a banner and a button into a bar. */
+    justify-items: start;
+    padding: var(--sp-2) 0;
+    border: 0;
+  }
+
+  .catalog-table td::before {
+    content: attr(data-label);
+    font-family: var(--sans-small);
+    font-size: var(--t-micro);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--ink-3);
+  }
+
+  /* Specificity has to match the wide rule it overrides, or end-alignment
+     survives into a layout that reads top-to-bottom. */
+  .catalog-table td:last-child:not([colspan]) {
+    text-align: start;
+  }
+
+  .catalog-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .catalog-connection-detail td {
+    border: 0;
+  }
+
+  .catalog-summary-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-2);
+  }
+
+  .catalog-activity-item time {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 30rem) {
+  .catalog-table td {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-2);
+  }
+
+  .catalog-head-actions .btn {
+    width: 100%;
+  }
+}

@@ -21,9 +21,45 @@ import {
   adoptGitHubSession,
   connectGitHub,
   disconnectGitHub,
+  forgetGitHubSession,
   githubSessionId,
   githubStatus,
 } from './github-session.mjs';
+import {
+  createConnection,
+  reconnectConnection,
+  resumeConnection,
+  revokeGitHubSession,
+} from './github-connections.mjs';
+
+/**
+ * Shape a connection-route answer like the account object every caller already
+ * expects, so a profile-backed credential and a bare token behave identically
+ * from here on.
+ *
+ * `revoke` is part of that shape, not an optional extra. A superseded or
+ * displaced credential that cannot revoke itself stays live on the server,
+ * holding one of eight session slots and a token in memory, with no id the
+ * browser can still address — and after a few connection switches every further
+ * connect fails with a limit the user cannot clear.
+ */
+function accountOf(result) {
+  const session = result?.session || {};
+  return {
+    ...session,
+    sessionId: session.id,
+    profileId: result?.profile?.id || session.profileId || null,
+    profile: result?.profile || null,
+    persisted: Boolean(result?.persisted),
+    persistenceReason: result?.persistenceReason || null,
+    revoke: session.id
+      ? async () => {
+          if (githubSessionId() === session.id) forgetGitHubSession();
+          await revokeGitHubSession(session.id);
+        }
+      : undefined,
+  };
+}
 
 export class GitHubSessionManager {
   constructor(options = {}) {
@@ -168,6 +204,73 @@ export class GitHubSessionManager {
   /** Is work started under `generation` still the active credential's work? */
   isCurrent(generation) {
     return generation === this.generation && this.account !== null;
+  }
+
+  /**
+   * Establish a credential through a saved connection.
+   *
+   * Shares the application-wide lock and generation with `connect`, so a token
+   * exchange and a profile resume cannot both publish a session. The exchange
+   * itself is injected because create, reconnect and resume differ only in what
+   * they send: the concurrency rules they need are identical, and duplicating
+   * them per call site is how two of the three end up subtly wrong.
+   */
+  async establish(exchange) {
+    if (this.busy) {
+      throw new Error('A GitHub connection is already in progress.');
+    }
+    const generation = ++this.generation;
+    const attempt = (async () => {
+      const superseded = this.account;
+      const account = accountOf(await exchange());
+      if (!account.sessionId) {
+        throw new Error('GitHub returned an unusable session identifier.');
+      }
+      if (generation !== this.generation) {
+        await account.revoke?.().catch?.(() => {});
+        return null;
+      }
+      if (superseded && superseded.sessionId !== account.sessionId) {
+        await superseded.revoke?.().catch?.(() => {});
+      }
+      // The connection routes adopt the session id themselves, because a caller
+      // that forgot would hold a connected profile whose every later request
+      // fails. Adopting again here is idempotent and keeps the invariant local.
+      this.adopt(account.sessionId);
+      this.account = account;
+      return account;
+    })();
+    this.pending = attempt;
+    try {
+      this.notify();
+      const account = await attempt;
+      return account ? { account, generation } : null;
+    } finally {
+      if (this.pending === attempt) {
+        this.pending = null;
+        this.notify();
+      }
+    }
+  }
+
+  /** Create a named connection from a token the user just entered. */
+  async connectProfile({ name, token, persist }) {
+    return this.establish(() => createConnection({ name, token, persist }));
+  }
+
+  /** Replace the credential behind an existing connection. */
+  async reconnectProfile(profileId, { token, persist }) {
+    return this.establish(() => reconnectConnection(profileId, { token, persist }));
+  }
+
+  /**
+   * Bring a saved connection back with no user interaction.
+   *
+   * The token is unsealed and validated entirely inside the server; this side
+   * receives an opaque id and an account summary.
+   */
+  async resumeProfile(profileId) {
+    return this.establish(() => resumeConnection(profileId));
   }
 
   /**

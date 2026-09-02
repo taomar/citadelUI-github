@@ -1,12 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
+import { atomicJson } from './atomic-json.mjs';
 import { transactionError } from './transactions.mjs';
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
-export const REGISTRY_VERSION = 3;
+const COMMIT_PATTERN = /^[a-f0-9]{40}$/;
+const MAX_CAPABILITIES = 12;
+const MAX_CAPABILITY_LENGTH = 64;
+export const REGISTRY_VERSION = 4;
 const COMPATIBILITY = new Set([
   'unscanned',
   'supported',
@@ -104,14 +108,23 @@ function repositoryFullName(value) {
 }
 
 /**
- * Tagged source union for registry v3.
+ * Tagged source union for registry v4.
  *
  * `source` is the single authority for where an environment's files live. A v2
  * record has no `source`, so its flat folder fields are migrated into a
  * `kind: 'local'` source here rather than being carried alongside it, which
  * keeps exactly one description of the source per environment.
  *
- * A GitHub source never carries a token or a credential session id.
+ * v4 adds connection ownership to the GitHub arm. A GitHub environment names the
+ * connection profile it was attached through, the exact branch the user chose,
+ * the head that branch was validated at, and what Citadel detected there. It
+ * still never carries a token or a credential session id: a profile id is a
+ * durable metadata reference, and the credential it may unlock lives elsewhere.
+ *
+ * `connectionProfileId` is nullable because a v3 record predates profiles and
+ * cannot be given one honestly — there is no recorded account identity to bind
+ * it to. Such a record is shown as needing reconnection, and the first reconnect
+ * binds it.
  */
 function environmentSource(value, legacy) {
   if (value === undefined || value === null) {
@@ -137,11 +150,15 @@ function environmentSource(value, legacy) {
   if (value.kind === 'github') {
     const allowed = new Set([
       'kind',
+      'connectionProfileId',
       'repositoryId',
       'fullName',
       'sourceBranch',
       'workingBranch',
       'writeMode',
+      'lastKnownHead',
+      'capabilities',
+      'validatedAt',
     ]);
     if (Object.keys(value).some((key) => !allowed.has(key))) {
       throw transactionError(400, 'INVALID_REGISTRY_SOURCE', 'GitHub source contains unsupported fields.');
@@ -156,14 +173,52 @@ function environmentSource(value, legacy) {
     }
     return {
       kind: 'github',
+      connectionProfileId: optionalId(value.connectionProfileId, 'connection profile id'),
       repositoryId,
       fullName: repositoryFullName(value.fullName),
       sourceBranch: gitRefName(value.sourceBranch, 'source branch'),
       workingBranch: gitRefName(value.workingBranch, 'working branch'),
       writeMode,
+      lastKnownHead: optionalCommit(value.lastKnownHead),
+      capabilities: capabilityList(value.capabilities),
+      validatedAt: optionalTimestamp(value.validatedAt, 'validation time'),
     };
   }
   throw transactionError(400, 'INVALID_REGISTRY_SOURCE', 'Unsupported environment source kind.');
+}
+
+function optionalId(value, name) {
+  if (value === null || value === undefined || value === '') return null;
+  return id(value, name);
+}
+
+function optionalCommit(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const sha = String(value).toLowerCase();
+  if (!COMMIT_PATTERN.test(sha)) {
+    throw transactionError(400, 'INVALID_REGISTRY_SOURCE', 'Invalid last known head.');
+  }
+  return sha;
+}
+
+/**
+ * What Citadel detected on the validated branch, for display only.
+ *
+ * Bounded in both directions: a list this long or a string this wide is not a
+ * capability name, and the catalogue renders these directly.
+ */
+function capabilityList(value) {
+  if (value === null || value === undefined) return null;
+  if (!Array.isArray(value) || value.length > MAX_CAPABILITIES) {
+    throw transactionError(400, 'INVALID_REGISTRY_SOURCE', 'Invalid capability list.');
+  }
+  return value.map((item) => {
+    const text = typeof item === 'string' ? item.trim() : '';
+    if (!text || text.length > MAX_CAPABILITY_LENGTH || /[\u0000-\u001f\u007f]/.test(text)) {
+      throw transactionError(400, 'INVALID_REGISTRY_SOURCE', 'Invalid capability name.');
+    }
+    return text;
+  });
 }
 
 function positiveInteger(value, name) {
@@ -246,11 +301,21 @@ function environment(value) {
 }
 
 /**
- * Upgrade a persisted registry document to v3.
+ * Upgrade a persisted registry document to v4.
  *
  * Only known older versions are migrated. A document from a newer Citadel UI is
  * left byte-identical and refused, because silently rewriting it would drop
  * fields this version does not understand.
+ *
+ * v3 GitHub sources gain the connection-ownership fields as nulls. They are not
+ * invented: a v3 record has no recorded account identity, so binding it to a
+ * profile here would be a guess, and a guess about which credential owns a
+ * repository is exactly the thing this schema exists to prevent. Those records
+ * surface as `Reconnect`.
+ *
+ * Environment labels become unique per project in v4. Existing data may violate
+ * that, and refusing to start would strand a user's whole registry behind a rule
+ * added for their benefit, so duplicates are suffixed deterministically instead.
  */
 function migrate(current) {
   const version = Number(current?.version ?? 1);
@@ -262,46 +327,108 @@ function migrate(current) {
       `This /data registry was written by a newer Citadel UI (schema v${version}). Upgrade Citadel UI or point it at a different data directory.`
     );
   }
-  if (version !== 1 && version !== 2) {
+  if (version !== 1 && version !== 2 && version !== 3) {
     throw transactionError(
       409,
       'REGISTRY_VERSION_UNSUPPORTED',
       `Unsupported Citadel registry schema v${version}.`
     );
   }
+  const taken = new Map();
   return {
     ...current,
     version: REGISTRY_VERSION,
     environments: (current?.environments || []).map((item) => {
-      if (item?.source) return item;
-      const { folderName, localPath, ...rest } = item || {};
-      return {
-        ...rest,
-        source: {
-          kind: 'local',
-          folderName: folderName || 'Selected folder',
-          localPath: localPath ?? null,
-        },
-      };
+      const record = item?.source
+        ? { ...item }
+        : (() => {
+            const { folderName, localPath, ...rest } = item || {};
+            return {
+              ...rest,
+              source: {
+                kind: 'local',
+                folderName: folderName || 'Selected folder',
+                localPath: localPath ?? null,
+              },
+            };
+          })();
+      if (record.source?.kind === 'github') {
+        record.source = {
+          connectionProfileId: null,
+          lastKnownHead: null,
+          capabilities: null,
+          validatedAt: null,
+          ...record.source,
+        };
+      }
+      record.label = uniqueLabel(record.label, record.projectId, taken);
+      return record;
     }),
   };
 }
 
-async function atomicJson(path, value) {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = join(dirname(path), `.${randomUUID()}.tmp`);
-  const handle = await open(temporary, 'wx', 0o600);
-  try {
-    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`);
-    await handle.sync();
-  } finally {
-    await handle.close();
+/** Deterministic de-duplication used only by migration. */
+function uniqueLabel(value, projectId, taken) {
+  const base = typeof value === 'string' && value.trim() ? value.trim() : 'Environment';
+  const scope = String(projectId || '');
+  let candidate = base;
+  let counter = 2;
+  while (taken.has(`${scope}\u0000${labelKey(candidate)}`)) {
+    const suffix = ` (${counter})`;
+    candidate = `${base.slice(0, 160 - suffix.length)}${suffix}`;
+    counter += 1;
   }
-  try {
-    await rename(temporary, path);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
+  taken.set(`${scope}\u0000${labelKey(candidate)}`, true);
+  return candidate;
+}
+
+function labelKey(value) {
+  return String(value).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+}
+
+/**
+ * Two invariants the catalogue depends on, enforced over the merged result
+ * rather than over the incoming batch.
+ *
+ * Checking only what the browser sent would let a rename collide with a record
+ * it did not resend, so both rules are evaluated against the document that is
+ * about to be written.
+ *
+ * 1. An environment label is unique inside its project, because the catalogue,
+ *    the command bar and every activity line identify a workspace by that label.
+ * 2. One repository and source branch is attached once per project and
+ *    connection. The same branch reached through a different connection is a
+ *    legitimately different workspace; the same branch twice through the same
+ *    connection is a duplicate the user meant to open, not create.
+ */
+function assertUnique(environments) {
+  const labels = new Set();
+  const attachments = new Set();
+  for (const item of environments) {
+    const labelIdentity = `${item.projectId}\u0000${labelKey(item.label)}`;
+    if (labels.has(labelIdentity)) {
+      throw transactionError(
+        409,
+        'DUPLICATE_ENVIRONMENT_LABEL',
+        `This project already has a workspace named "${item.label}". Choose a different name.`
+      );
+    }
+    labels.add(labelIdentity);
+    if (item.source?.kind !== 'github') continue;
+    const attachmentIdentity = [
+      item.projectId,
+      item.source.connectionProfileId || '',
+      item.source.repositoryId,
+      item.source.sourceBranch,
+    ].join('\u0000');
+    if (attachments.has(attachmentIdentity)) {
+      throw transactionError(
+        409,
+        'DUPLICATE_ENVIRONMENT_SOURCE',
+        `${item.source.fullName} on ${item.source.sourceBranch} is already attached to this project through this connection. Open the existing workspace instead.`
+      );
+    }
+    attachments.add(attachmentIdentity);
   }
 }
 
@@ -399,15 +526,15 @@ export class RegistryStore {
         }
         environments.set(item.id, item);
       }
+      const merged = [...environments.values()];
+      assertUnique(merged);
       const next = {
         version: REGISTRY_VERSION,
         epoch: current.epoch,
         revision: current.revision + 1,
         updatedAt: new Date(this.now()).toISOString(),
         projects: [...projects.values()].sort((left, right) => left.label.localeCompare(right.label)),
-        environments: [...environments.values()].sort((left, right) =>
-          left.label.localeCompare(right.label)
-        ),
+        environments: merged.sort((left, right) => left.label.localeCompare(right.label)),
       };
       await atomicJson(this.path, next);
       return next;

@@ -44,6 +44,81 @@ non-root UID/GID 10001, dropped capabilities, `no-new-privileges`, a bounded
 - Token-shaped strings and `Authorization`/`Bearer` fragments are redacted from
   any text that could reach a user or a log.
 
+## Connection identity
+
+- A credential belongs to a **named connection profile**: an immutable id, a
+  friendly name, and the immutable GitHub account id and login it is bound to.
+  A profile never contains a token, key material, or a session id.
+- Identity is the numeric account id, never the login. A login can be renamed and
+  re-registered by someone else; the id cannot.
+- Reconnecting compares account ids. A token for a different account is refused
+  and a separate profile is offered. A profile is **never** silently rebound to
+  another identity, because every workspace attached to it would then point at
+  repositories the user did not choose.
+- Every attach records the connection that performed it, taken from the
+  credential rather than from the request body, so a browser cannot claim a
+  workspace was attached through a connection it does not hold.
+- Removing a profile deletes local metadata and any stored credential. It revokes
+  no token, deletes no branch, and removes no workspace: affected workspaces stay
+  listed as **Reconnect**.
+
+## Encrypted credential persistence (optional, off by default)
+
+One checkbox, `Persist this connection on this device (encrypted)`, unticked by
+default. With it unticked nothing in this section runs and the behaviour is
+memory-only. There is deliberately no passphrase and no unlock step: a local
+single-user control panel that demands a second secret every morning gets that
+secret written on a sticky note.
+
+**Key.** `CITADEL_CREDENTIAL_KEY_FILE` names a **path**, never key material. The
+file holds a random 256-bit key, is generated outside the repository and outside
+`/data`, and is mounted read-only at `/run/secrets/citadel-credential-key`. The
+key is never printed, logged, committed, placed in an environment value, baked
+into an image layer, written to `/data`, put on a command line, or included in an
+audit or activity record. A missing or malformed key is not a startup failure:
+persistence is disabled, the checkbox says so, and session-only connections keep
+working.
+
+**Envelope.** Node's built-in `crypto`, versioned:
+
+- A random 256-bit data-encryption key per credential.
+- The credential sealed with AES-256-GCM under that key, with a unique random
+  96-bit IV, a 128-bit tag, and additional authenticated data binding the
+  envelope version, the profile id and the immutable account id.
+- The data key wrapped with AES-256-GCM under the mounted key, with its own IV,
+  its own tag, and a **different** AAD.
+- Ciphertext and wrapped key written atomically under `/data` at mode `0600`.
+
+Every length and version is validated before a cipher is constructed. A wrong
+key, an edited ciphertext, an envelope moved between profiles, a wrapped key
+swapped in from another envelope, or a replayed account binding all fail closed
+and yield no credential. Restore is server-side and automatic; the browser
+receives only an opaque session id and a status word. Buffers holding key
+material are zeroed after use.
+
+**Threat model, stated plainly.** This protects theft or copying of the `/data`
+volume — a backup, a stray archive, a mislaid disk — by someone who does not also
+hold the key file. It does **not** protect a compromised running host or
+container, a process that can read this server's memory, or theft of the data
+volume *and* the key file together. The key is mounted from outside the repo and
+outside `/data` so the two are not lost to the same accident; they are not
+separated by hardware.
+
+## Workspace activity log
+
+- `/data/settings/activity.json` is bounded, atomically written, and holds an
+  event id, a timestamp, an origin, an action from a fixed vocabulary, an
+  outcome, an optional reason from a fixed vocabulary, and names the user chose.
+- There is **no free-text field**. Nothing a caller happens to be holding — an
+  exception message, a path, a parameter value, a credential — has anywhere to
+  travel. Unknown actions, outcomes and reasons are dropped rather than filtered.
+- The browser may append only the events it alone observes (`environment.open`,
+  `repository.detach`, `validation.failure`). Everything a credential touches is
+  recorded server-side, where it cannot be forged or omitted.
+- Recording never fails the operation it describes.
+- This is separate from the commit audit that authorises undo, and separate from
+  Git History.
+
 ## GitHub network boundary
 
 - Egress is fixed to `https://api.github.com`. No API base URL is accepted from
