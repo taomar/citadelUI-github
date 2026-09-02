@@ -206,6 +206,27 @@ container restarts, so those workspaces stay listed and show **Reconnect** until
 a new session is established. A connection saved with the encrypted option is
 restored by the server on the next start, with no user step.
 
+### When an attach loses its answer
+
+Attaching runs six named steps — revalidating the branch, reserving the
+attachment, creating or recovering the working branch, saving workspace
+metadata, opening the workspace, ready — and the review screen shows which one is
+running.
+
+If the answer to the attach is lost in transport (a gateway error, a timeout, a
+dropped connection), Citadel UI does **not** report a failure. The branch may
+already exist. It reconciles instead: it asks the server what became of that
+exact operation, and if the server has no record it replays the same request with
+the same operation key, which the server answers from its original reservation.
+Either way the result is one working branch and one workspace.
+
+Only a definite rejection — an archived repository, no push access, a branch that
+moved — abandons the attempt. If it still cannot be confirmed, the screen says
+**GitHub may have completed this step; checking…** and offers a retry that
+resumes the same attempt rather than starting a new one; the attempt survives a
+reload. A failure while saving workspace metadata says so, and resumes at
+metadata rather than re-creating the branch.
+
 If a save's branch update fails in transport, Citadel UI asks GitHub what
 actually happened rather than guessing. A commit that is the branch head or an
 ancestor of it is reported as applied; a branch that is readable and provably

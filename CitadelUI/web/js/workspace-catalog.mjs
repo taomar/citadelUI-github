@@ -36,6 +36,7 @@ import { environmentSourceOf } from './registry.mjs';
 import { connectionStatusLabel, isConnectionLive, isConnectionResumable } from './github-connections.mjs';
 import { activityLabel, activityReason } from './activity.mjs';
 import { isRepositorySelectable, repositoryBlockedReason } from './github-selection.mjs';
+import { ATTACH_STAGES, StageTracker, createStageRegion } from './stage-progress.mjs';
 
 /**
  * The status vocabulary, in the order of how much attention a row deserves.
@@ -1797,8 +1798,25 @@ export function runAddWorkspace(options) {
 
   function reviewStep() {
     const error = alertLine();
-    const progress = statusLine();
     const summary = (term, value) => h('div', { class: 'catalog-summary-row' }, h('dt', {}, term), h('dd', {}, value));
+    // Real stages, driven by the attachment workflow's own await boundaries.
+    // The region carries the spinner on the running step, a checkmark on each
+    // completed one, and its list is `role=status aria-live=polite`.
+    const stages = new StageTracker(ATTACH_STAGES, { onChange: () => region.update(stages) });
+    const region = createStageRegion({ label: 'Attachment progress', keepOnSuccess: true });
+    let ticking = null;
+    const track = (id, label) => {
+      if (id === 'ready') stages.succeed(label);
+      else stages.begin(id, label);
+      // The "still waiting" line is time-based, so something has to re-render it
+      // while a step is simply taking a while.
+      if (stages.running && !ticking) ticking = setInterval(() => region.update(stages), 1000);
+      if (!stages.running && ticking) {
+        clearInterval(ticking);
+        ticking = null;
+      }
+    };
+
     const attach = h(
       'button',
       {
@@ -1809,7 +1827,6 @@ export function runAddWorkspace(options) {
           state.working = true;
           say(error, '');
           try {
-            say(progress, state.kind === 'local' ? 'Reading the folder\u2026' : 'Validating and attaching\u2026');
             const workspace =
               state.kind === 'local'
                 ? await actions.attachLocal({
@@ -1818,22 +1835,40 @@ export function runAddWorkspace(options) {
                     environmentLabel: state.environmentLabel,
                     localPath: state.localPath,
                     handle: state.handle,
-                    onProgress: (text) => say(progress, text),
+                    onProgress: (text) => track('branch', text),
                   })
                 : await actions.attachGitHub({
                     projectId: state.projectId,
                     projectLabel: state.projectLabel,
                     environmentLabel: state.environmentLabel,
                     ...selection.attachment(),
-                    onProgress: (text) => say(progress, text),
+                    stage: track,
                   });
             state.working = false;
+            if (ticking) clearInterval(ticking);
             dismissDialog(true);
             finish(workspace);
           } catch (failure) {
             state.working = false;
-            say(progress, '');
-            say(error, failure?.message || String(failure));
+            if (ticking) clearInterval(ticking);
+            // An unresolved attempt is not a failure. The server may have
+            // finished; the answer was lost. Saying "failed" here is what the
+            // activity log contradicted, so the stage stays running and the
+            // button offers to resume the *same* attempt.
+            const unresolved = Boolean(failure?.attachUnresolved || failure?.attachUnconfirmed);
+            stages.fail(failure?.message || String(failure), failure?.attachStage || null);
+            if (unresolved) {
+              stages.error = failure.message;
+              stages.begin(failure.attachStage || 'branch');
+              region.update(stages);
+            }
+            say(
+              error,
+              unresolved
+                ? 'GitHub may have completed this step; checking\u2026 Retry resumes the same attempt and cannot create a second branch.'
+                : failure?.message || String(failure)
+            );
+            attach.textContent = unresolved ? 'Retry this attempt' : 'Attach workspace';
             attach.disabled = false;
           }
         },
@@ -1878,7 +1913,7 @@ export function runAddWorkspace(options) {
             ? 'Citadel re-checks this exact commit on the server immediately before it creates anything. If the branch moved, the attach is refused rather than applied to a tree you did not review.'
             : 'Citadel reads the folder now to confirm it is a Citadel repository. Nothing is written.'
         ),
-        progress,
+        region.root,
         error
       ),
       [backButton('details'), attach],

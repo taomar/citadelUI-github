@@ -765,6 +765,10 @@ export class GitHubRoutes {
       return this.abandon(req, await readBody());
     }
 
+    if (method === 'POST' && tail[0] === 'attachments' && tail[1] === 'status') {
+      return this.attachmentStatus(req, await readBody());
+    }
+
     if (tail[0] === 'workspaces' && tail.length >= 3) {
       return this.workspace({ req, url, environmentId: tail[1], operation: tail[2], readBody });
     }
@@ -957,6 +961,39 @@ export class GitHubRoutes {
       });
       return result;
     });
+  }
+
+  /**
+   * What happened to an attach whose answer the browser never received?
+   *
+   * The reservation is already the authority on this: `attach` records
+   * provenance before it touches a branch and publishes the result when it
+   * succeeds. This exposes that record by the client's own operation key, so a
+   * lost 502 can be reconciled with a cheap read instead of a second mutation.
+   *
+   * It reads and never writes. `unknown` means only that this server has no
+   * record — after a restart, or past the reservation TTL — and the caller must
+   * fall back to replaying the idempotent attach rather than assuming nothing
+   * was created.
+   */
+  async attachmentStatus(req, body) {
+    assertKeys(body, new Set(['operationKey']));
+    const sessionFingerprint = reservationFingerprint(req.headers[SESSION_HEADER]);
+    // Resolving the session first keeps this behind the same credential check as
+    // every other route, and refuses a caller with no live session.
+    this.session(req);
+    const clientKey = operationKeyOf(body.operationKey);
+    if (!clientKey) {
+      throw githubError(400, 'INVALID_OPERATION_KEY', 'An attachment operation key is required.');
+    }
+    const reservation = this.attachments.findByKey(sessionFingerprint, clientKey);
+    if (!reservation) return { state: 'unknown', result: null };
+    return {
+      state: reservation.state === RESERVATION_PENDING ? 'pending' : 'attached',
+      // Exactly the payload the original attach would have returned, so a
+      // reconciling caller continues along the ordinary path.
+      result: reservation.result || null,
+    };
   }
 
   /**

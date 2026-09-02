@@ -7,6 +7,7 @@ import { createProvider } from './source-factory.mjs';
 import {
   abandonGitHubAttachment,
   attachGitHubRepository,
+  attachGitHubStatus,
   checkGitHubCompatibility,
   githubStatus,
   isSessionError,
@@ -326,8 +327,15 @@ export async function attachGitHubEnvironment(options) {
     mirror = syncRegistryMetadata,
     attach = attachGitHubRepository,
     abandon = abandonGitHubAttachment,
+    attachmentStatus = attachGitHubStatus,
     makeProvider = createProvider,
     activate = true,
+    stage = () => {},
+    // Bounded, and deliberately short: this runs while the user watches. Four
+    // waits is long enough to outlast a gateway blip and short enough that an
+    // unresolved attempt reaches the Retry affordance quickly.
+    reconcileDelays = [500, 1500, 3000, 5000],
+    wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   } = options;
 
   // Reuse an unresolved attempt for this exact selection so a retry addresses
@@ -340,21 +348,90 @@ export async function attachGitHubEnvironment(options) {
   const operationKey = previous?.operationKey || globalThis.crypto.randomUUID();
   targetRegistry.savePendingAttachment?.({ ...selection, environmentId, operationKey });
 
+  const request = {
+    repositoryId,
+    sourceBranch,
+    environmentId,
+    writeMode,
+    operationKey,
+    // The head the structure check passed against, so the server can refuse an
+    // attach whose branch moved after validation.
+    ...(expectedHead ? { expectedHead } : {}),
+  };
+
+  /**
+   * Ask the server what became of this attempt, then replay it if it must.
+   *
+   * The defect this exists to fix: a 502 after the server had already created
+   * the working branch was reported to the user as a failure, while the activity
+   * log recorded the attach as `ok`. The transport lost the answer; the operation
+   * succeeded. Nothing retried, because the code path that kept the durable
+   * attempt then threw immediately.
+   *
+   * Both moves here are safe. The status read is a read. The replay carries the
+   * same operation key, and the server serialises on it and returns the original
+   * reservation, so it cannot create a second branch.
+   */
+  async function reconcile() {
+    let lastError = null;
+    for (const delay of reconcileDelays) {
+      await wait(delay);
+      try {
+        const status = await attachmentStatus({ operationKey });
+        if (status?.state === 'attached' && status.result) return status.result;
+      } catch (statusError) {
+        lastError = statusError;
+      }
+      try {
+        // `unknown` is not "nothing happened": this server may have restarted,
+        // or the reservation may have aged out. Replaying the idempotent attach
+        // is the only way to find out, and it is what makes a duplicate branch
+        // impossible rather than merely unlikely.
+        return await attach(request);
+      } catch (retryError) {
+        if (isTerminalAttachFailure(retryError)) throw retryError;
+        lastError = retryError;
+      }
+    }
+    throw Object.assign(
+      new Error(
+        'GitHub may have completed this step, but the result could not be confirmed. Retry to resume the same attempt \u2014 it will not create a second branch.'
+      ),
+      {
+        code: 'ATTACH_UNRESOLVED',
+        attachUnresolved: true,
+        attachUnconfirmed: true,
+        retryable: true,
+        cause: lastError,
+      }
+    );
+  }
+
   let project = existingProject;
   let environment = null;
   const createdProject = !project;
   let attachment = null;
+  // The step actually in progress. Inferring it afterwards from which objects
+  // exist gets it wrong: the environment record is created *during* the metadata
+  // step, so a mirror failure would be reported as an "open" failure and a retry
+  // would resume past the step that failed.
+  let at = 'revalidate';
+  const enter = (id, label) => {
+    at = id;
+    stage(id, label);
+  };
   try {
-    attachment = await attach({
-      repositoryId,
-      sourceBranch,
-      environmentId,
-      writeMode,
-      operationKey,
-      // The head the structure check passed against, so the server can refuse an
-      // attach whose branch moved after validation.
-      ...(expectedHead ? { expectedHead } : {}),
-    });
+    enter('revalidate');
+    try {
+      attachment = await attach(request);
+    } catch (error) {
+      // A definite client-side rejection proves nothing was created. Anything
+      // else is ambiguous and is reconciled rather than reported as a failure.
+      if (isTerminalAttachFailure(error)) throw error;
+      enter('branch', 'Creating or recovering working branch \u2014 confirming with GitHub');
+      attachment = await reconcile();
+    }
+    enter('metadata');
     project ||= await targetRegistry.createProject(projectLabel);
     environment = await targetRegistry.addGitHubEnvironment(
       project.id,
@@ -363,6 +440,7 @@ export async function attachGitHubEnvironment(options) {
       { id: environmentId }
     );
     await mirror();
+    enter('open');
     const provider = await makeProvider(environment, {
       getHandle: (id) => targetRegistry.getHandle(id),
     });
@@ -386,8 +464,13 @@ export async function attachGitHubEnvironment(options) {
       projectIds: [project.id],
       environmentIds: [updated.id],
     });
+    stage('ready');
     return { projectId: project.id, environment: updated, handle: null, provider, attachment };
   } catch (error) {
+    // The step that was actually running, so a retry resumes there rather than
+    // at the beginning. A metadata failure after the branch succeeded must never
+    // be narrated as a branch failure.
+    if (!error.attachStage) error.attachStage = at;
     // Remove every local record *before* mirroring, and mirror once. Mirroring
     // the environment removal first and deleting the project afterwards would
     // leave the project in /data, which reconciliation would then restore as a
@@ -818,9 +901,8 @@ function catalogActions() {
       sourceBranch,
       writeMode,
       expectedHead,
-      onProgress,
+      stage = () => {},
     }) {
-      onProgress?.('Validating the branch and preparing the working branch\u2026');
       active = await attachGitHubEnvironment({
         project: projectId ? state.projects.find((project) => project.id === projectId) : null,
         projectLabel,
@@ -829,6 +911,7 @@ function catalogActions() {
         sourceBranch,
         writeMode,
         expectedHead,
+        stage,
       });
       return active;
     },

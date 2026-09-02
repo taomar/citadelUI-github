@@ -166,6 +166,13 @@ export async function attachGitHubRepository(payload) {
   });
 }
 
+export async function attachGitHubStatus(payload) {
+  return githubRequest('/api/github/attachments/status', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function abandonGitHubAttachment(payload) {
   return githubRequest('/api/github/attachments/abandon', {
     method: 'POST',

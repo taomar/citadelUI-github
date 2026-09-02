@@ -448,7 +448,7 @@ test('a failed attach call creates no local records at all', async () => {
   assert.equal(registry.pendingAttachment(), null);
 });
 
-test('a lost attach response is retried with the same environment and key', async () => {
+test('a lost attach response is recovered in place, with the same environment and key', async () => {
   const registry = registryDouble();
   const mirror = mirrorDouble(registry);
   const requests = [];
@@ -480,27 +480,9 @@ test('a lost attach response is retried with the same environment and key', asyn
     return result;
   };
 
-  await assert.rejects(
-    attachGitHubEnvironment({
-      projectLabel: 'Citadel',
-      environmentLabel: 'Development',
-      repositoryId: 9001,
-      sourceBranch: 'main',
-      registry,
-      mirror,
-      attach,
-      abandon: async () => ({ removed: true }),
-      makeProvider: async () => providerDouble('supported'),
-    }),
-    /socket hang up/
-  );
-
-  // The attempt is durable, so the retry addresses the same branch.
-  const pending = registry.pendingAttachment();
-  assert.ok(pending, 'the attempt was not recorded before the request');
-  assert.equal(pending.repositoryId, 9001);
-  assert.equal(pending.sourceBranch, 'main');
-
+  // The lost answer is reconciled inside the same call. Reporting it as a
+  // failure was the production defect: the activity log recorded the attach as
+  // `ok` while the user was told GitHub could not be reached.
   const result = await attachGitHubEnvironment({
     projectLabel: 'Citadel',
     environmentLabel: 'Development',
@@ -509,8 +491,12 @@ test('a lost attach response is retried with the same environment and key', asyn
     registry,
     mirror,
     attach,
+    // This server has no record — after a restart, or past the reservation TTL —
+    // so recovery has to fall back to replaying the idempotent attach.
+    attachmentStatus: async () => ({ state: 'unknown', result: null }),
     abandon: async () => ({ removed: true }),
     makeProvider: async () => providerDouble('supported'),
+    wait: async () => {},
   });
 
   assert.equal(requests.length, 2);

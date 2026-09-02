@@ -148,6 +148,29 @@ export const RECONNECT_STAGES = Object.freeze([
 ]);
 
 /**
+ * Attaching a repository, from the last check to an open workspace.
+ *
+ * The first three happen inside one request, and they are still listed
+ * separately because they are the three things that can be *left behind* if the
+ * answer is lost — and because "Creating or recovering working branch" is the
+ * only honest thing to display while an ambiguous result is being reconciled.
+ * A single spinner there would say "failed" for an operation the server
+ * completed.
+ *
+ * `metadata` is separate from `branch` for the same reason: a metadata failure
+ * after a branch succeeded must resume at metadata, and the display has to be
+ * able to say which of the two is being retried.
+ */
+export const ATTACH_STAGES = Object.freeze([
+  { id: 'revalidate', label: 'Revalidating Citadel branch' },
+  { id: 'reserve', label: 'Reserving attachment' },
+  { id: 'branch', label: 'Creating or recovering working branch' },
+  { id: 'metadata', label: 'Saving workspace metadata' },
+  { id: 'open', label: 'Opening workspace' },
+  { id: 'ready', label: 'Ready' },
+]);
+
+/**
  * Render a tracker into a compact inline region.
  *
  * Two live regions, not one: progress is polite so it does not interrupt, and a
