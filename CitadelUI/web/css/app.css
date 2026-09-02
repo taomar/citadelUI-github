@@ -1468,6 +1468,48 @@ input[type='search'].ctl {
   color: var(--danger);
 }
 
+/* Work in flight turns the severity dot into a spinner: same slot, same rhythm,
+   but it keeps moving. A stalled network and a crashed app look identical when
+   nothing on screen moves, and that ambiguity is what makes people reload and
+   lose their edits. */
+.status-pending::before {
+  width: 0.85em;
+  height: 0.85em;
+  background: none;
+  border: 2px solid var(--brand-wash);
+  border-top-color: var(--brand);
+  animation: status-spin 0.8s linear infinite;
+}
+
+@keyframes status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Appears only once the wait stops being ordinary, so it reads as reassurance
+   rather than noise. */
+.status-waiting {
+  flex: none;
+  color: var(--ink-3);
+  font-size: var(--t-small);
+}
+
+.status-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Motion is the secondary cue; the sentence carries the meaning. Without this a
+   reduced-motion user would get a static ring that reads as a broken control. */
+@media (prefers-reduced-motion: reduce) {
+  .status-pending::before {
+    animation: none;
+    border-top-color: var(--brand-wash);
+    background: var(--brand);
+  }
+}
+
 .status-x {
   margin-left: auto;
   padding: 0 var(--sp-3);

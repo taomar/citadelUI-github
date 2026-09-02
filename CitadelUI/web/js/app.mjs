@@ -113,10 +113,24 @@ const pendingByDocument = new Map();
 /* ------------------------------------------------------------------ status */
 
 let statusTimer = null;
+let pendingTicker = null;
+let pendingSince = 0;
 
-function setStatus(message, tone = 'info', sticky = false) {
-  state.status = message ? { message, tone } : null;
+// A slow network and a hung app look identical if nothing on screen moves. Work
+// that is waiting says so, and says so more loudly the longer it waits, so the
+// user never has to guess whether Citadel is still trying.
+const STILL_WORKING_AFTER_MS = 8000;
+
+function setStatus(message, tone = 'info', sticky = false, pending = false) {
+  state.status = message ? { message, tone, pending } : null;
   clearTimeout(statusTimer);
+  clearTimeout(pendingTicker);
+  if (message && pending) {
+    pendingSince = Date.now();
+    // Re-render once the wait stops being ordinary, so the toast can escalate
+    // from "doing it" to "still doing it" without a timer that ticks forever.
+    pendingTicker = setTimeout(renderStatus, STILL_WORKING_AFTER_MS);
+  }
   // Transient notices must clear themselves. A toast that is only dismissed on
   // the success path stays pinned forever the moment anything throws.
   if (message && !sticky && tone !== 'error') {
@@ -131,23 +145,37 @@ function setStatus(message, tone = 'info', sticky = false) {
 function renderStatus() {
   if (!state.status) {
     els.status.hidden = true;
+    els.status.removeAttribute('aria-busy');
     return;
   }
+  const { message, tone, pending } = state.status;
   els.status.hidden = false;
-  els.status.className = `status status-${state.status.tone}`;
+  els.status.className = `status status-${tone}${pending ? ' status-pending' : ''}`;
+  // Assistive tech is told the region is busy, not just sent new text.
+  if (pending) els.status.setAttribute('aria-busy', 'true');
+  else els.status.removeAttribute('aria-busy');
+  const waited = pending && Date.now() - pendingSince >= STILL_WORKING_AFTER_MS;
   mount(
     els.status,
-    h('span', {}, state.status.message),
-    h(
-      'button',
-      {
-        class: 'status-x',
-        type: 'button',
-        'aria-label': 'Dismiss notification',
-        onclick: () => setStatus(null),
-      },
-      '\u2715'
-    )
+    h('span', { class: 'status-text' }, message),
+    // Honest reassurance rather than a fake percentage: nothing here knows how
+    // long GitHub will take, so it reports that it is still trying, not how far.
+    waited ? h('span', { class: 'status-waiting' }, 'still working\u2026') : null,
+    // Work in flight offers no dismiss control. Hiding the toast would leave the
+    // operation running with nothing on screen to say so, which is exactly the
+    // "did it break?" state this is here to prevent.
+    pending
+      ? null
+      : h(
+          'button',
+          {
+            class: 'status-x',
+            type: 'button',
+            'aria-label': 'Dismiss notification',
+            onclick: () => setStatus(null),
+          },
+          '\u2715'
+        )
   );
 }
 
@@ -229,7 +257,10 @@ function transactionTone(transaction) {
 
 /** Every async entry point runs through here so status can never stick. */
 async function withStatus(message, fn) {
-  setStatus(message, 'info', true);
+  // `pending` is what turns a static sentence into a live, animated one. Every
+  // await in the product passes through this function, so nothing can wait
+  // silently without someone deliberately bypassing it.
+  setStatus(message, 'info', true, true);
   try {
     const result = await fn();
     setStatus(null);
