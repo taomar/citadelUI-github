@@ -3805,21 +3805,536 @@
 .pol-card {
   border-color: var(--rule-strong);
 }
+
+/* The setup screen is a datasheet like every other surface: a label column and
+   a control column, left-anchored against one reading edge. It is not a centred
+   card, and per the world rule it never gets a border. */
 .workspace-setup {
   display: grid;
-  gap: 1rem;
-  max-width: 44rem;
-  margin: 8vh auto;
-  padding: 2rem;
+  gap: var(--sp-7);
+  align-content: start;
+  width: min(100%, 58rem);
+  margin: var(--sp-8) auto var(--sp-9);
+  padding-inline: var(--gutter);
+  text-align: left;
+}
+
+.setup-head {
+  display: grid;
+  gap: var(--sp-2);
+  padding-bottom: var(--sp-4);
+  border-bottom: 1px solid var(--rule);
+}
+
+.setup-head h1 {
+  font-family: var(--sans-display);
+  font-size: var(--t-h1);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.setup-head .hint {
+  max-width: 68ch;
+}
+
+.setup-group {
+  display: grid;
+  gap: var(--sp-4);
+  align-content: start;
+}
+
+/* More space above a heading than below it. */
+.setup-group h2 {
+  margin-top: var(--sp-2);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
 }
 
 .workspace-setup label {
   display: grid;
-  gap: 0.35rem;
+  /* The control column takes the remaining width: repository full names, branch
+     refs and absolute paths are long, and truncating them hides the identity the
+     user is selecting. */
+  grid-template-columns: minmax(8rem, 10rem) minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--sp-2) var(--sp-5);
   font-weight: 600;
 }
 
-.setup-reconnect,
+.workspace-setup label > .hint,
+.workspace-setup label > small,
+.workspace-setup label > .setup-github-progress,
+.workspace-setup label > .setup-github-error,
+.workspace-setup label > .stage-region,
+.workspace-setup label > .setup-help-link {
+  grid-column: 2;
+  font-weight: 400;
+}
+
+/* Guidance is one link, not a second form competing with the field it explains.
+   It opens a dialog because the content is reference material read once. */
+.setup-help-link {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--brand);
+  font: inherit;
+  font-size: var(--t-meta);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.setup-help-link:hover {
+  color: var(--brand-hover);
+  text-decoration: underline;
+}
+
+.setup-help-link:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: var(--r-1);
+}
+
+.setup-help-body {
+  display: grid;
+  gap: var(--sp-5);
+  /* Grid items default to `min-content`, so one wide child would stretch the
+     whole dialog. Each child stays inside the dialog and scrolls if it must. */
+  grid-template-columns: minmax(0, 1fr);
+  font-size: var(--t-body);
+  color: var(--ink-2);
+}
+
+/* An anchor styled as the dialog's primary action: it leaves the product, so it
+   stays a real link rather than a scripted button. */
+.setup-help-action {
+  justify-self: start;
+  text-decoration: none;
+}
+
+/* Tabs inside the dialog, not in the form's control column, so they carry no
+   label-column offset. */
+.setup-help-tabs {
+  display: inline-flex;
+  justify-self: start;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-2);
+  overflow: hidden;
+}
+
+.setup-help-tabs .btn {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.setup-help-tabs .btn + .btn {
+  border-left: 1px solid var(--rule-strong);
+}
+
+.setup-help-method {
+  display: grid;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+/* Prose keeps a readable measure; tables and code use the full dialog width. */
+.setup-help-method p,
+.setup-help-steps,
+.setup-help-body > .hint {
+  max-width: 68ch;
+}
+
+.setup-help-method h4 {
+  margin-top: var(--sp-2);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+}
+
+.setup-help-method p {
+  margin: 0;
+}
+
+.setup-help-steps {
+  display: block;
+  margin: 0;
+  padding-left: var(--sp-6);
+  list-style: decimal;
+}
+
+.setup-help-steps li {
+  padding-left: var(--sp-1);
+}
+
+.setup-help-steps li + li {
+  margin-top: var(--sp-3);
+}
+
+.setup-help-code {
+  margin: 0;
+  padding: var(--sp-4);
+  overflow-x: auto;
+  background: var(--zebra);
+  border-radius: var(--r-2);
+  font-family: var(--mono);
+  font-size: var(--t-meta);
+  line-height: 1.5;
+  color: var(--ink-1);
+  white-space: pre;
+  tab-size: 2;
+}
+
+.setup-help-warn {
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--warning-wash);
+  border-radius: var(--r-2);
+  color: var(--warning);
+}
+
+/* The permissions are a spec the user transcribes into GitHub, so they are a
+   table rather than a sentence. */
+/* The spec scrolls within itself so its nowrap columns cannot widen the dialog
+   and clip the prose beside them. */
+.setup-help-spec-scroller {
+  overflow-x: auto;
+  min-width: 0;
+}
+
+.setup-help-spec-scroller:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.setup-help-spec {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.setup-help-spec caption {
+  padding-bottom: var(--sp-2);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+  text-align: left;
+}
+
+.setup-help-spec th,
+.setup-help-spec td {
+  padding: var(--sp-2) var(--sp-4) var(--sp-2) 0;
+  border-top: 1px solid var(--rule);
+  vertical-align: baseline;
+  font-weight: 400;
+}
+
+.setup-help-spec th {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.setup-help-spec td:nth-of-type(1) {
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+
+.setup-help-note {
+  color: var(--ink-3);
+}
+
+/* This surface deliberately overrides the four-width control rule: the values it
+   holds are repository full names, Git refs and absolute paths, whose length is
+   unbounded and whose tail is the identifying part. */
+.workspace-setup .ctl,
+.workspace-setup select.ctl,
+.workspace-setup select {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+}
+
+/* A checkbox is not a text field and must keep its own size. */
+.workspace-setup input[type='checkbox'],
+.workspace-setup input[type='radio'] {
+  width: auto;
+  max-width: none;
+  flex: none;
+}
+
+.setup-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.setup-inline .ctl {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.setup-inline .btn {
+  flex: none;
+}
+
+.setup-stack {
+  display: grid;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.setup-actions {
+  display: grid;
+  grid-template-columns: minmax(8rem, 10rem) minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-5);
+}
+
+/* The primary action sits under the fields it commits, in the control column,
+   not centred under the whole page. */
+.setup-actions > * {
+  grid-column: 2;
+  justify-self: start;
+}
+
+/* A segmented control, not two loose buttons. It hugs its own content instead
+   of stretching across the control column. */
+.setup-source-choice {
+  display: inline-flex;
+  justify-self: start;
+  margin-left: calc(10rem + var(--sp-5));
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-2);
+  overflow: hidden;
+}
+
+.setup-source-choice .btn {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.setup-source-choice .btn + .btn {
+  border-left: 1px solid var(--rule-strong);
+}
+
+.setup-source-panel {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+/* The panel's own status, aligned with the controls it reports on rather than
+   with the page description. */
+.setup-source-status {
+  margin: 0;
+  grid-column: 1;
+  padding-left: calc(10rem + var(--sp-5));
+}
+
+.setup-source-status:empty {
+  display: none;
+}
+
+.setup-source-panel[hidden] {
+  display: none;
+}
+
+.setup-github {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.setup-github select[size] {
+  padding: 0;
+  font-family: var(--mono);
+  font-size: var(--t-meta);
+}
+
+.setup-github select[size] option {
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.setup-github-mode {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  font-weight: 400;
+}
+
+.setup-github-mode input {
+  width: auto;
+  margin-top: 0.15rem;
+}
+
+/* Connection feedback sits with the field that produced it. A disabled control
+   is not a progress state: the attempt has to be visible on its own. */
+.setup-github-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin: 0;
+  font-size: var(--t-meta);
+  color: var(--ink-3);
+}
+
+.setup-github-progress::before {
+  content: '';
+  flex: none;
+  width: 0.85em;
+  height: 0.85em;
+  border: 2px solid var(--brand-wash);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: setup-github-spin 0.8s linear infinite;
+}
+
+@keyframes setup-github-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Motion is the secondary cue; the sentence carries the meaning. */
+@media (prefers-reduced-motion: reduce) {
+  .setup-github-progress::before {
+    animation: none;
+    border-top-color: var(--brand-wash);
+    background: var(--brand);
+  }
+}
+
+/* Reuses the product's existing `.field-error` treatment; this rule adds only
+   what a server message needs: no stray top margin inside the label grid, and
+   wrapping so a long unbroken string cannot widen the sheet. */
+/* A settled verdict is not progress: it keeps the row's shape but drops the
+   spinner, so nothing animates once the answer has arrived. */
+.setup-github-progress.is-settled::before {
+  animation: none;
+  border-color: var(--success);
+  background: var(--success);
+}
+
+.setup-github-error {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------- staged progress */
+
+/* Named steps rather than a bar: nothing here knows how long GitHub will take,
+   so the honest thing to show is which step is running. */
+.stage-region {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.stage-list {
+  display: grid;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--t-meta);
+}
+
+.stage {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  color: var(--ink-3);
+}
+
+.stage-mark {
+  flex: none;
+  width: 1em;
+  text-align: center;
+}
+
+.stage-done {
+  color: var(--ink-2);
+}
+
+.stage-done .stage-mark {
+  color: var(--success);
+}
+
+.stage-failed {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.stage-active {
+  color: var(--ink-1);
+  font-weight: 600;
+}
+
+/* The running step carries the only moving element on the sheet. */
+.stage-active .stage-mark::before {
+  content: '';
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  border: 2px solid var(--brand-wash);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: setup-github-spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-active .stage-mark::before {
+    animation: none;
+    border-top-color: var(--brand-wash);
+    background: var(--brand);
+  }
+}
+
+.stage-waiting,
+.stage-error {
+  margin: 0;
+  font-size: var(--t-meta);
+  overflow-wrap: anywhere;
+}
+
+.stage-waiting {
+  color: var(--ink-3);
+}
+
+.stage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+.setup-reconnect-list {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.setup-reconnect {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--zebra);
+  border-radius: var(--r-2);
+}
+
+.setup-reconnect label {
+  grid-template-columns: max-content minmax(0, 18rem);
+  gap: var(--sp-3);
+  font-weight: 400;
+}
+
 .environment-list,
 .environment-actions,
 .project-actions {
@@ -4072,6 +4587,48 @@
     padding: 1rem;
   }
 
+  /* Two columns cannot hold a label and a repository name at this width, so the
+     datasheet becomes a single column: the label sits above its control and the
+     control keeps the full measure. */
+  .workspace-setup label,
+  .setup-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workspace-setup label > .hint,
+  .workspace-setup label > small,
+  .workspace-setup label > .setup-help-link,
+  .workspace-setup label > .setup-github-progress,
+  .workspace-setup label > .setup-github-error,
+  .workspace-setup label > .stage-region,
+  .setup-actions > * {
+    grid-column: 1;
+  }
+  /* The source choice loses the control-column indent it used to align with the
+     fields above; at this width that offset pushed the second option out of the
+     sheet, which clips rather than scrolls. */
+  .setup-source-choice {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    margin-left: 0;
+    justify-self: stretch;
+  }
+
+  .setup-source-status {
+    padding-left: 0;
+  }
+
+  /* The token field and its two actions cannot share a row here: the buttons
+     are fixed-width, so the input collapsed to a few pixels and Disconnect
+     overflowed the sheet. The field takes its own line and the actions wrap. */
+  .setup-inline {
+    flex-wrap: wrap;
+  }
+
+  .setup-inline .ctl {
+    flex: 1 0 100%;
+  }
+
   .environment-summary {
     grid-template-columns: 1fr;
   }
@@ -4223,11 +4780,19 @@
   letter-spacing: -0.01em;
 }
 
+/* Anything that lands on the blue frame takes its text from the frame's own
+   ramp, so a shared neutral utility class cannot fall to 1.78:1 there. */
+.titleblock .empty,
+.titleblock .hint,
+.titleblock small {
+  color: var(--nav-muted);
+}
+
 .tb-mode {
   font-family: var(--sans-small);
   font-size: var(--t-micro);
   line-height: 1.2;
-  color: var(--ink-3);
+  color: var(--nav-muted);
   white-space: nowrap;
 }
 
@@ -4247,28 +4812,34 @@
 
 .tb-crumb {
   flex: none;
-  color: var(--ink-3);
+  color: var(--nav-muted);
   font-size: var(--t-small);
   font-weight: 600;
 }
 
+/* The active environment is the primary selection on the frame. It reads by a
+   raised surface and weight as well as by colour, so selection is never hue
+   alone. */
 .tb-environment {
   padding: 1px var(--sp-3);
-  border: 1px solid var(--brand-line);
+  border: 1px solid var(--nav-rule);
   border-radius: var(--r-1);
-  background: var(--brand-wash);
-  color: var(--brand-pressed);
+  background: var(--nav-active);
+  color: var(--nav-ink);
+  font-weight: 700;
 }
 
+/* A separator glyph, so it is held at graphical-object contrast rather than
+   left as a near-invisible tint. */
 .tb-chevron {
-  color: var(--ink-3);
+  color: var(--nav-muted);
 }
 
 .tb-doc .tb-path {
   flex: 1 1 auto;
   direction: ltr;
   font-size: var(--t-meta);
-  color: var(--ink-1);
+  color: var(--nav-ink);
 }
 
 .tb-local,
@@ -4291,6 +4862,7 @@
   min-height: var(--ctl-h-sm);
   padding: 0 var(--sp-2);
   border-radius: var(--r-1);
+  color: var(--nav-muted);
 }
 
 .tb-local code,
@@ -4306,7 +4878,7 @@
   font-family: var(--sans-small);
   font-size: var(--t-micro);
   font-weight: 600;
-  color: var(--ink-3);
+  color: var(--nav-muted);
 }
 
 .tb-copy-mark {
@@ -4314,18 +4886,15 @@
   font-family: var(--sans-small);
   font-size: var(--t-micro);
   font-weight: 600;
-  color: var(--brand);
+  color: var(--nav-ink);
   opacity: 0;
   transition: opacity var(--fast) var(--ease);
 }
 
 .tb-local:hover {
-  color: var(--brand-hover);
+  color: var(--nav-ink);
   text-decoration: underline;
-}
-
-.tb-local:hover {
-  background: var(--zebra);
+  background: var(--nav-hover);
 }
 
 .tb-local:hover .tb-copy-mark,
@@ -4336,7 +4905,7 @@
 .tb-actions {
   gap: var(--sp-5);
   padding-left: var(--sp-6);
-  border-left: 1px solid var(--rule);
+  border-left: 1px solid var(--nav-rule);
 }
 
 .tb-status-group,
@@ -4344,6 +4913,13 @@
   display: flex;
   align-items: center;
   gap: var(--sp-3);
+}
+
+/* These chips carry their own light surface on the blue frame, so their text is
+   ink on that surface, not tinted from the frame. */
+.tb-pending,
+.tb-clean {
+  color: var(--ink-2);
 }
 
 .tb-pending {
@@ -4354,9 +4930,19 @@
   background: var(--zebra);
 }
 
+.tb-pending::before,
+.tb-clean::before {
+  background: var(--rule-strong);
+}
+
 .tb-pending.is-dirty {
   border-color: var(--brand-line);
   background: var(--brand-wash);
+  color: var(--brand-pressed);
+}
+
+.tb-pending.is-dirty::before {
+  background: var(--brand);
 }
 
 .tb-pending.has-warnings {
@@ -4388,6 +4974,25 @@
   .tb-actions {
     gap: var(--sp-3);
     padding-left: var(--sp-4);
+  }
+}
+
+/* Narrow: the frame must not spend a sixth of the viewport on chrome. The
+   repository path is already truncated here and is recoverable from Settings,
+   so it yields before the controls do. */
+@media (max-width: 48rem) {
+  .titleblock {
+    row-gap: var(--sp-3);
+    padding-bottom: var(--sp-4);
+  }
+
+  .tb-local {
+    display: none;
+  }
+
+  .tb-actions {
+    padding-left: 0;
+    border-left: 0;
   }
 }
 

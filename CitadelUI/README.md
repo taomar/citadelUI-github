@@ -75,6 +75,69 @@ registry metadata API; it is never used to open, read, or write a repository.
 
 Capability signatures, not folder names, identify the guided areas below.
 
+## GitHub repositories
+
+An environment can be a selected local folder or a GitHub repository. The GitHub
+source is chosen on the landing page next to **Local folder**:
+
+1. Paste a **fine-grained personal access token** scoped to only the intended
+   repositories, with `Contents: Read and write` (and `Metadata: Read-only`,
+   which GitHub adds automatically). Classic tokens are refused, and no Pull
+   requests permission is needed — Citadel only opens a compare URL that
+   github.com's own session authorises.
+2. Citadel UI validates it, keeps it **only in server memory**, and hands the
+   browser an opaque session id. The token is never written to disk, browser
+   storage, a log, an audit record, or a response. Connecting reports its real
+   stages — validating, authenticating, loading repositories — and any failure
+   appears beside the token field, not only in the status bar.
+3. Pick a repository from the list the credential can actually reach, then pick a
+   branch. You never type an owner/repository path, and **no branch is chosen for
+   you**: the branch decides which tree Citadel edits, so it has to be selected.
+4. Citadel UI checks that the selected repository and branch really are a Citadel
+   workspace, using the same discovery the local folder editor is judged by, and
+   names the capabilities it found. **Attach stays disabled until that check
+   passes**, and the server repeats it against the exact branch head immediately
+   before it creates anything — so a repository that is not a Citadel repository
+   never gets a working branch or a registry record.
+5. Citadel UI creates or reuses the working branch `citadel-ui/<environment-id>`
+   from the branch you chose, and every save commits there. Direct writes to the
+   selected branch are an explicit opt-in.
+
+Every Citadel operation is exactly one Git commit built from one tree:
+
+| Operation | Result |
+| --- | --- |
+| Parameter save | one commit |
+| Policy save | one commit |
+| Environment copy | one commit |
+| Contract creation | one commit containing both files |
+| History undo | one inverse commit |
+
+Refs are updated with `force: false`. If the branch moved after you loaded or
+reviewed a file, the save is rejected, your edits stay intact, and the branch is
+untouched. Nothing is ever reset, rebased, or force-pushed, and undo appends an
+inverse commit instead of rewriting history. Commits carry `Citadel-Action`,
+`Citadel-Environment`, and `Citadel-Transaction` trailers, and no values or file
+contents.
+
+Protected branches surface as an ordinary permission error with a link to open a
+pull request from the working branch. Symlinks, submodules, Git LFS pointers,
+oversized blobs, and unsupported file modes are refused rather than edited. The
+container talks only to `https://api.github.com`, accepts no API base URL from
+the user, and never follows a redirect.
+
+GitHub credentials are cleared when the container restarts, so GitHub
+environments stay listed and show **Reconnect GitHub** until a new session is
+established.
+
+If a save's branch update fails in transport, Citadel UI asks GitHub what
+actually happened rather than guessing. A commit that is the branch head or an
+ancestor of it is reported as applied; a branch that is readable and provably
+does not contain the commit is a real failure you can retry; and a branch that
+cannot be read either is reported as **indeterminate**, with the commit SHA and
+an instruction to reload rather than retry — because a blind retry would
+duplicate a commit that had already landed.
+
 ### 1. Main deployment
 
 `bicep/main.bicepparam` — the core gateway infrastructure. Around 97 parameters
@@ -231,8 +294,17 @@ CitadelUI/
     index.mjs          hardened loopback API and static files
     registry-store.mjs durable non-sensitive project/environment metadata
     transactions.mjs   backup, journal, audit, retention, recovery
+    github/
+      api.mjs          fixed-host api.github.com client, the only egress
+      sessions.mjs     in-memory credential sessions, never persisted
+      repositories.mjs repository/ref validation and source-tree filtering
+      workspace.mjs    tree, blob, atomic commit, history, inverse commit
+      routes.mjs       same-origin GitHub routes
   shared/
     citadel-core.mjs   provider-neutral discovery and document behavior
+    source-scope.mjs   one definition of the editable source boundary
+    subscription-env.mjs
+                       byte-preserving AZURE_SUBSCRIPTION_ID patcher
     policy.mjs         pure APIM policy parser/editor
     bicepparam/        lexer, parser, serializer, span editor
   web/
@@ -243,6 +315,17 @@ CitadelUI/
       registry.mjs     IndexedDB labels, metadata, drafts, retained handles
       directory-provider.mjs
                        selected-folder I/O and exclusion boundary
+      github-provider.mjs
+                       read-only GitHub source provider
+      mutation-coordinator.mjs
+                       mutation contract and local transaction coordinator
+      github-coordinator.mjs
+                       one Git commit per Citadel operation
+      source-factory.mjs
+                       the only place that dispatches on source kind
+      github-session.mjs
+                       opaque session id, never a token
+      github-setup.mjs repository and branch selection panel
       transaction-client.mjs
                        browser half of verified backup-before-write
       paramview.mjs    sections and parameter rows
@@ -256,4 +339,5 @@ CitadelUI/
 
 The production image has no package install or build step. It contains only the
 application runtime and serves ES modules directly. It has no Azure CLI, Bicep
-CLI, `azd`, Git, deployment tooling, telemetry, or runtime Internet dependency.
+CLI, `azd`, Git, deployment tooling, or telemetry. Its only outbound network
+dependency is `https://api.github.com`, used exclusively by GitHub environments.

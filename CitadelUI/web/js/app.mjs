@@ -29,16 +29,37 @@ import { APIM_SKUS, LOGIC_APPS_TEMPLATE } from './azuremeta.mjs';
 import {
   activeWorkspace,
   attachEnvironment,
+  attachGitHubEnvironment,
   assertSupportedScan,
+  clearActiveWorkspace,
   commitActiveWorkspaceReconnect,
   ensureWorkspace,
   scanProvider,
   syncRegistryMetadata,
   localPathMatchesHandle,
+  observeSetupContext,
   validateLocalPath,
   workspaceRegistry,
 } from './workspace-context.mjs';
+import { createGitHubPanel } from './github-setup.mjs';
+import { githubSessions } from './github-session-manager.mjs';
 import { BrowserDirectoryProvider } from './directory-provider.mjs';
+import { environmentLocation, environmentSourceOf, isGitHubEnvironment } from './registry.mjs';
+import { createProvider } from './source-factory.mjs';
+import { historyEntry } from './history-entry.mjs';
+import { createCompareSession } from './compare-session.mjs';
+
+/**
+ * GitHub's compare view for the environment's working branch.
+ *
+ * Rendered as a link so the user's browser navigates to GitHub directly;
+ * Citadel UI itself never opens an outbound connection for this.
+ */
+function pullRequestUrl(environment) {
+  const source = environmentSourceOf(environment);
+  const compare = `${encodeURIComponent(source.sourceBranch)}...${encodeURIComponent(source.workingBranch)}`;
+  return `https://github.com/${source.fullName}/compare/${compare}?expand=1`;
+}
 import { createEnvironmentOperation } from './settings-operation.mjs';
 import { setRawPolicyDraft } from './policy-edit-state.mjs';
 import {
@@ -51,6 +72,7 @@ import {
   choiceDialog,
   closeDialog,
   confirmDialog,
+  dismissDialog,
   promptDialog,
   showDialog,
 } from './dialog.mjs';
@@ -140,7 +162,7 @@ function currentWriteContext(file = state.current?.path || null, environment = n
     project: state.projectLabel || 'Project',
     environment: selected.label || 'Environment',
     file: file || 'No file selected',
-    localPath: selected.localPath || 'Local path not recorded',
+    localPath: environmentLocation(selected),
   };
 }
 
@@ -1096,11 +1118,17 @@ async function commitSave() {
     );
   }
   else await loadDocument(state.current.path);
+  // A warning here always describes something the source could not confirm
+  // *after* the write landed, so the save is reported as done and the caveat is
+  // appended rather than replacing it with a failure.
+  const caveats = (result.warnings || []).join(' ');
   setStatus(
     result.changed
-      ? `Saved ${result.path}. Previous revision archived to ${result.archived}`
+      ? `Saved ${result.path}. Previous revision archived to ${result.archived}${
+          caveats ? ` ${caveats}` : ''
+        }`
       : 'Nothing changed.',
-    'ok'
+    caveats ? 'warn' : 'ok'
   );
 }
 
@@ -1127,6 +1155,10 @@ async function switchEnvironment(environment) {
   location.reload();
 }
 
+/**
+ * One history row, whichever source produced it. The reconciliation itself lives
+ * in `history-entry.mjs` so it can be exercised without a DOM.
+ */
 async function openHistory() {
   const result = await withStatus('Loading history\u2026', () => api.history());
   if (!result) return;
@@ -1142,8 +1174,9 @@ async function openHistory() {
         ? h(
             'div',
             { class: 'history-list' },
-            transactions.map((transaction) =>
-              h(
+            transactions.map((transaction) => {
+              const entry = historyEntry(transaction);
+              return h(
                 'section',
                 { class: `history-item history-${transactionTone(transaction)}` },
                 h(
@@ -1153,21 +1186,20 @@ async function openHistory() {
                   h(
                     'span',
                     { class: `chip chip-${transactionTone(transaction)}` },
-                    String(transaction.status || 'original').replace(/_/g, ' ')
+                    String(entry.status).replace(/_/g, ' ')
                   ),
-                  formatTimestamp(transaction.timestamp || transaction.createdAt)
+                  formatTimestamp(entry.timestamp)
                 ),
                 h(
                   'code',
                   { class: 'history-files' },
-                  (transaction.files || transaction.targets || []).map((target) => target.alias).join(', ') ||
-                    'No file aliases recorded'
+                  entry.aliases.join(', ') || 'No file aliases recorded'
                 ),
                 h(
                   'details',
                   { class: 'technical-details' },
                   h('summary', {}, 'Technical details'),
-                  h('code', {}, transaction.transactionId || transaction.id || 'No transaction ID')
+                  h('code', {}, entry.id || 'No transaction ID')
                 ),
                 transaction.recoveryRequired ||
                 transaction.status === 'committing' ||
@@ -1242,15 +1274,11 @@ async function openHistory() {
                     }, 'Recover')
                   : null
                 ,
-                ((['committed', 'rolled_back'].includes(transaction.status) &&
-                  (transaction.files || []).some((file) => file.existed)) ||
-                  (transaction.status === 'committed' &&
-                    transaction.targetLabel === 'contract-create' &&
-                    (transaction.files || []).every((file) => !file.existed)))
+                entry.canUndo
                   ? h('button', {
                        class: 'btn btn-sm btn-danger-ghost',
                       onclick: async () => {
-                        const creation = (transaction.files || []).every((file) => !file.existed);
+                        const creation = entry.isCreation;
                          if (
                            !(await confirmDialog({
                              title: creation ? 'Undo contract creation?' : 'Restore prior revision?',
@@ -1260,21 +1288,18 @@ async function openHistory() {
                              confirmLabel: creation ? 'Remove created files' : 'Back up and restore',
                              tone: 'danger',
                              context: writeContextNode({
-                               file:
-                                 (transaction.files || []).map((file) => file.alias).join(', ') ||
-                                 state.current?.path,
+                               file: entry.aliases.join(', ') || state.current?.path,
                              }),
                            }))
                          ) return;
-                         const id = transaction.transactionId || transaction.id;
                          const result = await withStatus('Backing up current source and restoring\u2026', () =>
-                           api.restoreTransaction(id)
+                           api.restoreTransaction(entry.id)
                         );
                         if (!result) return;
                         closeModal();
                         if (creation) {
                           state.contracts = await api.contracts();
-                          const fallback = state.contracts.contracts?.find((entry) => entry.isTemplate);
+                          const fallback = state.contracts.contracts?.find((item) => item.isTemplate);
                           if (fallback) await selectContract(fallback.id);
                         } else if (state.current) {
                           await loadDocument(state.current.path);
@@ -1286,10 +1311,10 @@ async function openHistory() {
                           'ok'
                         );
                       },
-                    }, (transaction.files || []).every((file) => !file.existed) ? 'Undo creation' : 'Restore prior')
+                    }, entry.isCreation ? 'Undo creation' : 'Restore prior')
                   : null
-              )
-            )
+              );
+            })
           )
         : h('p', { class: 'empty' }, 'No transactions have been recorded for this environment.')
     ),
@@ -1314,13 +1339,14 @@ async function openEnvironmentCompare(environments) {
       h(
         'option',
         { value: environment.id },
-        `${environment.label} — ${environment.localPath || 'Reconnect folder'}`
+        `${environment.label} — ${environmentLocation(environment)}`
       )
     )
   );
   const results = h('div', { class: 'compare-results', 'aria-live': 'polite' });
   const selectedCount = h('strong', { class: 'compare-selected' }, '0 selected');
   const contextSlot = h('div', { class: 'compare-context' });
+  const session = createCompareSession();
   const reviewButton = h(
     'button',
     {
@@ -1331,11 +1357,22 @@ async function openEnvironmentCompare(environments) {
           (input) => input.value
         );
         if (!names.length) return;
-        const targetEnvironment = candidates.find((environment) => environment.id === select.value);
+        // The target is bound once, for the whole reviewed operation. Re-reading
+        // the selector after an await would let a change made while the preview
+        // loads redirect reviewed content at a different environment.
+        const bound = session.review(select.value);
+        if (!bound) return;
+        const targetId = bound.targetId;
+        const targetEnvironment = candidates.find((environment) => environment.id === targetId);
+        select.disabled = true;
         const preview = await withStatus('Preparing target preview\u2026', () =>
-          api.previewCopy(select.value, state.current.path, names, state.current.hash)
+          api.previewCopy(targetId, state.current.path, names, state.current.hash)
         );
-        if (!preview) return;
+        if (!preview) {
+          session.release();
+          select.disabled = false;
+          return;
+        }
         const { node, stats } = renderDiff(preview.before, preview.after);
         showModal(
           `Review copy to ${preview.targetLabel}`,
@@ -1350,13 +1387,19 @@ async function openEnvironmentCompare(environments) {
             node
           ),
           [
-            h('button', { class: 'btn', onclick: () => openEnvironmentCompare(environments) }, 'Back'),
+            h('button', {
+              class: 'btn',
+              onclick: () => {
+                session.release();
+                openEnvironmentCompare(environments);
+              },
+            }, 'Back'),
             h('button', {
               class: 'btn btn-primary',
               onclick: async () => {
                 const copied = await withStatus('Backing up and copying\u2026', () =>
                   api.copyParameters(
-                    select.value,
+                    targetId,
                     state.current.path,
                     names,
                     preview.sourceHash,
@@ -1364,6 +1407,7 @@ async function openEnvironmentCompare(environments) {
                   )
                 );
                 if (!copied) return;
+                session.release();
                 closeModal();
                 setStatus(`Copied ${names.length} parameters in transaction ${copied.transactionId}.`, 'ok');
               },
@@ -1377,13 +1421,17 @@ async function openEnvironmentCompare(environments) {
   const updateSelected = () => {
     const count = results.querySelectorAll('input[data-copy]:checked').length;
     selectedCount.textContent = `${count} selected`;
-    reviewButton.disabled = count === 0;
+    reviewButton.disabled = count === 0 || session.locked;
   };
   const load = async () => {
+    // A slower response for a target the user has since moved away from must not
+    // paint over the newer one.
+    const token = session.begin(select.value);
+    const targetId = token.targetId;
     const comparison = await withStatus('Comparing\u2026', () =>
-      api.compareEnvironment(select.value, state.current.path)
+      api.compareEnvironment(targetId, state.current.path)
     );
-    if (!comparison) return;
+    if (!comparison || session.isStale(token)) return;
     const secure = comparison.source.schema?.parameters || {};
     const differences = comparison.parameters.filter(
       (parameter) =>
@@ -1394,7 +1442,7 @@ async function openEnvironmentCompare(environments) {
     const deferred = comparison.parameters.filter(
       (parameter) => !differences.includes(parameter)
     );
-    const targetEnvironment = candidates.find((environment) => environment.id === select.value);
+    const targetEnvironment = candidates.find((environment) => environment.id === targetId);
     contextSlot.replaceChildren(
       writeContextNode({
         source: currentWriteContext(),
@@ -1492,6 +1540,109 @@ async function openEnvironmentCompare(environments) {
   await load();
 }
 
+/**
+ * Ask which source a new environment comes from.
+ *
+ * Both entry points — a new project and an added environment — offer the same
+ * two sources, so a local user can adopt GitHub later and a GitHub user can
+ * attach a second repository.
+ */
+async function chooseSourceKind({ title, message }) {
+  const kind = await choiceDialog({
+    title,
+    message,
+    choices: [
+      { value: 'local', label: 'Local folder', primary: true },
+      { value: 'github', label: 'GitHub repository' },
+      { value: null, label: 'Cancel' },
+    ],
+  });
+  return kind || null;
+}
+
+/**
+ * Create a project whose first environment is a GitHub repository, using the
+ * same repository and branch picker the settings panel uses.
+ *
+ * Attaching creates a branch on GitHub and writes registry records, so it has to
+ * reach a terminal state before the dialog can answer. Cancel, the backdrop and
+ * Escape are all refused while it is in flight: resolving `false` mid-attach
+ * would tell the caller nothing was created while the attachment carried on and
+ * created it.
+ */
+function attachGitHubProject({ projectLabel, environmentLabel }) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let attaching = false;
+    const notice = h('p', { class: 'operation-status' });
+    const cancelButton = h('button', { class: 'btn', type: 'button' }, 'Cancel');
+
+    const finish = (value, error) => {
+      if (settled) return;
+      settled = true;
+      dismissDialog(value);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    // The single guard: while an attachment is in flight the dialog refuses to
+    // be dismissed, and says why. `false` therefore always means "nothing was
+    // created".
+    const refuseWhileAttaching = () => {
+      if (!attaching) return false;
+      notice.className = 'operation-status';
+      notice.textContent =
+        'Attaching this repository. This cannot be cancelled until it finishes or rolls back.';
+      return true;
+    };
+    cancelButton.addEventListener('click', () => {
+      if (refuseWhileAttaching()) return;
+      finish(false);
+    });
+
+    const panel = createGitHubPanel({
+      onMessage: (text) => {
+        if (attaching) return;
+        notice.className = 'operation-status';
+        notice.textContent = text;
+      },
+      onAttach: async (selection) => {
+        attaching = true;
+        cancelButton.disabled = true;
+        try {
+          await attachGitHubEnvironment({
+            projectLabel,
+            environmentLabel: environmentLabel || selection.repository.name,
+            repositoryId: selection.repositoryId,
+            sourceBranch: selection.sourceBranch,
+            writeMode: selection.writeMode,
+            activate: true,
+          });
+          attaching = false;
+          finish(true);
+        } catch (error) {
+          // Terminal: the attachment rolled itself back, so the picker reopens
+          // for a different repository or branch.
+          attaching = false;
+          cancelButton.disabled = false;
+          notice.className = 'operation-status operation-error';
+          notice.textContent = error.message;
+          throw error;
+        }
+      },
+    });
+
+    showDialog(
+      `Repository for ${projectLabel}`,
+      h('div', { class: 'setup-source-panel' }, notice, panel.root),
+      [cancelButton],
+      // A dismissal while attaching is refused rather than answered, so `false`
+      // always means "nothing was created".
+      { stack: true, onDismiss: () => finish(false), preventDismiss: refuseWhileAttaching }
+    );
+    panel.restore().catch(() => {});
+  });
+}
+
 async function openWorkspaceSettingsContent() {
   const context = activeWorkspace();
   const projects = await workspaceRegistry.listProjects();
@@ -1567,21 +1718,25 @@ async function openWorkspaceSettingsContent() {
             {
               class: 'environment-path',
               type: 'button',
-              title: environment.localPath || 'Local path not recorded',
-              'aria-label': `Copy Local path for ${environment.label}: ${environment.localPath || 'not recorded'}`,
+              title: environmentLocation(environment),
+              'aria-label': `Copy source location for ${environment.label}: ${environmentLocation(environment)}`,
               onclick: () =>
                 navigator.clipboard
-                  .writeText(environment.localPath || '')
+                  .writeText(
+                    environmentLocation(environment) === 'Local path not recorded'
+                      ? ''
+                      : environmentLocation(environment)
+                  )
                   .then(() => {
                     rowStatus.className = 'operation-status operation-success';
-                    rowStatus.textContent = 'Local path copied.';
+                    rowStatus.textContent = 'Source location copied.';
                   })
                   .catch(() => {
                     rowStatus.className = 'operation-status operation-error';
-                    rowStatus.textContent = 'Local path could not be copied. Select and copy it from the technical details.';
+                    rowStatus.textContent = 'Source location could not be copied. Select and copy it from the technical details.';
                   }),
             },
-            h('code', {}, environment.localPath || 'Local path not recorded')
+            h('code', {}, environmentLocation(environment))
           ),
           h(
             'span',
@@ -1617,8 +1772,23 @@ async function openWorkspaceSettingsContent() {
               await refresh();
             }),
           }, 'Rename'),
+          isGitHubEnvironment(environment)
+            ? h(
+                'a',
+                {
+                  class: 'btn btn-sm',
+                  // A plain link: the browser opens GitHub directly and Citadel
+                  // UI performs no outbound request for the pull request view.
+                  href: pullRequestUrl(environment),
+                  target: '_blank',
+                  rel: 'noreferrer noopener',
+                },
+                'Open pull request'
+              )
+            : null,
           h('button', {
             class: 'btn btn-sm',
+            hidden: isGitHubEnvironment(environment),
             onclick: rowOperation('Reconnecting environment\u2026', async (onRollback) => {
               const handle = await showDirectoryPicker({ mode: 'readwrite' });
               const values = await promptDialog({
@@ -1712,7 +1882,9 @@ async function openWorkspaceSettingsContent() {
           h('button', {
             class: 'btn btn-sm',
             onclick: rowOperation('Verifying access and compatibility\u2026', async (onRollback) => {
-              const provider = new BrowserDirectoryProvider(await workspaceRegistry.getHandle(environment.id));
+              const provider = await createProvider(environment, {
+                getHandle: (id) => workspaceRegistry.getHandle(id),
+              });
               await provider.assertWritable({ request: true });
               const scan = await scanProvider(provider);
               assertSupportedScan(scan);
@@ -1831,6 +2003,126 @@ async function openWorkspaceSettingsContent() {
       await refresh();
     }),
   }, 'Add environment');
+
+  // GitHub source choice for an active workspace. Without this a local user can
+  // never add a GitHub environment, and a GitHub user can never attach a second
+  // repository, which is what makes GitHub-to-GitHub compare and copy reachable.
+  const githubPanelSlot = h('div', { class: 'setup-source-panel', hidden: true });
+  const localPanelSlot = h(
+    'div',
+    { class: 'setup-source-panel' },
+    h('label', { for: 'new-environment-label' }, 'Environment label', addLabel),
+    h(
+      'label',
+      { for: 'new-environment-path' },
+      'Local path',
+      addLocalPath,
+      h('small', { class: 'hint' }, 'Display only; the selected folder handle remains authoritative.')
+    ),
+    add
+  );
+  let githubPanel = null;
+  const localChoice = h(
+    'button',
+    { class: 'btn btn-sm btn-primary', type: 'button', 'aria-pressed': 'true' },
+    'Local folder'
+  );
+  const githubChoice = h(
+    'button',
+    { class: 'btn btn-sm', type: 'button', 'aria-pressed': 'false' },
+    'GitHub repository'
+  );
+  const chooseSource = (kind) => {
+    localPanelSlot.hidden = kind !== 'local';
+    githubPanelSlot.hidden = kind !== 'github';
+    localChoice.classList.toggle('btn-primary', kind === 'local');
+    githubChoice.classList.toggle('btn-primary', kind === 'github');
+    localChoice.setAttribute('aria-pressed', String(kind === 'local'));
+    githubChoice.setAttribute('aria-pressed', String(kind === 'github'));
+    if (kind === 'github' && !githubPanel) {
+      githubPanel = createGitHubPanel({
+        onMessage: (text) => {
+          settingsNotice.className = 'operation-status';
+          settingsNotice.textContent = text;
+        },
+        onAttach: environmentOperation('Attaching GitHub repository\u2026', async (selection) => {
+          const label = addLabel.value.trim() || selection.repository.name;
+          await attachGitHubEnvironment({
+            project,
+            environmentLabel: label,
+            repositoryId: selection.repositoryId,
+            sourceBranch: selection.sourceBranch,
+            writeMode: selection.writeMode,
+            activate: false,
+          });
+          workspaceRegistry.clearProfileDraft(addDraftScope);
+          await refresh();
+        }),
+      });
+      githubPanelSlot.append(
+        h('label', { for: 'new-environment-label' }, 'Environment label', addLabel),
+        githubPanel.root
+      );
+      // Delegated to the shared manager, so a session another panel already
+      // restored is adopted here rather than fetched again.
+      githubPanel.restore().catch(() => {});
+    }
+  };
+  localChoice.addEventListener('click', () => chooseSource('local'));
+  githubChoice.addEventListener('click', () => chooseSource('github'));
+
+  /**
+   * GitHub connection state, reachable while a workspace is active.
+   *
+   * Disconnect must not be available only on the landing page: a user with an
+   * attached environment still needs to end the credential session, and a
+   * failed disconnect must be visible rather than silently assumed.
+   */
+  const githubConnection = h('div', { class: 'environment-actions' });
+  const renderGitHubConnection = async () => {
+    let status = { connected: false };
+    try {
+      // Through the manager, so a server session that has gone away also clears
+      // the manager's cached account. Calling `githubStatus()` directly here
+      // forgot the durable session id while leaving the manager still handing
+      // that account to every panel, which rendered a connected panel whose
+      // Connect button was disabled and could never recover.
+      const restored = await githubSessions.restore().catch(() => null);
+      status = restored || { connected: false };
+    } catch {
+      // Treated as disconnected for display; the controls below still work.
+    }
+    githubConnection.replaceChildren(
+      h(
+        'span',
+        { class: `chip chip-${status.connected ? 'success' : 'warning'}` },
+        status.connected ? `GitHub connected as ${status.login}` : 'GitHub not connected'
+      ),
+      status.connected
+        ? h('small', { class: 'hint' }, `Session ends ${status.idleExpiresAt || 'on restart'}.`)
+        : h('small', { class: 'hint' }, 'Tokens are memory-only and never stored, so a container restart requires reconnecting.'),
+      status.connected
+        ? h('button', {
+            class: 'btn btn-sm',
+            onclick: environmentOperation('Disconnecting GitHub\u2026', async () => {
+              // Through the shared manager, so a connect still in flight is
+              // superseded and revokes itself rather than quietly becoming the
+              // active credential after the user signed out.
+              const result = await githubSessions.disconnect();
+              settingsNotice.className = 'operation-status operation-success';
+              settingsNotice.textContent = result.alreadyAbsent
+                ? 'That GitHub session had already expired.'
+                : 'Disconnected from GitHub. The token was erased from server memory.';
+              await renderGitHubConnection();
+            }),
+          }, 'Disconnect GitHub')
+        : h('button', {
+            class: 'btn btn-sm',
+            onclick: () => chooseSource('github'),
+          }, 'Connect GitHub')
+    );
+  };
+  await renderGitHubConnection();
   showModal(
     'Projects and environments',
     h(
@@ -1862,25 +2154,40 @@ async function openWorkspaceSettingsContent() {
           onclick: environmentOperation('Creating project\u2026', async () => {
             const draftScope = 'new-project';
             const draft = workspaceRegistry.profileDraft(draftScope) || {};
+            // A new project's first environment has the same two sources as any
+            // other. Forcing the folder picker here left a GitHub user unable to
+            // create a GitHub project from an active workspace.
+            const kind = await chooseSourceKind({
+              title: 'New project source',
+              message:
+                'Where does this project\u2019s first environment live? A GitHub project needs an active credential session.',
+            });
+            if (!kind) return false;
+            const fields = [
+              { name: 'label', label: 'Project label', value: draft.projectLabel || '' },
+              {
+                name: 'environmentLabel',
+                label: 'First environment label',
+                value: draft.environmentLabel || 'Development',
+              },
+            ];
+            if (kind === 'local') {
+              fields.push({
+                name: 'localPath',
+                label: 'Local path',
+                value: draft.localPath || '',
+                placeholder: 'C:\\source\\citadel or /home/user/citadel',
+                hint: 'Display only; the browser folder handle remains authoritative.',
+              });
+            }
             const values = await promptDialog({
               title: 'New project',
-              description: 'Create the project and its first environment, then choose the exact Citadel repository folder.',
-              fields: [
-                { name: 'label', label: 'Project label', value: draft.projectLabel || '' },
-                {
-                  name: 'environmentLabel',
-                  label: 'First environment label',
-                  value: draft.environmentLabel || 'Development',
-                },
-                {
-                  name: 'localPath',
-                  label: 'Local path',
-                  value: draft.localPath || '',
-                  placeholder: 'C:\\source\\citadel or /home/user/citadel',
-                  hint: 'Display only; the browser folder handle remains authoritative.',
-                },
-              ],
-              submitLabel: 'Choose folder',
+              description:
+                kind === 'local'
+                  ? 'Create the project and its first environment, then choose the exact Citadel repository folder.'
+                  : 'Create the project and its first environment, then choose the repository and branch.',
+              fields,
+              submitLabel: kind === 'local' ? 'Choose folder' : 'Choose repository',
               context: writeContextNode({ file: 'New project profile' }),
             });
             if (!values) return false;
@@ -1890,8 +2197,17 @@ async function openWorkspaceSettingsContent() {
             workspaceRegistry.saveProfileDraft(draftScope, {
               projectLabel: values.label,
               environmentLabel: values.environmentLabel,
-              localPath: values.localPath,
+              localPath: values.localPath || '',
             });
+            if (kind === 'github') {
+              const attached = await attachGitHubProject({ projectLabel: label, environmentLabel });
+              if (!attached) return false;
+              if (!workspaceRegistry.clearProfileDraft(draftScope)) {
+                setStatus('Project saved, but its pending form cache could not be cleared.', 'error');
+              }
+              location.reload();
+              return;
+            }
             const localPath = validateLocalPath(values.localPath);
             const handle = await showDirectoryPicker({ mode: 'readwrite' });
             if (
@@ -1969,20 +2285,20 @@ async function openWorkspaceSettingsContent() {
         }, 'Remove project')
       ),
       settingsNotice,
-      h('p', { class: 'hint' }, 'Labels and Local path are durable display metadata. Only the selected browser folder handle grants file access.'),
+      h('p', { class: 'hint' }, 'Labels and Local path are durable display metadata. A local folder grants file access only through the selected browser handle; a GitHub repository is reached with a memory-only token that must be reconnected after a restart.'),
+      githubConnection,
       list,
       h(
         'div',
         { class: 'environment-actions' },
-        h('label', { for: 'new-environment-label' }, 'Environment label', addLabel),
         h(
-          'label',
-          { for: 'new-environment-path' },
-          'Local path',
-          addLocalPath,
-          h('small', { class: 'hint' }, 'Display only; the selected folder handle remains authoritative.')
+          'div',
+          { class: 'setup-source-choice', role: 'group', 'aria-label': 'New environment source' },
+          localChoice,
+          githubChoice
         ),
-        add,
+        localPanelSlot,
+        githubPanelSlot,
         h('button', { class: 'btn', onclick: () => openEnvironmentCompare(environments) }, 'Compare & copy'),
         h('button', { class: 'btn', onclick: openHistory }, 'History')
       )
@@ -2112,12 +2428,47 @@ function renderActions() {
   );
 }
 
+/**
+ * Context the masthead shows while no workspace is active yet.
+ *
+ * The setup screen used to leave the placeholder crumbs and "Path not recorded"
+ * in place, so a user who had connected GitHub and picked a repository still saw
+ * nothing about what they had chosen. Setup publishes its state here instead, and
+ * an active workspace overrides it.
+ */
+let setupContext = null;
+
+export function setSetupContext(context) {
+  setupContext = context ? { ...context } : null;
+  updateHeaderContext();
+}
+
 function updateHeaderContext() {
   let workspace = null;
   try {
     workspace = activeWorkspace();
   } catch {
-    // Setup view intentionally keeps placeholder context.
+    // No active workspace: the setup screen's own context is used instead.
+  }
+  if (!workspace && setupContext) {
+    const { projectLabel, environmentLabel, repository, branch, account, sourceKind } = setupContext;
+    els.projectName.textContent = projectLabel || 'Project';
+    els.environmentName.textContent = environmentLabel || 'Environment';
+    const target = repository ? (branch ? `${repository} @ ${branch}` : repository) : null;
+    const detail = target || (account ? `Connected as ${account}` : 'Not attached');
+    els.repoPath.textContent = detail;
+    els.repoPath.title = detail;
+    // In GitHub mode the source is a repository, never a filesystem path, so
+    // "Path not recorded" would be both wrong and alarming.
+    const location =
+      sourceKind === 'github'
+        ? target || (account ? `Connected as ${account}` : 'GitHub not connected')
+        : 'Local path not recorded';
+    els.localPath.textContent = location;
+    els.localPathCopy.title = location;
+    els.localPathCopy.setAttribute('aria-label', `Source: ${location}`);
+    els.localPathCopy.disabled = true;
+    return;
   }
   const environment = workspace?.environment || {};
   const overviewPath =
@@ -2128,15 +2479,16 @@ function updateHeaderContext() {
   els.environmentName.textContent = environment.label || 'Environment';
   els.repoPath.textContent = state.current?.path || overviewPath || 'No file selected';
   els.repoPath.title = state.current?.path || overviewPath || 'No file selected';
-  els.localPath.textContent = environment.localPath || 'Local path not recorded';
-  els.localPathCopy.title = environment.localPath || 'Local path not recorded';
+  const location = environmentLocation(environment);
+  const recorded = location !== 'Local path not recorded';
+  els.localPath.textContent = location;
+  els.localPathCopy.title = location;
   els.localPathCopy.setAttribute(
     'aria-label',
-    environment.localPath
-      ? `Copy full Local path: ${environment.localPath}`
-      : 'Local path not recorded'
+    recorded ? `Copy source location: ${location}` : 'Local path not recorded'
   );
-  els.localPathCopy.disabled = !environment.localPath;
+  // A GitHub source is an identifier, not a path the clipboard helps with.
+  els.localPathCopy.disabled = !recorded || isGitHubEnvironment(environment);
 }
 
 /**
@@ -2710,6 +3062,45 @@ async function openOther(path) {
   await loadDocument(path);
 }
 
+let wired = false;
+
+/**
+ * Shell-level navigation.
+ *
+ * The brand is a real `<a href="/">` so it behaves correctly for middle-click,
+ * copy-link and no-JS. Left-clicking it, though, must not reload the document:
+ * a reload discards every panel subscribed to the shared GitHub credential and,
+ * when startup then failed, left the masthead standing over an empty sheet. It
+ * is intercepted and turned into an in-app return to setup, with a history entry
+ * so Back is meaningful.
+ */
+function wireShellNavigation() {
+  const brand = document.querySelector('.tb-brand');
+  brand?.addEventListener('click', async (event) => {
+    // Modified clicks belong to the browser, not to us.
+    if (event.defaultPrevented || event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    // The history entry is pushed only once the user has actually agreed to
+    // leave, so a refused navigation changes nothing at all.
+    if (!(await returnToSetup())) return;
+    if (history.state?.view !== 'setup') {
+      history.pushState({ view: 'setup' }, '', '/');
+    }
+  });
+
+  // Back and Forward must render a valid state rather than leaving whatever the
+  // previous view happened to have put in the sheet.
+  window.addEventListener('popstate', (event) => {
+    const view = event.state?.view;
+    if (view === 'setup' || view === undefined) {
+      returnToSetup();
+    }
+  });
+
+  if (!history.state) history.replaceState({ view: 'setup' }, '', location.pathname);
+}
+
 async function init() {
   els.shell = document.querySelector('.shell');
   els.sidebar = document.getElementById('sidebar');
@@ -2723,32 +3114,41 @@ async function init() {
   els.workspace = document.getElementById('workspace');
   els.status = document.getElementById('status');
   els.modal = document.getElementById('modal');
-  els.localPathCopy.addEventListener('click', async () => {
-    const path = activeWorkspace().environment.localPath;
-    if (!path) return;
-    try {
-      await navigator.clipboard.writeText(path);
-      setStatus('Full Local path copied.', 'ok');
-    } catch {
-      setStatus('Local path could not be copied. Select it from Settings instead.', 'error');
-    }
-  });
+  // `init` runs again when the user returns to setup, so anything bound to a
+  // node that outlives a view must be bound exactly once.
+  if (!wired) {
+    wired = true;
+    wireShellNavigation();
+    // The setup screen owns what the masthead should say before a workspace
+    // exists; the header is owned here.
+    observeSetupContext((context) => setSetupContext(context));
+    els.localPathCopy.addEventListener('click', async () => {
+      const path = activeWorkspace().environment.localPath;
+      if (!path) return;
+      try {
+        await navigator.clipboard.writeText(path);
+        setStatus('Full Local path copied.', 'ok');
+      } catch {
+        setStatus('Local path could not be copied. Select it from Settings instead.', 'error');
+      }
+    });
 
-  // Position feedback has to survive scrolling, so the rail marker is refreshed
-  // from the sheet's own scroll rather than from renders.
-  let ticking = false;
-  els.workspace.addEventListener(
-    'scroll',
-    () => {
-      if (ticking) return;
-      ticking = true;
-      requestAnimationFrame(() => {
-        ticking = false;
-        markCurrentSection();
-      });
-    },
-    { passive: true }
-  );
+    // Position feedback has to survive scrolling, so the rail marker is refreshed
+    // from the sheet's own scroll rather than from renders.
+    let ticking = false;
+    els.workspace.addEventListener(
+      'scroll',
+      () => {
+        if (ticking) return;
+        ticking = true;
+        requestAnimationFrame(() => {
+          ticking = false;
+          markCurrentSection();
+        });
+      },
+      { passive: true }
+    );
+  }
 
   try {
     els.shell.dataset.workspace = 'setup';
@@ -2787,6 +3187,90 @@ async function init() {
 
   } catch (err) {
     setStatus(err.message, 'error');
+    renderStartupRecovery(err);
+  }
+}
+
+/**
+ * Never leave the sheet empty.
+ *
+ * Startup can fail for reasons that are entirely ordinary — a GitHub session
+ * that did not survive a container restart, a repository that was renamed, a
+ * local folder whose handle was not retained, an active environment id that no
+ * longer exists. Reporting those only in the status bar left the masthead
+ * standing over a blank page with nothing to click, which reads as a crash.
+ *
+ * This renders the failure where the user is looking, with the actions that
+ * actually resolve it. It is a recovery boundary rather than a catch per call
+ * site, so a failure nobody anticipated still lands somewhere actionable.
+ */
+function renderStartupRecovery(error) {
+  if (!els.workspace) return;
+  const message = String(error?.message || 'Citadel UI could not open the last workspace.');
+  const actions = h('div', { class: 'setup-actions' });
+  actions.append(
+    h(
+      'button',
+      { class: 'btn btn-primary', type: 'button', onclick: () => returnToSetup() },
+      'Return to setup'
+    ),
+    h(
+      'button',
+      { class: 'btn', type: 'button', onclick: () => location.reload() },
+      'Reload Citadel UI'
+    )
+  );
+  els.workspace.replaceChildren(
+    h(
+      'section',
+      { class: 'workspace-setup', role: 'region', 'aria-label': 'Recovery' },
+      h('h1', {}, 'Citadel UI could not open this workspace'),
+      h('p', { class: 'field-error', role: 'alert' }, message),
+      h(
+        'p',
+        { class: 'hint' },
+        'Your saved projects and environments are unchanged. GitHub credentials are held only in server memory, so a restart requires reconnecting.'
+      ),
+      actions
+    )
+  );
+  els.shell.dataset.workspace = 'setup';
+  els.workspace.focus?.();
+}
+
+/**
+ * Leave the active workspace and return to a deterministic setup state.
+ *
+ * In-app rather than a document load: a hard navigation throws away the
+ * credential the server still holds and every panel subscribed to it, and it was
+ * what left the brand link showing a masthead over an empty sheet.
+ */
+async function returnToSetup() {
+  try {
+    // The only navigation entry point that used to be a real document load, and
+    // so the only one that relied on `beforeunload` to protect unsaved work.
+    // Policy edits live in memory alone, so leaving without asking loses them
+    // silently.
+    if (!(await confirmPendingNavigation({ destination: 'the setup screen' }))) return false;
+    clearActiveWorkspace();
+    state.areas = [];
+    state.catalog = null;
+    state.current = null;
+    // `selectArea` early-returns when the requested area is already selected, so
+    // a stale `state.area` would make the next environment open to an empty
+    // sheet with that area highlighted and unclickable.
+    state.area = null;
+    state.contractId = null;
+    setSetupContext(null);
+    els.shell.dataset.workspace = 'setup';
+    els.sidebar?.replaceChildren();
+    els.contextRail?.replaceChildren();
+    updateHeaderContext();
+    await init();
+    return true;
+  } catch (error) {
+    renderStartupRecovery(error);
+    return true;
   }
 }
 

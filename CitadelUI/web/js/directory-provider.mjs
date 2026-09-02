@@ -4,68 +4,20 @@ import {
   validateSubscriptionId,
   writeSubscriptionIdToText,
 } from './subscription-env.mjs';
+import {
+  isEnvironmentFile,
+  isSkippedDirectory,
+  isSourceExtension,
+  MAX_ENV_BYTES,
+  MAX_SOURCE_BYTES,
+  normalizeAlias,
+  normalizeDirectoryAlias,
+  sha256,
+  sourceExtension,
+  sourceScope,
+} from '../../shared/source-scope.mjs';
 
-const SOURCE_EXTENSIONS = new Set(['.bicepparam', '.bicep', '.xml']);
-const MAX_SOURCE_BYTES = 8 * 1024 * 1024;
-const MAX_ENV_BYTES = 1024 * 1024;
-const SKIP_DIRECTORIES = new Set([
-  '.azure',
-  '.git',
-  '.github',
-  '.vscode',
-  'node_modules',
-  '.venv',
-  '__pycache__',
-  'CitadelUI',
-  '.backups',
-  '.baseline',
-  '.qa',
-  '.shots',
-  '.snapshots',
-].map((name) => name.toLowerCase()));
-
-function normalizeAlias(alias) {
-  const value = String(alias || '').replaceAll('\\', '/').replace(/^\/+/, '');
-  const parts = value.split('/').filter(Boolean);
-  if (!parts.length || parts.some((part) => part === '.' || part === '..')) {
-    throw new Error(`Unsafe workspace alias: ${alias}`);
-  }
-
-  if (parts.some((part) => part.toLowerCase() === '.azure')) {
-    throw new Error('Citadel UI never accesses .azure directories.');
-  }
-  const leaf = parts.at(-1);
-  if (leaf === '.env' || leaf.startsWith('.env.')) {
-    throw new Error('Citadel UI never accesses environment files.');
-  }
-  const dot = leaf.lastIndexOf('.');
-  const extension = dot < 0 ? '' : leaf.slice(dot).toLowerCase();
-  if (!SOURCE_EXTENSIONS.has(extension)) {
-    throw new Error(`Unsupported source type: ${leaf}`);
-  }
-  return parts.join('/');
-}
-
-function normalizeDirectoryAlias(alias) {
-  const value = String(alias || '').replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '');
-  const parts = value.split('/').filter(Boolean);
-  if (
-    !parts.length ||
-    parts.some((part) => part === '.' || part === '..' || /[\u0000-\u001f\u007f]/.test(part))
-  ) {
-    throw new Error(`Unsafe workspace directory alias: ${alias}`);
-  }
-  if (parts.some((part) => part.toLowerCase() === '.azure')) {
-    throw new Error('Citadel UI never accesses .azure directories.');
-  }
-  return parts.join('/');
-}
-
-export async function sha256(bytes) {
-  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', data);
-  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('');
-}
+export { sha256, sourceScope };
 
 async function permission(handle, request = false) {
   const options = { mode: 'readwrite' };
@@ -98,16 +50,14 @@ export class BrowserDirectoryProvider {
     const walk = async (directory, prefix = '') => {
       for await (const [name, handle] of directory.entries()) {
         if (handle.kind === 'directory') {
-          if (name.startsWith('.') || SKIP_DIRECTORIES.has(name.toLowerCase())) continue;
+          if (isSkippedDirectory(name)) continue;
           await walk(handle, prefix ? `${prefix}/${name}` : name);
           continue;
         }
         const alias = prefix ? `${prefix}/${name}` : name;
-        const lower = name.toLowerCase();
-        if (lower === '.env' || lower.startsWith('.env.')) continue;
-        const extension = lower.slice(lower.lastIndexOf('.'));
-        if (!SOURCE_EXTENSIONS.has(extension)) continue;
-        files.push({ alias, kind: extension.slice(1) });
+        if (isEnvironmentFile(name)) continue;
+        if (!isSourceExtension(name)) continue;
+        files.push({ alias, kind: sourceExtension(name).slice(1) });
       }
     };
     await walk(this.root);
@@ -268,6 +218,8 @@ export class BrowserDirectoryProvider {
       lastModified: file.lastModified,
       hash: await sha256(bytes),
     };
+    result.version = result.hash;
+    result.workspaceHead = null;
     this.instrument({ operation: 'read', alias: safe, size: result.size, hash: result.hash });
     return result;
   }
@@ -391,11 +343,3 @@ export class BrowserDirectoryProvider {
     }
   }
 }
-
-export const sourceScope = Object.freeze({
-  extensions: [...SOURCE_EXTENSIONS],
-  skippedDirectories: [...SKIP_DIRECTORIES],
-  normalizeAlias,
-  maxSourceBytes: MAX_SOURCE_BYTES,
-  subscriptionEnvironmentKey: 'AZURE_SUBSCRIPTION_ID',
-});

@@ -1,15 +1,16 @@
 /* ============================================================================
    Citadel UI — foundation
 
-   THE WORLD: cold-rolled steel. The working sheet is paper white and the
-   *chrome* is tinted graphite — the inverse of a tinted-page dashboard. Rules
-   are hairlines. Controls are wells sunk back into the sheet with a top inner
-   shadow, never filled grey blocks: an empty well is a recess, which reads as
-   absence, where an empty filled block reads as presence. No card ever gets a
-   border. Two elevations exist and nothing sits between them.
+   THE WORLD: an Azure control plane. A deep Azure-blue masthead frames a paper
+   working sheet — colour owns one deliberate region and the sheet stays bright.
+   Rules are hairlines. Controls are wells sunk back into the sheet with a top
+   inner shadow, never filled grey blocks: an empty well is a recess, which
+   reads as absence, where an empty filled block reads as presence. No card ever
+   gets a border. Two elevations exist and nothing sits between them.
 
    RAMPS, named for role rather than hue:
-     --ground / --band / --sunk     the chrome: rails, title block, sticky bands
+     --nav / --nav-active / --nav-rule  the frame: masthead, selection, rules
+     --ground / --band / --sunk     the chrome: rails, sticky bands
      --sheet / --well / --zebra     the paper: working surface, control, banding
      --ink-1 / --ink-2 / --ink-3    one ink at three weights
 
@@ -38,26 +39,31 @@
 
 :root {
   /* --- the chrome ------------------------------------------------------- */
-  --ground: #f3f6f9;
-  --band: #f7f9fc;
-  --sunk: #d8e0e8;
-  --nav: #17212c;
-  --nav-hover: #1f2d3a;
-  --nav-active: #243447;
-  --nav-rule: #334353;
-  --nav-ink: #f7f9fb;
-  --nav-muted: #bdc8d3;
+  --ground: #f1f5f9;
+  --band: #f6f9fc;
+  --sunk: #d5e0eb;
+
+  /* The masthead ramp. Retitled from graphite to Azure: the top of the
+     product is a deep, saturated blue frame around a paper sheet, which is the
+     one large region colour is allowed to own. Kept darker than --brand so a
+     primary action stays findable when it sits against this frame. */
+  --nav: #0b3c68;
+  --nav-hover: #10497b;
+  --nav-active: #15558e;
+  --nav-rule: #2a6ba3;
+  --nav-ink: #ffffff;
+  --nav-muted: #c3dcf2;
 
   /* --- the paper -------------------------------------------------------- */
   --sheet: #ffffff;
-  --well: #fbfcfd;
-  --zebra: #f7f9fb;
+  --well: #fafcfe;
+  --zebra: #f5f9fc;
 
   /* --- rules: a hairline, never a border -------------------------------- */
-  --rule: #dce3ea;
-  --rule-strong: #b9c5d0;
-  --rule-soft: #e8edf2;
-  --control-stroke: #6b7785;
+  --rule: #d8e2ec;
+  --rule-strong: #b3c3d2;
+  --rule-soft: #e6ecf3;
+  --control-stroke: #64758a;
 
   /* --- ink -------------------------------------------------------------- */
   --ink-1: #111827;
@@ -344,8 +350,10 @@ textarea {
   gap: var(--sp-5);
   min-height: 2.5rem;
   padding: var(--sp-3) var(--gutter) var(--sp-3) var(--sp-5);
-  background: var(--sheet);
-  border-bottom: 1px solid var(--rule-2);
+  /* The one region colour owns. Everything below it stays paper. */
+  background: var(--nav);
+  color: var(--nav-ink);
+  border-bottom: 1px solid var(--nav-rule);
 }
 
 .tb-brand {
@@ -353,7 +361,7 @@ textarea {
   align-items: center;
   gap: var(--sp-3);
   flex: none;
-  color: var(--ink);
+  color: var(--nav-ink);
   text-decoration: none;
   border-radius: var(--r-2);
   min-height: var(--ctl-h);
@@ -367,7 +375,8 @@ textarea {
   width: 0.625rem;
   height: 0.625rem;
   flex: none;
-  background: var(--brand);
+  /* On the blue frame the mark reads by lightness, not by hue. */
+  background: var(--nav-ink);
   transform: rotate(45deg);
   border-radius: 2px;
 }
@@ -393,9 +402,11 @@ textarea {
   gap: var(--sp-1);
 }
 
+/* Secondary text on the coloured frame is tinted from the frame's own hue,
+   never a washed generic grey. */
 .tb-crumb {
   min-width: 0;
-  color: var(--ink-2);
+  color: var(--nav-ink);
   font-size: var(--t-small);
   font-weight: 600;
   overflow-wrap: anywhere;
@@ -403,13 +414,13 @@ textarea {
 
 .tb-chevron {
   flex: none;
-  color: var(--ink-3);
+  color: var(--nav-muted);
 }
 
 .tb-path {
   min-width: 0;
   font-size: var(--t-small);
-  color: var(--ink-2);
+  color: var(--nav-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -424,7 +435,7 @@ textarea {
   padding: 0;
   border: 0;
   background: none;
-  color: var(--ink-3);
+  color: var(--nav-muted);
   font-family: var(--sans-small);
   font-size: var(--t-micro);
   text-align: left;
@@ -440,7 +451,7 @@ textarea {
 }
 
 .tb-local:hover:not(:disabled) code {
-  color: var(--brand-hover);
+  color: var(--nav-ink);
   text-decoration: underline;
 }
 
@@ -459,7 +470,7 @@ textarea {
   width: 1px;
   align-self: stretch;
   margin-block: var(--sp-1);
-  background: var(--rule-2);
+  background: var(--nav-rule);
 }
 
 .tb-pending,
@@ -469,7 +480,7 @@ textarea {
   gap: var(--sp-3);
   font-family: var(--sans-small);
   font-size: var(--t-small);
-  color: var(--ink-3);
+  color: var(--nav-muted);
   white-space: nowrap;
 }
 
@@ -479,16 +490,18 @@ textarea {
   width: 0.4375rem;
   height: 0.4375rem;
   border-radius: 50%;
-  background: var(--rule-2);
+  background: var(--nav-rule);
 }
 
+/* Unsaved work is called out on the frame by weight and a filled dot, so the
+   state is never carried by hue alone. */
 .tb-pending.is-dirty {
-  color: var(--brand);
-  font-weight: 600;
+  color: var(--nav-ink);
+  font-weight: 700;
 }
 
 .tb-pending.is-dirty::before {
-  background: var(--brand);
+  background: var(--nav-ink);
 }
 
 /* ------------------------------------------------------------------ rails */

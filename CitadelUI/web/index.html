@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Citadel UI</title>
+    <title>Citadel Control Panel</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/css/app.css" />
     <link rel="stylesheet" href="/css/components.css" />
@@ -13,29 +13,29 @@
       THESIS: A .bicepparam is a parameter table, so this is a datasheet, not a
       dashboard. Every screen is a sheet of rows whose columns are declared once
       and shared, so a value is never squeezed while its row runs half empty.
-      OWN-WORLD: Midnight drafting studio. A deep ink navigation rail frames a
-      bright working canvas; Fluent blue carries action and position, while
-      Azure teal marks values sourced outside the file. Crisp table rules, quiet
-      mist surfaces and strong Segoe/Cascadia hierarchy make the dense editor
-      feel authored without spending space on decoration.
+      OWN-WORLD: Azure control plane. A deep Azure-blue masthead frames a bright
+      working canvas; Fluent blue carries action and position, while Azure teal
+      marks values sourced outside the file. Crisp table rules, cool tinted
+      surfaces and strong Segoe/Cascadia hierarchy make the dense editor feel
+      authored without spending space on decoration.
       SIZING: No layout is written in pixels. Columns are declared in ch and fr
       through one shared --pcols custom property, panes use minmax()/auto-fill,
       and type runs on a clamp() scale, so 1100px and 2560px are the same design
       at two sizes rather than two designs.
       STORY: The engineer sees the whole sheet, finds the knob, reads where its
       value comes from, changes it, and reviews the exact text before it lands.
-      FIRST VIEWPORT: Title block across the top holding path and Review & save;
-      areas rail, section index rail, then the sheet -- one sticky strip and
-      ruled five-column parameter rows running to the fold.
+      FIRST VIEWPORT: Azure-blue title block across the top holding path and
+      Review & save; areas rail, section index rail, then the sheet -- one
+      sticky strip and ruled five-column parameter rows running to the fold.
       FORM: Component datasheet / parameter table. Brief-pinned direction.
     -->
     <div class="shell" data-rail="off">
       <header class="titleblock">
-        <a class="tb-brand" href="/" aria-label="Citadel UI">
+        <a class="tb-brand" href="/" aria-label="Citadel Control Panel">
           <span class="tb-mark" aria-hidden="true"></span>
           <span class="tb-brand-copy">
-            <span class="tb-name">Citadel UI</span>
-            <span class="tb-mode">Local control plane</span>
+            <span class="tb-name">Citadel</span>
+            <span class="tb-mode">Control Panel</span>
           </span>
         </a>
 
@@ -70,3 +70,4 @@
     <script type="module" src="/js/app.mjs"></script>
   </body>
 </html>
+

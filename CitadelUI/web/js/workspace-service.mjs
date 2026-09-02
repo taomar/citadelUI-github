@@ -7,7 +7,8 @@ import {
   resolveAlias,
 } from '../../shared/citadel-core.mjs';
 import { activeWorkspace, workspaceRegistry } from './workspace-context.mjs';
-import { BrowserDirectoryProvider } from './directory-provider.mjs';
+import { LocalTransactionCoordinator } from './mutation-coordinator.mjs';
+import { createProvider } from './source-factory.mjs';
 import {
   applyPolicyChanges,
   assertBalancedXml,
@@ -27,26 +28,6 @@ function assertLoadedHash(source, expectedHash) {
   if (typeof expectedHash !== 'string' || source.hash !== expectedHash) {
     throw new Error(STALE_SOURCE_MESSAGE);
   }
-}
-
-function contractCreationBoundary(transaction) {
-  if (
-    transaction.targetLabel !== 'contract-create' ||
-    !transaction.files?.length ||
-    transaction.files.some((file) => file.existed)
-  ) {
-    return null;
-  }
-  const matches = transaction.files.map((file) =>
-    /^(.*\/citadel-access-contracts\/contracts)\/([^/]+)\/[^/]+$/.exec(file.alias)
-  );
-  if (
-    matches.some((match) => !match) ||
-    matches.some((match) => match[1] !== matches[0][1] || match[2] !== matches[0][2])
-  ) {
-    return null;
-  }
-  return matches[0][1];
 }
 
 function values(document) {
@@ -154,8 +135,22 @@ export function rewriteContractTemplate(text, usingPath) {
 export class WorkspaceService {
   constructor(options = {}) {
     this.request = options.request;
-    this.commitFiles = options.commitFiles;
     this.contextProvider = options.contextProvider || activeWorkspace;
+    this.registry = options.registry || workspaceRegistry;
+    this.coordinator =
+      options.coordinator ||
+      new LocalTransactionCoordinator({
+        request: options.request,
+        commitFiles: options.commitFiles,
+        contextProvider: () => this.context,
+      });
+    // Injected so the editor never constructs a source-specific provider itself.
+    this.createProvider =
+      options.createProvider ||
+      ((environment) =>
+        createProvider(environment, {
+          getHandle: (id) => this.registry.getHandle(id),
+        }));
     this.catalog = null;
   }
 
@@ -165,6 +160,10 @@ export class WorkspaceService {
 
   get provider() {
     return this.context.provider;
+  }
+
+  commitFiles(files, options = {}) {
+    return this.coordinator.commit(files, options);
   }
 
   reset() {
@@ -294,7 +293,15 @@ export class WorkspaceService {
       { alias, before: source.bytes, beforeHash: expectedHash, after: new TextEncoder().encode(after), changed: operations.map((operation) => operation.path?.[0]).filter(Boolean) },
     ], { action: 'parameter-edit' });
     this.catalog = null;
-    return { path: alias, changed: true, archived: result.transactionId, hash: result.files[0].hash };
+    return {
+      path: alias,
+      changed: true,
+      archived: result.transactionId,
+      hash: result.files[0].hash,
+      // Anything the source could not confirm after the write landed. Never a
+      // failure, so the caller reports it alongside a successful save.
+      warnings: result.warnings || [],
+    };
   }
 
   async onboardedModels() {
@@ -450,11 +457,11 @@ export class WorkspaceService {
   }
 
   async contextForEnvironment(environmentId) {
-    const environments = await workspaceRegistry.listEnvironments(this.context.projectId);
+    const environments = await this.registry.listEnvironments(this.context.projectId);
     const environment = environments.find((item) => item.id === environmentId);
     if (!environment) throw new Error('Unknown target environment.');
-    const handle = await workspaceRegistry.getHandle(environment.id);
-    const provider = new BrowserDirectoryProvider(handle);
+    const handle = await this.registry.getHandle(environment.id);
+    const provider = await this.createProvider(environment);
     await provider.assertWritable({ request: true });
     return { projectId: environment.projectId, environment, handle, provider };
   }
@@ -577,238 +584,20 @@ export class WorkspaceService {
   }
 
   async history() {
-    return this.request(
-      `/api/transactions?environmentId=${encodeURIComponent(this.context.environment.id)}`
-    );
+    return this.coordinator.history();
   }
 
   async inspectRecovery(transactionId) {
-    const result = await this.request(
-      `/api/transactions/${encodeURIComponent(transactionId)}?environmentId=${encodeURIComponent(this.context.environment.id)}`
-    );
-    const files = [];
-    for (const file of result.transaction.files || []) {
-      let current = null;
-      try {
-        current = await this.provider.read(file.alias);
-      } catch (error) {
-        if (error.name !== 'NotFoundError' && !/not found/i.test(error.message)) throw error;
-      }
-      files.push({
-        ...file,
-        currentHash: current?.hash || null,
-        currentSize: current?.size || 0,
-        state:
-          current?.hash === file.finalHash && current?.size === file.finalSize
-            ? 'final'
-            : file.existed && current?.hash === file.originalHash && current?.size === file.originalSize
-              ? 'original'
-              : !file.existed && !current
-                ? 'absent'
-                : 'unexpected',
-      });
-    }
-    return {
-      transaction: result.transaction,
-      files,
-      canComplete:
-        result.transaction.status === 'reverting'
-          ? files.every((file) => file.state === 'absent')
-          : files.every((file) => file.state === 'final'),
-    };
+    return this.coordinator.inspect(transactionId);
   }
 
   async recoverTransaction(transactionId, action) {
-    const environmentId = this.context.environment.id;
-    const inspection = await this.inspectRecovery(transactionId);
-    const recovery = await this.request(
-      `/api/transactions/${encodeURIComponent(transactionId)}/recover`,
-      {
-        method: 'POST',
-        headers: { 'X-Citadel-Environment': environmentId },
-        body: JSON.stringify({}),
-      }
-    );
-    const transaction = inspection.transaction;
-    const transactionHeaders = {
-      'X-Citadel-Environment': environmentId,
-      'X-Citadel-Transaction': recovery.transactionToken,
-    };
-    if (action === 'complete' && transaction.status !== 'reverting') {
-      if (!inspection.canComplete) throw new Error('Not every target matches its planned final hash.');
-      return this.request(`/api/transactions/${encodeURIComponent(transactionId)}/receipt`, {
-        method: 'POST',
-        headers: {
-          ...transactionHeaders,
-          'X-Citadel-Authorization': recovery.authorizationToken,
-        },
-        body: JSON.stringify({
-          receipts: inspection.files.map((file) => ({
-            alias: file.alias,
-            hash: file.currentHash,
-            size: file.currentSize,
-          })),
-        }),
-      });
-    }
-    if (action !== 'rollback' && !(action === 'complete' && transaction.status === 'reverting')) {
-      throw new Error('Unknown recovery action.');
-    }
-
-    const receipts = [];
-    for (const file of [...transaction.files].reverse()) {
-      let current = null;
-      try {
-        current = await this.provider.read(file.alias);
-      } catch (error) {
-        if (error.name !== 'NotFoundError' && !/not found/i.test(error.message)) throw error;
-      }
-      if (!file.existed) {
-        if (current) {
-          if (current.hash !== file.finalHash || current.size !== file.finalSize) {
-            throw new Error(`Created source changed outside Citadel UI: ${file.alias}`);
-          }
-          await this.provider.remove(file.alias, {
-            expectedHash: file.finalHash,
-            removeEmptyDirectories: (
-              transaction.status === 'reverting'
-                ? transaction.revertCleanupDirectories || []
-                : transaction.createdDirectories || []
-            ).filter((directory) => file.alias.startsWith(`${directory}/`)),
-          });
-        }
-        receipts.push({ alias: file.alias, removed: true });
-        continue;
-      }
-      if (current?.hash !== file.originalHash || current?.size !== file.originalSize) {
-        const backup = await this.request(
-          `/api/transactions/${encodeURIComponent(transactionId)}/backups/${encodeURIComponent(file.id)}?environmentId=${encodeURIComponent(environmentId)}`,
-          {
-            responseType: 'bytes',
-            headers: { 'X-Citadel-Transaction': recovery.transactionToken },
-          }
-        );
-        const verified = await this.provider.write(file.alias, backup.bytes, {
-          create: !current,
-          expectedHash: current?.hash ?? null,
-          finalHash: file.originalHash,
-        });
-        current = verified;
-      }
-      receipts.push({ alias: file.alias, hash: current.hash, size: current.size });
-    }
-    return this.request(`/api/transactions/${encodeURIComponent(transactionId)}/rollback`, {
-      method: 'POST',
-      headers: transactionHeaders,
-      body: JSON.stringify({ receipts }),
-    });
+    return this.coordinator.recover(transactionId, action);
   }
 
   async restoreTransaction(transactionId) {
-    const environmentId = this.context.environment.id;
-    const detail = await this.request(
-      `/api/transactions/${encodeURIComponent(transactionId)}?environmentId=${encodeURIComponent(environmentId)}`
-    );
-    const restorable = (detail.transaction.files || []).filter((file) => file.existed);
-    if (!restorable.length) {
-      return this.revertContractCreation(detail.transaction);
-    }
-    const token = await this.request(
-      `/api/transactions/${encodeURIComponent(transactionId)}/restore-token`,
-      {
-        method: 'POST',
-        headers: { 'X-Citadel-Environment': environmentId },
-        body: JSON.stringify({}),
-      }
-    );
-    const files = [];
-    for (const file of restorable) {
-      const backup = await this.request(
-        `/api/transactions/${encodeURIComponent(transactionId)}/backups/${encodeURIComponent(file.id)}?environmentId=${encodeURIComponent(environmentId)}`,
-        {
-          responseType: 'bytes',
-          headers: { 'X-Citadel-Backup-Read': token.backupReadToken },
-        }
-      );
-      let current = null;
-      try {
-        current = await this.provider.read(file.alias);
-      } catch (error) {
-        if (error.name !== 'NotFoundError' && !/not found/i.test(error.message)) throw error;
-      }
-      files.push({
-        alias: file.alias,
-        before: current?.bytes || null,
-        beforeHash: current?.hash || null,
-        after: backup.bytes,
-        changed: ['restore'],
-        create: !current,
-      });
-    }
-    return this.commitFiles(files, { action: 'history-restore' });
-  }
-
-  async revertContractCreation(transaction) {
-    const boundary = contractCreationBoundary(transaction);
-    if (!boundary || transaction.status !== 'committed') {
-      throw new Error('This transaction has no prior file bytes to restore.');
-    }
-    const current = new Map();
-    for (const file of transaction.files) {
-      let source;
-      try {
-        source = await this.provider.read(file.alias);
-      } catch (error) {
-        if (error.name === 'NotFoundError' || /not found/i.test(error.message)) {
-          throw new Error(`Created source is missing: ${file.alias}`);
-        }
-        throw error;
-      }
-      if (source.hash !== file.finalHash || source.size !== file.finalSize) {
-        throw new Error(`Created source changed outside Citadel UI: ${file.alias}`);
-      }
-      current.set(file.alias, source);
-    }
-
-    const environmentId = this.context.environment.id;
-    const revert = await this.request(
-      `/api/transactions/${encodeURIComponent(transaction.transactionId)}/revert`,
-      {
-        method: 'POST',
-        headers: { 'X-Citadel-Environment': environmentId },
-        body: JSON.stringify({}),
-      }
-    );
-
-    for (const file of transaction.files) {
-      const source = await this.provider.read(file.alias);
-      if (source.hash !== file.finalHash || source.size !== file.finalSize) {
-        throw new Error(`Created source changed outside Citadel UI: ${file.alias}`);
-      }
-    }
-
-    const receipts = [];
-    for (const file of [...transaction.files].reverse()) {
-      await this.provider.remove(file.alias, {
-        expectedHash: file.finalHash,
-        removeEmptyDirectories: (revert.cleanupDirectories || []).filter((directory) =>
-          file.alias.startsWith(`${directory}/`)
-        ),
-      });
-      receipts.push({ alias: file.alias, removed: true });
-    }
-    const result = await this.request(
-      `/api/transactions/${encodeURIComponent(transaction.transactionId)}/rollback`,
-      {
-        method: 'POST',
-        headers: {
-          'X-Citadel-Environment': environmentId,
-          'X-Citadel-Transaction': revert.transactionToken,
-        },
-        body: JSON.stringify({ receipts }),
-      }
-    );
+    const result = await this.coordinator.revert(transactionId);
     this.catalog = null;
-    return { ...result, transactionId: transaction.transactionId, removed: receipts.map((item) => item.alias) };
+    return result;
   }
 }

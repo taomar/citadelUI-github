@@ -1,11 +1,18 @@
 import { createTransactionCommit } from './transaction-client.mjs';
 import { WorkspaceService } from './workspace-service.mjs';
 import { localRequest as request } from './local-api.mjs';
+import { SourceMutationCoordinator } from './source-factory.mjs';
+import { activeWorkspace } from './workspace-context.mjs';
 
-const workspace = new WorkspaceService({
+// Composition root: the coordinator dispatches on the attached source kind, so
+// every editor operation below stays source-agnostic.
+const coordinator = new SourceMutationCoordinator({
   request,
   commitFiles: createTransactionCommit(request),
+  contextProvider: activeWorkspace,
 });
+
+const workspace = new WorkspaceService({ request, coordinator });
 
 export const api = {
   resetWorkspace: () => workspace.reset(),

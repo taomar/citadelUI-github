@@ -125,6 +125,10 @@ export function showDialog(title, body, actions = [], options = {}) {
     actions: actions.filter(Boolean),
     initialFocus: options.initialFocus || null,
     onDismiss: options.onDismiss || null,
+    // A frame may refuse to be dismissed while an operation it started is still
+    // in flight. Without this, Escape or the backdrop would resolve the dialog
+    // as cancelled while the work it launched carried on.
+    preventDismiss: options.preventDismiss || null,
     opener: document.activeElement,
     titleId: `modal-title-${++sequence}`,
   };
@@ -142,15 +146,21 @@ export function showDialog(title, body, actions = [], options = {}) {
 }
 
 export function dismissDialog(result) {
+  // Checked before the frame is popped: a refused dismissal must leave the
+  // dialog exactly as it was, still owning the stack, and must not report itself
+  // as cancelled.
+  const current = stack.at(-1);
+  if (current?.preventDismiss?.()) return false;
   const frame = stack.pop();
   frame?.onDismiss?.(result);
   if (!stack.length) {
     closeHost();
-    return;
+    return true;
   }
   const previous = stack.at(-1);
   renderFrame(previous);
   requestAnimationFrame(() => frame?.opener?.isConnected && frame.opener.focus());
+  return true;
 }
 
 export function closeDialog() {

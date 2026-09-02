@@ -1,5 +1,5 @@
 const DB_NAME = 'citadel-ui';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const PROJECTS = 'projects';
 const ENVIRONMENTS = 'environments';
 const HANDLES = 'handles';
@@ -37,6 +37,57 @@ function normalizeProfileDraft(value = {}) {
 
 function uuid() {
   return globalThis.crypto.randomUUID();
+}
+
+/**
+ * Registry v3 tagged source union.
+ *
+ * `source` is the authority for where an environment's files come from. The
+ * flat `folderName` and `localPath` fields are kept on the browser record only
+ * as a convenience projection for existing local UI, and are always derived
+ * from `source` so the two can never disagree.
+ */
+export function localSource(folderName, localPath) {
+  return {
+    kind: 'local',
+    folderName: folderName || 'Selected folder',
+    localPath: localPath || null,
+  };
+}
+
+export function environmentSourceOf(environment) {
+  if (environment?.source) return environment.source;
+  return localSource(environment?.folderName, environment?.localPath);
+}
+
+export function isGitHubEnvironment(environment) {
+  return environmentSourceOf(environment).kind === 'github';
+}
+
+/**
+ * Human-readable location of an environment's source.
+ *
+ * Local environments show their display-only path; GitHub environments show the
+ * repository and the branch every save commits to, so a write target is never
+ * ambiguous in the command bar or a save review.
+ */
+export function environmentLocation(environment) {
+  const source = environmentSourceOf(environment);
+  if (source.kind === 'github') {
+    return `${source.fullName} @ ${source.workingBranch}`;
+  }
+  return source.localPath || 'Local path not recorded';
+}
+
+function withSourceProjection(environment) {
+  const source = environmentSourceOf(environment);
+  return {
+    ...environment,
+    source,
+    folderName:
+      source.kind === 'local' ? source.folderName : `${source.fullName}@${source.workingBranch}`,
+    localPath: source.kind === 'local' ? source.localPath : null,
+  };
 }
 
 function openDatabase(indexedDB = globalThis.indexedDB, dbName = DB_NAME) {
@@ -98,6 +149,8 @@ export class WorkspaceRegistry {
     }
     this.stateKey = options.stateKey || `${this.dbName}.active-context`;
     this.profileDraftPrefix = options.profileDraftPrefix || `${this.dbName}.profile-draft`;
+    this.pendingAttachmentKey = options.pendingAttachmentKey || `${this.dbName}.pending-attachment`;
+    this.tombstoneKey = options.tombstoneKey || `${this.dbName}.pending-removals`;
   }
 
   run(storeNames, mode, callback) {
@@ -159,6 +212,7 @@ export class WorkspaceRegistry {
       id: uuid(),
       projectId,
       label: value,
+      source: localSource(handle.name, localPath),
       folderName: handle.name || 'Selected folder',
       localPath,
       permission: 'prompt',
@@ -179,18 +233,79 @@ export class WorkspaceRegistry {
     return environment;
   }
 
+  /**
+   * Attach a GitHub repository and branch as an environment.
+   *
+   * No credential, credential session id, or token-derived value is stored. The
+   * record holds only the immutable repository id, the name GitHub returned for
+   * that id, and the two branch names.
+   */
+  async addGitHubEnvironment(projectId, label, source, options = {}) {
+    const value = String(label || '').trim();
+    if (!value) throw new Error('Environment label is required.');
+    if (source?.kind !== 'github') throw new Error('A GitHub source is required.');
+    const duplicate = (await this.listEnvironments()).find(
+      (item) =>
+        item.source?.kind === 'github' &&
+        item.source.repositoryId === source.repositoryId &&
+        item.source.workingBranch === source.workingBranch
+    );
+    if (duplicate) {
+      throw new Error(
+        `That repository and working branch are already attached as "${duplicate.label}".`
+      );
+    }
+    const environment = withSourceProjection({
+      id: options.id || uuid(),
+      projectId,
+      label: value,
+      source: {
+        kind: 'github',
+        repositoryId: source.repositoryId,
+        fullName: source.fullName,
+        sourceBranch: source.sourceBranch,
+        workingBranch: source.workingBranch,
+        writeMode: source.writeMode || 'working-branch',
+      },
+      permission: 'granted',
+      compatibility: 'unscanned',
+      fingerprint: null,
+      toolVersion: '1.0.0-local',
+      settingsVersion: DB_VERSION,
+      fingerprintVersion: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastOpenedAt: null,
+      lastScannedAt: null,
+    });
+    await this.run([ENVIRONMENTS], 'readwrite', (tx) => {
+      tx.objectStore(ENVIRONMENTS).add(environment);
+    });
+    return environment;
+  }
+
   async updateEnvironment(id, updates) {
     return this.run([ENVIRONMENTS], 'readwrite', async (tx) => {
       const store = tx.objectStore(ENVIRONMENTS);
       const prior = await requestResult(store.get(id));
       if (!prior) throw new Error('Unknown environment.');
-      const next = {
+      const priorSource = environmentSourceOf(prior);
+      const nextSource =
+        updates.source ||
+        (priorSource.kind === 'local'
+          ? localSource(
+              updates.folderName ?? priorSource.folderName,
+              updates.localPath ?? priorSource.localPath
+            )
+          : priorSource);
+      const next = withSourceProjection({
         ...prior,
         ...updates,
+        source: nextSource,
         id: prior.id,
         projectId: prior.projectId,
         updatedAt: new Date().toISOString(),
-      };
+      });
       store.put(next);
       return next;
     });
@@ -220,14 +335,22 @@ export class WorkspaceRegistry {
       const envStore = tx.objectStore(ENVIRONMENTS);
       const prior = await requestResult(envStore.get(id));
       if (!prior) throw new Error('Unknown environment.');
+      if (environmentSourceOf(prior).kind !== 'local') {
+        throw new Error('This environment is a GitHub repository. Reconnect GitHub instead.');
+      }
       tx.objectStore(HANDLES).put(handle, id);
-      envStore.put({
-        ...prior,
-        folderName: handle.name || prior.folderName,
-        localPath: localPath || prior.localPath || null,
-        permission: 'prompt',
-        updatedAt: new Date().toISOString(),
-      });
+      const priorSource = environmentSourceOf(prior);
+      envStore.put(
+        withSourceProjection({
+          ...prior,
+          source: localSource(
+            handle.name || priorSource.folderName,
+            localPath || priorSource.localPath || null
+          ),
+          permission: 'prompt',
+          updatedAt: new Date().toISOString(),
+        })
+      );
     });
   }
 
@@ -389,10 +512,21 @@ export class WorkspaceRegistry {
       for (const item of projects) projectStore.put(item);
       for (const item of environments) {
         const existing = await requestResult(environmentStore.get(item.id));
-        environmentStore.put({
-          ...item,
-          permission: existing?.permission || 'reconnect-required',
-        });
+        const source = environmentSourceOf(item);
+        environmentStore.put(
+          withSourceProjection({
+            ...item,
+            source,
+            // A GitHub environment has no durable credential, so after a restart
+            // it is visible but must be reconnected before it can be used.
+            permission:
+              source.kind === 'github'
+                ? existing?.permission === 'granted'
+                  ? 'granted'
+                  : 'reconnect-required'
+                : existing?.permission || 'reconnect-required',
+          })
+        );
       }
     });
     const selected = this.active();
@@ -410,7 +544,7 @@ export class WorkspaceRegistry {
       this.listEnvironments(),
     ]);
     return {
-      version: 1,
+      version: 3,
       projects: projects.map(({ id, label, createdAt, updatedAt }) => ({
         id,
         label,
@@ -421,8 +555,7 @@ export class WorkspaceRegistry {
         id: environment.id,
         projectId: environment.projectId,
         label: environment.label,
-        folderName: environment.folderName,
-        localPath: environment.localPath || null,
+        source: environmentSourceOf(environment),
         fingerprint: environment.fingerprint,
         toolVersion: environment.toolVersion,
         settingsVersion: environment.settingsVersion,
@@ -465,8 +598,156 @@ export class WorkspaceRegistry {
     }
   }
 
+  /**
+   * Attachment attempts that have not reached a terminal state.
+   *
+   * An attach that creates a working branch and then loses its response has
+   * already changed GitHub. Regenerating the environment id and operation key on
+   * the retry would create a *second* branch and orphan the first, so the exact
+   * attempt is written down before the request and reused until it resolves.
+   *
+   * A map, not a single slot: choosing a different repository must not overwrite
+   * an attempt that is still unresolved, because the overwritten environment id
+   * and operation key are the only handles that could ever clean its branch up.
+   */
+  pendingAttachments() {
+    const raw = this.storage?.getItem?.(this.pendingAttachmentKey);
+    if (!raw) return [];
+    try {
+      const value = JSON.parse(raw);
+      const entries = Array.isArray(value) ? value : [value];
+      return entries.filter(
+        (entry) =>
+          entry && typeof entry.operationKey === 'string' && typeof entry.environmentId === 'string'
+      );
+    } catch {
+      this.storage?.removeItem?.(this.pendingAttachmentKey);
+      return [];
+    }
+  }
+
+  /** The unresolved attempt for one selection, if there is one. */
+  pendingAttachment(selection = null) {
+    const entries = this.pendingAttachments();
+    if (!selection) return entries[0] || null;
+    return (
+      entries.find(
+        (entry) =>
+          entry.repositoryId === selection.repositoryId &&
+          entry.sourceBranch === selection.sourceBranch &&
+          entry.writeMode === selection.writeMode
+      ) || null
+    );
+  }
+
+  savePendingAttachment(value) {
+    const entries = this.pendingAttachments().filter(
+      (entry) => entry.operationKey !== value.operationKey
+    );
+    entries.push(value);
+    this.storage?.setItem?.(this.pendingAttachmentKey, JSON.stringify(entries));
+    return value;
+  }
+
+  /** Retire one attempt by operation key, leaving every other one reachable. */
+  clearPendingAttachment(operationKey = null) {
+    try {
+      if (!operationKey) {
+        this.storage?.removeItem?.(this.pendingAttachmentKey);
+        return true;
+      }
+      const entries = this.pendingAttachments().filter(
+        (entry) => entry.operationKey !== operationKey
+      );
+      if (entries.length) {
+        this.storage?.setItem?.(this.pendingAttachmentKey, JSON.stringify(entries));
+      } else {
+        this.storage?.removeItem?.(this.pendingAttachmentKey);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Records the server has not yet accepted as removed.
+   *
+   * Rolling back a failed attachment removes the local records, but `/data` is
+   * the durable copy: if the mirror that carries those removals fails, the next
+   * reconciliation restores what was removed. A tombstone outlives that failure
+   * and the process, and is retried before anything else reads the registry.
+   */
+  tombstones() {
+    const raw = this.storage?.getItem?.(this.tombstoneKey);
+    if (!raw) return { projectIds: [], environmentIds: [] };
+    try {
+      const value = JSON.parse(raw);
+      return {
+        projectIds: Array.isArray(value?.projectIds) ? value.projectIds.filter(Boolean) : [],
+        environmentIds: Array.isArray(value?.environmentIds)
+          ? value.environmentIds.filter(Boolean)
+          : [],
+      };
+    } catch {
+      this.storage?.removeItem?.(this.tombstoneKey);
+      return { projectIds: [], environmentIds: [] };
+    }
+  }
+
+  addTombstones({ projectIds = [], environmentIds = [] } = {}) {
+    const current = this.tombstones();
+    const merged = {
+      projectIds: [...new Set([...current.projectIds, ...projectIds])],
+      environmentIds: [...new Set([...current.environmentIds, ...environmentIds])],
+    };
+    this.storage?.setItem?.(this.tombstoneKey, JSON.stringify(merged));
+    return merged;
+  }
+
+  /** Cleared only once the server has accepted the removals. */
+  /**
+   * Drop tombstones for records that have come back to life.
+   *
+   * A retry deliberately reuses the environment id of the attempt it resumes, so
+   * an id that was tombstoned by a failed rollback can legitimately exist again.
+   * Leaving the tombstone would make the next startup remove the live record.
+   */
+  removeTombstones({ projectIds = [], environmentIds = [] } = {}) {
+    const current = this.tombstones();
+    const droppedProjects = new Set(projectIds);
+    const droppedEnvironments = new Set(environmentIds);
+    const merged = {
+      projectIds: current.projectIds.filter((id) => !droppedProjects.has(id)),
+      environmentIds: current.environmentIds.filter((id) => !droppedEnvironments.has(id)),
+    };
+    if (!merged.projectIds.length && !merged.environmentIds.length) {
+      return this.clearTombstones();
+    }
+    try {
+      this.storage?.setItem(this.tombstoneKey, JSON.stringify(merged));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  clearTombstones() {
+    try {
+      this.storage?.removeItem?.(this.tombstoneKey);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   setActive(projectId, environmentId) {
     this.storage?.setItem(this.stateKey, JSON.stringify({ projectId, environmentId }));
+  }
+
+  /** Forget which environment is open, leaving every stored record intact. */
+  clearRetainedSelection() {
+    this.storage?.removeItem(this.stateKey);
   }
 
   active() {

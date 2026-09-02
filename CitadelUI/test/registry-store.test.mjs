@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -46,6 +46,12 @@ const productionEnvironment = {
   folderName: 'citadel-production',
   localPath: 'C:\\source\\citadel-production',
 };
+
+/** Registry v3 projection of a v2 fixture, used to assert the migration. */
+function migrated(value) {
+  const { folderName, localPath, ...rest } = value;
+  return { ...rest, source: { kind: 'local', folderName, localPath } };
+}
 
 async function authority(store) {
   const current = await store.read();
@@ -180,9 +186,10 @@ test('registry metadata survives a store restart without handles', async (t) => 
   await second.initialize();
   const persisted = await second.read();
   assert.deepEqual(persisted.projects, [project]);
-  assert.deepEqual(persisted.environments, [environment]);
+  assert.deepEqual(persisted.environments, [migrated(environment)]);
+  assert.equal(persisted.version, 3);
   const raw = await readFile(join(root, 'settings', 'registry.json'), 'utf8');
-  assert.equal(persisted.environments[0].localPath, environment.localPath);
+  assert.equal(persisted.environments[0].source.localPath, environment.localPath);
   for (const forbidden of ['handle', '.azure', '.env']) {
     assert.equal(raw.includes(forbidden), false, forbidden);
   }
@@ -225,6 +232,76 @@ test('registry rejects handles, invalid display paths, absolute folder names, an
     }),
     (error) => error.code === 'UNKNOWN_REGISTRY_PROJECT'
   );
+});
+
+test('a registry written by a newer Citadel UI is refused and left byte-identical', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'citadel-registry-future-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, 'settings', 'registry.json');
+  await mkdir(join(root, 'settings'), { recursive: true });
+  const future = `${JSON.stringify(
+    {
+      version: 4,
+      epoch: 'future-epoch',
+      revision: 7,
+      projects: [project],
+      environments: [
+        {
+          ...migrated(environment),
+          somethingThisVersionDoesNotKnow: { retained: true },
+        },
+      ],
+    },
+    null,
+    2
+  )}\n`;
+  await writeFile(path, future);
+  const before = createHash('sha256').update(await readFile(path)).digest('hex');
+
+  const store = new RegistryStore({ dataRoot: root });
+  await assert.rejects(
+    store.initialize(),
+    (error) => error.code === 'REGISTRY_VERSION_UNSUPPORTED'
+  );
+  await assert.rejects(
+    store.read(),
+    (error) => error.code === 'REGISTRY_VERSION_UNSUPPORTED'
+  );
+
+  // Refusing must not rewrite, downgrade, or drop the unknown field.
+  const after = createHash('sha256').update(await readFile(path)).digest('hex');
+  assert.equal(after, before);
+  const raw = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(raw.version, 4);
+  assert.deepEqual(raw.environments[0].somethingThisVersionDoesNotKnow, { retained: true });
+});
+
+test('a v1 registry migrates to the v3 source union', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'citadel-registry-v1-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'settings'), { recursive: true });
+  await writeFile(
+    join(root, 'settings', 'registry.json'),
+    `${JSON.stringify({
+      version: 1,
+      epoch: 'legacy-epoch',
+      revision: 3,
+      projects: [project],
+      environments: [environment],
+    })}\n`
+  );
+  const store = new RegistryStore({ dataRoot: root });
+  await store.initialize();
+  const current = await store.read();
+  assert.equal(current.version, 3);
+  assert.deepEqual(current.environments[0].source, {
+    kind: 'local',
+    folderName: 'citadel-dev',
+    localPath: 'C:\\source\\citadel-dev',
+  });
+  // The epoch and revision are preserved so a mirror conflict is still detected.
+  assert.equal(current.epoch, 'legacy-epoch');
+  assert.equal(current.revision, 3);
 });
 
 test('QA data roots leave production registry bytes unchanged', async (t) => {
@@ -476,7 +553,7 @@ test('saved Development and Production remain visible across container and brows
   await restarted.initialize();
   const durable = await restarted.read();
   assert.deepEqual(
-    durable.environments.map((item) => [item.label, item.localPath]),
+    durable.environments.map((item) => [item.label, item.source.localPath]),
     [
       ['Development', 'C:\\source\\citadel-dev'],
       ['Production', 'C:\\source\\citadel-production'],

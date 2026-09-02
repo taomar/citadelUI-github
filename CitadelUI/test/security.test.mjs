@@ -424,8 +424,9 @@ test('registry metadata endpoints are authenticated and persist only non-sensiti
   assert.equal(saved.status, 200);
   const read = await fixture.request('/api/registry', { headers: apiHeaders(token) });
   assert.equal(read.status, 200);
-  assert.equal(read.json().environments[0].folderName, 'citadel-dev');
-  assert.equal(read.json().environments[0].localPath, 'C:\\source\\citadel-dev');
+  assert.equal(read.json().environments[0].source.folderName, 'citadel-dev');
+  assert.equal(read.json().environments[0].source.localPath, 'C:\\source\\citadel-dev');
+  assert.equal(read.json().environments[0].folderName, undefined);
   const raw = await readFile(join(fixture.root, 'data', 'settings', 'registry.json'), 'utf8');
   for (const forbidden of ['handle', '.azure', '.env']) {
     assert.equal(raw.includes(forbidden), false, forbidden);

@@ -6,6 +6,7 @@ import { transactionError } from './transactions.mjs';
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
+export const REGISTRY_VERSION = 3;
 const COMPATIBILITY = new Set([
   'unscanned',
   'supported',
@@ -39,6 +40,132 @@ function optionalTimestamp(value, name) {
   return value;
 }
 
+function folderDisplayName(value) {
+  const folderName = label(value, 'folder display name');
+  const lowerFolderName = folderName.toLowerCase();
+  if (
+    folderName.includes('/') ||
+    folderName.includes('\\') ||
+    folderName === '.' ||
+    folderName === '..' ||
+    lowerFolderName === '.azure' ||
+    lowerFolderName === '.env' ||
+    lowerFolderName.startsWith('.env.')
+  ) {
+    throw transactionError(400, 'INVALID_FOLDER_NAME', 'Folder display name must not be a path.');
+  }
+  return folderName;
+}
+
+function displayPath(value) {
+  const localPath =
+    value === null || value === undefined ? null : String(value).trim();
+  if (
+    localPath !== null &&
+    (
+      !localPath ||
+      localPath.length > 1024 ||
+      /[\u0000-\u001f\u007f]/.test(localPath) ||
+      !/^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+|\/)/.test(localPath)
+    )
+  ) {
+    throw transactionError(400, 'INVALID_LOCAL_PATH', 'Local path must be an absolute display path.');
+  }
+  return localPath;
+}
+
+function gitRefName(value, name) {
+  const ref = typeof value === 'string' ? value.trim() : '';
+  if (
+    !ref ||
+    ref.length > 255 ||
+    /[\u0000-\u001f\u007f ~^:?*[\\]/.test(ref) ||
+    ref.includes('..') ||
+    ref.includes('//') ||
+    ref.includes('@{') ||
+    ref.startsWith('/') ||
+    ref.endsWith('/') ||
+    ref.startsWith('-') ||
+    ref.endsWith('.lock') ||
+    ref === '@' ||
+    ref.split('/').some((part) => !part || part.startsWith('.') || part.endsWith('.lock'))
+  ) {
+    throw transactionError(400, 'INVALID_REGISTRY_BRANCH', `Invalid ${name}.`);
+  }
+  return ref;
+}
+
+function repositoryFullName(value) {
+  const fullName = typeof value === 'string' ? value.trim() : '';
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/.test(fullName)) {
+    throw transactionError(400, 'INVALID_REGISTRY_REPOSITORY', 'Invalid repository full name.');
+  }
+  return fullName;
+}
+
+/**
+ * Tagged source union for registry v3.
+ *
+ * `source` is the single authority for where an environment's files live. A v2
+ * record has no `source`, so its flat folder fields are migrated into a
+ * `kind: 'local'` source here rather than being carried alongside it, which
+ * keeps exactly one description of the source per environment.
+ *
+ * A GitHub source never carries a token or a credential session id.
+ */
+function environmentSource(value, legacy) {
+  if (value === undefined || value === null) {
+    return {
+      kind: 'local',
+      folderName: folderDisplayName(legacy.folderName),
+      localPath: displayPath(legacy.localPath),
+    };
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw transactionError(400, 'INVALID_REGISTRY_SOURCE', 'Invalid environment source.');
+  }
+  if (value.kind === 'local') {
+    if (Object.keys(value).some((key) => !['kind', 'folderName', 'localPath'].includes(key))) {
+      throw transactionError(400, 'INVALID_REGISTRY_SOURCE', 'Local source contains unsupported fields.');
+    }
+    return {
+      kind: 'local',
+      folderName: folderDisplayName(value.folderName),
+      localPath: displayPath(value.localPath),
+    };
+  }
+  if (value.kind === 'github') {
+    const allowed = new Set([
+      'kind',
+      'repositoryId',
+      'fullName',
+      'sourceBranch',
+      'workingBranch',
+      'writeMode',
+    ]);
+    if (Object.keys(value).some((key) => !allowed.has(key))) {
+      throw transactionError(400, 'INVALID_REGISTRY_SOURCE', 'GitHub source contains unsupported fields.');
+    }
+    const repositoryId = Number(value.repositoryId);
+    if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0) {
+      throw transactionError(400, 'INVALID_REGISTRY_SOURCE', 'Invalid repository id.');
+    }
+    const writeMode = value.writeMode === undefined ? 'working-branch' : String(value.writeMode);
+    if (writeMode !== 'working-branch' && writeMode !== 'direct') {
+      throw transactionError(400, 'INVALID_REGISTRY_SOURCE', 'Invalid GitHub write mode.');
+    }
+    return {
+      kind: 'github',
+      repositoryId,
+      fullName: repositoryFullName(value.fullName),
+      sourceBranch: gitRefName(value.sourceBranch, 'source branch'),
+      workingBranch: gitRefName(value.workingBranch, 'working branch'),
+      writeMode,
+    };
+  }
+  throw transactionError(400, 'INVALID_REGISTRY_SOURCE', 'Unsupported environment source kind.');
+}
+
 function positiveInteger(value, name) {
   const normalized = Number(value);
   if (!Number.isInteger(normalized) || normalized < 1 || normalized > 1_000_000) {
@@ -68,6 +195,7 @@ function environment(value) {
     'id',
     'projectId',
     'label',
+    'source',
     'folderName',
     'localPath',
     'fingerprint',
@@ -90,38 +218,11 @@ function environment(value) {
       'Environment metadata contains unsupported fields.'
     );
   }
-  const folderName = label(value.folderName, 'folder display name');
-  const lowerFolderName = folderName.toLowerCase();
-  if (
-    folderName.includes('/') ||
-    folderName.includes('\\') ||
-    folderName === '.' ||
-    folderName === '..' ||
-    lowerFolderName === '.azure' ||
-    lowerFolderName === '.env' ||
-    lowerFolderName.startsWith('.env.')
-  ) {
-    throw transactionError(400, 'INVALID_FOLDER_NAME', 'Folder display name must not be a path.');
-  }
+  const source = environmentSource(value.source, value);
   const fingerprint =
     value.fingerprint === null || value.fingerprint === undefined ? null : String(value.fingerprint);
   if (fingerprint !== null && !HASH_PATTERN.test(fingerprint)) {
     throw transactionError(400, 'INVALID_FINGERPRINT', 'Invalid capability fingerprint.');
-  }
-  const localPath =
-    value.localPath === null || value.localPath === undefined
-      ? null
-      : String(value.localPath).trim();
-  if (
-    localPath !== null &&
-    (
-      !localPath ||
-      localPath.length > 1024 ||
-      /[\u0000-\u001f\u007f]/.test(localPath) ||
-      !/^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+|\/)/.test(localPath)
-    )
-  ) {
-    throw transactionError(400, 'INVALID_LOCAL_PATH', 'Local path must be an absolute display path.');
   }
   const compatibility = String(value.compatibility || 'unscanned');
   if (!COMPATIBILITY.has(compatibility)) {
@@ -131,8 +232,7 @@ function environment(value) {
     id: id(value.id, 'environment id'),
     projectId: id(value.projectId, 'project id'),
     label: label(value.label, 'environment label'),
-    folderName,
-    localPath,
+    source,
     fingerprint,
     toolVersion: label(value.toolVersion || '1.0.0-local', 'tool version'),
     settingsVersion: positiveInteger(value.settingsVersion || 1, 'settings version'),
@@ -142,6 +242,48 @@ function environment(value) {
     updatedAt: optionalTimestamp(value.updatedAt, 'environment updated time'),
     lastOpenedAt: optionalTimestamp(value.lastOpenedAt, 'environment opened time'),
     lastScannedAt: optionalTimestamp(value.lastScannedAt, 'environment scanned time'),
+  };
+}
+
+/**
+ * Upgrade a persisted registry document to v3.
+ *
+ * Only known older versions are migrated. A document from a newer Citadel UI is
+ * left byte-identical and refused, because silently rewriting it would drop
+ * fields this version does not understand.
+ */
+function migrate(current) {
+  const version = Number(current?.version ?? 1);
+  if (version === REGISTRY_VERSION) return current;
+  if (version > REGISTRY_VERSION) {
+    throw transactionError(
+      409,
+      'REGISTRY_VERSION_UNSUPPORTED',
+      `This /data registry was written by a newer Citadel UI (schema v${version}). Upgrade Citadel UI or point it at a different data directory.`
+    );
+  }
+  if (version !== 1 && version !== 2) {
+    throw transactionError(
+      409,
+      'REGISTRY_VERSION_UNSUPPORTED',
+      `Unsupported Citadel registry schema v${version}.`
+    );
+  }
+  return {
+    ...current,
+    version: REGISTRY_VERSION,
+    environments: (current?.environments || []).map((item) => {
+      if (item?.source) return item;
+      const { folderName, localPath, ...rest } = item || {};
+      return {
+        ...rest,
+        source: {
+          kind: 'local',
+          folderName: folderName || 'Selected folder',
+          localPath: localPath ?? null,
+        },
+      };
+    }),
   };
 }
 
@@ -173,17 +315,14 @@ export class RegistryStore {
   async initialize() {
     try {
       const current = JSON.parse(await readFile(this.path, 'utf8'));
-      if (!current.epoch) {
-        await atomicJson(this.path, {
-          ...current,
-          version: 2,
-          epoch: randomUUID(),
-        });
+      const upgraded = migrate(current);
+      if (!current.epoch || upgraded !== current) {
+        await atomicJson(this.path, { ...upgraded, epoch: current.epoch || randomUUID() });
       }
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
       await atomicJson(this.path, {
-        version: 2,
+        version: REGISTRY_VERSION,
         epoch: randomUUID(),
         revision: 0,
         updatedAt: new Date(this.now()).toISOString(),
@@ -195,14 +334,23 @@ export class RegistryStore {
 
   async read() {
     const current = JSON.parse(await readFile(this.path, 'utf8'));
-    if (current.epoch) return current;
-    const upgraded = {
-      ...current,
-      version: 2,
-      epoch: randomUUID(),
-    };
-    await atomicJson(this.path, upgraded);
-    return upgraded;
+    const upgraded = migrate(current);
+    if (current.epoch && upgraded === current) return current;
+    const next = { ...upgraded, epoch: current.epoch || randomUUID() };
+    await atomicJson(this.path, next);
+    return next;
+  }
+
+  /**
+   * Authoritative source record for one environment.
+   *
+   * GitHub routes resolve repository and branch from here rather than trusting
+   * request parameters, so a browser cannot point an environment at a different
+   * repository by editing a request body.
+   */
+  async getEnvironment(environmentId) {
+    const current = await this.read();
+    return current.environments.find((item) => item.id === environmentId) || null;
   }
 
   async reconcile(input = {}) {
@@ -252,7 +400,7 @@ export class RegistryStore {
         environments.set(item.id, item);
       }
       const next = {
-        version: 2,
+        version: REGISTRY_VERSION,
         epoch: current.epoch,
         revision: current.revision + 1,
         updatedAt: new Date(this.now()).toISOString(),

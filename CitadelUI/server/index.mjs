@@ -17,6 +17,8 @@ import { nodeToValue, parseBicepParam } from './bicepparam/parser.mjs';
 import { buildOutline } from './doclayer.mjs';
 import { TransactionStore, transactionError } from './transactions.mjs';
 import { RegistryStore } from './registry-store.mjs';
+import { GitHubRoutes } from './github/routes.mjs';
+import { GitHubAuditStore } from './github/audit.mjs';
 import {
   applyPolicyChanges,
   CONTENT_SAFETY_CATEGORIES,
@@ -39,6 +41,14 @@ const PRODUCTION_CHECKOUT_DATA_ROOT = resolve(here, '..', '.data');
 const DEFAULT_ALLOWED_HOST = process.env.CITADEL_ALLOWED_HOST || PRODUCTION_ALLOWED_HOST;
 const JSON_BODY_LIMIT = 2 * 1024 * 1024;
 const BACKUP_BODY_LIMIT = 32 * 1024 * 1024;
+/**
+ * GitHub commit bodies carry base64-encoded sources, so the advertised 8 MiB
+ * source limit needs roughly 4/3 for base64 plus JSON framing. Without this the
+ * transport would reject a file the product says it supports. The aggregate
+ * decoded size stays bounded by the per-file and per-change-set limits enforced
+ * in the change-set validator.
+ */
+const GITHUB_COMMIT_BODY_LIMIT = 12 * 1024 * 1024;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -259,6 +269,39 @@ async function handleApi(context) {
   } = context;
   const stateChanging = req.method !== 'GET' && req.method !== 'HEAD';
   assertBrowserRequest(req, allowedHost, allowedOrigin, sessionToken, stateChanging);
+
+  // GitHub routes own their own method set (they need DELETE to disconnect), so
+  // they are dispatched before the method allow-list that governs every other
+  // API route. That list stays exactly as narrow as it was.
+  if (url.pathname === '/api/github' || url.pathname.startsWith('/api/github/')) {
+    if (!context.githubRoutes) {
+      throw transactionError(404, 'ROUTE_NOT_FOUND', 'API route not found.');
+    }
+    if (!['GET', 'POST', 'DELETE'].includes(req.method)) {
+      return sendJson(
+        res,
+        405,
+        { error: { code: 'METHOD_NOT_ALLOWED', message: 'Method not allowed.', correlationId } },
+        correlationId,
+        { Allow: 'GET, POST, DELETE' }
+      );
+    }
+    const result = await context.githubRoutes.handle({
+      req,
+      url,
+      parts: routeParts(url.pathname),
+      readBody: () =>
+        readLimitedBody(
+          req,
+          // Only the routes that carry encoded source get the larger ceiling.
+          /\/(commits|reverts)$/.test(url.pathname)
+            ? context.githubCommitBodyLimit
+            : context.jsonBodyLimit,
+          true
+        ),
+    });
+    return sendJson(res, 200, result, correlationId);
+  }
 
   if (!['GET', 'POST', 'PUT'].includes(req.method)) {
     return sendJson(
@@ -521,6 +564,15 @@ export async function createCitadelServer(options = {}) {
   const maxConcurrency = options.maxConcurrency ?? 32;
   const store = options.store || new TransactionStore({ dataRoot, ...(options.transactionOptions || {}) });
   const registryStore = options.registryStore || new RegistryStore({ dataRoot });
+  const githubRoutes =
+    options.githubRoutes === null
+      ? null
+      : options.githubRoutes ||
+        new GitHubRoutes({
+          registryStore,
+          audit: new GitHubAuditStore({ dataRoot }),
+          ...(options.githubOptions || {}),
+        });
   await store.initialize();
   await registryStore.initialize();
   const indexHtml = await readFile(resolve(webRoot, 'index.html'), 'utf8');
@@ -575,10 +627,12 @@ export async function createCitadelServer(options = {}) {
         bootstrapHtml,
         store,
         registryStore,
+        githubRoutes,
         allowedHost,
         allowedOrigin,
         sessionToken,
         jsonBodyLimit: options.jsonBodyLimit ?? JSON_BODY_LIMIT,
+        githubCommitBodyLimit: options.githubCommitBodyLimit ?? GITHUB_COMMIT_BODY_LIMIT,
         backupBodyLimit: options.backupBodyLimit ?? BACKUP_BODY_LIMIT,
       };
       if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
@@ -591,8 +645,25 @@ export async function createCitadelServer(options = {}) {
         return;
       }
       const status = Number.isInteger(error.status) ? error.status : 500;
-      const code = error.code && status < 500 ? error.code : 'INTERNAL_ERROR';
-      const message = status < 500 ? error.message : 'Internal server error.';
+      // A `githubError` is constructed to be shown: its message is redacted at
+      // the point of creation and carries no token, header, or GitHub request
+      // id. Some of them are deliberately 5xx — `INDETERMINATE_SAVE` (503) and
+      // `SAVE_NOT_APPLIED` (502) exist precisely to tell the user whether a
+      // retry is safe. Flattening those into "Internal server error" would erase
+      // the one instruction that prevents a duplicate commit, so they are
+      // exempted from sanitization rather than being demoted to 4xx.
+      const disclosable = error.github === true;
+      const code = error.code && (status < 500 || disclosable) ? error.code : 'INTERNAL_ERROR';
+      const message = status < 500 || disclosable ? error.message : 'Internal server error.';
+      const detail = {};
+      if (disclosable && error.indeterminate) {
+        detail.indeterminate = true;
+        if (error.commit) detail.commit = error.commit;
+      }
+      // A boolean provenance marker, carrying no repository, branch, or
+      // credential detail: the browser needs it to tell an unresolved attach
+      // apart from a definite rejection, whatever the status says.
+      if (error.attachUnconfirmed) detail.attachUnconfirmed = true;
       if (status >= 500) {
         // Correlation and error class only: never log paths, bodies, source text, or tokens.
         console.error(
@@ -607,7 +678,7 @@ export async function createCitadelServer(options = {}) {
       return sendJson(
         res,
         status,
-        { error: { code, message, correlationId } },
+        { error: { code, message, correlationId, ...detail } },
         correlationId,
         status === 413 ? { Connection: 'close' } : {}
       );
@@ -617,7 +688,7 @@ export async function createCitadelServer(options = {}) {
   server.requestTimeout = options.requestTimeout ?? 30_000;
   server.keepAliveTimeout = options.keepAliveTimeout ?? 5_000;
 
-  return { server, store, registryStore };
+  return { server, store, registryStore, githubRoutes };
 }
 
 export async function startCitadelServer(options = {}) {
