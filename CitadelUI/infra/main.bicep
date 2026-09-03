@@ -59,7 +59,7 @@ param principalId string = ''
 @description('Mount /data on Azure Files so workspaces, connection profiles, the activity log and the sealed credential envelopes survive a restart. Requires shared-key access on the storage account, which some tenants deny by policy -- see the resource group preprovision hook. Set false to run with an ephemeral /data: the app boots and works, but forgets everything on a restart, a scale to zero, or a new revision.')
 param persistData bool = true
 
-@description('Publish the app on the public internet WITHOUT Entra authentication in front of it. Off by default, and deliberately awkward to turn on: this application issues a working session token to anyone who loads its page, so a public ingress with no authentication hands that token, the stored GitHub credential and write access to the connected repositories to any anonymous visitor. Setting this true is a considered decision by the owner of the deployment, not a default. Prefer setting entraAuthClientId, which makes the app public AND authenticated.')
+@description('Publish the app on the public internet with only its own owner sign-in in front of it, and no Entra authentication. Off by default. The app does defend itself: an anonymous visitor is issued no session token and every data route refuses one, so this is not the open door it would have been before the owner gate existed. What it does not defend is the *claim* -- a container nobody has claimed yet belongs to whoever reaches it first, which on a public ingress means whoever finds the URL first. Set this true when you intend to publish and will claim it yourself immediately. Prefer setting entraAuthClientId, which puts Entra in front of the claim as well.')
 param allowPublicIngressWithoutAuth bool = false
 
 @description('Type of the principal above. azd running as a human leaves this as User; in a pipeline running as a service principal, set it to ServicePrincipal or the assignment fails validation.')
@@ -82,7 +82,7 @@ param keyVaultResourceGroup string = ''
 @description('Name of the secret holding the credential key-encryption key. The app reads the key from the vault at startup; this template deliberately does not create the secret, because generating key material in a deployment would put it in the deployment history in plain text.')
 param credentialSecretName string = 'citadel-credential-key'
 
-@description('Entra application (client) id for Container Apps built-in authentication. Supplying it is what unlocks public ingress -- see the ingress block. Leave empty and the app is deployed on internal ingress, unreachable from the internet.')
+@description('Entra application (client) id for Container Apps built-in authentication. Supplying it publishes the app with Entra in front of it -- see the ingress block. Leave it empty and the app is on internal ingress, unreachable from the internet, unless allowPublicIngressWithoutAuth is also set.')
 param entraAuthClientId string = ''
 
 @secure()
@@ -444,12 +444,10 @@ resource dataStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = i
 // The application
 // ---------------------------------------------------------------------------
 
-// Authentication is the switch this whole deployment turns on. See the ingress
-// block below for why.
+// Two independent decisions, kept apart so neither happens by accident.
+// `authConfigured` means Entra is in front of the app. `publicIngress` means
+// the app is on the internet, by either route. See the ingress block below.
 var authConfigured = !empty(entraAuthClientId)
-// Public means published on the internet, by either route: with Entra in front
-// of it, or because the owner explicitly accepted the risk of publishing it
-// without. The two are kept separate so the second never happens by accident.
 var publicIngress = authConfigured || allowPublicIngressWithoutAuth
 var authClientSecretConfigured = authConfigured && !empty(entraAuthClientSecret)
 var authClientSecretName = 'entra-client-secret'
@@ -530,19 +528,22 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
     configuration: {
       activeRevisionsMode: 'Single'
       // ---------------------------------------------------------------------
-      // `external: authConfigured` is the security invariant of this template,
-      // expressed as code so that it cannot be got wrong by editing a boolean.
+      // `external: publicIngress` is the exposure invariant of this template,
+      // expressed as code so that it cannot be got wrong by editing a boolean:
+      // the app reaches the internet only because someone decided it should,
+      // never as a side effect of another setting.
       //
-      // This application's trust model is that reaching it proves you own it:
-      // any GET / is handed a fresh, working session token. On loopback that is
-      // sound -- being on the port already proves you are the user. On a public
-      // ingress it is not. An anonymous visitor gets a session token, and with
-      // it the stored, encrypted GitHub credential and the ability to write to
-      // the user's repositories. That is credential disclosure, not a
-      // configuration preference, so the template refuses to express it: with no
-      // Entra client id there is no authentication, and with no authentication
-      // there is no public ingress. The app still deploys and can still be
-      // reached from inside the environment; it is simply not on the internet.
+      // There are two such decisions and they are deliberately separate.
+      // Supplying `entraAuthClientId` publishes the app with Entra in front of
+      // it. Setting `allowPublicIngressWithoutAuth` publishes it with only the
+      // app's own owner sign-in in front -- a real control, since an anonymous
+      // visitor is issued no session token and every data route refuses one,
+      // but a weaker one than Entra, because a container nobody has claimed yet
+      // belongs to whoever reaches it first.
+      //
+      // Neither default is public. With both unset the app still deploys and
+      // still works: it is reachable from inside the environment, and simply
+      // not on the internet.
       // ---------------------------------------------------------------------
       ingress: {
         external: publicIngress
@@ -787,13 +788,16 @@ output AZURE_CONTAINER_APP_ENVIRONMENT_NAME string = containerAppsEnvironment.na
 @description('Resource group the deployment landed in.')
 output AZURE_RESOURCE_GROUP string = resourceGroup().name
 
-@description('Public URL of the app. Read back from the platform rather than recomputed, so that if it ever disagrees with CITADEL_ALLOWED_HOST below, the disagreement is visible instead of silent. On an unauthenticated deployment this is the internal address and is not reachable from the internet -- that is the intent, not a fault.')
+@description('Public URL of the app. Read back from the platform rather than recomputed, so that if it ever disagrees with CITADEL_ALLOWED_HOST below, the disagreement is visible instead of silent. On a deployment that is neither Entra-authenticated nor explicitly published this is the internal address and is not reachable from the internet -- that is the intent, not a fault.')
 output SERVICE_CITADELUI_URI string = 'https://${containerApp.properties.configuration.ingress.fqdn}'
 
-@description('Whether the app is published to the internet. False means no Entra client id was supplied, so ingress is internal only.')
-output SERVICE_CITADELUI_PUBLIC bool = authConfigured
+@description('Whether the app is reachable from the internet. This mirrors the `external` flag on the ingress exactly, so it can be trusted to answer "is this exposed?". It is true by either route -- an Entra client id, or allowPublicIngressWithoutAuth -- so read SERVICE_CITADELUI_ENTRA_AUTH to find out which.')
+output SERVICE_CITADELUI_PUBLIC bool = publicIngress
 
-@description('Reply URL to register on the Entra application, before setting entraAuthClientId. This is deliberately the address the app will have *once authentication is configured*, not the address it has now: the two differ, because an unauthenticated deployment is internal and carries an `.internal.` segment. Registering the current internal address would produce a redirect loop that is genuinely hard to read. So the intended order is: provision once with no client id, take this value, register it, then set the client id and provision again.')
+@description('Whether Container Apps built-in Entra authentication is in front of the app. False while SERVICE_CITADELUI_PUBLIC is true means the app is on the internet behind its own owner sign-in rather than behind Entra.')
+output SERVICE_CITADELUI_ENTRA_AUTH bool = authConfigured
+
+@description('Reply URL to register on the Entra application, before setting entraAuthClientId. This is deliberately the address the app will have *once it is published*, not necessarily the address it has now: on an internal deployment the two differ, because the internal address carries an `.internal.` segment. Registering that one would produce a redirect loop that is genuinely hard to read. So the intended order is: provision once with no client id, take this value, register it, then set the client id and provision again.')
 output AZURE_AUTH_REDIRECT_URI string = 'https://${containerAppName}.${containerAppsEnvironment.properties.defaultDomain}/.auth/login/aad/callback'
 
 @description('Name of the vault in use, whether created here or reused.')

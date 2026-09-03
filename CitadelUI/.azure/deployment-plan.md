@@ -1,6 +1,6 @@
 # Citadel UI — Azure Container Apps deployment plan
 
-**Status:** Validated
+**Status:** Deployed — torn down and rebuilt from nothing on 2026-09-03 to prove it
 **Target:** Azure Container Apps, provisioned by `azd up` from `CitadelUI/`
 **Subscription:** `ME-MngEnvMCAP443119-taomar-1` (`5a03d84f-151a-4ad3-9568-063e4e502bf0`)
 **Region:** West Europe (`westeurope`)
@@ -165,7 +165,69 @@ az ad app create --display-name "Citadel UI" \
 ```
 
 Until it is supplied the app deploys with **internal ingress** and is not
-reachable from the internet — which is the safe state, by design.
+reachable from the internet — unless `ALLOW_PUBLIC_INGRESS_WITHOUT_AUTH` is set,
+which publishes it behind the application's own owner sign-in instead of behind
+Entra. Both routes are explicit; neither is the default.
+
+## Deploying from scratch
+
+`azd up` does everything except name the resource group. Four environment values
+have to exist first; azd itself supplies none of them:
+
+```
+azd env new <env-name> --subscription <id> --location westeurope
+azd env set AZURE_RESOURCE_GROUP rg-<env-name>
+azd env set ALLOW_PUBLIC_INGRESS_WITHOUT_AUTH true   # only if it should be public
+azd up
+```
+
+**Why `AZURE_RESOURCE_GROUP` is mandatory and not defaulted.** The preprovision
+hook has to create the group *and tag it* `SecurityControl: Ignore` before the
+storage account is evaluated, so it must know the name before azd would
+otherwise choose one. It could guess `rg-<env-name>`, but a guess that disagreed
+with the group azd then deployed into would put the tag on an empty group and
+fail the storage mount several layers away from the cause. So the hook refuses to
+guess: it exits 1 and prints the exact command. That is the intended behaviour,
+not a gap.
+
+**Everything downstream is unattended.** The resource token is
+`uniqueString(subscription, environmentName, location)`, so a new environment
+name is sufficient to get an entirely new set of resource names — nothing else
+needs editing to stand up a second, parallel deployment.
+
+## Proof: torn down and rebuilt from nothing
+
+Run on 2026-09-03 to establish that the template, not accumulated manual repair,
+is what produces the deployment.
+
+| Phase | Command | Result |
+| --- | --- | --- |
+| Teardown | `azd down --force --purge` | **Exit 0**, 24m03s. Resource group deleted, Log Analytics purged, Key Vault purged out of soft-delete. Old FQDN stopped resolving in DNS. |
+| Rebuild | `azd up -e citadel-clean --no-prompt` | **Exit 0**, 15m32s (provision 14m19s, deploy 1m13s). No `az` repair, no code edit, no retry. |
+
+New environment `citadel-clean` produced resource token `i6yfeoa2kwta2` against
+the previous `slctnddipzizu`, so every resource name differed.
+
+What `azd up` did without help:
+
+- Created `rg-citadel-clean` through the preprovision hook and **read the
+  `SecurityControl: Ignore` tag back** before continuing.
+- Provisioned all seven resources: identity, registry, vault, Log Analytics,
+  storage, Container Apps environment, container app.
+- Assigned `AcrPull` and `Key Vault Secrets User` to the app identity, and
+  `Key Vault Secrets Officer` to the operator. `principalId` is passed by azd as
+  a deployment parameter; it does not appear in `azd env get-values`, which is
+  expected and not a missing assignment.
+- Built the image in ACR (`remoteBuild: true`) — no local Docker, no registry
+  credential on the machine.
+- Mounted Azure Files at `/data`, which the app requires to boot at all.
+- Fed the FQDN into `CITADEL_ALLOWED_HOST` and `CITADEL_ALLOWED_ORIGIN` before
+  the app existed.
+
+Verified afterwards: revision Healthy at one replica, `minReplicas: 0` as
+declared, `/healthz` 200, `/` 200 reporting `unclaimed` with **no session token
+in the markup**, and `/api/registry`, `/api/activity`, `/api/health` all refused
+to an unauthenticated caller.
 
 ## Steps
 
@@ -179,7 +241,7 @@ reachable from the internet — which is the safe state, by design.
 | 6 | Key Vault credential source behind the existing interface + tests | Done |
 | 7 | Entra ID auth on ingress, with public ingress gated on it | Done |
 | 8 | `CITADEL_ALLOWED_HOST`/`CITADEL_ALLOWED_ORIGIN` bound to the app FQDN | Done |
-| 9 | Hand off to azure-validate, then azure-deploy | azure-validate complete; azure-deploy **withheld pending audit** |
+| 9 | Hand off to azure-validate, then azure-deploy | Complete — deployed, then torn down and rebuilt from nothing to prove the template reproduces it |
 
 ## Section 7: Validation Proof
 
