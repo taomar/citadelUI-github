@@ -351,6 +351,23 @@ module storage 'br/public:avm/res/storage/storage-account:0.33.0' = {
     // the application's environment, where a crash report or `docker inspect`
     // equivalent could surface it.
     allowSharedKeyAccess: true
+    // AVM defaults the network ACL to Deny, and Deny with no rules means every
+    // address is refused -- including the Container Apps environment, which is
+    // Microsoft-managed, has no VNet integration here, and therefore reaches
+    // this account from an address no rule list can name. `publicNetworkAccess:
+    // Enabled` above is not enough on its own: it opens the door while this
+    // leaves it bolted, and the SMB mount then fails with `mount error(13):
+    // Permission denied`. The container exits 1 at startup, because /data is
+    // required to boot, and the platform reports it as a crash loop rather than
+    // as a storage rule -- the cause is four layers from the symptom.
+    //
+    // A private endpoint is the real answer and is out of scope for this
+    // iteration; the account is still protected by requiring the key, HTTPS
+    // only, and no public blob access.
+    networkAcls: {
+      bypass: 'AzureServices'
+      defaultAction: 'Allow'
+    }
     fileServices: {
       shares: [
         {
