@@ -304,6 +304,112 @@ test('a v1 registry migrates to the v4 source union', async (t) => {
   assert.equal(current.revision, 3);
 });
 
+test('a record written before this change loads without crashing', async (t) => {
+  // Migration was dropped on the user's instruction: old data does not matter,
+  // and if earlier records are wrong they do not mind. The only remaining bar is
+  // that such a record must not take the app down. It may need re-attaching; it
+  // may describe itself as unknown. It may not throw.
+  const root = await mkdtemp(join(tmpdir(), 'citadel-registry-legacy-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'settings'), { recursive: true });
+  const legacy = {
+    kind: 'github',
+    connectionProfileId: null,
+    repositoryId: 9001,
+    fullName: 'taomar/citadelQA',
+    sourceBranch: 'CitadelQA',
+    workingBranch: 'citadel-ui/d79d23d1-d638-42fd-a0ff-1992dfbfa2eb',
+    writeMode: 'working-branch',
+    lastKnownHead: null,
+    capabilities: null,
+    validatedAt: null,
+  };
+  await writeFile(
+    join(root, 'settings', 'registry.json'),
+    `${JSON.stringify({
+      version: 4,
+      epoch: 'live-epoch',
+      revision: 7,
+      projects: [project],
+      environments: [{ ...environment, source: legacy }],
+    })}\n`
+  );
+
+  const store = new RegistryStore({ dataRoot: root });
+  await store.initialize();
+  const current = await store.read();
+  const found = await store.getEnvironment(environment.id);
+
+  // Loads, and is still identifiable.
+  assert.equal(current.environments.length, 1);
+  assert.equal(found.source.fullName, 'taomar/citadelQA');
+  // Provenance is unknown and is left unknown rather than invented — that is
+  // what "no bad data going forward" means for a record nobody can vouch for.
+  assert.equal(found.source.branchChoice, undefined);
+  // And writing it back is accepted, with the unknown recorded as null rather
+  // than guessed.
+  const saved = await store.reconcile({
+    expectedEpoch: current.epoch,
+    expectedRevision: current.revision,
+    projects: [project],
+    environments: [{ ...environment, source: legacy }],
+    removedProjectIds: [],
+    removedEnvironmentIds: [],
+  });
+  assert.equal(saved.environments[0].source.branchChoice, null);
+  assert.equal(
+    saved.environments[0].source.workingBranch,
+    'citadel-ui/d79d23d1-d638-42fd-a0ff-1992dfbfa2eb'
+  );
+});
+
+test('branch choice cannot contradict the write mode', async (t) => {
+  // `writeMode` already answers "is the target the source branch". If
+  // `branchChoice` could disagree there would be two records of one fact, and a
+  // later reader would have to guess which to believe. Contradiction is refused
+  // rather than silently reconciled.
+  const root = await mkdtemp(join(tmpdir(), 'citadel-registry-conflict-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = new RegistryStore({ dataRoot: root });
+  await store.initialize();
+  const base = await store.read();
+  const contradiction = (writeMode, branchChoice) =>
+    store.reconcile({
+      expectedEpoch: base.epoch,
+      expectedRevision: base.revision,
+      projects: [project],
+      environments: [
+        {
+          ...environment,
+          source: {
+            kind: 'github',
+            repositoryId: 9001,
+            fullName: 'taomar/citadelQA',
+            sourceBranch: 'CitadelQA',
+            workingBranch: writeMode === 'direct' ? 'CitadelQA' : 'citadel-ui/x',
+            writeMode,
+            branchChoice,
+          },
+        },
+      ],
+      removedProjectIds: [],
+      removedEnvironmentIds: [],
+    });
+
+  await assert.rejects(
+    () => contradiction('working-branch', 'selected'),
+    (error) => error.code === 'INVALID_REGISTRY_SOURCE'
+  );
+  await assert.rejects(
+    () => contradiction('direct', 'created'),
+    (error) => error.code === 'INVALID_REGISTRY_SOURCE'
+  );
+  await assert.rejects(
+    () => contradiction('working-branch', 'invented'),
+    (error) => error.code === 'INVALID_REGISTRY_SOURCE'
+  );
+});
+
 test('QA data roots leave production registry bytes unchanged', async (t) => {
   const productionRoot = await mkdtemp(join(tmpdir(), 'citadel-production-'));
   const qaRoot = await mkdtemp(join(tmpdir(), 'citadel-qa-'));

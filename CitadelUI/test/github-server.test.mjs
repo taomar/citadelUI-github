@@ -249,8 +249,14 @@ test('a GitHub environment is mirrored to /data without any credential', async (
     repositoryId: 9001,
     fullName: 'taomar/citadelQA',
     sourceBranch: 'main',
+    // Untouched. The record posted above has no `branchChoice`, which is the
+    // shape every workspace attached before the user could name a branch has.
+    // Migration was dropped on the user's instruction, so nothing is derived:
+    // the branch is carried through and the unknown provenance stays null rather
+    // than being guessed at.
     workingBranch: 'citadel-ui/env-github-one',
     writeMode: 'working-branch',
+    branchChoice: null,
     lastKnownHead: null,
     capabilities: null,
     validatedAt: null,
@@ -531,10 +537,17 @@ test('project and GitHub environment settings survive a container restart', asyn
   assert.deepEqual(github.source, {
     ...environments[0].source,
     connectionProfileId: null,
+    // Unknown, and left unknown. Migration was dropped, so a record that
+    // predates the field is not given a value nobody can vouch for.
+    branchChoice: null,
     lastKnownHead: null,
     capabilities: null,
     validatedAt: null,
   });
+  // The remaining bar for old data: it loads and is still identifiable across a
+  // restart. It may need re-attaching; it may not crash.
+  assert.equal(github.source.workingBranch, 'citadel-ui/env-github-one');
+  assert.equal(github.source.writeMode, 'working-branch');
   assert.equal(durable.projects[0].label, 'Citadel');
 
   // No credential of any kind is on the volume, so GitHub must be reconnected.

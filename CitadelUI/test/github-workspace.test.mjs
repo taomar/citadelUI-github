@@ -509,11 +509,12 @@ test('a branch that moved after review is rejected and leaves the branch unchang
   assert.equal(context.repository.refs.get(branch), moved);
 });
 
-test('a non-fast-forward ref update never forces, and rescues the commit instead', async () => {
+test('a non-fast-forward ref update never forces, and creates no branch of its own', async () => {
   const context = fixture();
   const id = await attached(context);
   const branch = 'citadel-ui/env-github-one';
   const head = context.repository.refs.get(branch);
+  const refsBefore = [...context.repository.refs.keys()].sort();
   context.github.failNextRefUpdate = true;
   const result = await context.routes.workspace({
     req: request(id, { method: 'POST' }),
@@ -527,10 +528,13 @@ test('a non-fast-forward ref update never forces, and rescues the commit instead
       files: [{ alias: 'bicep/infra/new.bicepparam', create: true, after: Buffer.from('x\n').toString('base64') }],
     }),
   });
-  // The commit exists and is reachable; it simply is not on the working branch.
-  assert.equal(result.resolution.kind, 'branch-moved');
-  assert.equal(result.branch, result.resolution.branch);
-  assert.equal(context.repository.refs.get(result.resolution.branch), result.commit);
+  // The commit exists and is reachable by SHA; it simply is not on any branch,
+  // and Citadel does not create one the user did not ask for.
+  assert.equal(result.applied, false);
+  assert.equal(result.unresolved.kind, 'branch-moved');
+  assert.equal(result.branch, branch);
+  assert.match(result.unresolved.commit, /^[0-9a-f]{40}$/);
+  assert.deepEqual([...context.repository.refs.keys()].sort(), refsBefore);
   // The original guarantees still hold: the branch is untouched and no update
   // was ever forced.
   assert.equal(context.repository.refs.get(branch), head);
@@ -540,12 +544,13 @@ test('a non-fast-forward ref update never forces, and rescues the commit instead
   );
 });
 
-test('a protected branch keeps the change on a branch the user can open a PR from', async () => {
+test('a protected branch keeps the change as a commit, and asks before branching', async () => {
   const context = fixture();
   const id = await attached(context);
   const branch = 'citadel-ui/env-github-one';
   context.github.protectedBranches.add(branch);
   const head = context.repository.refs.get(branch);
+  const refsBefore = [...context.repository.refs.keys()].sort();
   const result = await context.routes.workspace({
     req: request(id, { method: 'POST' }),
     url: url(),
@@ -558,15 +563,15 @@ test('a protected branch keeps the change on a branch the user can open a PR fro
       files: [{ alias: 'bicep/infra/new.bicepparam', create: true, after: Buffer.from('x\n').toString('base64') }],
     }),
   });
-  assert.equal(result.resolution.kind, 'branch-protected');
-  // The old advice was "open a pull request from <branch>" — from a branch that
-  // did not contain the change. The branch named now actually does.
-  assert.equal(context.repository.refs.get(result.resolution.branch), result.commit);
+  assert.equal(result.unresolved.kind, 'branch-protected');
+  // The change really is in the commit; what is missing is a branch, and that
+  // is the user's decision to make.
   assert(
     context.github
-      .treeOf(result.commit)
+      .treeOf(result.unresolved.commit)
       .some((entry) => entry.path === 'bicep/infra/new.bicepparam')
   );
+  assert.deepEqual([...context.repository.refs.keys()].sort(), refsBefore);
   assert.equal(context.repository.refs.get(branch), head);
 });
 

@@ -31,6 +31,7 @@ import {
   assertAction,
   branchHead,
   commitChangeSet,
+  createCommitBranch,
   ensureWorkingBranch,
   inspectCommit,
   loadHistory,
@@ -844,6 +845,8 @@ export class GitHubRoutes {
         'sourceBranch',
         'environmentId',
         'writeMode',
+        'workingBranch',
+        'adoptExisting',
         'operationKey',
         'expectedHead',
       ])
@@ -895,7 +898,25 @@ export class GitHubRoutes {
         body.expectedHead ? validateCommitSha(body.expectedHead, 'head') : null
       );
       const head = validated.head;
-      const workingBranch = writeMode === 'direct' ? sourceBranch : workingBranchName(environmentId);
+      // The branch is the user's to name. `citadel-ui/<environmentId>` remains
+      // the answer only when a caller supplies no name at all, which keeps the
+      // API contract that predates branch naming working; the browser always
+      // supplies one.
+      const namedByUser = body.workingBranch !== undefined && body.workingBranch !== null;
+      const adoptExisting = body.adoptExisting === true;
+      const workingBranch =
+        writeMode === 'direct'
+          ? sourceBranch
+          : namedByUser
+            ? validateBranchName(body.workingBranch)
+            : workingBranchName(environmentId);
+      if (writeMode === 'working-branch' && workingBranch === sourceBranch) {
+        throw githubError(
+          400,
+          'INVALID_BRANCH',
+          `${sourceBranch} is the branch you selected. Attach it directly instead of asking Citadel to create it.`
+        );
+      }
 
       // Provenance first. A create whose response is lost has still happened on
       // GitHub, and without a record written beforehand nothing could name the
@@ -916,7 +937,7 @@ export class GitHubRoutes {
 
       let working;
       if (writeMode === 'direct') {
-        working = { branch: sourceBranch, head, created: false };
+        working = { branch: sourceBranch, head, created: false, adopted: false };
       } else {
         try {
           working = await ensureWorkingBranch(
@@ -924,9 +945,24 @@ export class GitHubRoutes {
             session.token,
             repository.fullName,
             sourceBranch,
-            workingBranch
+            workingBranch,
+            {
+              // Only a name a human typed can belong to somebody else. A derived
+              // name embeds this environment's own id, and a resume is finishing
+              // a branch this same operation already created.
+              requireAbsent: namedByUser && !adoptExisting && !resumed,
+            }
           );
         } catch (error) {
+          // A name that already exists is a definite, answerable rejection, not
+          // an ambiguous transport failure: nothing was created, so nothing has
+          // to be reconciled or cleaned up. Letting it fall into the probe below
+          // would find the branch, conclude the attach had half-succeeded, and
+          // adopt the very branch this refusal exists to protect.
+          if (error?.code === 'BRANCH_EXISTS') {
+            this.attachments.discard(reservation);
+            throw error;
+          }
           // Ambiguous: the ref call may have succeeded before the failure. Ask
           // GitHub what actually exists rather than guessing.
           //
@@ -963,16 +999,27 @@ export class GitHubRoutes {
           }
           // A branch sitting exactly at the source head is one this call just
           // created; anything else pre-existed and is not ours to remove.
-          working = { branch: workingBranch, head: actual, created: actual === head };
+          working = {
+            branch: workingBranch,
+            head: actual,
+            created: actual === head,
+            adopted: actual !== head,
+          };
         }
         if (resumed && !working.created && working.head === head) {
           // Resuming this operation's own reservation. `ensureWorkingBranch`
           // sees a branch that already exists and reports `created: false`, but
           // the reservation is provenance that *this* operation was mid-create
           // when its answer was lost, so the branch is ours to clean up.
-          working = { ...working, created: true };
+          working = { ...working, created: true, adopted: false };
         }
       }
+
+      // Provenance, recorded rather than inferred later. A branch Citadel made
+      // and a branch it was pointed at are different things to the person whose
+      // repository it is, and only the moment of attaching knows which happened.
+      const branchChoice =
+        writeMode === 'direct' ? 'selected' : working.created ? 'created' : 'adopted';
 
       const result = {
         repository,
@@ -987,6 +1034,7 @@ export class GitHubRoutes {
           sourceBranch,
           workingBranch: working.branch,
           writeMode,
+          branchChoice,
           lastKnownHead: working.head,
           capabilities: validated.detected || [],
           validatedAt: new Date().toISOString(),
@@ -1221,6 +1269,26 @@ export class GitHubRoutes {
         audit: this.audit,
         // Deliberately omitted: the public endpoint never grants the
         // subscription capability, so no request can reach `.azure/**/.env`.
+      });
+    }
+
+    if (req.method === 'POST' && operation === 'commit-branches') {
+      // The user's answer to a refused save: put that commit on a branch of
+      // this name. Nothing here runs without it — a refusal on its own creates
+      // no ref at all.
+      const body = await readBody();
+      assertKeys(body, new Set(['commit', 'branch']));
+      return createCommitBranch(this.client, token, {
+        fullName,
+        commitSha: validateCommitSha(body.commit),
+        branch: body.branch,
+        // The branch the refused save was aiming at. The audit record was
+        // written against it, so it is how the commit is proven to belong to
+        // this workspace.
+        intendedBranch: branch,
+        environmentId,
+        repositoryId: repository.id,
+        audit: this.audit,
       });
     }
 

@@ -9,6 +9,7 @@
  * Nothing here knows any repository or branch name. The lists come entirely
  * from what the connected credential can reach.
  */
+import { resolveWriteTarget, suggestedBranchName } from './branch-target.mjs';
 
 /**
  * The exact settings the token needs, stated identically inline, in the token
@@ -88,7 +89,13 @@ export class RepositorySelection {
     this.branchesTruncated = false;
     this.branchFilter = '';
     this.branch = '';
-    this.writeMode = 'working-branch';
+    // The default is the branch the user picks. Creating a branch to work in is
+    // something they opt into and name, never something that happens because a
+    // checkbox arrived already ticked — which is how an opaque
+    // `citadel-ui/<uuid>` branch used to appear without anybody choosing it.
+    this.writeMode = 'direct';
+    this.newBranchName = '';
+    this.adoptExisting = false;
     this.loading = false;
     this.connecting = false;
     this.error = null;
@@ -351,9 +358,46 @@ export class RepositorySelection {
   }
 
   setWriteMode(mode) {
-    this.writeMode = mode === 'direct' ? 'direct' : 'working-branch';
+    this.writeMode = mode === 'working-branch' ? 'working-branch' : 'direct';
+    // Going back to the selected branch drops a half-typed name and any adoption
+    // the user had agreed to, so returning to this step cannot silently re-apply
+    // a decision they have since abandoned.
+    if (this.writeMode === 'direct') {
+      this.newBranchName = '';
+      this.adoptExisting = false;
+    }
     this.onChange(this);
     return this.writeMode;
+  }
+
+  setNewBranchName(value) {
+    this.newBranchName = String(value ?? '');
+    // Adoption is agreed for one exact name. Editing the name withdraws it.
+    this.adoptExisting = false;
+    this.onChange(this);
+    return this.newBranchName;
+  }
+
+  setAdoptExisting(value) {
+    this.adoptExisting = Boolean(value);
+    this.onChange(this);
+    return this.adoptExisting;
+  }
+
+  /** A name Citadel would be happy with, offered but never filled in. */
+  suggestedBranchName() {
+    return suggestedBranchName(this.branch, this.branches);
+  }
+
+  /** The write target implied by the current choice, with its reason. */
+  writeTarget() {
+    return resolveWriteTarget({
+      sourceBranch: this.branch,
+      createBranch: this.writeMode === 'working-branch',
+      name: this.newBranchName,
+      adopt: this.adoptExisting,
+      branches: this.branches,
+    });
   }
 
   selectedBranch() {
@@ -375,7 +419,11 @@ export class RepositorySelection {
         // repository and branch that verdict was requested for.
         this.validation?.supported === true &&
         this.validation.branch === this.branch &&
-        this.validation.repositoryId === this.repository.id
+        this.validation.repositoryId === this.repository.id &&
+        // A typed name that is invalid, or one that already exists and has not
+        // been deliberately adopted, is not a target. Attach stays closed rather
+        // than quietly falling back to a name the user did not choose.
+        this.writeTarget().ok
     );
   }
 
@@ -384,15 +432,23 @@ export class RepositorySelection {
    *
    * Identity is the immutable numeric repository id, never a name, so a rename
    * between listing and attaching cannot redirect the selection.
+   *
+   * `workingBranch` is always sent, including in direct mode. The server still
+   * derives `citadel-ui/<id>` when a caller omits it — that compatibility
+   * default is exactly the behaviour that surprised the user — and the browser
+   * does not rely on it.
    */
   attachment() {
     if (!this.canAttach()) {
       throw new Error('Select a repository and branch you can push to.');
     }
+    const target = this.writeTarget();
     return {
       repositoryId: this.repository.id,
       sourceBranch: this.branch,
-      writeMode: this.writeMode,
+      writeMode: target.writeMode,
+      workingBranch: target.workingBranch,
+      adoptExisting: target.branchChoice === 'adopted',
       // The exact head the structure check passed against. The server refuses
       // the attach if the branch has moved since, so a race cannot slip an
       // unvalidated tree past the gate.

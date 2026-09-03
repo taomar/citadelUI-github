@@ -245,10 +245,29 @@ test('attachment carries the immutable repository id and the selected branch', a
   await selection.selectRepository(502);
   selection.selectBranch('CitadelDev');
   await selection.validate();
+  // The default is now the branch the user picked. Creating a working branch is
+  // an opt-in they name themselves, because attaching used to invent
+  // `citadel-ui/<uuid>` without anybody choosing it and then write every edit
+  // there. The user asked for this to change.
+  assert.deepEqual(selection.attachment(), {
+    repositoryId: 502,
+    sourceBranch: 'CitadelDev',
+    writeMode: 'direct',
+    workingBranch: 'CitadelDev',
+    adoptExisting: false,
+    expectedHead: fixture.accelerator.refs.get('CitadelDev'),
+  });
+
+  // Opting in, and naming it.
+  selection.setWriteMode('working-branch');
+  assert.equal(selection.canAttach(), false, 'an unnamed branch must not be attachable');
+  selection.setNewBranchName('citadel-ui/accel-work');
   assert.deepEqual(selection.attachment(), {
     repositoryId: 502,
     sourceBranch: 'CitadelDev',
     writeMode: 'working-branch',
+    workingBranch: 'citadel-ui/accel-work',
+    adoptExisting: false,
     expectedHead: fixture.accelerator.refs.get('CitadelDev'),
   });
 
@@ -265,17 +284,22 @@ test('attachment carries the immutable repository id and the selected branch', a
     repositoryId: 502,
     fullName: 'taomar/ai-hub-gateway-solution-accelerator',
     sourceBranch: 'CitadelDev',
-    workingBranch: 'citadel-ui/env-accel',
+    // The name the user typed, not one derived from an identifier they have
+    // never seen.
+    workingBranch: 'citadel-ui/accel-work',
     writeMode: 'working-branch',
-    lastKnownHead: fixture.accelerator.refs.get('citadel-ui/env-accel'),
+    branchChoice: 'created',
+    lastKnownHead: fixture.accelerator.refs.get('citadel-ui/accel-work'),
     capabilities: attached.source.capabilities,
     validatedAt: attached.source.validatedAt,
   });
   assert.ok(Array.isArray(attached.source.capabilities));
   assert.ok(!Number.isNaN(Date.parse(attached.source.validatedAt)));
+  // No branch named after the environment id exists at all.
+  assert.equal(fixture.accelerator.refs.has('citadel-ui/env-accel'), false);
   // The chosen source branch is the parent of the working branch and is not moved.
   assert.equal(
-    fixture.accelerator.refs.get('citadel-ui/env-accel'),
+    fixture.accelerator.refs.get('citadel-ui/accel-work'),
     fixture.accelerator.refs.get('CitadelDev')
   );
   assert.notEqual(
@@ -326,18 +350,22 @@ test('two environments can attach different repositories and different branches'
   await selection.selectRepository(501);
   selection.selectBranch('CitadelQA');
   await selection.validate();
+  selection.setWriteMode('working-branch');
+  selection.setNewBranchName('citadel-ui/qa-work');
   const first = await routes.attach(req, { ...selection.attachment(), environmentId: 'env-qa' });
 
   await selection.selectRepository(502);
   selection.selectBranch('CitadelProd');
   await selection.validate();
+  selection.setWriteMode('working-branch');
+  selection.setNewBranchName('citadel-ui/prod-work');
   const second = await routes.attach(req, { ...selection.attachment(), environmentId: 'env-prod' });
 
   assert.notEqual(first.source.repositoryId, second.source.repositoryId);
   assert.notEqual(first.source.workingBranch, second.source.workingBranch);
-  assert.equal(fixture.qa.refs.get('citadel-ui/env-qa'), fixture.qa.refs.get('CitadelQA'));
+  assert.equal(fixture.qa.refs.get('citadel-ui/qa-work'), fixture.qa.refs.get('CitadelQA'));
   assert.equal(
-    fixture.accelerator.refs.get('citadel-ui/env-prod'),
+    fixture.accelerator.refs.get('citadel-ui/prod-work'),
     fixture.accelerator.refs.get('CitadelProd')
   );
 });
@@ -373,7 +401,10 @@ test('disconnect clears every selection so nothing carries into a new credential
   assert.equal(selection.branch, '');
   assert.equal(selection.repositoryFilter, '');
   assert.equal(selection.branchFilter, '');
-  assert.equal(selection.writeMode, 'working-branch');
+  // Reset returns to the honest default: write to the branch you selected.
+  assert.equal(selection.writeMode, 'direct');
+  assert.equal(selection.newBranchName, '');
+  assert.equal(selection.adoptExisting, false);
   assert.equal(selection.canAttach(), false);
 });
 

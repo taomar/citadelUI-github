@@ -1677,8 +1677,52 @@ export function runAddWorkspace(options) {
       type: 'checkbox',
       class: 'ctl-check',
       checked: selection.writeMode === 'working-branch',
-      onchange: (event) => selection.setWriteMode(event.target.checked ? 'working-branch' : 'direct'),
+      onchange: (event) => {
+        selection.setWriteMode(event.target.checked ? 'working-branch' : 'direct');
+        paint();
+      },
     });
+    const branchName = h('input', {
+      id: 'catalog-branch-name',
+      class: 'ctl',
+      type: 'text',
+      // Deliberately no value and no `value:` binding. Pre-filling is how the
+      // opaque `citadel-ui/<uuid>` branch happened: a name nobody typed looks
+      // exactly like a name somebody approved.
+      placeholder: 'e.g. citadel-ui/my-work',
+      'aria-label': 'New branch name',
+      oninput: (event) => {
+        selection.setNewBranchName(event.target.value);
+        paint();
+      },
+    });
+    const suggestion = h('button', { class: 'btn btn-sm', type: 'button' }, 'Use suggested name');
+    const adopt = h('input', {
+      id: 'catalog-branch-adopt',
+      type: 'checkbox',
+      class: 'ctl-check',
+      onchange: (event) => {
+        selection.setAdoptExisting(event.target.checked);
+        paint();
+      },
+    });
+    const adoptRow = h(
+      'label',
+      { class: 'catalog-persist', for: 'catalog-branch-adopt' },
+      adopt,
+      h('span', {}, 'Use the existing branch as it is')
+    );
+    const nameRow = h(
+      'div',
+      { class: 'catalog-branch-name' },
+      field('catalog-branch-name', 'New branch name', branchName),
+      suggestion
+    );
+    // The whole point of the redesign: say where a save will land, before it
+    // lands, in words, so nobody has to open GitHub to find out.
+    const target = h('p', { class: 'catalog-target', role: 'status', 'aria-live': 'polite' });
+    const targetProblem = alertLine();
+    const protection = statusLine();
     const verdict = h('div', { class: 'catalog-verdict' });
     const next = h('button', { class: 'btn btn-primary', type: 'button', disabled: true }, 'Continue');
 
@@ -1711,12 +1755,43 @@ export function runAddWorkspace(options) {
             ]
           : []
       );
+
+      // The write target, stated before anything is created.
+      const creating = selection.writeMode === 'working-branch';
+      writeMode.checked = creating;
+      nameRow.hidden = !creating;
+      const decision = selection.writeTarget();
+      say(target, selection.branch ? decision.summary : '');
+      say(targetProblem, decision.problem || '');
+      // Adoption is only offered for a name that actually collides, and only
+      // while that exact name is in the field.
+      adoptRow.hidden = !decision.needsAdoption;
+      adopt.checked = selection.adoptExisting;
+      const suggested = selection.suggestedBranchName();
+      suggestion.hidden = !creating || !suggested;
+      suggestion.textContent = suggested ? `Use ${suggested}` : 'Use suggested name';
+      // Protection is a property of the branch, known from the branch list, so
+      // it can be said at selection time rather than after the first save fails.
+      say(
+        protection,
+        decision.ok && decision.protectedTarget
+          ? `${decision.workingBranch} is protected. Citadel will commit your change and, if the branch refuses it, put that commit on a branch of its own and tell you where.`
+          : ''
+      );
       next.disabled = !selection.canAttach();
     }
 
     list.addEventListener('change', () => {
       selection.selectBranch(list.value);
       paint();
+    });
+    suggestion.addEventListener('click', () => {
+      const name = selection.suggestedBranchName();
+      if (!name) return;
+      branchName.value = name;
+      selection.setNewBranchName(name);
+      paint();
+      branchName.focus?.();
     });
     selection.onChange = () => paint();
     next.addEventListener('click', () => go('details'));
@@ -1738,8 +1813,15 @@ export function runAddWorkspace(options) {
           'label',
           { class: 'catalog-persist', for: 'catalog-branch-working' },
           writeMode,
-          h('span', {}, 'Commit to a Citadel working branch (recommended)')
+          // Unticked by default. Saves go to the branch above unless the user
+          // asks for a separate one, which they then name.
+          h('span', {}, 'Create a separate branch to work in')
         ),
+        nameRow,
+        adoptRow,
+        target,
+        targetProblem,
+        protection,
         progress,
         verdict,
         error
@@ -2012,11 +2094,20 @@ export function runAddWorkspace(options) {
           state.kind === 'github'
             ? summary(
                 'Writes go to',
-                selection.writeMode === 'direct'
-                  ? h('code', {}, selection.branch)
-                  : 'a Citadel working branch created from this head'
+                // The exact branch, named. "A Citadel working branch" was the
+                // wording that let an opaque `citadel-ui/<uuid>` pass review
+                // without the user ever seeing what it would be called.
+                h('code', {}, selection.writeTarget().workingBranch || selection.branch)
               )
             : summary('Local path', h('code', {}, state.localPath)),
+          state.kind === 'github' && selection.writeMode === 'working-branch'
+            ? summary(
+                'That branch',
+                selection.writeTarget().branchChoice === 'adopted'
+                  ? 'already exists, and you chose to use it'
+                  : `will be created from ${selection.branch}`
+              )
+            : null,
           state.kind === 'github'
             ? summary(
                 'Validated at',

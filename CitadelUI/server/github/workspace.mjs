@@ -93,17 +93,44 @@ export async function requireBranchHead(client, token, fullName, branch) {
  * Create the Citadel working branch from the source branch when it is missing.
  * An existing branch is reused; it is never moved or reset.
  */
-export async function ensureWorkingBranch(client, token, fullName, sourceBranch, workingBranch) {
+export async function ensureWorkingBranch(
+  client,
+  token,
+  fullName,
+  sourceBranch,
+  workingBranch,
+  options = {}
+) {
   const working = validateBranchName(workingBranch);
   const existing = await branchHead(client, token, fullName, working);
-  if (existing) return { branch: working, head: existing, created: false };
+  if (existing) {
+    // `requireAbsent` makes reuse a decision rather than a side effect, and is
+    // passed only for a name a *human typed*. A name Citadel derived embeds the
+    // environment id, so a branch already standing there is this workspace's
+    // own and adopting it is the whole point of respecting a working branch
+    // across reopens. A name someone typed may be a colleague's.
+    if (options.requireAbsent) {
+      throw githubError(
+        409,
+        'BRANCH_EXISTS',
+        `${working} already exists in this repository. Choose another name, or confirm that you want Citadel to use the existing branch.`,
+        { branch: working, head: existing }
+      );
+    }
+    return { branch: working, head: existing, created: false, adopted: true };
+  }
   const base = await requireBranchHead(client, token, fullName, sourceBranch);
   const { data } = await client.request(`/repos/${fullName}/git/refs`, {
     token,
     method: 'POST',
     body: { ref: `refs/heads/${working}`, sha: base },
   });
-  return { branch: working, head: validateCommitSha(data?.object?.sha || base), created: true };
+  return {
+    branch: working,
+    head: validateCommitSha(data?.object?.sha || base),
+    created: true,
+    adopted: false,
+  };
 }
 
 async function commitTreeSha(client, token, fullName, commitSha) {
@@ -633,46 +660,91 @@ export async function findAppliedCommit(client, token, options) {
 }
 
 /**
- * Give a commit a branch of its own when its intended branch refuses it.
+ * Give a commit a branch of its own — only when the user asks for it.
  *
- * The commit already exists at this point; all that is missing is a name. This
- * only ever *creates* a ref — never a force-update, never an overwrite — so it
- * cannot destroy a collaborator's work no matter what state the repository is
- * in. A `422 Reference already exists` is the success case of a retry: the name
- * is derived from the commit, so the ref that already exists is the one this
- * call was about to make.
+ * ## A deliberate reversal
  *
- * If the create fails for any other reason, the outcome is genuinely unknown
- * and is reported as such, carrying the commit SHA. The commit is real and
- * reachable by SHA even with no branch pointing at it, so the honest answer is
- * "it exists, here is its identifier" — never "your edits were not applied".
+ * This used to happen automatically. When a branch refused a commit, Citadel
+ * created `citadel-ui/<environmentId>-save-<commit12>` and told the user where
+ * the work went. That was a real improvement on what came before it, which was
+ * to report durable work as lost and advise a reload that would destroy it.
+ *
+ * It was still wrong. A user found three branches in their repository that they
+ * had never asked for. Creating a ref is a change to someone's repository, and
+ * the commit is reachable by SHA with no branch pointing at it — so nothing is
+ * lost while we ask. Asking is strictly better than acting, and it is what the
+ * user wants. The refusal path now returns a decision and creates nothing; this
+ * runs only once the user has answered it with a name.
+ *
+ * Two controls, because this takes a commit SHA from a browser:
+ *
+ *   - The commit must be one this environment's own saves produced, proven by
+ *     the audit. Unconstrained, this endpoint would be "create a ref at any
+ *     object in this repository".
+ *   - The name goes through the same validation as any branch the user types,
+ *     so this path cannot smuggle in a name the attach flow would refuse.
+ *
+ * Create-only, as ever. A user asking for a branch is not permission to move
+ * one that already exists.
  */
-async function rescueCommit(client, token, options) {
-  const { fullName, environmentId, commitSha, warnings } = options;
-  const branch = rescueBranchName(environmentId, commitSha);
+export async function createCommitBranch(client, token, options) {
+  const { fullName, commitSha, branch, audit, environmentId, repositoryId } = options;
+  const sha = validateCommitSha(commitSha);
+  const name = validateBranchName(branch);
+
+  // Attribution first: the audit is what makes "where did this branch come
+  // from" answerable inside the product, and it is also what stops this being a
+  // way to name arbitrary objects.
+  const record = audit
+    ? await audit.find({ commit: sha, environmentId, repositoryId, branch: options.intendedBranch })
+    : null;
+  if (!record) {
+    throw githubError(
+      403,
+      'COMMIT_NOT_ATTRIBUTED',
+      'Citadel can only branch a commit it made for this workspace.'
+    );
+  }
+
   try {
     await client.request(`/repos/${fullName}/git/refs`, {
       token,
       method: 'POST',
-      body: { ref: `refs/heads/${branch}`, sha: commitSha },
+      body: { ref: `refs/heads/${name}`, sha },
     });
-    return branch;
   } catch (error) {
     if (error.status === 422) {
-      // Already there. Either this exact save was retried, or the first attempt
-      // created it and lost the answer. Both converge here.
-      warnings.push(`${branch} already held this change.`);
-      return branch;
+      // Already there. Either this exact request was retried and its answer was
+      // lost, or the name is taken. Both are answered the same way: nothing was
+      // moved, and the user is told rather than having a branch reassigned.
+      const existing = await branchHead(client, token, fullName, name).catch(() => null);
+      if (existing === sha) return { branch: name, commit: sha, created: false };
+      throw githubError(
+        409,
+        'BRANCH_EXISTS',
+        `${name} already exists and points somewhere else. Choose another name.`
+      );
     }
     throw githubError(
       503,
-      'INDETERMINATE_RESCUE',
-      `Your change was committed as ${commitSha}, but Citadel UI could not put it on a branch: ${redactSecrets(
+      'BRANCH_NOT_CREATED',
+      `Your change is committed as ${sha} and is not lost, but Citadel could not create ${name}: ${redactSecrets(
         error.message
-      )} The commit exists and is not lost. Reload the environment before saving again; retrying now could duplicate the change.`,
-      { commit: commitSha, branch, indeterminate: true }
+      )} Try again, or use a different name.`,
+      { commit: sha, branch: name }
     );
   }
+
+  if (audit) {
+    // Best effort: the ref exists now, and a log failure must not be reported as
+    // a failure to create it.
+    try {
+      await audit.record({ ...record, branch: name, commit: sha });
+    } catch {
+      return { branch: name, commit: sha, created: true, unlogged: true };
+    }
+  }
+  return { branch: name, commit: sha, created: true };
 }
 
 export async function commitChangeSet(client, token, options) {
@@ -847,8 +919,7 @@ export async function commitChangeSet(client, token, options) {
     }
   }
   const warnings = [];
-  let resolution = null;
-  let rescueBranch = null;
+  let unresolved = null;
   let alreadyApplied = null;
 
   try {
@@ -886,30 +957,24 @@ export async function commitChangeSet(client, token, options) {
           `This change was already on ${branch} as ${alreadyApplied.slice(0, 12)}, so Citadel did not save it a second time.`
         );
       } else {
-        // Genuinely absent. The commit exists and needs a name of its own.
-        rescueBranch = await rescueCommit(client, token, {
-          fullName,
-          environmentId,
-          commitSha,
-          warnings,
-        });
-        resolution = {
+        // Genuinely absent, and this is where Citadel used to create a branch
+        // nobody asked for. It no longer does. The commit is real and reachable
+        // by SHA with no ref pointing at it, so nothing is lost while the user
+        // is asked what they want done with it — and asking is the only way to
+        // keep the promise that Citadel creates no ref the user did not request.
+        unresolved = {
           kind: error.status === 422 ? 'branch-moved' : 'branch-protected',
-          branch: rescueBranch,
+          commit: commitSha,
+          intendedBranch: branch,
+          baseCommit: head,
           reason:
             error.status === 422
               ? `${branch} moved while you were saving, so it would not accept this change.`
               : `${redactSecrets(error.message)}`,
+          // Offered as a starting point for the name field. Nothing is created
+          // from it unless the user accepts or replaces it.
+          suggestedBranch: rescueBranchName(environmentId, commitSha),
         };
-        if (audit) {
-          // Recorded on a best-effort basis: the save is already durable, and a
-          // log failure must not be reported as a lost change.
-          try {
-            await audit.record({ ...record, branch: rescueBranch, baseCommit: head });
-          } catch {
-            warnings.push('The rescue branch could not be added to the change log.');
-          }
-        }
       }
     } else {
       // Anything else — a transport failure, a timeout, a 5xx — means the update
@@ -930,10 +995,10 @@ export async function commitChangeSet(client, token, options) {
     }
   }
 
-  // Past this line the commit is durably in the repository, on `branch` or on a
-  // rescue branch. Nothing below may throw: reporting a failure for work that
-  // already landed would invite the user to re-apply it, and a retry would
-  // duplicate the commit.
+  // Past this line the commit is durably in the repository — on `branch`, or as
+  // an unreferenced object the user is about to be asked about. Nothing below
+  // may throw: reporting a failure for work that already landed would invite the
+  // user to re-apply it, and a retry would duplicate the commit.
   const result = {
     transactionId,
     // When the change was already there, the commit the user should be given is
@@ -941,19 +1006,18 @@ export async function commitChangeSet(client, token, options) {
     // references it, so History would never list it and Undo would refuse it.
     commit: alreadyApplied || commitSha,
     baseCommit: head,
-    branch: rescueBranch || branch,
+    // Always the branch this save aimed at. No ref was created, so there is no
+    // other branch to name.
+    branch,
     author: authorName || null,
     files: tree.map((entry) => ({ alias: entry.path, sha: entry.sha, mode: entry.mode })),
     warnings,
-    // No `resolution`, deliberately. This is an ordinary successful save that
-    // happened to be a no-op, not a change that landed somewhere unexpected, so
-    // the rescue dialog and the compare link must stay out of the user's way.
     ...(alreadyApplied ? { alreadyApplied: true, duplicateCommit: commitSha } : {}),
-    ...(resolution ? { resolution } : {}),
+    ...(unresolved ? { unresolved, applied: false } : {}),
   };
-  if (resolution) {
-    // The working branch is untouched, so there is no head of "this save" to
-    // re-read. What the user needs is where the change went.
+  if (unresolved) {
+    // The branch is untouched and nothing was created. What the user needs is
+    // the decision, not a re-read of a head that did not move.
     return result;
   }
   try {

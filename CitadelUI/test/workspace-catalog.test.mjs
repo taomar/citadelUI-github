@@ -477,6 +477,65 @@ test('an already-attached branch offers the existing workspace instead of a dupl
   assert.match(catalogSource, /'Open existing workspace'/);
 });
 
+test('the branch step defaults to the branch the user selected, and names the target', () => {
+  // The defect: the working-branch checkbox arrived pre-ticked, so attaching
+  // created `citadel-ui/<uuid>` and wrote there without anyone choosing it.
+  assert.match(catalogSource, /id: 'catalog-branch-working',[\s\S]{0,120}checked: selection\.writeMode === 'working-branch'/);
+  assert.match(catalogSource, /'Create a separate branch to work in'/);
+  // The old pre-checked, self-recommending label is gone.
+  assert.doesNotMatch(catalogSource, /Commit to a Citadel working branch/);
+  // Where a save lands is stated on the step itself, before anything exists.
+  assert.match(catalogSource, /class: 'catalog-target', role: 'status'/);
+  assert.match(catalogSource, /decision = selection\.writeTarget\(\)/);
+  assert.match(catalogSource, /say\(target, selection\.branch \? decision\.summary : ''\)/);
+});
+
+test('the new branch name is asked for, never prefilled', () => {
+  const name = catalogSource.slice(catalogSource.indexOf("id: 'catalog-branch-name'"));
+  // Comments stripped first: prose *about* not binding a value is not a value
+  // binding, and the comment here says exactly that.
+  const block = name.slice(0, name.indexOf('});')).replace(/\/\/[^\n]*/g, '');
+  // A placeholder is a suggestion; a value is a decision nobody made.
+  assert.match(block, /placeholder:/);
+  assert.doesNotMatch(block, /\bvalue:/);
+  // The suggestion is one click away, and only fills the field when clicked.
+  assert.match(catalogSource, /suggestion\.addEventListener\('click'/);
+  assert.match(catalogSource, /selection\.suggestedBranchName\(\)/);
+});
+
+test('an existing branch name must be adopted deliberately', () => {
+  assert.match(catalogSource, /adoptRow\.hidden = !decision\.needsAdoption/);
+  assert.match(catalogSource, /'Use the existing branch as it is'/);
+  assert.match(catalogSource, /selection\.setAdoptExisting\(event\.target\.checked\)/);
+});
+
+test('branch protection is surfaced on the step, not after the first save fails', () => {
+  assert.match(catalogSource, /decision\.ok && decision\.protectedTarget/);
+  assert.match(catalogSource, /is protected\. Citadel will commit your change/);
+});
+
+test('the review step names the exact branch, not a category of branch', () => {
+  assert.match(catalogSource, /'Writes go to',[\s\S]{0,400}selection\.writeTarget\(\)\.workingBranch/);
+  // The wording that let an opaque `citadel-ui/<uuid>` pass review unnamed.
+  assert.doesNotMatch(catalogSource, /a Citadel working branch created from this head/);
+  assert.match(catalogSource, /will be created from \$\{selection\.branch\}/);
+});
+
+test('the setup panel offers the same choice as the stepper', () => {
+  // A second door to the same operation must not keep the old default.
+  const setup = readFileSync(new URL('../web/js/github-setup.mjs', import.meta.url), 'utf8');
+  assert.match(setup, /id: 'setup-github-working-branch',[\s\S]{0,200}checked: false/);
+  assert.match(setup, /'Create a separate branch to work in'/);
+  assert.doesNotMatch(setup, /Commit to a Citadel working branch/);
+  assert.match(setup, /id: 'setup-github-branch-name'/);
+  assert.match(setup, /selection\.writeTarget\(\)/);
+  const nameField = setup.slice(setup.indexOf("id: 'setup-github-branch-name'"));
+  assert.doesNotMatch(
+    nameField.slice(0, nameField.indexOf('});')).replace(/\/\/[^\n]*/g, ''),
+    /\bvalue:/
+  );
+});
+
 test('detaching is metadata only, and says so before it happens', () => {
   assert.match(catalogSource, /The repository, the \$\{row\.workingBranch\} branch and every commit on it are left exactly as they are\./);
   assert.match(catalogSource, /No file in \$\{row\.location\} is changed or deleted\./);

@@ -6,6 +6,7 @@
  * repository cannot silently redirect a selection.
  */
 import { githubError } from './api.mjs';
+import { refNameProblem } from '../../shared/git-refs.mjs';
 import {
   isSkippedDirectory,
   isSourceExtension,
@@ -14,6 +15,30 @@ import {
 } from '../../shared/source-scope.mjs';
 
 export const WORKING_BRANCH_PREFIX = 'citadel-ui/';
+/**
+ * How the branch Citadel writes to came to be.
+ *
+ * A closed vocabulary, because this is the answer to "why are my edits going
+ * here", and it is displayed. `selected` means the user's own source branch is
+ * the write target; `created` means Citadel made a branch for this workspace;
+ * `adopted` means a branch of that name already existed and the user chose it
+ * deliberately.
+ *
+ * `created` and `adopted` are not decoration. A branch Citadel created during a
+ * failed attach may be cleaned up; one it adopted belongs to somebody else and
+ * never may be.
+ *
+ * Absent means unknown, and stays unknown. Nothing derives a value from
+ * `writeMode`: a record written before this field existed cannot be described
+ * honestly by guessing, and inventing one is exactly the bad data going forward
+ * that this is here to prevent.
+ */
+export const BRANCH_CHOICES = Object.freeze(['selected', 'created', 'adopted']);
+
+export function isBranchChoice(value) {
+  return BRANCH_CHOICES.includes(value);
+}
+
 export const MAX_TREE_ENTRIES = 100_000;
 export const BLOB_MODE_FILE = '100644';
 export const BLOB_MODE_EXECUTABLE = '100755';
@@ -34,28 +59,18 @@ export function validateRepositoryId(value) {
  *
  * Refs reach path segments and JSON bodies of GitHub calls, so anything that
  * could traverse, inject a query, or produce an ambiguous ref is rejected here.
+ *
+ * The rules moved to `shared/git-refs.mjs` when the user gained the ability to
+ * type a branch name: the browser has to explain a rejection beside the field,
+ * before anything is submitted, and it cannot import server code to find out
+ * why. A second copy of the policy in the browser would drift from this one, and
+ * the copy the user reads would eventually disagree with the copy that decides.
+ * The error contract here is unchanged — a 400 with `INVALID_BRANCH`.
  */
 export function validateBranchName(value) {
   const name = String(value ?? '').trim();
-  if (!name || name.length > 255) {
-    throw githubError(400, 'INVALID_BRANCH', 'A branch name of 1 to 255 characters is required.');
-  }
-  if (
-    /[\u0000-\u001f\u007f ~^:?*[\\]/.test(name) ||
-    name.includes('..') ||
-    name.includes('//') ||
-    name.includes('@{') ||
-    name.startsWith('/') ||
-    name.endsWith('/') ||
-    name.startsWith('-') ||
-    name.startsWith('.') ||
-    name.endsWith('.') ||
-    name.endsWith('.lock') ||
-    name === '@' ||
-    name.split('/').some((part) => !part || part.startsWith('.') || part.endsWith('.lock'))
-  ) {
-    throw githubError(400, 'INVALID_BRANCH', 'That branch name is not a valid Git ref.');
-  }
+  const problem = refNameProblem(name);
+  if (problem) throw githubError(400, 'INVALID_BRANCH', problem);
   return name;
 }
 

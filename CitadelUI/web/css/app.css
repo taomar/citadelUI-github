@@ -1929,6 +1929,19 @@ input[type='search'].ctl {
   font-size: var(--t-small);
 }
 
+/* The branch a save will land on. Stated in the review dialog itself, because a
+   user should never have to open GitHub to discover where their edits went. */
+.write-context-branch {
+  grid-column: 2;
+  font-size: var(--t-small);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.write-context-origin {
+  color: var(--ink-3);
+}
+
 /* ------------------------------------------------------------------ diff */
 
 .diff {

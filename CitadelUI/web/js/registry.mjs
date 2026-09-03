@@ -74,14 +74,19 @@ export function localSource(folderName, localPath) {
  * record surfaces as `Reconnect` and is bound on the first reconnection.
  */
 export function githubSource(source) {
+  const writeMode = source.writeMode || 'working-branch';
   return {
     kind: 'github',
     connectionProfileId: source.connectionProfileId ?? null,
     repositoryId: source.repositoryId,
     fullName: source.fullName,
     sourceBranch: source.sourceBranch,
+    // Carried through untouched. A workspace attached before branch naming
+    // existed keeps writing exactly where it always has; only the description of
+    // how it got there is filled in.
     workingBranch: source.workingBranch,
-    writeMode: source.writeMode || 'working-branch',
+    writeMode,
+    branchChoice: source.branchChoice || null,
     lastKnownHead: source.lastKnownHead ?? null,
     capabilities: Array.isArray(source.capabilities) ? source.capabilities : null,
     validatedAt: source.validatedAt ?? null,

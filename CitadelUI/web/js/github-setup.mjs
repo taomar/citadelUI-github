@@ -516,7 +516,48 @@ export function createGitHubPanel(options = {}) {
   const workingBranchMode = element('input', {
     id: 'setup-github-working-branch',
     type: 'checkbox',
-    checked: true,
+    // Unticked. Saves go to the branch the user selected unless they ask for a
+    // separate one and name it.
+    checked: false,
+  });
+  const workingBranchName = element('input', {
+    id: 'setup-github-branch-name',
+    class: 'ctl',
+    type: 'text',
+    // No prefilled value, deliberately: a name nobody typed reads as a name
+    // somebody approved, which is how the opaque branch got created.
+    placeholder: 'e.g. citadel-ui/my-work',
+    'aria-label': 'New branch name',
+  });
+  const adoptExisting = element('input', {
+    id: 'setup-github-adopt',
+    type: 'checkbox',
+  });
+  const adoptRow = element(
+    'label',
+    { class: 'setup-github-mode', for: 'setup-github-adopt' },
+    adoptExisting,
+    element('span', {}, 'Use the existing branch as it is')
+  );
+  const branchNameRow = element(
+    'label',
+    { class: 'setup-stack', for: 'setup-github-branch-name' },
+    'New branch name',
+    workingBranchName
+  );
+  // Where a save will land, said before anything is created.
+  const writeTargetLine = element('p', {
+    class: 'setup-github-progress is-settled',
+    id: 'setup-github-target',
+    role: 'status',
+    'aria-live': 'polite',
+    hidden: true,
+  });
+  const writeTargetError = element('p', {
+    class: 'field-error setup-github-error',
+    id: 'setup-github-target-error',
+    role: 'alert',
+    hidden: true,
   });
   const attachButton = element('button', { class: 'btn btn-primary' }, 'Attach repository');
   // Structure verdict, next to the Branch row it describes.
@@ -595,7 +636,9 @@ export function createGitHubPanel(options = {}) {
     repositorySelect.disabled = busy || !selection.connected;
     branchSearch.disabled = busy || !selection.repository;
     branchSelect.disabled = busy || !selection.repository;
-    workingBranchMode.disabled = busy || !selection.repository;
+    workingBranchMode.disabled = busy || !selection.branch;
+    workingBranchName.disabled = busy || selection.writeMode !== 'working-branch';
+    adoptExisting.disabled = busy;
     attachButton.disabled = busy || !selection.canAttach();
 
     if (searchInput.value !== selection.repositoryFilter) {
@@ -666,6 +709,19 @@ export function createGitHubPanel(options = {}) {
     );
 
     workingBranchMode.checked = selection.writeMode === 'working-branch';
+    branchNameRow.hidden = selection.writeMode !== 'working-branch';
+    const writeTarget = selection.writeTarget();
+    adoptRow.hidden = !writeTarget.needsAdoption;
+    adoptExisting.checked = selection.adoptExisting;
+    const targetText = selection.branch
+      ? writeTarget.ok && writeTarget.protectedTarget
+        ? `${writeTarget.summary} ${writeTarget.workingBranch} is protected; if it refuses the commit, Citadel puts it on a branch of its own and tells you where.`
+        : writeTarget.summary
+      : '';
+    writeTargetLine.textContent = targetText;
+    writeTargetLine.hidden = !targetText;
+    writeTargetError.textContent = writeTarget.problem || '';
+    writeTargetError.hidden = !writeTarget.problem || !selection.branch;
 
     // What the structure check is doing, or found, beside the Branch row.
     const checking = selection.validating;
@@ -818,6 +874,12 @@ export function createGitHubPanel(options = {}) {
   workingBranchMode.addEventListener('change', () =>
     selection.setWriteMode(workingBranchMode.checked ? 'working-branch' : 'direct')
   );
+  workingBranchName.addEventListener('input', () =>
+    selection.setNewBranchName(workingBranchName.value)
+  );
+  adoptExisting.addEventListener('change', () =>
+    selection.setAdoptExisting(adoptExisting.checked)
+  );
 
   attachButton.addEventListener('click', async () => {
     if (!selection.canAttach()) return;
@@ -898,12 +960,12 @@ export function createGitHubPanel(options = {}) {
         'span',
         { class: 'setup-github-mode' },
         workingBranchMode,
-        element(
-          'span',
-          {},
-          'Commit to a Citadel working branch and open a pull request (recommended)'
-        )
-      )
+        element('span', {}, 'Create a separate branch to work in')
+      ),
+      branchNameRow,
+      adoptRow,
+      writeTargetLine,
+      writeTargetError
     ),
     element('div', { class: 'setup-actions' }, attachButton)
   );

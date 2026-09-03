@@ -156,6 +156,7 @@ function environmentSource(value, legacy) {
       'sourceBranch',
       'workingBranch',
       'writeMode',
+      'branchChoice',
       'lastKnownHead',
       'capabilities',
       'validatedAt',
@@ -179,6 +180,7 @@ function environmentSource(value, legacy) {
       sourceBranch: gitRefName(value.sourceBranch, 'source branch'),
       workingBranch: gitRefName(value.workingBranch, 'working branch'),
       writeMode,
+      branchChoice: branchChoice(value.branchChoice, writeMode),
       lastKnownHead: optionalCommit(value.lastKnownHead),
       capabilities: capabilityList(value.capabilities),
       validatedAt: optionalTimestamp(value.validatedAt, 'validation time'),
@@ -317,6 +319,36 @@ function environment(value) {
  * that, and refusing to start would strand a user's whole registry behind a rule
  * added for their benefit, so duplicates are suffixed deterministically instead.
  */
+/**
+ * How the branch Citadel writes to came to be.
+ *
+ * Absent means *unknown*, and is left unknown. Nothing is derived: a record
+ * written before this field existed cannot be described honestly by guessing,
+ * and the user has said old data does not matter, so it is not invented.
+ *
+ * When present it is reconciled against `writeMode` in both directions.
+ * `writeMode` already answers "is the target the source branch"; if
+ * `branchChoice` could disagree there would be two records of one fact and a
+ * later reader would have to guess which to believe. A record that cannot be
+ * represented honestly is refused at the boundary rather than stored and
+ * reinterpreted later.
+ */
+function branchChoice(value, writeMode) {
+  if (value === undefined || value === null || value === '') return null;
+  const choice = String(value);
+  if (!['selected', 'created', 'adopted'].includes(choice)) {
+    throw transactionError(400, 'INVALID_REGISTRY_SOURCE', 'Invalid GitHub branch choice.');
+  }
+  if ((choice === 'selected') !== (writeMode === 'direct')) {
+    throw transactionError(
+      400,
+      'INVALID_REGISTRY_SOURCE',
+      'GitHub branch choice contradicts the write mode.'
+    );
+  }
+  return choice;
+}
+
 function migrate(current) {
   const version = Number(current?.version ?? 1);
   if (version === REGISTRY_VERSION) return current;

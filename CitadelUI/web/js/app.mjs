@@ -42,6 +42,7 @@ import {
   workspaceRegistry,
 } from './workspace-context.mjs';
 import { createGitHubPanel } from './github-setup.mjs';
+import { describeWriteTarget } from './branch-target.mjs';
 import { guardedHandler } from './single-flight.mjs';
 import { githubSessions } from './github-session-manager.mjs';
 import { BrowserDirectoryProvider } from './directory-provider.mjs';
@@ -49,7 +50,8 @@ import { environmentLocation, environmentSourceOf, isGitHubEnvironment } from '.
 import { createProvider } from './source-factory.mjs';
 import { historyEntry } from './history-entry.mjs';
 import { createCompareSession } from './compare-session.mjs';
-import { saveStatusLine } from './save-resolution.mjs';
+import { describeCreatedBranch, saveStatusLine } from './save-resolution.mjs';
+import { refNameProblem } from '../../shared/git-refs.mjs';
 
 /**
  * GitHub's compare view for the environment's working branch.
@@ -193,6 +195,10 @@ function currentWriteContext(file = state.current?.path || null, environment = n
     environment: selected.label || 'Environment',
     file: file || 'No file selected',
     localPath: environmentLocation(selected),
+    // Named, every time, before the save happens. A user should never have to
+    // open GitHub to discover which branch received their edits — which is
+    // exactly what an auto-created `citadel-ui/<uuid>` forced them to do.
+    target: describeWriteTarget(environmentSourceOf(selected)),
   };
 }
 
@@ -213,6 +219,15 @@ function writeContextNode(options = {}) {
         h('span', { 'aria-hidden': 'true' }, '\u203a'),
         h('code', {}, context.file)
       ),
+      context.target
+        ? h(
+            'span',
+            { class: 'write-context-branch' },
+            'Branch ',
+            h('code', {}, context.target.branch),
+            h('span', { class: 'write-context-origin' }, ` \u2014 ${context.target.text.split(' \u2014 ')[1] || ''}`)
+          )
+        : null,
       h('code', { class: 'write-context-local', title: context.localPath }, context.localPath)
     );
   return h(
@@ -1156,6 +1171,24 @@ async function commitSave() {
     api.save(state.current.path, state.operations, state.current.hash)
   );
   if (!result) return;
+  const source = environmentSourceOf(activeWorkspace().environment);
+  const line = saveStatusLine(result, source);
+
+  if (line.pending) {
+    // The commit exists but is on no branch, and Citadel will not invent one.
+    //
+    // The draft is deliberately kept and the document is not reloaded. Under the
+    // old auto-rescue this was safe, because the work had a home; now it does
+    // not, so clearing the draft and reloading would show the branch's old
+    // content with the user's edits apparently gone — the exact failure this
+    // whole change exists to prevent. The commit SHA is the safety net for the
+    // repository; the retained draft is the safety net for the editor.
+    closeModal();
+    setStatus(line.text, line.tone);
+    await resolveUnsavedCommit(line.pending, source);
+    return;
+  }
+
   closeModal();
   state.operations = [];
   await workspaceRegistry.removeDraft(activeWorkspace().environment.id, state.current.path);
@@ -1169,52 +1202,72 @@ async function commitSave() {
   else await loadDocument(state.current.path);
   // A warning here always describes something the source could not confirm
   // *after* the write landed, so the save is reported as done and the caveat is
-  // appended rather than replacing it with a failure. A rescued save is the
-  // same shape: it happened, it is just not where it was aimed.
-  const line = saveStatusLine(result, environmentSourceOf(activeWorkspace().environment));
+  // appended rather than replacing it with a failure.
   setStatus(line.text, line.tone);
-  if (line.rescued) await announceRescuedSave(line.rescued);
 }
 
 /**
- * Show where a refused save actually went.
+ * Ask what to do with a commit that has no branch.
  *
- * The status bar carries the sentence, but a branch name and a compare link are
- * things the user has to be able to click, so they get a dialog too. It is
- * informational — there is nothing to confirm, because the change is already
- * committed.
+ * This is the decision that replaced automatic rescue. Nothing has been created
+ * at this point and nothing will be unless the user names a branch here, so
+ * dismissing the dialog is a legitimate answer — "leave it" — and their edits
+ * are still in the editor.
  */
-async function announceRescuedSave(rescued) {
+async function resolveUnsavedCommit(pending, source) {
   await new Promise((resolve) => {
+    const name = h('input', {
+      class: 'ctl',
+      type: 'text',
+      id: 'unsaved-branch-name',
+      // Offered, not filled in. Citadel suggests; the user decides.
+      placeholder: pending.suggestedBranch || 'branch name',
+      'aria-label': 'Branch name for this commit',
+    });
+    const problem = h('p', { class: 'field-error', role: 'alert', hidden: true });
     const done = () => {
       dismissDialog(true);
       resolve();
     };
+    const create = guardedHandler(async () => {
+      const chosen = String(name.value || '').trim() || pending.suggestedBranch || '';
+      const reason = refNameProblem(chosen);
+      if (reason) {
+        problem.textContent = reason;
+        problem.hidden = false;
+        return;
+      }
+      const outcome = await withStatus('Creating the branch\u2026', () =>
+        api.createCommitBranch(pending.commit, chosen)
+      );
+      if (!outcome) return;
+      const created = describeCreatedBranch(outcome, source, pending.intendedBranch);
+      dismissDialog(true);
+      // Only now is the work on a branch, so only now is the draft safe to drop.
+      state.operations = [];
+      await workspaceRegistry.removeDraft(activeWorkspace().environment.id, state.current.path);
+      setStatus(created.message, 'ok');
+      resolve();
+    });
+
     showDialog(
-      rescued.title,
+      pending.title,
       h(
         'div',
         { class: 'dialog-message' },
-        h('p', {}, rescued.message),
-        rescued.compareUrl
-          ? h(
-              'p',
-              {},
-              h(
-                'a',
-                {
-                  // A plain link: the browser opens GitHub directly and Citadel
-                  // UI performs no outbound request for the compare view.
-                  href: rescued.compareUrl,
-                  target: '_blank',
-                  rel: 'noreferrer noopener',
-                },
-                rescued.linkLabel
-              )
-            )
-          : null
+        h('p', {}, pending.message),
+        h('label', { for: 'unsaved-branch-name' }, 'Branch name', name),
+        problem,
+        h(
+          'p',
+          { class: 'hint' },
+          'Your edits stay in the editor either way. Nothing is created unless you name a branch here.'
+        )
       ),
-      [h('button', { class: 'btn btn-primary', type: 'button', onclick: done }, 'Got it')],
+      [
+        h('button', { class: 'btn', type: 'button', onclick: done }, 'Leave it for now'),
+        h('button', { class: 'btn btn-primary', type: 'button', onclick: create }, 'Create branch'),
+      ],
       { stack: true, onDismiss: () => resolve() }
     );
   });

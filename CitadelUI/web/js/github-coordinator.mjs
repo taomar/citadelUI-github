@@ -78,12 +78,35 @@ export class GitHubCommitCoordinator extends MutationCoordinator {
       // Anything the server could not confirm *after* the commit landed. These
       // never mean "retry"; they mean "applied, with something to know".
       headUnknown: Boolean(result.headUnknown),
-      // Present when the intended branch would not take the commit and it was
-      // given a branch of its own instead. The save succeeded; it just did not
-      // land where it was aimed, and the user has to be told where it went.
-      resolution: result.resolution || null,
+      // Present when the intended branch would not take the commit. The commit
+      // exists and is reachable by SHA, but Citadel has created no ref for it —
+      // it does not create branches the user did not ask for — so this carries
+      // the decision rather than a destination.
+      unresolved: result.unresolved || null,
+      applied: result.applied !== false,
+      alreadyApplied: Boolean(result.alreadyApplied),
       warnings: result.warnings || [],
       files: files.map((file) => ({ alias: file.alias, hash: file.afterHash || null })),
+    };
+  }
+
+  /**
+   * Put an unreferenced commit on a branch the user has just named.
+   *
+   * The only path in the product that creates a ref for a refused save, and it
+   * exists solely because the user asked for one by name.
+   */
+  async createCommitBranch(commit, branch, options = {}) {
+    const context = this.resolve(options);
+    const result = await this.request(`${this.base(context)}/commit-branches`, {
+      method: 'POST',
+      body: JSON.stringify({ commit, branch }),
+    });
+    return {
+      branch: result.branch,
+      commit: result.commit,
+      created: Boolean(result.created),
+      unlogged: Boolean(result.unlogged),
     };
   }
 

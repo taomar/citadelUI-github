@@ -310,9 +310,24 @@ export class WorkspaceService {
       // Anything the source could not confirm after the write landed. Never a
       // failure, so the caller reports it alongside a successful save.
       warnings: result.warnings || [],
-      // Where the change went when the intended branch refused it.
-      resolution: result.resolution || null,
+      // The intended branch refused this commit and Citadel created nothing.
+      // The caller has to ask the user what to do with it.
+      unresolved: result.unresolved || null,
     };
+  }
+
+  /**
+   * Put a refused commit on a branch the user has named.
+   *
+   * Only meaningful for a Git-backed workspace; a local one has no refs and no
+   * refusal to resolve.
+   */
+  async createCommitBranch(commit, branch) {
+    const coordinator = this.coordinator;
+    if (typeof coordinator.createCommitBranch !== 'function') {
+      throw new Error('This workspace does not use branches.');
+    }
+    return coordinator.createCommitBranch(commit, branch);
   }
 
   async onboardedModels() {

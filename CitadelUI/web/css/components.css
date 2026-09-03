@@ -4175,6 +4175,25 @@
   margin-top: 0.15rem;
 }
 
+/* The write target, in words, before anything is created. */
+.catalog-target {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--t-small);
+}
+
+.catalog-branch-name {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.catalog-branch-name > :first-child {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
 /* Connection feedback sits with the field that produced it. A disabled control
    is not a progress state: the attempt has to be visible on its own. */
 .setup-github-progress {

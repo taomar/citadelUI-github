@@ -1,22 +1,24 @@
 /**
- * What to tell the user when a save landed somewhere other than where it aimed.
+ * What to ask the user when a save is refused and the work is not on the branch.
  *
- * ## Why this exists
+ * ## A deliberate reversal
  *
- * A working branch can refuse a commit for two ordinary reasons: someone else
- * pushed to it, or it is protected. Citadel used to report both as failures —
- * *"your edits were not applied; reload and review again"* — and that was
- * wrong twice over. The commit object, with the reviewed parent, already
- * existed by the time the branch refused it; only the ref update failed. So the
- * work was durable, and the advice was to reload and destroy it.
+ * This module used to explain where a save had *gone*. When a branch refused a
+ * commit, Citadel created `<branch>-save-<sha>` automatically and this turned
+ * that into a sentence and a compare link.
  *
- * The server now gives that commit a branch of its own. This module turns that
- * outcome into something a person can act on: what happened, where the change
- * is, and a link to see it. It is deliberately pure so the wording and the URL
- * can be tested without a DOM.
+ * That was already the second design. The first reported durable work as lost
+ * and advised a reload that would have destroyed it, which was worse. But
+ * auto-creating the branch was still wrong: a user opened their repository and
+ * found three branches they had never asked for. Creating a ref changes their
+ * repository, and it was being done on their behalf without a word.
  *
- * The compare link is a plain github.com URL the user's own session authorises.
- * Citadel makes no pull request API call and needs no such permission.
+ * The commit is what makes asking affordable. It exists, with the reviewed
+ * parent, and Git reaches it by SHA with no branch pointing at it — so nothing
+ * is lost in the time it takes to ask. Citadel now creates nothing and puts the
+ * choice in front of the user.
+ *
+ * Still pure, so the wording and the URL are testable without a DOM.
  */
 
 /** GitHub's compare view between two branches of one repository. */
@@ -27,52 +29,64 @@ export function compareUrl(fullName, base, head) {
 }
 
 /**
- * Describe a rescued save.
+ * Describe a refused save as a decision the user has to make.
  *
- * Returns `null` for an ordinary save, so the caller's normal path is
- * unchanged and this only ever *adds* an explanation.
+ * Returns `null` for an ordinary save, so the caller's normal path is unchanged
+ * and this only ever *adds* a question.
  */
 export function describeSaveResolution(result, source) {
-  const resolution = result?.resolution;
-  if (!resolution?.branch) return null;
-  const intended = source?.workingBranch || null;
+  const unresolved = result?.unresolved;
+  if (!unresolved?.commit) return null;
+  const intended = unresolved.intendedBranch || source?.workingBranch || 'the branch';
   const cause =
-    resolution.kind === 'branch-protected'
-      ? `${intended || 'The branch'} is protected, so Citadel could not update it.`
-      : `${intended || 'The branch'} moved while you were saving, so it would not accept this change.`;
+    unresolved.kind === 'branch-protected'
+      ? `${intended} is protected, so Citadel could not update it.`
+      : `${intended} moved while you were saving, so it would not accept this change.`;
   return {
-    kind: resolution.kind,
-    branch: resolution.branch,
-    commit: result.commit || null,
-    title: 'Saved to a separate branch',
-    // Stated in this order on purpose: what happened, then that nothing was
-    // lost, then where it is. A user who reads only the first sentence must not
-    // come away believing their work is gone.
-    message: `${cause} Your change was committed and is safe — Citadel put it on ${resolution.branch} instead of discarding it. Compare it against ${
-      intended || 'the branch'
-    } and open a pull request when you are ready.`,
-    compareUrl: compareUrl(source?.fullName, intended, resolution.branch),
-    linkLabel: `Compare ${resolution.branch}`,
+    kind: unresolved.kind,
+    commit: unresolved.commit,
+    intendedBranch: unresolved.intendedBranch || null,
+    suggestedBranch: unresolved.suggestedBranch || null,
+    title: 'This change needs somewhere to go',
+    // Order matters. What happened, then that nothing is lost, then the choice.
+    // A user who reads only the first sentence must not conclude their work is
+    // gone — and must not be told a branch exists when none does.
+    message: `${cause} Your change is committed as ${unresolved.commit.slice(
+      0,
+      12
+    )} and is safe, but Citadel has not put it on any branch — it does not create branches you did not ask for. Give it a branch name, or reload and save again onto ${intended}.`,
   };
 }
 
 /**
  * One line for the status bar.
  *
- * A rescued save is still a save: it is reported as done, with the caveat
- * appended, exactly as the existing post-write warnings are.
+ * A refused save is not a completed one, so it is not reported as "Saved". The
+ * work is safe and the sentence says so, but the outcome is a question.
  */
 export function saveStatusLine(result, source) {
-  const rescued = describeSaveResolution(result, source);
+  const pending = describeSaveResolution(result, source);
   const caveats = (result?.warnings || []).join(' ');
+  if (pending) {
+    return { text: `${pending.message}${caveats ? ` ${caveats}` : ''}`, tone: 'warn', pending };
+  }
   if (!result?.changed) return { text: 'Nothing changed.', tone: 'ok' };
   const base = `Saved ${result.path}. Previous revision archived to ${result.archived}`;
-  if (rescued) {
-    return {
-      text: `${base}. ${rescued.message}${caveats ? ` ${caveats}` : ''}`,
-      tone: 'warn',
-      rescued,
-    };
-  }
   return { text: `${base}${caveats ? ` ${caveats}` : ''}`, tone: caveats ? 'warn' : 'ok' };
+}
+
+/** Confirmation once the user has named a branch and Citadel has created it. */
+export function describeCreatedBranch(outcome, source, intendedBranch) {
+  if (!outcome?.branch) return null;
+  return {
+    branch: outcome.branch,
+    commit: outcome.commit || null,
+    message: outcome.created
+      ? `Your change is on ${outcome.branch}. Compare it against ${
+          intendedBranch || 'the branch'
+        } and open a pull request when you are ready.`
+      : `${outcome.branch} already held this change.`,
+    compareUrl: compareUrl(source?.fullName, intendedBranch, outcome.branch),
+    linkLabel: `Compare ${outcome.branch}`,
+  };
 }
