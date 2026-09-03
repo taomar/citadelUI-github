@@ -380,7 +380,7 @@ This is enforced, not assumed:
 ```bash
 cd CitadelUI
 node test/roundtrip.test.mjs   # every .bicepparam in the repo, parsed and re-emitted byte-for-byte
-node test/focus.test.mjs       # the three focus areas, their outlines and contract handling
+node test/focus.test.mjs       # the three focus areas and their documentation outlines
 ```
 
 The round-trip gate covers all 17 parameter files, 402 parameters and 1,320

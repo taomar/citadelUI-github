@@ -5,15 +5,6 @@
 !shared/**
 !web/**
 
-server/access-targets.mjs
-server/bicep.mjs
-server/config.mjs
-server/contracts.mjs
-server/discovery.mjs
-server/envlayer.mjs
-server/focus.mjs
-server/save.mjs
-
 .git
 .github
 .azure

@@ -1,9 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-import { extractSchema } from '../server/bicep.mjs';
 import { regionOptionsFor } from '../web/js/fields.mjs';
 import { filterPickerItems } from '../web/js/picker.mjs';
 import {
@@ -15,22 +11,12 @@ import {
 import { foundryServiceOptions, logicAppsWorkerGuidance } from '../web/js/paramview.mjs';
 import { classifyValidation, validateDocument } from '../web/js/validation.mjs';
 
-const here = fileURLToPath(new URL('.', import.meta.url));
-const source = readFileSync(join(here, '..', '..', 'bicep', 'infra', 'main.bicep'), 'utf8');
-const schema = extractSchema(source);
-
-assert.deepEqual(schema.location.allowedValues, PRIMARY_REGIONS);
-assert.deepEqual(schema.apicLocation.allowedValues, APIC_LOCATION_VALUES);
-assert.equal(schema.location.name, 'location');
 assert.deepEqual(
   regionOptionsFor(null, ['aiFoundryInstances', 0, 'location', '__args', 1]),
   PRIMARY_REGIONS
 );
 assert.deepEqual(regionOptionsFor(null, ['apicLocation']), APIC_LOCATION_VALUES);
 assert.equal(regionOptionsFor(null, ['resourceGroupName']), null);
-assert.deepEqual(schema.logicAppsSkuName.allowedValues, ['WS1', 'WS2', 'WS3']);
-assert.equal(schema.logicAppsSkuCapacityUnits.minValue, 1);
-assert.equal(schema.logicAppsSkuCapacityUnits.maxValue, 20);
 assert.deepEqual(LOGIC_APPS_TEMPLATE.workerSizes, {
   WS1: { vCpu: 1, memoryGb: 3.5 },
   WS2: { vCpu: 2, memoryGb: 7 },
@@ -38,7 +24,7 @@ assert.deepEqual(LOGIC_APPS_TEMPLATE.workerSizes, {
 });
 assert.match(logicAppsWorkerGuidance('WS2'), /WS2 provides 2 vCPU and 7 GB memory/);
 
-const regions = schema.location.allowedValues.map((value) => ({ value, meta: value }));
+const regions = PRIMARY_REGIONS.map((value) => ({ value, meta: value }));
 assert.equal(filterPickerItems(regions, '').length, 14);
 assert.deepEqual(filterPickerItems(regions, 'sweden').map((item) => item.value), ['swedencentral']);
 
@@ -75,13 +61,13 @@ assert.match(
 for (const skuName of ['WS1', 'WS2', 'WS3']) {
   assert.equal(validateDocument(doc(
     { logicAppsSkuName: skuName, logicAppsSkuCapacityUnits: 7 },
-    { logicAppsSkuName: schema.logicAppsSkuName, logicAppsSkuCapacityUnits: schema.logicAppsSkuCapacityUnits }
+    { logicAppsSkuName: { allowedValues: ['WS1', 'WS2', 'WS3'] } }
   )).length, 0);
 }
 assert.match(
   validateDocument(doc(
     { logicAppsSkuName: 'WS4', logicAppsSkuCapacityUnits: 7 },
-    { logicAppsSkuName: schema.logicAppsSkuName, logicAppsSkuCapacityUnits: schema.logicAppsSkuCapacityUnits }
+    { logicAppsSkuName: { allowedValues: ['WS1', 'WS2', 'WS3'] } }
   ))[0].message,
   /not allowed/
 );
