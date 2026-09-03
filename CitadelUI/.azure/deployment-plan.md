@@ -171,24 +171,25 @@ Entra. Both routes are explicit; neither is the default.
 
 ## Deploying from scratch
 
-`azd up` does everything except name the resource group. Four environment values
-have to exist first; azd itself supplies none of them:
-
 ```
 azd env new <env-name> --subscription <id> --location westeurope
-azd env set AZURE_RESOURCE_GROUP rg-<env-name>
 azd env set ALLOW_PUBLIC_INGRESS_WITHOUT_AUTH true   # only if it should be public
 azd up
 ```
 
-**Why `AZURE_RESOURCE_GROUP` is mandatory and not defaulted.** The preprovision
-hook has to create the group *and tag it* `SecurityControl: Ignore` before the
-storage account is evaluated, so it must know the name before azd would
-otherwise choose one. It could guess `rg-<env-name>`, but a guess that disagreed
-with the group azd then deployed into would put the tag on an empty group and
-fail the storage mount several layers away from the cause. So the hook refuses to
-guess: it exits 1 and prints the exact command. That is the intended behaviour,
-not a gap.
+**The resource group names itself.** The preprovision hook has to create the
+group *and* tag it `SecurityControl: Ignore` before the storage account is
+evaluated, so it needs the name earlier than azd would otherwise settle on one.
+When `AZURE_RESOURCE_GROUP` is unset the hook derives `rg-<env-name>` — the same
+convention azd uses in its own templates
+(`${abbrs.resourcesResourceGroups}${environmentName}`) — and records it on the
+environment, so the group it tags and the group azd deploys into are the same
+one. Setting `AZURE_RESOURCE_GROUP` yourself still overrides it.
+
+Whether azd re-reads that value in time for the *same* run is not documented and
+has not been proven here. If it does not, the run fails as it did before, the
+value is now recorded, and the next `azd up` succeeds — so the worst case is one
+empty tagged group and a second run.
 
 **Everything downstream is unattended.** The resource token is
 `uniqueString(subscription, environmentName, location)`, so a new environment

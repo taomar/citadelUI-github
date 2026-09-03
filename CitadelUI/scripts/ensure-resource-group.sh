@@ -13,9 +13,34 @@
 set -eu
 
 if [ -z "${AZURE_RESOURCE_GROUP:-}" ]; then
-  echo "AZURE_RESOURCE_GROUP is not set; azd will create the group itself and the tag cannot be applied here."
-  echo "Set it with: azd env set AZURE_RESOURCE_GROUP <name>"
-  exit 1
+  # Fall back to the name azd would have chosen anyway: it names resource groups
+  # rg-<env-name> in its own templates, so deriving the same name here cannot
+  # disagree with the group azd targets. That agreement is the point -- a name
+  # known only to this script would tag one group while azd deployed into
+  # another, and the mistake would not surface until the storage account was
+  # refused its shared key and the container exited 1 on a missing /data.
+  #
+  # The value is written back to the environment file rather than only exported,
+  # because a child process cannot change its parent's environment. Whether azd
+  # re-reads it in time for *this* run is not documented and is not proven here;
+  # if it does not, the run fails as it did before, the value is now recorded,
+  # and the next `azd up` succeeds. Worst case is one empty tagged group and a
+  # second run, which still beats refusing to start.
+  if [ -z "${AZURE_ENV_NAME:-}" ]; then
+    echo "Neither AZURE_RESOURCE_GROUP nor AZURE_ENV_NAME is set, so the resource group cannot be named."
+    echo "Set it with: azd env set AZURE_RESOURCE_GROUP <name>"
+    exit 1
+  fi
+
+  AZURE_RESOURCE_GROUP="rg-${AZURE_ENV_NAME}"
+  export AZURE_RESOURCE_GROUP
+  echo "AZURE_RESOURCE_GROUP was not set; using azd's own convention: '$AZURE_RESOURCE_GROUP'."
+
+  if ! azd env set AZURE_RESOURCE_GROUP "$AZURE_RESOURCE_GROUP"; then
+    echo "Could not record AZURE_RESOURCE_GROUP on the environment."
+    echo "Set it by hand with: azd env set AZURE_RESOURCE_GROUP $AZURE_RESOURCE_GROUP"
+    exit 1
+  fi
 fi
 
 if [ -z "${AZURE_LOCATION:-}" ]; then

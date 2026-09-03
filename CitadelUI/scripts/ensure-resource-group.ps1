@@ -31,12 +31,45 @@ $ErrorActionPreference = 'Stop'
 $resourceGroup = $env:AZURE_RESOURCE_GROUP
 $location      = $env:AZURE_LOCATION
 $subscription  = $env:AZURE_SUBSCRIPTION_ID
+$environment   = $env:AZURE_ENV_NAME
 
 if ([string]::IsNullOrWhiteSpace($resourceGroup)) {
-  Write-Host 'AZURE_RESOURCE_GROUP is not set; azd will create the group itself and the tag cannot be applied here.'
-  Write-Host 'Set it with: azd env set AZURE_RESOURCE_GROUP <name>'
-  exit 1
+  # Fall back to the name azd would have chosen anyway.
+  #
+  # azd names resource groups `rg-<env-name>`
+  # (`${abbrs.resourcesResourceGroups}${environmentName}` in its own templates),
+  # so deriving the same name here cannot disagree with the group azd targets.
+  # That agreement is the whole point: a name known only to this script would
+  # tag one group while azd deployed into another, and the mistake would not
+  # surface until the storage account was refused its shared key and the
+  # container exited 1 on a missing /data.
+  #
+  # The value is written back to the environment file rather than only held in
+  # this process, because a child process cannot change its parent's
+  # environment. Whether azd re-reads the file in time to use it for *this*
+  # run is not documented and has not been proven here; if it does not, the
+  # run fails exactly as it did before, the value is now recorded, and the next
+  # `azd up` succeeds. So the worst case is one empty tagged group and a second
+  # run -- strictly better than the previous behaviour of refusing to start.
+  if ([string]::IsNullOrWhiteSpace($environment)) {
+    Write-Host 'Neither AZURE_RESOURCE_GROUP nor AZURE_ENV_NAME is set, so the resource group cannot be named.'
+    Write-Host 'Set it with: azd env set AZURE_RESOURCE_GROUP <name>'
+    exit 1
+  }
+
+  $resourceGroup = "rg-$environment"
+  Write-Host "AZURE_RESOURCE_GROUP was not set; using azd's own convention: '$resourceGroup'."
+
+  azd env set AZURE_RESOURCE_GROUP $resourceGroup
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "Could not record AZURE_RESOURCE_GROUP on the environment."
+    Write-Host "Set it by hand with: azd env set AZURE_RESOURCE_GROUP $resourceGroup"
+    exit $LASTEXITCODE
+  }
+
+  $env:AZURE_RESOURCE_GROUP = $resourceGroup
 }
+
 if ([string]::IsNullOrWhiteSpace($location)) {
   Write-Host 'AZURE_LOCATION is not set.'
   exit 1
