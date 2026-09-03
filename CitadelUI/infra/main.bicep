@@ -85,6 +85,9 @@ param credentialSecretName string = 'citadel-credential-key'
 @description('Entra application (client) id for Container Apps built-in authentication. Supplying it publishes the app with Entra in front of it -- see the ingress block. Leave it empty and the app is on internal ingress, unreachable from the internet, unless allowPublicIngressWithoutAuth is also set.')
 param entraAuthClientId string = ''
 
+@description('Resource id of a subnet in the Citadel AI Hub Gateway VNet, delegated to Microsoft.App/environments and at least a /27. Supplying it places the Container Apps environment inside that VNet with no public endpoint at all: the application is reachable only from the VNet and whatever is peered, VPN-connected or ExpressRoute-connected to it. This is the private topology -- it overrides allowPublicIngressWithoutAuth and entraAuthClientId as far as internet exposure is concerned, because there is no internet-facing load balancer to expose it on. Leave empty to deploy outside a VNet.')
+param infrastructureSubnetId string = ''
+
 @secure()
 @description('Optional client secret for the Entra app registration, stored as a container app secret. Leave empty and the secretless form is used, which is what a SPA-style app registration (no secret, PKCE) wants. Supply it only if your registration is a confidential web client and the login redirect fails without it.')
 param entraAuthClientSecret string = ''
@@ -97,6 +100,10 @@ param entraAuthClientSecret string = ''
 // across redeploys of the same environment and unique across different ones,
 // which matters for the globally unique names (registry, storage, vault).
 var resourceToken = toLower(uniqueString(subscription().id, environmentName, location))
+
+// Whether the Container Apps environment is placed inside a caller-supplied VNet.
+// Declared here because both the environment and the ingress depend on it.
+var vnetInjected = !empty(infrastructureSubnetId)
 
 // Every resource carries this so `azd down`, the portal and a cost report can
 // all see one environment as one thing.
@@ -389,7 +396,7 @@ resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01'
   name: 'cae-citadelui-${resourceToken}'
   location: location
   tags: tags
-  properties: {
+  properties: union({
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
@@ -413,7 +420,17 @@ resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01'
       }
     ]
     zoneRedundant: false
-  }
+  }, vnetInjected ? {
+    // `internal: true` is what makes this the private topology: the environment
+    // gets an internal load balancer in the supplied subnet and no public
+    // endpoint at all. The subnet must be delegated to Microsoft.App/environments
+    // and be at least a /27; Azure rejects the deployment otherwise rather than
+    // degrading to a public environment.
+    vnetConfiguration: {
+      infrastructureSubnetId: infrastructureSubnetId
+      internal: true
+    }
+  } : {})
 }
 
 // The environment, not the app, owns the Azure Files binding; the app then
@@ -447,8 +464,18 @@ resource dataStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = i
 // Two independent decisions, kept apart so neither happens by accident.
 // `authConfigured` means Entra is in front of the app. `publicIngress` means
 // the app is on the internet, by either route. See the ingress block below.
+//
+// `vnetInjected` overrides both. An environment inside a VNet has no public
+// load balancer, so there is nothing for a public ingress to be published on:
+// the app is reachable from the VNet and from whatever reaches that VNet, and
+// from nowhere else. It is the private topology, and it wins.
 var authConfigured = !empty(entraAuthClientId)
-var publicIngress = authConfigured || allowPublicIngressWithoutAuth
+var publicIngress = !vnetInjected && (authConfigured || allowPublicIngressWithoutAuth)
+// True when the app is reachable beyond the Container Apps environment itself --
+// on the internet when the environment is public, on the VNet's internal load
+// balancer when it is injected. Container Apps spells both `external: true`; the
+// difference is the environment, not the app.
+var reachableBeyondEnvironment = vnetInjected || publicIngress
 var authClientSecretConfigured = authConfigured && !empty(entraAuthClientSecret)
 var authClientSecretName = 'entra-client-secret'
 
@@ -458,7 +485,7 @@ var authClientSecretName = 'entra-client-secret'
 // domain is what lets the app be told its own address before it exists; getting
 // it wrong is not a degraded deployment, it is 421 on every request including
 // the probes, which looks exactly like a broken image.
-var appFqdn = publicIngress
+var appFqdn = reachableBeyondEnvironment
   ? '${containerAppName}.${containerAppsEnvironment.properties.defaultDomain}'
   : '${containerAppName}.internal.${containerAppsEnvironment.properties.defaultDomain}'
 
@@ -528,25 +555,31 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
     configuration: {
       activeRevisionsMode: 'Single'
       // ---------------------------------------------------------------------
-      // `external: publicIngress` is the exposure invariant of this template,
-      // expressed as code so that it cannot be got wrong by editing a boolean:
-      // the app reaches the internet only because someone decided it should,
-      // never as a side effect of another setting.
+      // `external: reachableBeyondEnvironment` is the exposure invariant of this
+      // template, expressed as code so that it cannot be got wrong by editing a
+      // boolean: the app is reachable beyond its own environment only because
+      // someone decided it should be, never as a side effect of another setting.
       //
-      // There are two such decisions and they are deliberately separate.
-      // Supplying `entraAuthClientId` publishes the app with Entra in front of
-      // it. Setting `allowPublicIngressWithoutAuth` publishes it with only the
-      // app's own owner sign-in in front -- a real control, since an anonymous
-      // visitor is issued no session token and every data route refuses one,
-      // but a weaker one than Entra, because a container nobody has claimed yet
-      // belongs to whoever reaches it first.
+      // What "beyond" means is decided by the environment, not by this flag.
+      // On a VNet-injected environment there is no public load balancer, so this
+      // publishes the app on the VNet's internal one -- a private address,
+      // reachable from the Citadel AI Hub Gateway VNet and from whatever is
+      // peered or connected to it, and from nowhere else.
       //
-      // Neither default is public. With both unset the app still deploys and
-      // still works: it is reachable from inside the environment, and simply
-      // not on the internet.
+      // On a public environment there are two ways to reach this point, kept
+      // deliberately separate. Supplying `entraAuthClientId` publishes the app
+      // with Entra in front of it. Setting `allowPublicIngressWithoutAuth`
+      // publishes it with only the app's own owner sign-in in front -- a real
+      // control, since an anonymous visitor is issued no session token and every
+      // data route refuses one, but a weaker one than Entra, because a container
+      // nobody has claimed yet belongs to whoever reaches it first.
+      //
+      // With none of the three set the app still deploys and still works: it is
+      // reachable from inside the environment, and simply not on any network
+      // anyone else is on.
       // ---------------------------------------------------------------------
       ingress: {
-        external: publicIngress
+        external: reachableBeyondEnvironment
         targetPort: containerPort
         transport: 'auto'
         allowInsecure: false
@@ -791,8 +824,11 @@ output AZURE_RESOURCE_GROUP string = resourceGroup().name
 @description('Public URL of the app. Read back from the platform rather than recomputed, so that if it ever disagrees with CITADEL_ALLOWED_HOST below, the disagreement is visible instead of silent. On a deployment that is neither Entra-authenticated nor explicitly published this is the internal address and is not reachable from the internet -- that is the intent, not a fault.')
 output SERVICE_CITADELUI_URI string = 'https://${containerApp.properties.configuration.ingress.fqdn}'
 
-@description('Whether the app is reachable from the internet. This mirrors the `external` flag on the ingress exactly, so it can be trusted to answer "is this exposed?". It is true by either route -- an Entra client id, or allowPublicIngressWithoutAuth -- so read SERVICE_CITADELUI_ENTRA_AUTH to find out which.')
+@description('Whether the app is reachable from the public internet. False while SERVICE_CITADELUI_NETWORK is `vnet` means it is reachable privately instead, not that it is unreachable.')
 output SERVICE_CITADELUI_PUBLIC bool = publicIngress
+
+@description('Which network the app is published on. `vnet` means the environment is inside the supplied subnet and the address is private. `internet` means it is published on the public internet. `environment` means it is reachable only from inside the Container Apps environment.')
+output SERVICE_CITADELUI_NETWORK string = vnetInjected ? 'vnet' : (publicIngress ? 'internet' : 'environment')
 
 @description('Whether Container Apps built-in Entra authentication is in front of the app. False while SERVICE_CITADELUI_PUBLIC is true means the app is on the internet behind its own owner sign-in rather than behind Entra.')
 output SERVICE_CITADELUI_ENTRA_AUTH bool = authConfigured

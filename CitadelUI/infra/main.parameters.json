@@ -20,6 +20,9 @@
     "allowPublicIngressWithoutAuth": {
       "value": "${ALLOW_PUBLIC_INGRESS_WITHOUT_AUTH=false}"
     },
+    "infrastructureSubnetId": {
+      "value": "${AZURE_INFRASTRUCTURE_SUBNET_ID}"
+    },
     "entraAuthClientId": {
       "value": "${AZURE_AUTH_CLIENT_ID}"
     },
