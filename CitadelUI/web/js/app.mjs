@@ -707,7 +707,9 @@ function contractList() {
 async function restoreContract(id) {
   const res = await withStatus('Restoring contract\u2026', () => api.restoreContract(id));
   if (!res) return;
-  state.contracts = await api.contracts();
+  // Refreshing the list is a second round trip over the same network. Left
+  // unwrapped it is a silent wait after the visible one has ended.
+  state.contracts = await withStatus('Refreshing contracts\u2026', () => api.contracts());
   render();
   selectContract(id);
 }
@@ -762,7 +764,7 @@ function openCreateContract() {
             const result = await withStatus('Creating\u2026', () => api.createContract({ name }));
             if (!result) return;
             closeModal();
-            state.contracts = await api.contracts();
+            state.contracts = await withStatus('Refreshing contracts\u2026', () => api.contracts());
             await selectContract(result.id);
             setStatus(`Created ${result.dir}`, 'ok');
           },
@@ -1439,7 +1441,9 @@ async function openHistory() {
                         if (!result) return;
                         closeModal();
                         if (creation) {
-                          state.contracts = await api.contracts();
+                          state.contracts = await withStatus('Refreshing contracts\u2026', () =>
+                            api.contracts()
+                          );
                           const fallback = state.contracts.contracts?.find((item) => item.isTemplate);
                           if (fallback) await selectContract(fallback.id);
                         } else if (state.current) {
@@ -3311,6 +3315,11 @@ async function init() {
 
   try {
     els.shell.dataset.workspace = 'setup';
+    // Startup is the longest wait in the product over a GitHub source: opening
+    // the environment, reading the Citadel sources and checking history are all
+    // network round trips. Left silent, the shell sits empty and reads as a
+    // failure. The stages are named because nothing here knows the duration.
+    setStatus('Opening workspace\u2026', 'info', true, true);
     const workspace = await ensureWorkspace();
     els.shell.dataset.workspace = 'active';
     const health = await api.health();
@@ -3318,12 +3327,17 @@ async function init() {
     state.projectLabel =
       projects.find((project) => project.id === workspace.projectId)?.label || 'Project';
 
+    setStatus('Reading Citadel sources\u2026', 'info', true, true);
     const [focus, catalog] = await Promise.all([api.focus(), api.deployments()]);
     state.areas = focus.areas;
     state.catalog = catalog;
 
     render();
+    setStatus('Checking history\u2026', 'info', true, true);
     const history = await api.history();
+    // Cleared here rather than at the end, so the recovery notice below is not
+    // immediately overwritten by dismissing this one.
+    setStatus(null);
     const recovery = (history.transactions || []).filter(
       (transaction) =>
         transaction.recoveryRequired ||

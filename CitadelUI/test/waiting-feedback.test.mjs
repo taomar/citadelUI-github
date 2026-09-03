@@ -87,3 +87,47 @@ test('a settled status keeps its severity dot and does not spin', () => {
   assert.match(css, /\.status-ok::before\s*\{[^}]*background:\s*var\(--success\)/);
   assert.match(css, /\.status-error::before\s*\{[^}]*background:\s*var\(--danger\)/);
 });
+
+/**
+ * The toast is not enough on its own.
+ *
+ * `showModal()` puts a native dialog in the browser's top layer, which is above
+ * every z-index, so the fixed status toast is behind the backdrop exactly when
+ * the wait is longest — a save. The clicked control stays visible, and
+ * `markBusy` already marks it, so the control is the second place progress has
+ * to appear.
+ */
+test('the busy control itself spins, because a dialog hides the toast', () => {
+  // Window is generous enough to span the declarations and the comment between
+  // the selector and the animation, but still scoped to the same rule block.
+  assert.match(css, /\.btn\.is-busy::before[^}]*animation:\s*status-spin/);
+  assert.match(css, /\.btn\[aria-busy='true'\]::before/);
+});
+
+test('a busy control is not faded into invisibility by the disabled style', () => {
+  // `markBusy` disables the control, and `.btn:disabled` sets opacity 0.5.
+  // Without restoring opacity the spinner would be half-transparent precisely
+  // when it is the only progress on screen.
+  assert.match(css, /\.btn\.is-busy,\s*\n\s*\.btn\[aria-busy='true'\]\s*\{[^}]*opacity:\s*1/);
+  assert.match(css, /\.btn\.is-busy,\s*\n\s*\.btn\[aria-busy='true'\]\s*\{[^}]*cursor:\s*progress/);
+});
+
+test('the control spinner also degrades honestly under reduced motion', () => {
+  // Anchored on the rule itself rather than on "the last reduced-motion block",
+  // because the stylesheet ends with a global reduced-motion reset that would
+  // otherwise satisfy a looser search without proving anything about buttons.
+  assert.match(
+    css,
+    /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*?\.btn\.is-busy::before[\s\S]*?animation:\s*none/
+  );
+});
+
+test('every guarded save marks a control, so the spinner has somewhere to appear', () => {
+  // `guardedHandler` resolves the control from the event, so an inline button
+  // built by `h()` is marked without the caller holding a reference. If this
+  // stopped being true, the CSS above would style nothing.
+  const sf = readFileSync(new URL('../web/js/single-flight.mjs', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  assert.match(sf, /const control = options\.control \|\| event\?\.currentTarget \|\| null/);
+  assert.match(sf, /control\.classList\?\.add\('is-busy'\)/);
+  assert.match(sf, /control\.setAttribute\?\.\('aria-busy', 'true'\)/);
+});

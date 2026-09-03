@@ -777,6 +777,48 @@ textarea {
   cursor: not-allowed;
 }
 
+/* A guarded action marks the control that was clicked busy (`markBusy` sets
+   `aria-busy` and `.is-busy`), and this is what makes that visible.
+   
+   It matters most inside a dialog. A native `<dialog>` opened with
+   `showModal()` renders in the browser's top layer, which is above every
+   z-index there is, so the fixed status toast sits behind the backdrop and
+   cannot be seen — precisely during a save, which is the longest wait in the
+   product. The clicked button is always on screen, so the button is where the
+   progress belongs. One rule covers every guarded action, in a dialog or not.
+   
+   A busy control is also disabled, so `opacity: 0.5` would fade the spinner
+   into near-invisibility; the busy state restores full opacity and keeps
+   `progress` as the cursor. */
+.btn.is-busy,
+.btn[aria-busy='true'] {
+  opacity: 1;
+  cursor: progress;
+}
+
+.btn.is-busy::before,
+.btn[aria-busy='true']::before {
+  content: '';
+  flex: none;
+  width: 0.85em;
+  height: 0.85em;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  /* `currentColor` so it reads on a primary button and a plain one alike. */
+  animation: status-spin 0.8s linear infinite;
+}
+
+/* Motion is the secondary cue. Reduced motion still gets a mark that says the
+   control is working, rather than a static ring that reads as broken. */
+@media (prefers-reduced-motion: reduce) {
+  .btn.is-busy::before,
+  .btn[aria-busy='true']::before {
+    animation: none;
+    border-color: currentColor;
+  }
+}
+
 .btn-primary {
   background: var(--brand);
   border-color: var(--brand);
