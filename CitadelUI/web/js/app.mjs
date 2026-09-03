@@ -2588,6 +2588,30 @@ export function setSetupContext(context) {
   updateHeaderContext();
 }
 
+/**
+ * The source line beneath the breadcrumb.
+ *
+ * It earns its row only when it says something the path above does not. On the
+ * catalogue both lines degrade to the same connection sentence — the path falls
+ * back to "Connected as <account>" and so does the source — so the frame spent a
+ * whole row stating one fact twice, beneath a "Repository" label that was not
+ * describing a repository. Suppressed, the frame collapses to a single row,
+ * which is the density the sheet below is drawn at.
+ */
+function setSourceLine({ text, label, copyable = false, hint = null }) {
+  const value = String(text || '').trim();
+  const redundant = !value || value === els.repoPath.textContent;
+  // `[hidden]` alone loses to the element's own `display`, so the stylesheet
+  // carries a matching rule rather than this reaching in to set display.
+  els.localPathCopy.hidden = redundant;
+  if (redundant) return;
+  if (els.localPathLabel) els.localPathLabel.textContent = label;
+  els.localPath.textContent = value;
+  els.localPathCopy.title = hint || value;
+  els.localPathCopy.setAttribute('aria-label', hint || `Source: ${value}`);
+  els.localPathCopy.disabled = !copyable;
+}
+
 function updateHeaderContext() {
   let workspace = null;
   try {
@@ -2613,10 +2637,11 @@ function updateHeaderContext() {
       (sourceKind === 'github'
         ? target || (account ? `Connected as ${account}` : 'GitHub not connected')
         : 'Local path not recorded');
-    els.localPath.textContent = location;
-    els.localPathCopy.title = location;
-    els.localPathCopy.setAttribute('aria-label', `Source: ${location}`);
-    els.localPathCopy.disabled = true;
+    setSourceLine({
+      text: location,
+      label: sourceKind === 'github' ? 'Repository' : 'Folder',
+      copyable: false,
+    });
     return;
   }
   const environment = workspace?.environment || {};
@@ -2630,14 +2655,14 @@ function updateHeaderContext() {
   els.repoPath.title = state.current?.path || overviewPath || 'No file selected';
   const location = environmentLocation(environment);
   const recorded = location !== 'Local path not recorded';
-  els.localPath.textContent = location;
-  els.localPathCopy.title = location;
-  els.localPathCopy.setAttribute(
-    'aria-label',
-    recorded ? `Copy source location: ${location}` : 'Local path not recorded'
-  );
   // A GitHub source is an identifier, not a path the clipboard helps with.
-  els.localPathCopy.disabled = !recorded || isGitHubEnvironment(environment);
+  const isGitHub = isGitHubEnvironment(environment);
+  setSourceLine({
+    text: location,
+    label: isGitHub ? 'Repository' : 'Folder',
+    copyable: recorded && !isGitHub,
+    hint: recorded ? (isGitHub ? location : `Copy source location: ${location}`) : 'Local path not recorded',
+  });
 }
 
 /**
@@ -3273,6 +3298,7 @@ async function init() {
   els.environmentName = document.getElementById('environment-name');
   els.repoPath = document.getElementById('repo-path');
   els.localPath = document.getElementById('local-path');
+  els.localPathLabel = document.getElementById('local-path-label');
   els.localPathCopy = document.getElementById('local-path-copy');
   els.workspace = document.getElementById('workspace');
   els.status = document.getElementById('status');
@@ -3315,13 +3341,14 @@ async function init() {
 
   try {
     els.shell.dataset.workspace = 'setup';
-    // Startup is the longest wait in the product over a GitHub source: opening
-    // the environment, reading the Citadel sources and checking history are all
-    // network round trips. Left silent, the shell sits empty and reads as a
-    // failure. The stages are named because nothing here knows the duration.
-    setStatus('Opening workspace\u2026', 'info', true, true);
+    // No status yet: `ensureWorkspace` waits for the catalogue, and the catalogue
+    // is a screen the user is reading, not a wait. Announcing "Opening workspace"
+    // here left a pending toast escalating to "still working" for as long as they
+    // browsed — the exact false alarm this feature exists to prevent.
     const workspace = await ensureWorkspace();
     els.shell.dataset.workspace = 'active';
+    // From here it really is loading, and every step is a network round trip.
+    setStatus('Opening workspace\u2026', 'info', true, true);
     const health = await api.health();
     const projects = await workspaceRegistry.listProjects();
     state.projectLabel =

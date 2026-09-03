@@ -4771,7 +4771,10 @@
 /* ====================================================== final Fluent polish */
 
 .titleblock {
-  min-height: 3.5rem;
+  /* Sized for one row. The floor was 3.5rem when the frame carried a second
+     line; with the source line suppressed unless it says something new, that
+     floor became dead space above a 22px row. */
+  min-height: 3rem;
   gap: var(--sp-6);
   padding: var(--sp-3) var(--gutter);
 }
@@ -4780,7 +4783,10 @@
   gap: var(--sp-4);
   min-height: 2.5rem;
   padding-right: var(--sp-6);
-  border-right: 1px solid var(--rule);
+  /* The frame's own ramp, not the sheet's. `--rule` is a paper tint (#d8e2ec)
+     and on this navy it read as a bright bar, which is what made the brand look
+     like a slab bolted to the left rather than part of the frame. */
+  border-right: 1px solid var(--nav-rule);
 }
 
 .tb-mark {
@@ -4925,6 +4931,20 @@
   gap: var(--sp-5);
   padding-left: var(--sp-6);
   border-left: 1px solid var(--nav-rule);
+}
+
+/* The catalogue and setup have no frame actions. An empty flex box still paints
+   its left rule and its padding, which reads as a divider introducing nothing. */
+.tb-actions:empty {
+  display: none;
+  padding-left: 0;
+  border-left: 0;
+}
+
+/* `.tb-local` sets its own `display`, which outranks the `hidden` attribute, so
+   the row would stay on screen while claiming to be hidden. */
+.tb-local[hidden] {
+  display: none;
 }
 
 .tb-status-group,
