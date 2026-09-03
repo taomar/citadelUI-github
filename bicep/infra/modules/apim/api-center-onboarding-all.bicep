@@ -326,7 +326,7 @@ module universalLLMApiCenter './api-center-onboarding.bicep' = {
     gatewayUrl: apimGatewayUrl
     apiPath: 'llm'
     customProperties: universalLLMCustomProperties
-    documentationUrl: 'https://github.com/mohamedsaif/ai-hub-gateway-solution-accelerator'
+    documentationUrl: 'https://github.com/taomar/Citadel-UI'
   }
 }
 
