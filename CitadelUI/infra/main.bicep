@@ -56,6 +56,12 @@ param location string = resourceGroup().location
 @description('Object id of whoever is running azd (AZURE_PRINCIPAL_ID). Only used to grant that person write access to a vault this template creates -- see the Secrets Officer assignment below.')
 param principalId string = ''
 
+@description('Mount /data on Azure Files so workspaces, connection profiles, the activity log and the sealed credential envelopes survive a restart. Requires shared-key access on the storage account, which some tenants deny by policy -- see the resource group preprovision hook. Set false to run with an ephemeral /data: the app boots and works, but forgets everything on a restart, a scale to zero, or a new revision.')
+param persistData bool = true
+
+@description('Publish the app on the public internet WITHOUT Entra authentication in front of it. Off by default, and deliberately awkward to turn on: this application issues a working session token to anyone who loads its page, so a public ingress with no authentication hands that token, the stored GitHub credential and write access to the connected repositories to any anonymous visitor. Setting this true is a considered decision by the owner of the deployment, not a default. Prefer setting entraAuthClientId, which makes the app public AND authenticated.')
+param allowPublicIngressWithoutAuth bool = false
+
 @description('Type of the principal above. azd running as a human leaves this as User; in a pipeline running as a service principal, set it to ServicePrincipal or the assignment fails validation.')
 @allowed([
   'User'
@@ -112,6 +118,7 @@ var fileShareName = 'citadel-data'
 // Role definition GUIDs. Written out rather than looked up so a reader can
 // check them against the docs without deploying anything.
 var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+var acrPushRoleId = '8311e382-0749-4cb8-b61a-304f252e45ec'
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 var keyVaultSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
 
@@ -178,6 +185,19 @@ module registry 'br/public:avm/res/container-registry/registry:0.13.0' = {
     // that there is nothing to store.
     acrAdminUserEnabled: false
     publicNetworkAccess: 'Enabled'
+    // AVM emits a `networkRuleSet` whenever public access is Enabled and the
+    // default action is Deny, and Deny is its default. ACR Basic cannot accept
+    // one at all -- network rules are a Premium feature -- so the deployment
+    // fails with `NetworkRuleNotSupported` before anything is created.
+    //
+    // Setting this to Allow suppresses the block rather than loosening it:
+    // Basic has no rule engine to relax. Access is controlled where it actually
+    // is for this registry -- AcrPull granted to the one managed identity, with
+    // the admin account disabled above, so there is no key to leak and no
+    // anonymous pull. A registry that must be network-restricted needs Premium
+    // and a private endpoint, which is the same conclusion the Key Vault ACL
+    // above reaches for the same reason.
+    networkRuleSetDefaultAction: 'Allow'
   }
 }
 
@@ -189,6 +209,27 @@ module acrPull 'modules/registry-role-assignment.bicep' = {
     subjectId: identity.id
     roleDefinitionId: acrPullRoleId
     principalType: 'ServicePrincipal'
+  }
+}
+
+// The identity above can PULL, which is what the running app needs. Nothing was
+// granted PUSH, and the deployment cannot complete without it: `azd deploy`
+// builds the image locally and pushes it as the signed-in user, and with the
+// admin account deliberately disabled there is no fallback credential. The
+// symptom is a 401 from the registry's token exchange at the publish step,
+// after every resource has provisioned successfully -- which reads as a broken
+// registry rather than a missing grant.
+//
+// Scoped to this registry, and only when a principal is known: `principalId` is
+// empty in unattended contexts that have no interactive user to grant.
+module acrPush 'modules/registry-role-assignment.bicep' = if (!empty(principalId)) {
+  name: 'rbac-acr-push'
+  params: {
+    registryName: registry.outputs.name
+    principalId: principalId
+    subjectId: principalId
+    roleDefinitionId: acrPushRoleId
+    principalType: 'User'
   }
 }
 
@@ -361,7 +402,15 @@ resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01'
 // The environment, not the app, owns the Azure Files binding; the app then
 // mounts it by name. accessMode is ReadWrite because /data is written on every
 // save, every commit and every activity entry.
-resource dataStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
+//
+// Conditional, because the binding authenticates with the storage account key
+// and some tenants forbid that. Where `allowSharedKeyAccess` is denied by
+// governance the account silently reports `false` however it is created, the
+// CIFS mount is then refused with `mount error(13): Permission denied`, and the
+// container exits 1 at startup -- /data is required to boot, not merely to
+// persist. Rather than fail there, `persistData` selects an ephemeral volume so
+// the app runs; see the volume declaration for what that costs.
+resource dataStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = if (persistData) {
   parent: containerAppsEnvironment
   name: dataVolumeName
   properties: {
@@ -381,6 +430,10 @@ resource dataStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
 // Authentication is the switch this whole deployment turns on. See the ingress
 // block below for why.
 var authConfigured = !empty(entraAuthClientId)
+// Public means published on the internet, by either route: with Entra in front
+// of it, or because the owner explicitly accepted the risk of publishing it
+// without. The two are kept separate so the second never happens by accident.
+var publicIngress = authConfigured || allowPublicIngressWithoutAuth
 var authClientSecretConfigured = authConfigured && !empty(entraAuthClientSecret)
 var authClientSecretName = 'entra-client-secret'
 
@@ -390,7 +443,7 @@ var authClientSecretName = 'entra-client-secret'
 // domain is what lets the app be told its own address before it exists; getting
 // it wrong is not a degraded deployment, it is 421 on every request including
 // the probes, which looks exactly like a broken image.
-var appFqdn = authConfigured
+var appFqdn = publicIngress
   ? '${containerAppName}.${containerAppsEnvironment.properties.defaultDomain}'
   : '${containerAppName}.internal.${containerAppsEnvironment.properties.defaultDomain}'
 
@@ -475,7 +528,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
       // reached from inside the environment; it is simply not on the internet.
       // ---------------------------------------------------------------------
       ingress: {
-        external: authConfigured
+        external: publicIngress
         targetPort: containerPort
         transport: 'auto'
         allowInsecure: false
@@ -577,20 +630,38 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       volumes: [
-        {
-          name: dataVolumeName
-          storageType: 'AzureFile'
-          storageName: dataVolumeName
-          // SMB has no POSIX ownership, so the mount decides it once for every
-          // file on it. This image runs as UID 10001 and every store under /data
-          // opens its files 0600 and its directories 0700; a mount owned by root
-          // would fail the very first write, at startup, with a permission error
-          // that looks nothing like a storage problem. Setting the modes here
-          // also preserves the property the code is explicit about wanting --
-          // nothing under /data is group- or world-readable -- which a per-file
-          // chmod cannot deliver over SMB because the server ignores it.
-          mountOptions: 'uid=10001,gid=10001,dir_mode=0700,file_mode=0600,mfsymlinks,nobrl'
-        }
+        persistData
+          ? {
+              name: dataVolumeName
+              storageType: 'AzureFile'
+              storageName: dataVolumeName
+              // SMB has no POSIX ownership, so the mount decides it once for every
+              // file on it. This image runs as UID 10001 and every store under /data
+              // opens its files 0600 and its directories 0700; a mount owned by root
+              // would fail the very first write, at startup, with a permission error
+              // that looks nothing like a storage problem. Setting the modes here
+              // also preserves the property the code is explicit about wanting --
+              // nothing under /data is group- or world-readable -- which a per-file
+              // chmod cannot deliver over SMB because the server ignores it.
+              mountOptions: 'uid=10001,gid=10001,dir_mode=0700,file_mode=0600,mfsymlinks,nobrl'
+            }
+          : {
+              // Ephemeral. The app boots and works, but /data lives only as long as
+              // the replica: workspaces, connection profiles, the activity log and
+              // the sealed credential envelopes are all lost on a restart, a scale
+              // to zero, or a new revision. The credential KEY survives, because it
+              // is in Key Vault -- what is lost is the sealed token, so the user
+              // re-enters a PAT rather than losing anything unrecoverable.
+              //
+              // This is the honest fallback when the tenant forbids shared-key
+              // storage: an app that runs and forgets is better than one that
+              // cannot start, but it is NOT the intended production shape. Durable
+              // state needs either shared-key access permitted on the account, or
+              // Premium Files over NFS with VNet integration, which does not use an
+              // account key at all.
+              name: dataVolumeName
+              storageType: 'EmptyDir'
+            }
       ]
       scale: {
         // Scale to zero. This is the single largest cost decision here: a

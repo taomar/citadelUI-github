@@ -1,5 +1,10 @@
+import { forgetToken, storedToken } from './owner-gate.mjs';
+
 export async function localRequest(path, options = {}) {
-  const token = document.querySelector('meta[name="citadel-session"]')?.content;
+  // The token comes from the sign-in that issued it. The bootstrap meta tag is
+  // kept only as a fallback for any deployment that still publishes one; the
+  // owner-gated server does not, which is the point.
+  const token = storedToken() || document.querySelector('meta[name="citadel-session"]')?.content;
   const { responseType = 'json', ...fetchOptions } = options;
   const res = await fetch(path, {
     ...fetchOptions,
@@ -20,6 +25,18 @@ export async function localRequest(path, options = {}) {
   const body = await res.json().catch(() => ({ error: `${res.status} ${res.statusText}` }));
   if (!res.ok) {
     const detail = typeof body.error === 'object' ? body.error : body;
+    /**
+     * A refused session means the token we hold is no longer the server's.
+     *
+     * The session token is process-wide, so a container restart invalidates
+     * every stored copy at once. Discarding it here and reloading turns that
+     * into a sign-in prompt; leaving it in place would make every subsequent
+     * request fail with an error the user cannot act on.
+     */
+    if (res.status === 401 && detail.code === 'INVALID_SESSION') {
+      forgetToken();
+      window.location.reload();
+    }
     const message =
       (typeof body.error === 'string' ? body.error : detail.message) ||
       `Request failed: ${res.status}`;

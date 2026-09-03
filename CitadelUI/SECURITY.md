@@ -3,6 +3,46 @@
 Citadel UI is a single-user local editor. The supported origin is
 `http://127.0.0.1:4173`.
 
+## Owner credential
+
+This container has exactly one account, and it is what makes publishing the UI
+beyond loopback defensible.
+
+- **First run claims it.** While no owner exists, the page asks for a username
+  and password and stores the credential at `/data/settings/owner.json`. The file
+  is created with an exclusive open, so if two people arrive at once exactly one
+  becomes the owner and the other is told to sign in.
+- **One account, permanently.** There is no route that creates a second account
+  and no route that resets the password. A forgotten password is recovered by
+  redeploying with fresh state, which is the honest operation for a container
+  whose identity is one file.
+- **The password is never stored.** Only an scrypt hash with a per-record random
+  salt, compared in constant time. The cost parameters are stored with the hash
+  so they can be raised later without locking out the existing owner.
+- **Signing in is the only way to get a session token.** `GET /` no longer
+  carries one; it reports only whether this container has been claimed. Every API
+  route authenticates exactly as it did before — the token simply has to be
+  earned now.
+- **An unreadable owner record fails closed.** A corrupt or truncated file is
+  reported as "cannot tell", never as "unclaimed", so damaging one file cannot
+  re-open the claim on a running deployment. Recovery is a redeploy.
+- **`/healthz` stays unauthenticated**, so the platform can still tell whether
+  the container is up.
+
+Known gaps, deliberate for a demo and listed for whoever hardens this next:
+
+- **The claim window.** Between the first public deploy and the first successful
+  claim, whoever reaches the URL first becomes the owner. Closing it means either
+  requiring a deployment-supplied claim secret or refusing the claim flow until
+  the operator has claimed it over internal ingress. The place to add either is
+  `OwnerAccount.claim` in `server/owner.mjs`.
+- **The token lives in `localStorage`.** The CSP admits no third-party script, so
+  there is no realistic reader, but an httpOnly cookie is the better answer.
+- **The session token is process-wide and does not expire.** A container restart
+  signs everyone out; there is no rotation and no idle timeout.
+- **`/data` must be persistent.** On ephemeral storage the owner record is lost
+  on every restart and the deployment becomes claimable again by anyone.
+
 ## Trust boundaries
 
 - The browser owns Citadel repository authority through user-selected

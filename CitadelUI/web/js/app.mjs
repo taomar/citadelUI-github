@@ -18,6 +18,7 @@
  */
 
 import { api } from './api.mjs';
+import { ensureOwnerSession } from './owner-gate.mjs';
 import { h, mount, clear } from './dom.mjs';
 import { renderDiff } from './diff.mjs';
 import { renderParamDocument, renderOutlineNav } from './paramview.mjs';
@@ -3474,4 +3475,6 @@ async function returnToSetup() {
   }
 }
 
-init();
+// Nothing starts until this browser holds a session token, and the only way to
+// hold one is to create the owner account or sign in as it.
+ensureOwnerSession().then(() => init());

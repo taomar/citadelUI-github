@@ -19,6 +19,7 @@ import { TransactionStore, transactionError } from './transactions.mjs';
 import { RegistryStore } from './registry-store.mjs';
 import { ConnectionProfileStore } from './connections.mjs';
 import { CredentialVault } from './credentials.mjs';
+import { OwnerAccount } from './owner.mjs';
 import { ActivityStore, ACTIVITY_ACTIONS } from './activity.mjs';
 import { GitHubRoutes } from './github/routes.mjs';
 import { GitHubAuditStore } from './github/audit.mjs';
@@ -185,6 +186,30 @@ export function resolveAllowedOrigin(explicit, allowedHost, env = process.env) {
   return url.origin;
 }
 
+/**
+ * The checks that qualify a request as coming from this application's own page,
+ * independent of who is signed in.
+ *
+ * Split out from the session check because the owner claim and sign-in routes
+ * have to be reachable before a session token exists, and they must not become
+ * a hole in everything else while they are. They still have to arrive on the
+ * right host, from a same-origin fetch, and — when they change state — carry the
+ * exact allowed origin. Only the token check is skipped, because the token is
+ * precisely what those two routes exist to issue.
+ */
+function assertBrowserTransport(req, allowedHost, allowedOrigin, stateChanging) {
+  if (req.headers.host !== allowedHost) {
+    throw transactionError(421, 'INVALID_HOST', 'Request host is not allowed.');
+  }
+  const fetchSite = req.headers['sec-fetch-site'];
+  if (fetchSite !== 'same-origin' && fetchSite !== 'none') {
+    throw transactionError(403, 'INVALID_FETCH_SITE', 'Request site is not allowed.');
+  }
+  if (stateChanging && req.headers.origin !== allowedOrigin) {
+    throw transactionError(403, 'INVALID_ORIGIN', 'Request origin is not allowed.');
+  }
+}
+
 function assertBrowserRequest(req, allowedHost, allowedOrigin, sessionToken, stateChanging) {
   if (req.headers.host !== allowedHost) {
     throw transactionError(421, 'INVALID_HOST', 'Request host is not allowed.');
@@ -198,6 +223,7 @@ function assertBrowserRequest(req, allowedHost, allowedOrigin, sessionToken, sta
   }
   if (stateChanging && req.headers.origin !== allowedOrigin) {
     throw transactionError(403, 'INVALID_ORIGIN', 'Request origin is not allowed.');
+
   }
 }
 
@@ -279,9 +305,24 @@ function assertBodyKeys(body, allowed) {
   }
 }
 
-function injectBootstrapMetadata(html, token, registryNamespace, testRuntime) {
+/**
+ * What the page is told before anyone has signed in.
+ *
+ * This used to carry the session token, which meant every `GET /` handed a
+ * working API credential to whoever asked. That was defensible while the server
+ * only ever answered on loopback and indefensible the moment it was published,
+ * and it is the specific thing the owner credential replaces.
+ *
+ * The token is no longer here at all. It is returned in the JSON response to a
+ * successful claim or sign-in and nowhere else, so an unauthenticated request
+ * cannot obtain one by reading the markup. What is left is the authentication
+ * state, which the page needs in order to know whether to offer "create the
+ * owner" or "sign in" — and which reveals nothing beyond whether this container
+ * has been claimed.
+ */
+function injectBootstrapMetadata(html, authState, registryNamespace, testRuntime) {
   const meta = [
-    `<meta name="citadel-session" content="${token}" />`,
+    `<meta name="citadel-auth" content="${authState}" />`,
     `<meta name="citadel-registry-namespace" content="${registryNamespace}" />`,
     `<meta name="citadel-test-runtime" content="${testRuntime ? 'true' : 'false'}" />`,
   ].join('\n    ');
@@ -319,6 +360,67 @@ function requireQuery(url, name) {
   return value;
 }
 
+/**
+ * Claim the container, or sign in to it.
+ *
+ * Three routes, and the set is closed on purpose. `GET /api/owner` reports
+ * whether this container has been claimed, which is what the page needs to
+ * decide between offering "create the owner" and "sign in". The two POSTs are
+ * the only ways a session token is ever issued.
+ *
+ * What is absent is the point: no route updates the credential, no route deletes
+ * it, and no route creates a second one. Resetting a forgotten password means
+ * redeploying with fresh state — the honest operation for a container whose
+ * identity is one file — rather than a route that would have to be defended.
+ */
+async function handleOwnerApi(context) {
+  const { req, res, url, correlationId, ownerAccount, sessionToken } = context;
+
+  if (url.pathname === '/api/owner') {
+    if (req.method !== 'GET') {
+      return sendJson(
+        res,
+        405,
+        { error: { code: 'METHOD_NOT_ALLOWED', message: 'Method not allowed.', correlationId } },
+        correlationId,
+        { Allow: 'GET' }
+      );
+    }
+    // A corrupt record throws 503 from here rather than reporting "unclaimed",
+    // so a damaged volume never invites a fresh claim on a live deployment.
+    const state = await ownerAccount.read();
+    return sendJson(res, 200, { state: state.state }, correlationId);
+  }
+
+  const claiming = url.pathname === '/api/owner/claim';
+  const signingIn = url.pathname === '/api/owner/session';
+  if (!claiming && !signingIn) {
+    throw transactionError(404, 'ROUTE_NOT_FOUND', 'API route not found.');
+  }
+  if (req.method !== 'POST') {
+    return sendJson(
+      res,
+      405,
+      { error: { code: 'METHOD_NOT_ALLOWED', message: 'Method not allowed.', correlationId } },
+      correlationId,
+      { Allow: 'POST' }
+    );
+  }
+
+  const body = await readLimitedBody(req, context.jsonBodyLimit, true);
+  assertBodyKeys(body, new Set(['username', 'password']));
+
+  if (claiming) {
+    await ownerAccount.claim(body.username, body.password);
+    // The token is handed over exactly once here and never appears in the
+    // markup, so possession of it is the proof of ownership from now on.
+    return sendJson(res, 201, { state: 'claimed', sessionToken }, correlationId);
+  }
+
+  await ownerAccount.verify(body.username, body.password);
+  return sendJson(res, 200, { state: 'claimed', sessionToken }, correlationId);
+}
+
 async function handleApi(context) {
   const {
     req,
@@ -333,6 +435,26 @@ async function handleApi(context) {
     sessionToken,
   } = context;
   const stateChanging = req.method !== 'GET' && req.method !== 'HEAD';
+
+  /**
+   * The owner routes, dispatched before the session check.
+   *
+   * They have to be, because they are how a session token is obtained: applying
+   * the token check to them would make signing in require being signed in. Every
+   * other guard still applies — `assertBrowserTransport` enforces the exact
+   * host, the fetch site and, for the two POSTs, the exact origin — so this is a
+   * narrower door, not an unguarded one.
+   *
+   * The route table is the enforcement. There is no route that creates a second
+   * account and none that resets a password, so neither can be reached by
+   * guessing a method or a path; anything under `/api/owner` that is not one of
+   * these three falls through to the 404 below.
+   */
+  if (url.pathname === '/api/owner' || url.pathname.startsWith('/api/owner/')) {
+    assertBrowserTransport(req, allowedHost, allowedOrigin, stateChanging);
+    return await handleOwnerApi(context);
+  }
+
   assertBrowserRequest(req, allowedHost, allowedOrigin, sessionToken, stateChanging);
 
   // GitHub routes own their own method set (they need DELETE to disconnect), so
@@ -584,7 +706,7 @@ async function handleApi(context) {
 }
 
 async function serveStatic(context) {
-  const { req, res, url, correlationId, webRoot, sharedRoot, bootstrapHtml } = context;
+  const { req, res, url, correlationId, webRoot, sharedRoot, bootstrapFor } = context;
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     return sendEmpty(res, 405, correlationId, { Allow: 'GET, HEAD' });
   }
@@ -601,7 +723,7 @@ async function serveStatic(context) {
     if (!info.isFile()) throw Object.assign(new Error('not a file'), { code: 'ENOENT' });
     body =
       !sharedRequest && target === resolve(webRoot, 'index.html')
-        ? bootstrapHtml
+        ? await bootstrapFor()
         : await readFile(target);
   } catch (error) {
     if (error.code === 'ENOENT') {
@@ -665,6 +787,11 @@ export async function createCitadelServer(options = {}) {
   const credentialVault =
     options.credentialVault ||
     new CredentialVault({ dataRoot, keyFile: options.credentialKeyFile });
+  // The one account this container will ever have. Claimed on first run; after
+  // that it is the only way to obtain the session token above.
+  const ownerAccount =
+    options.ownerAccount ||
+    new OwnerAccount({ dataRoot, ...(options.ownerOptions || {}) });
   const githubRoutes =
     options.githubRoutes === null
       ? null
@@ -682,12 +809,31 @@ export async function createCitadelServer(options = {}) {
   await connectionStore.initialize();
   await credentialVault.initialize();
   const indexHtml = await readFile(resolve(webRoot, 'index.html'), 'utf8');
-  const bootstrapHtml = injectBootstrapMetadata(
-    indexHtml,
-    sessionToken,
-    registryNamespace,
-    testRuntime
-  );
+  /**
+   * The bootstrap is chosen per request now, not baked once at startup.
+   *
+   * It has to be: the page is told whether this container has an owner, and that
+   * answer changes the moment someone claims it. Both variants are rendered
+   * once and picked between, so the only per-request cost is reading one small
+   * file.
+   *
+   * A record that cannot be read yields `unavailable` rather than `unclaimed`.
+   * The page still loads and can say something useful, but it never invites a
+   * claim on a deployment that may already have an owner — the claim and
+   * sign-in routes refuse it anyway, and the two answers must agree.
+   */
+  const bootstraps = {
+    unclaimed: injectBootstrapMetadata(indexHtml, 'unclaimed', registryNamespace, testRuntime),
+    claimed: injectBootstrapMetadata(indexHtml, 'claimed', registryNamespace, testRuntime),
+    unavailable: injectBootstrapMetadata(indexHtml, 'unavailable', registryNamespace, testRuntime),
+  };
+  const bootstrapFor = async () => {
+    try {
+      return bootstraps[(await ownerAccount.read()).state] || bootstraps.unavailable;
+    } catch {
+      return bootstraps.unavailable;
+    }
+  };
   let active = 0;
 
   const server = createServer(async (req, res) => {
@@ -730,11 +876,12 @@ export async function createCitadelServer(options = {}) {
         correlationId,
         webRoot,
         sharedRoot,
-        bootstrapHtml,
+        bootstrapFor,
         store,
         registryStore,
         activityStore,
         githubRoutes,
+        ownerAccount,
         allowedHost,
         allowedOrigin,
         sessionToken,
@@ -800,7 +947,17 @@ export async function createCitadelServer(options = {}) {
   server.requestTimeout = options.requestTimeout ?? 30_000;
   server.keepAliveTimeout = options.keepAliveTimeout ?? 5_000;
 
-  return { server, store, registryStore, connectionStore, credentialVault, activityStore, githubRoutes };
+  return {
+    server,
+    store,
+    registryStore,
+    connectionStore,
+    credentialVault,
+    activityStore,
+    githubRoutes,
+    ownerAccount,
+    sessionToken,
+  };
 }
 
 export async function startCitadelServer(options = {}) {

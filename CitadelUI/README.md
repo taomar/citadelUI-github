@@ -33,6 +33,24 @@ Open <http://127.0.0.1:4173>. The origin and port are fixed because retained
 directory handles are origin-bound. If the port is occupied, stop the conflicting
 process rather than changing ports.
 
+## Signing in
+
+The first time a container starts it has no owner, so it asks you to create one:
+a username and a password of your choosing. That account is the only account this
+container will ever have.
+
+- There is no second user, and no password reset. Keep the password somewhere
+  safe — recovering it means redeploying with fresh state.
+- The password is never stored, only an scrypt hash of it.
+- Signing in is what issues the session token every other request uses, so
+  reaching the URL is no longer enough on its own to use the application.
+- The credential lives at `/data/settings/owner.json`, so it survives restarts
+  only while `/data` is persistent. On ephemeral storage the container is
+  claimable again after every restart.
+
+If two people open a brand-new container at the same moment, exactly one becomes
+the owner; the other is asked to sign in.
+
 On first use, create a project, enter an environment label and display-only
 **Local path**, and choose the exact Citadel repository through the in-app folder
 picker. Repeat from **Settings** for Development, Test, Production, or any other

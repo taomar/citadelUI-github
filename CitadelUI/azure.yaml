@@ -20,6 +20,28 @@ infra:
   path: infra
   module: main
 
+hooks:
+  # The resource group has to exist, and has to be tagged, before provisioning.
+  #
+  # This tenant enforces `allowSharedKeyAccess = false` on storage accounts, and
+  # enforces it silently: the request to set it true is accepted and the value
+  # stays false. Container Apps mounts Azure Files over SMB with the account key,
+  # so the mount is refused with `mount error(13)` and the container exits 1 at
+  # startup -- /data is required to boot, not only to persist. Tagging the group
+  # `SecurityControl: Ignore` exempts it, and the tag must be there before the
+  # storage account is evaluated, so it cannot be applied afterwards by hand.
+  preprovision:
+    windows:
+      shell: pwsh
+      run: ./scripts/ensure-resource-group.ps1
+      continueOnError: false
+      interactive: false
+    posix:
+      shell: sh
+      run: ./scripts/ensure-resource-group.sh
+      continueOnError: false
+      interactive: false
+
 services:
   citadelui:
     project: .
@@ -32,3 +54,17 @@ services:
     docker:
       path: ./Dockerfile
       context: .
+      # Build in ACR rather than locally.
+      #
+      # Two independent local failures make a local build-and-push unreliable
+      # here, and neither is a property of this application. Docker Desktop's
+      # proxy drops the large base layer partway through the push, and azd's own
+      # registry login fails the token exchange with a 401 even though the
+      # signed-in user holds AcrPush and `az acr login` succeeds with the same
+      # identity. A remote build sidesteps both: azd uploads the build context
+      # and ACR Tasks builds and stores the image, so nothing is pushed over the
+      # local network and no registry credential is needed on this machine.
+      #
+      # It is also nearly free here. The context is ~2 MB, because this app has
+      # no dependencies and no node_modules to upload.
+      remoteBuild: true

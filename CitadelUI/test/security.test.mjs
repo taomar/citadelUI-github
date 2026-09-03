@@ -31,6 +31,7 @@ async function start(options = {}) {
       dataRoot,
       allowedHost,
       allowedOrigin: `http://${allowedHost}`,
+      ownerOptions: { cost: { N: 4, r: 8, p: 1 }, failedDelayMs: 0 },
       ...options,
     });
   } catch (error) {
@@ -42,15 +43,39 @@ async function start(options = {}) {
     created.server.listen(0, '127.0.0.1', resolve);
   });
   const port = created.server.address().port;
+  const call = (path, requestOptions = {}) =>
+    httpRequest(port, path, {
+      host: allowedHost,
+      ...requestOptions,
+      headers: { Host: allowedHost, ...(requestOptions.headers || {}) },
+    });
   return {
     root,
     ...created,
-    request(path, requestOptions = {}) {
-      return httpRequest(port, path, {
-        host: allowedHost,
-        ...requestOptions,
-        headers: { Host: allowedHost, ...(requestOptions.headers || {}) },
+    request: call,
+    /**
+     * Become the owner and return the session token.
+     *
+     * The bootstrap no longer carries a token, so a test that needs one has to
+     * claim the container the way a browser does. This is the only way to obtain
+     * a working credential, which is the property the owner feature adds.
+     *
+     * The credentials are short on purpose: one fixture here runs with a 64-byte
+     * JSON body limit to prove that limit is enforced, and a longer name would
+     * make the fixture trip the very control it is meant to be testing.
+     */
+    async signIn(username = 'owner', password = 'owner-password') {
+      const claim = await call('/api/owner/claim', {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+        headers: {
+          'Sec-Fetch-Site': 'same-origin',
+          'Content-Type': 'application/json',
+          Origin: `http://${allowedHost}`,
+        },
       });
+      assert.equal(claim.status, 201, 'the fixture claims the container');
+      return claim.json().sessionToken;
     },
   };
 }
@@ -91,11 +116,19 @@ async function close(fixture) {
   await rm(fixture.root, { recursive: true, force: true });
 }
 
-function tokenFrom(response) {
+/**
+ * CHANGED CONTRACT.
+ *
+ * This helper used to read a working session token out of the bootstrap markup,
+ * because every `GET /` was handed one. That is exactly the property the owner
+ * credential removes, so the token is no longer in the page and what remains to
+ * read is the authentication state.
+ */
+function authStateFrom(response) {
   const match = response.body
     .toString('utf8')
-    .match(/<meta name="citadel-session" content="([^"]+)" \/>/);
-  assert.ok(match, 'bootstrap includes the session token');
+    .match(/<meta name="citadel-auth" content="([^"]+)" \/>/);
+  assert.ok(match, 'bootstrap reports the authentication state');
   return match[1];
 }
 
@@ -107,13 +140,26 @@ function apiHeaders(token, extra = {}) {
   };
 }
 
-test('bootstrap injects a random session token and every response receives restrictive headers', async (t) => {
+/**
+ * CHANGED TEST — the assertion about the token was inverted deliberately.
+ *
+ *   Old contract: any `GET /` is handed a working session token in the markup.
+ *   New contract: `GET /` carries no token at all; it reports only whether this
+ *   container has an owner, and a token is issued solely by a successful claim
+ *   or sign-in.
+ *
+ * Everything else this test covers — the response headers, the registry
+ * namespace, the absence of CORS, no-store on static assets — is unchanged.
+ */
+test('bootstrap withholds the session token and every response receives restrictive headers', async (t) => {
   const fixture = await start();
   t.after(() => close(fixture));
   const response = await fixture.request('/');
   assert.equal(response.status, 200);
-  const token = tokenFrom(response);
-  assert.ok(token.length >= 43);
+  assert.equal(authStateFrom(response), 'unclaimed');
+  const markup = response.body.toString('utf8');
+  assert.equal(markup.includes('citadel-session'), false, 'no session token in the markup');
+  assert.equal(markup.includes(fixture.sessionToken), false, 'not the token under another name');
   assert.match(response.headers['content-security-policy'], /frame-ancestors 'none'/);
   assert.match(response.headers['content-security-policy'], /default-src 'self'/);
   assert.equal(response.headers['x-content-type-options'], 'nosniff');
@@ -126,6 +172,12 @@ test('bootstrap injects a random session token and every response receives restr
   );
   assert.ok(response.headers['x-correlation-id']);
   assert.equal(response.headers['access-control-allow-origin'], undefined);
+
+  // A token still exists and is still 32 random bytes; it is now issued by the
+  // claim rather than published to anyone who loads the page.
+  const token = await fixture.signIn();
+  assert.ok(token.length >= 43);
+  assert.equal(authStateFrom(await fixture.request('/')), 'claimed');
 
   const staticAsset = await fixture.request('/app.mjs');
   assert.equal(staticAsset.status, 200);
@@ -183,7 +235,8 @@ test('host, fetch-site, session, origin, JSON, method, and body limits are enfor
   const fixture = await start({ jsonBodyLimit: 64 });
   t.after(() => close(fixture));
   const bootstrap = await fixture.request('/');
-  const token = tokenFrom(bootstrap);
+  assert.equal(authStateFrom(bootstrap), 'unclaimed');
+  const token = await fixture.signIn();
 
   const wrongHost = await fixture.request('/healthz', { headers: { Host: 'localhost:4173' } });
   assert.equal(wrongHost.status, 421);
@@ -263,7 +316,7 @@ test('health responses expose no host path and legacy host-filesystem routes are
   const healthz = await fixture.request('/healthz');
   assert.deepEqual(healthz.json(), { ok: true });
   assert.equal(healthz.body.toString().includes(fixture.root), false);
-  const token = tokenFrom(await fixture.request('/'));
+  const token = await fixture.signIn();
   for (const path of [
     '/api/deployments',
     '/api/deployment?path=C:%2Fhost%2Fsecret',
@@ -297,7 +350,7 @@ test('health responses expose no host path and legacy host-filesystem routes are
 test('content endpoints transform supplied text without accepting a source path', async (t) => {
   const fixture = await start();
   t.after(() => close(fixture));
-  const token = tokenFrom(await fixture.request('/'));
+  const token = await fixture.signIn();
   const headers = apiHeaders(token, {
     Origin: 'http://127.0.0.1:4173',
     'Content-Type': 'application/json',
@@ -373,7 +426,7 @@ test('content endpoints transform supplied text without accepting a source path'
 test('registry metadata endpoints are authenticated and persist only non-sensitive fields', async (t) => {
   const fixture = await start();
   t.after(() => close(fixture));
-  const token = tokenFrom(await fixture.request('/'));
+  const token = await fixture.signIn();
   const headers = apiHeaders(token, {
     Origin: 'http://127.0.0.1:4173',
     'Content-Type': 'application/json',

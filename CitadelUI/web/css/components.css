@@ -6112,3 +6112,136 @@
   font-size: var(--t-meta);
   color: var(--ink-3);
 }
+
+/* ============================================================
+   Owner gate
+   The first screen on an unclaimed container and the only screen
+   on a claimed one until the owner signs in. Deliberately plain:
+   it is a door, not a dashboard, and it must render correctly
+   before any application state exists.
+   Sized in rem and ch like every other surface here, so the 1px
+   hairlines below are the only pixel values -- they are the
+   design system's rule weight, not layout.
+   ============================================================ */
+.gate {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  place-items: center;
+  padding: 2rem 1.25rem;
+  background: var(--nav);
+  overflow: auto;
+}
+
+.gate-panel {
+  width: min(32ch + 12rem, 100%);
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: 0.5rem;
+  box-shadow: 0 1.5rem 3rem rgba(11, 60, 104, 0.35);
+  padding: clamp(1.5rem, 4vw, 2.25rem);
+}
+
+.gate-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 1.25rem;
+}
+
+.gate-mark {
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 0.2rem;
+  background: var(--brand);
+  flex: none;
+}
+
+.gate-brand-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.gate-title {
+  margin: 0 0 0.5rem;
+  font-size: clamp(1.25rem, 2.5vw, 1.6rem);
+  color: var(--ink-1);
+}
+
+.gate-blurb {
+  margin: 0 0 1.5rem;
+  color: var(--ink-2);
+  line-height: 1.5;
+  font-size: 0.925rem;
+}
+
+.gate-form {
+  display: grid;
+  gap: 1rem;
+}
+
+.gate-field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.gate-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.gate-hint {
+  font-size: 0.8rem;
+  color: var(--ink-3);
+}
+
+.gate-input {
+  font: inherit;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--control-stroke);
+  border-radius: 0.25rem;
+  background: var(--sheet);
+  color: var(--ink-1);
+}
+
+.gate-input:focus-visible {
+  outline: 0.125rem solid var(--brand);
+  outline-offset: 1px;
+  border-color: var(--brand);
+}
+
+.gate-error {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--danger-line);
+  border-radius: 0.25rem;
+  background: var(--danger-wash);
+  color: var(--danger-ink);
+  font-size: 0.9rem;
+}
+
+.gate-submit {
+  font: inherit;
+  font-weight: 600;
+  padding: 0.6rem 1rem;
+  border: 1px solid transparent;
+  border-radius: 0.25rem;
+  background: var(--brand);
+  color: var(--on-brand);
+  cursor: pointer;
+}
+
+.gate-submit:hover:not(:disabled) {
+  background: var(--brand-hover);
+}
+
+.gate-submit:disabled {
+  background: var(--sunk);
+  color: var(--ink-3);
+  cursor: default;
+}

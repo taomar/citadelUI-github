@@ -17,6 +17,9 @@
     "keyVaultResourceGroup": {
       "value": "${AZURE_KEY_VAULT_RESOURCE_GROUP}"
     },
+    "allowPublicIngressWithoutAuth": {
+      "value": "${ALLOW_PUBLIC_INGRESS_WITHOUT_AUTH=false}"
+    },
     "entraAuthClientId": {
       "value": "${AZURE_AUTH_CLIENT_ID}"
     },
