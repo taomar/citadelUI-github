@@ -275,7 +275,14 @@ export class MockGitHub {
     if (rest[0] === 'git' && rest[1] === 'commits' && rest[2]) {
       const commit = this.commits.get(rest[2]);
       if (!commit) return this.json(404, { message: 'Not Found' });
-      return this.json(200, { sha: commit.sha, tree: { sha: commit.tree } });
+      // Parents are part of GitHub's own response. Omitting them made a commit
+      // look parentless, so nothing could walk a branch's recent history to ask
+      // whether a change was already applied.
+      return this.json(200, {
+        sha: commit.sha,
+        tree: { sha: commit.tree },
+        parents: (commit.parents || []).map((sha) => ({ sha })),
+      });
     }
 
     if (rest[0] === 'git' && rest[1] === 'blobs' && init.method === 'POST') {

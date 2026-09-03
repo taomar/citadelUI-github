@@ -29,6 +29,15 @@ import {
 
 const MAX_COMMIT_FILES = 64;
 const MAX_HISTORY = 100;
+/**
+ * How far back to look for a change that already landed.
+ *
+ * Bounded because this walk is one request per commit and runs on a path that
+ * is already handling a refusal. In practice it stops at the reviewed parent
+ * long before this, because a branch that moved has moved by a few commits, not
+ * by twenty.
+ */
+const MAX_RECONCILE_DEPTH = 20;
 const TRAILER_ACTION = 'Citadel-Action';
 const TRAILER_ENVIRONMENT = 'Citadel-Environment';
 const TRAILER_TRANSACTION = 'Citadel-Transaction';
@@ -561,6 +570,69 @@ async function reconcileAmbiguousRefUpdate(client, token, options) {
 }
 
 /**
+ * Is this change already on the branch?
+ *
+ * ## The defect this exists to fix
+ *
+ * A refused ref update was treated as proof that the change was absent, and the
+ * commit was given a rescue branch. Those are different facts. A user
+ * double-clicked Save; both invocations built a commit from the same reviewed
+ * parent with the same content; the first won the ref and the second was
+ * refused with 422. The branch head's tree was byte-identical to the tree of the
+ * commit being "rescued", so the honest answer was *your change is already
+ * saved* and the correct number of new branches was zero. Instead the user got
+ * two branches for one action.
+ *
+ * ## Why the tree SHA is the right question
+ *
+ * A Git tree SHA is a content hash of the entire tree. If the branch holds a
+ * commit whose tree equals ours, the repository already contains exactly the
+ * state this save intended to produce — whether this save put it there, a
+ * retry did, or a collaborator made the identical change. In every one of those
+ * cases a rescue branch is noise, and telling the user their work went
+ * somewhere else would be false.
+ *
+ * ## Bounds
+ *
+ * The walk follows first parents only, stops at the reviewed parent — beyond
+ * that point the content predates the save and cannot be it — and is capped at
+ * `MAX_RECONCILE_DEPTH` commits. `baseCommit` itself is never a match: it is
+ * the state the user was editing *away* from.
+ *
+ * Returns the matching commit SHA, or null. Never throws: an unreadable history
+ * means "cannot prove it is already there", which falls through to the rescue
+ * that was going to happen anyway.
+ */
+export async function findAppliedCommit(client, token, options) {
+  const { fullName, branch, treeSha, baseCommit } = options;
+  const depth = options.depth || MAX_RECONCILE_DEPTH;
+  if (!treeSha) return null;
+  try {
+    let cursor = await branchHead(client, token, fullName, branch);
+    const seen = new Set();
+    for (let step = 0; step < depth && cursor; step += 1) {
+      if (seen.has(cursor)) break;
+      seen.add(cursor);
+      // The reviewed parent bounds the search. Anything at or below it is the
+      // state that existed before this save, so it cannot be this save.
+      if (baseCommit && cursor === baseCommit) return null;
+      const { data } = await client.request(
+        `/repos/${fullName}/git/commits/${validateCommitSha(cursor)}`,
+        { token }
+      );
+      if (data?.tree?.sha === treeSha) return cursor;
+      const parents = Array.isArray(data?.parents) ? data.parents : [];
+      const next = parents[0]?.sha;
+      cursor = next ? validateCommitSha(next) : null;
+    }
+  } catch {
+    // Unprovable, not disproven. The caller rescues, which is safe.
+    return null;
+  }
+  return null;
+}
+
+/**
  * Give a commit a branch of its own when its intended branch refuses it.
  *
  * The commit already exists at this point; all that is missing is a name. This
@@ -777,6 +849,7 @@ export async function commitChangeSet(client, token, options) {
   const warnings = [];
   let resolution = null;
   let rescueBranch = null;
+  let alreadyApplied = null;
 
   try {
     await client.request(`/repos/${fullName}/git/refs/heads/${encodePath(branch)}`, {
@@ -792,29 +865,50 @@ export async function commitChangeSet(client, token, options) {
       // reviewed parent and the audit record all exist by now; only the ref
       // update was refused. Reporting "your edits were not applied" would be
       // false, and telling the user to reload would destroy work that is
-      // already durable in the repository. So the commit is given a name of its
-      // own and the user is told where it went.
-      rescueBranch = await rescueCommit(client, token, {
+      // already durable in the repository.
+      //
+      // But "the ref would not move" is not the same fact as "the change is
+      // not there". Ask the branch first: if it already holds a commit with
+      // this exact tree, this save has landed, and the right number of new
+      // branches is zero. Skipping this question is what turned one
+      // double-clicked save into two branches holding an identical tree.
+      alreadyApplied = await findAppliedCommit(client, token, {
         fullName,
-        environmentId,
-        commitSha,
-        warnings,
+        branch,
+        treeSha,
+        baseCommit: head,
       });
-      resolution = {
-        kind: error.status === 422 ? 'branch-moved' : 'branch-protected',
-        branch: rescueBranch,
-        reason:
-          error.status === 422
-            ? `${branch} moved while you were saving, so it would not accept this change.`
-            : `${redactSecrets(error.message)}`,
-      };
-      if (audit) {
-        // Recorded on a best-effort basis: the save is already durable, and a
-        // log failure must not be reported as a lost change.
-        try {
-          await audit.record({ ...record, branch: rescueBranch, baseCommit: head });
-        } catch {
-          warnings.push('The rescue branch could not be added to the change log.');
+      if (alreadyApplied) {
+        // Idempotent success. No ref is created and no second audit record is
+        // written: the commit that is really on the branch already has one, and
+        // logging this attempt again would count one user action twice.
+        warnings.push(
+          `This change was already on ${branch} as ${alreadyApplied.slice(0, 12)}, so Citadel did not save it a second time.`
+        );
+      } else {
+        // Genuinely absent. The commit exists and needs a name of its own.
+        rescueBranch = await rescueCommit(client, token, {
+          fullName,
+          environmentId,
+          commitSha,
+          warnings,
+        });
+        resolution = {
+          kind: error.status === 422 ? 'branch-moved' : 'branch-protected',
+          branch: rescueBranch,
+          reason:
+            error.status === 422
+              ? `${branch} moved while you were saving, so it would not accept this change.`
+              : `${redactSecrets(error.message)}`,
+        };
+        if (audit) {
+          // Recorded on a best-effort basis: the save is already durable, and a
+          // log failure must not be reported as a lost change.
+          try {
+            await audit.record({ ...record, branch: rescueBranch, baseCommit: head });
+          } catch {
+            warnings.push('The rescue branch could not be added to the change log.');
+          }
         }
       }
     } else {
@@ -842,12 +936,19 @@ export async function commitChangeSet(client, token, options) {
   // duplicate the commit.
   const result = {
     transactionId,
-    commit: commitSha,
+    // When the change was already there, the commit the user should be given is
+    // the one the branch actually holds. Ours is a real object but nothing
+    // references it, so History would never list it and Undo would refuse it.
+    commit: alreadyApplied || commitSha,
     baseCommit: head,
     branch: rescueBranch || branch,
     author: authorName || null,
     files: tree.map((entry) => ({ alias: entry.path, sha: entry.sha, mode: entry.mode })),
     warnings,
+    // No `resolution`, deliberately. This is an ordinary successful save that
+    // happened to be a no-op, not a change that landed somewhere unexpected, so
+    // the rescue dialog and the compare link must stay out of the user's way.
+    ...(alreadyApplied ? { alreadyApplied: true, duplicateCommit: commitSha } : {}),
     ...(resolution ? { resolution } : {}),
   };
   if (resolution) {
@@ -857,7 +958,11 @@ export async function commitChangeSet(client, token, options) {
   }
   try {
     const finalHead = await requireBranchHead(client, token, fullName, branch);
-    if (finalHead !== commitSha) {
+    // Compared against the commit this save is *reported* as, not against the
+    // object we happened to build. When the change was already applied those
+    // differ, and comparing the wrong one would report "someone moved the
+    // branch" about a branch sitting exactly where it should be.
+    if (finalHead !== result.commit) {
       // Someone else fast-forwarding immediately afterwards is normal
       // collaboration, not a failed save.
       result.movedAfterSave = true;

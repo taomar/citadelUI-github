@@ -28,6 +28,7 @@ import { GitHubApiClient } from '../server/github/api.mjs';
 import { GitHubRoutes } from '../server/github/routes.mjs';
 import { GitHubSessionStore } from '../server/github/sessions.mjs';
 import { rescueBranchName, workingBranchName } from '../server/github/repositories.mjs';
+import { findAppliedCommit } from '../server/github/workspace.mjs';
 import { compareUrl, describeSaveResolution, saveStatusLine } from '../web/js/save-resolution.mjs';
 import { citadelRepositoryFiles } from './_citadel-fixture.mjs';
 import { MemoryAudit, MockGitHub, TEST_TOKEN, environmentRegistry } from './_github-mock.mjs';
@@ -207,6 +208,247 @@ test('a rescue branch that already exists is adopted, not overwritten', async ()
     name.includes('-save-')
   );
   assert.deepEqual(rescueRefs, [rescued]);
+});
+
+// --------------------------------------------------------------------------
+// "It already happened" is not "it needs saving somewhere else".
+// --------------------------------------------------------------------------
+
+test('a refusal whose tree is already on the branch creates no branch at all', async () => {
+  // The incident, reproduced by its actual mechanism. Two saves in flight
+  // together both read the same branch head, so both build a commit from the
+  // same parent with the same content:
+  //
+  //   1668f8c  tree 7826930ed1a3  parent cf630db  22:52:42Z
+  //   ae0288e  tree 7826930ed1a3  parent cf630db  22:52:45Z
+  //
+  // The first won the ref. The second was refused with 422 and rescued onto a
+  // branch of its own — even though the branch head's tree was byte-identical
+  // to the tree being "rescued". The correct answer was "already saved", and
+  // the correct number of new branches was zero.
+  //
+  // A sequential retry cannot produce this: it is refused by the reviewed-head
+  // precondition long before a commit exists. Only the race reaches here, which
+  // is why the guard in `single-flight` and this reconcile are two fixes and
+  // not one.
+  const context = fixture();
+  const id = await attached(context);
+  const reviewedHead = context.repository.refs.get(BRANCH);
+  const refsBefore = [...context.repository.refs.keys()].sort();
+
+  const [first, second] = await Promise.all([
+    save(context, id, {
+      expectedHead: reviewedHead,
+      transactionId: '11111111-1111-4111-8111-111111111111',
+    }),
+    save(context, id, {
+      expectedHead: reviewedHead,
+      transactionId: '22222222-2222-4222-8222-222222222222',
+    }),
+  ]);
+
+  // Both commits exist as objects — that is the hazard this reconciles, not
+  // something it prevents. What must not exist is a second *branch*.
+  const outcomes = [first, second];
+  const duplicate = outcomes.find((result) => result.alreadyApplied);
+  const landed = outcomes.find((result) => !result.alreadyApplied);
+
+  assert(duplicate, 'neither save recognised that the change was already applied');
+  assert.equal(duplicate.resolution, undefined, 'a rescue resolution was reported anyway');
+  assert.equal(duplicate.branch, BRANCH, 'the save was reported against the wrong branch');
+  // The commit handed back is the one the branch actually holds. The duplicate
+  // exists as an object but nothing references it, so History could never list
+  // it and Undo would refuse it.
+  assert.equal(duplicate.commit, landed.commit);
+  assert.notEqual(duplicate.duplicateCommit, duplicate.commit);
+  assert.equal(context.repository.refs.get(BRANCH), landed.commit);
+
+  // The assertion the user cares about: zero new branches.
+  assert.deepEqual([...context.repository.refs.keys()].sort(), refsBefore);
+  assert.equal(
+    [...context.repository.refs.keys()].some((name) => name.includes('-save-')),
+    false,
+    'a rescue branch was created for a change that was already saved'
+  );
+
+  // Each save writes one audit record before it touches the ref; that is the
+  // existing design and is harmless, because History and Undo both require
+  // reachability. What must not happen is the *third* record the rescue path
+  // writes for a branch it created.
+  assert.equal(
+    context.audit.commits.length,
+    2,
+    'an already-applied save was written to the change log a second time'
+  );
+
+  assert(
+    duplicate.warnings.some((warning) => warning.includes('already on')),
+    `expected the user to be told, got ${JSON.stringify(duplicate.warnings)}`
+  );
+  // A no-op save must not read as "somebody moved the branch".
+  assert.equal(duplicate.movedAfterSave, undefined);
+});
+
+test('an already-applied save is reported to the user as an ordinary save', () => {
+  // No compare link, no "saved to a separate branch" dialog: nothing went
+  // anywhere unexpected. `describeSaveResolution` keys off `resolution.branch`,
+  // and an already-applied result deliberately carries no resolution.
+  const source = { fullName: FULL_NAME, workingBranch: BRANCH };
+  const result = { changed: true, path: 'p', archived: 'a', alreadyApplied: true, warnings: [] };
+  assert.equal(describeSaveResolution(result, source), null);
+  assert.equal(saveStatusLine(result, source).rescued, undefined);
+});
+
+test('a refusal whose tree is genuinely absent still rescues, and still creates', async () => {
+  // The other half of the same question. The reconcile must not swallow a real
+  // rescue: if the change is not on the branch, the commit still needs a name.
+  const context = fixture();
+  const id = await attached(context);
+  const head = context.repository.refs.get(BRANCH);
+  context.github.calls.length = 0;
+  context.github.failNextRefUpdate = true;
+
+  const result = await save(context, id);
+
+  assert.equal(result.alreadyApplied, undefined, 'an absent change was called already-applied');
+  assert.equal(result.resolution.kind, 'branch-moved');
+  assert.equal(context.repository.refs.get(result.resolution.branch), result.commit);
+  assert.equal(context.repository.refs.get(BRANCH), head, 'the working branch moved');
+
+  // Created, never forced — the property the rescue has always had.
+  const refWrites = context.github.calls.filter((call) => call.path.includes('/git/ref'));
+  assert.equal(refWrites.filter((call) => call.method === 'POST').length, 1);
+  assert.equal(
+    refWrites.some(
+      (call) => call.method === 'PATCH' && call.path.includes(result.resolution.branch)
+    ),
+    false,
+    'the rescue ref was force-updated'
+  );
+});
+
+test('the walk back through history is bounded and terminates', async () => {
+  const context = fixture();
+  await attached(context);
+
+  // A history far longer than the bound, none of which matches.
+  let parent = context.repository.refs.get(BRANCH);
+  for (let index = 0; index < 60; index += 1) {
+    parent = context.github.writeCommit(
+      context.github.commits.get(parent).tree,
+      [parent],
+      `filler ${index}`
+    );
+  }
+  context.repository.refs.set(BRANCH, parent);
+  context.github.calls.length = 0;
+
+  const found = await findAppliedCommit(context.client, TEST_TOKEN, {
+    fullName: FULL_NAME,
+    branch: BRANCH,
+    treeSha: 'f'.repeat(40),
+    baseCommit: null,
+  });
+
+  assert.equal(found, null);
+  const reads = context.github.calls.filter((call) => call.path.includes('/git/commits/'));
+  assert.equal(reads.length <= 20, true, `walked ${reads.length} commits; the bound is 20`);
+});
+
+test('the walk stops at the reviewed parent rather than matching older content', async () => {
+  // Everything at or below the reviewed parent is the state the user was
+  // editing away from. Matching it would report a save as already-applied
+  // because the file looked the way it did before the edit.
+  const context = fixture();
+  await attached(context);
+  const head = context.repository.refs.get(BRANCH);
+  const headTree = context.github.commits.get(head).tree;
+
+  const found = await findAppliedCommit(context.client, TEST_TOKEN, {
+    fullName: FULL_NAME,
+    branch: BRANCH,
+    treeSha: headTree,
+    baseCommit: head,
+  });
+
+  assert.equal(found, null, 'the reviewed parent was treated as proof the save had landed');
+});
+
+test('a matching tree further back on the branch is still found', async () => {
+  // The branch may have moved on since the save landed. Someone else pushing
+  // afterwards is normal collaboration and must not turn an applied change into
+  // a rescued one.
+  const context = fixture();
+  await attached(context);
+  const applied = context.repository.refs.get(BRANCH);
+  const appliedTree = context.github.commits.get(applied).tree;
+  let head = applied;
+  for (let index = 0; index < 3; index += 1) {
+    head = context.github.writeCommit(context.github.writeBlob(`later ${index}`), [head], 'later');
+  }
+  context.repository.refs.set(BRANCH, head);
+
+  const found = await findAppliedCommit(context.client, TEST_TOKEN, {
+    fullName: FULL_NAME,
+    branch: BRANCH,
+    treeSha: appliedTree,
+    baseCommit: null,
+  });
+
+  assert.equal(found, applied);
+});
+
+test('a cycle in history cannot spin the walk forever', async () => {
+  const context = fixture();
+  await attached(context);
+  const head = context.repository.refs.get(BRANCH);
+  // A commit that claims itself as its own parent. Real Git cannot express
+  // this, but a bounded walk must not depend on that being true.
+  context.github.commits.get(head).parents = [head];
+
+  const found = await findAppliedCommit(context.client, TEST_TOKEN, {
+    fullName: FULL_NAME,
+    branch: BRANCH,
+    treeSha: 'e'.repeat(40),
+    baseCommit: null,
+  });
+  assert.equal(found, null);
+});
+
+test('an unreadable history is not mistaken for proof the change is absent', async () => {
+  // "Cannot prove it is already there" is not "it is not there". The walk
+  // swallows its own failure and answers null, so the caller rescues — which is
+  // safe, create-only, and was going to happen anyway.
+  const context = fixture();
+  await attached(context);
+  const unreachable = new GitHubApiClient({
+    fetch: async () => {
+      throw new Error('history unavailable');
+    },
+  });
+
+  const found = await findAppliedCommit(unreachable, TEST_TOKEN, {
+    fullName: FULL_NAME,
+    branch: BRANCH,
+    treeSha: 'a'.repeat(40),
+    baseCommit: null,
+  });
+
+  assert.equal(found, null, 'an unreadable history threw instead of falling through');
+});
+
+test('no tree to compare means no claim that the change is already applied', async () => {
+  const context = fixture();
+  await attached(context);
+  assert.equal(
+    await findAppliedCommit(context.client, TEST_TOKEN, {
+      fullName: FULL_NAME,
+      branch: BRANCH,
+      treeSha: null,
+      baseCommit: null,
+    }),
+    null
+  );
 });
 
 // --------------------------------------------------------------------------

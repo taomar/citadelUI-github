@@ -42,6 +42,7 @@ import {
   workspaceRegistry,
 } from './workspace-context.mjs';
 import { createGitHubPanel } from './github-setup.mjs';
+import { guardedHandler } from './single-flight.mjs';
 import { githubSessions } from './github-session-manager.mjs';
 import { BrowserDirectoryProvider } from './directory-provider.mjs';
 import { environmentLocation, environmentSourceOf, isGitHubEnvironment } from './registry.mjs';
@@ -507,7 +508,7 @@ function editContext(doc) {
     },
     paramValue: (name) => editableValue(params.get(name) && params.get(name).value),
     findingsFor: (name) => findings.filter((finding) => finding.param === name),
-    saveSubscriptionId: async ({ environmentName, value, expectedHash }) => {
+    saveSubscriptionId: guardedHandler(async ({ environmentName, value, expectedHash }) => {
       const confirmed = await confirmDialog({
         title: 'Update Azure subscription ID?',
         message:
@@ -537,7 +538,7 @@ function editContext(doc) {
         result.changed ? 'Azure subscription ID updated in the azd environment.' : 'Subscription ID is unchanged.',
         'ok'
       );
-    },
+    }, { key: 'save-subscription-id' }),
     accessTargets: state.accessTargets,
     applyObject: (path, source, fields) => {
       const target = path.reduce((value, segment) => value && value[segment], Object.fromEntries(
@@ -1065,7 +1066,10 @@ async function savePolicy() {
         'button',
         {
           class: 'btn btn-primary',
-          onclick: async () => {
+          // Same guarantee as the parameter save: one click, one commit.
+          // Keyed by the operation, so a rebuilt modal cannot hand out a fresh
+          // lock while the previous policy save is still running.
+          onclick: guardedHandler(async () => {
             const preserved = captureContractEdits(state);
             const result = await withStatus('Saving\u2026', () => api.savePolicy(payload));
             if (!result) return;
@@ -1081,7 +1085,7 @@ async function savePolicy() {
                 : 'Nothing changed.',
               'ok'
             );
-          },
+          }, { key: 'save-policy' }),
         },
         'Save policy'
       ),
@@ -1122,7 +1126,20 @@ async function openReview() {
     ),
     [
       h('button', { class: 'btn', onclick: closeModal }, 'Back'),
-      h('button', { class: 'btn btn-primary', onclick: commitSave }, 'Save changes'),
+      // Guarded, not merely awaited. Two clicks on this button used to run two
+      // saves from the same reviewed head, producing two commits with an
+      // identical tree — one on the branch, one rescued onto a branch of its
+      // own. The second click is dropped and the button says so.
+      h(
+        'button',
+        {
+          class: 'btn btn-primary',
+          // Keyed by the operation, not by this button. A modal rebuild must not
+          // hand out a fresh lock while the previous save is still in flight.
+          onclick: guardedHandler(commitSave, { key: 'save-parameters' }),
+        },
+        'Save changes'
+      ),
     ]
   );
 }
