@@ -1,0 +1,34 @@
+# Citadel UI — the azd project for the *application*.
+#
+# This file deliberately lives here, in `CitadelUI/`, and not at the repository
+# root. The root already has an `azure.yaml`, and it belongs to something else:
+# it declares `ai-citadel-governance-hub` with `infra: bicep/infra`, which is the
+# Citadel APIM platform. That platform is not this application's infrastructure —
+# it is this application's *data*. `shared/source-plan.mjs` names
+# `bicep/infra/main.bicepparam` as MAIN_PATH, the exact file the Main editor
+# opens.
+#
+# So running `azd up` at the root would deploy the wrong product entirely, and
+# generating infrastructure there would overwrite the very files this editor
+# exists to edit. Everything for this deployment stays inside `CitadelUI/`.
+name: citadel-ui
+metadata:
+  template: citadel-ui@1.0.0
+
+infra:
+  provider: bicep
+  path: infra
+  module: main
+
+services:
+  citadelui:
+    project: .
+    # `docker`, not `js`: this application has no package.json, no lockfile and
+    # no node_modules, and its Dockerfile removes npm from the runtime image.
+    # There is nothing here for a Node build pack to do, and inviting one would
+    # undo a deliberate supply-chain position.
+    language: docker
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: .

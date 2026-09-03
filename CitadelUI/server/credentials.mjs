@@ -44,12 +44,24 @@
  * The key file is read by path and its bytes never enter an environment
  * variable, an image layer, a command line, the registry, the audit, or the
  * activity log.
+ *
+ * ## Where the key comes from
+ *
+ * The key material arrives through a *source* (`credential-key-source.mjs`) —
+ * a mounted file locally, a secret in Azure Key Vault when running in Container
+ * Apps, where there is no host to mount from. That seam is the only thing the
+ * cloud changed. Everything below it — the envelope, the AAD binding, the
+ * refusal to stretch a short key, the decision to fail closed rather than
+ * degrade — is identical whatever the source, and must stay that way. A key that
+ * arrives from a vault is not more trustworthy than one that arrives from a
+ * disk, and is validated exactly as hard.
  */
 import { createCipheriv, createDecipheriv, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { atomicJson } from './atomic-json.mjs';
+import { createKeySource } from './credential-key-source.mjs';
 
 export const ENVELOPE_VERSION = 1;
 const KEY_BYTES = 32;
@@ -150,6 +162,7 @@ export class CredentialVault {
   constructor(options = {}) {
     this.directory = join(options.dataRoot, 'settings', 'credentials');
     this.keyFile = options.keyFile ?? process.env.CITADEL_CREDENTIAL_KEY_FILE ?? null;
+    this.keySource = createKeySource(options);
     this.now = options.now || (() => Date.now());
     this.key = null;
     this.reason = 'not-initialised';
@@ -157,28 +170,28 @@ export class CredentialVault {
   }
 
   /**
-   * Load the key if one is mounted.
+   * Load the key if the configured source can supply one.
    *
    * A missing or malformed key is not a startup failure. The product still
    * works; the persistence option is simply unavailable and the UI says so,
    * because refusing to boot would turn a convenience feature into an outage.
+   *
+   * Note what is deliberately *not* here: a fallback. If the source is a vault
+   * and the vault cannot be reached, this does not quietly look for a file, and
+   * it certainly does not carry on without encryption. An unreachable vault
+   * yields no key, and no key means no persistence — the same answer an absent
+   * key file has always given.
    */
   async initialize() {
-    if (!this.keyFile || typeof this.keyFile !== 'string') {
-      this.reason = 'no-key-file';
+    const { bytes, reason } = await this.keySource.read();
+    if (!bytes) {
+      this.reason = reason;
       return this;
     }
-    let raw = null;
-    try {
-      raw = await readFile(this.keyFile);
-    } catch {
-      this.reason = 'key-file-unreadable';
-      return this;
-    }
-    const key = decodeMasterKey(raw);
-    wipe(raw);
+    const key = decodeMasterKey(bytes);
+    wipe(bytes);
     if (!key) {
-      this.reason = 'key-file-invalid';
+      this.reason = this.keySource.invalidReason;
       return this;
     }
     this.key = key;

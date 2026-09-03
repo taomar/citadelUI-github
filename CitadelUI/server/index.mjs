@@ -138,6 +138,53 @@ function sameToken(left, right) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/**
+ * Decide the one origin a state-changing request may carry.
+ *
+ * Until this deployment the answer could simply be derived: the server only ever
+ * ran on loopback, so the origin was `http://` plus the host it already
+ * enforced. Behind a Container Apps ingress that derivation is wrong. TLS is
+ * terminated at the edge, so the browser sends `https://<fqdn>` while the
+ * derived value still says `http://`, and the exact-match in
+ * `assertBrowserRequest` then rejects every write with 403.
+ *
+ * That failure is worth naming, because it is the nastiest shape available: the
+ * page loads, the health probe passes, the container reports healthy, and only
+ * saving fails. "Looks fine, is broken" costs far more to diagnose than a
+ * container that refuses to start.
+ *
+ * So the origin becomes configurable — and *only* configurable. The comparison
+ * stays an exact string match. There is no prefix matching, no scheme-agnostic
+ * compare and no wildcard here, because each of those would turn a control that
+ * answers "yes or no" into one that answers "probably".
+ *
+ * A path, query, fragment or embedded credential is refused outright rather than
+ * trimmed. An `Origin` header never contains any of them, so a value carrying
+ * one cannot match anything, and quietly repairing it would hide the operator's
+ * mistake behind the same silent-write-failure this exists to prevent.
+ */
+export function resolveAllowedOrigin(explicit, allowedHost, env = process.env) {
+  const configured = (explicit || env.CITADEL_ALLOWED_ORIGIN || '').trim();
+  if (!configured) return `http://${allowedHost}`;
+  let url;
+  try {
+    url = new URL(configured);
+  } catch {
+    throw new Error('Invalid Citadel allowed origin.');
+  }
+  if (
+    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+    url.username ||
+    url.password ||
+    url.pathname !== '/' ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error('Invalid Citadel allowed origin.');
+  }
+  return url.origin;
+}
+
 function assertBrowserRequest(req, allowedHost, allowedOrigin, sessionToken, stateChanging) {
   if (req.headers.host !== allowedHost) {
     throw transactionError(421, 'INVALID_HOST', 'Request host is not allowed.');
@@ -585,7 +632,7 @@ export async function createCitadelServer(options = {}) {
   const sharedRoot = resolve(options.sharedRoot || DEFAULT_SHARED_ROOT);
   const dataRoot = resolve(options.dataRoot || DEFAULT_DATA_ROOT);
   const allowedHost = options.allowedHost || DEFAULT_ALLOWED_HOST;
-  const allowedOrigin = options.allowedOrigin || `http://${allowedHost}`;
+  const allowedOrigin = resolveAllowedOrigin(options.allowedOrigin, allowedHost);
   const registryNamespace =
     options.registryNamespace || process.env.CITADEL_REGISTRY_NAMESPACE || 'citadel-ui';
   const testRuntime =
