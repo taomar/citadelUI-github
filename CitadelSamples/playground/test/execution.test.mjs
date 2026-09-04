@@ -160,15 +160,34 @@ test('an unregistered az operation is refused before it can be spawned', () => {
 test('`az rest` is restricted to the approved method and to ARM resource paths', () => {
   const step = (args) => ({ id: 'read-backend-1', type: 'azure-cli', command: { executable: 'az', args } });
   assert.throws(
-    () => resolveAzOperation('circuit-breaker-check', step(['rest', '--method', 'post', '--uri', '/subscriptions/x'])),
+    () =>
+      resolveAzOperation(
+        'circuit-breaker-check',
+        step(['rest', '--method', 'post', '--uri', '/subscriptions/x', '-o', 'json']),
+      ),
     /not approved/,
   );
   assert.throws(
-    () => resolveAzOperation('circuit-breaker-check', step(['rest', '--method', 'get', '--uri', 'https://evil.test/'])),
+    () =>
+      resolveAzOperation(
+        'circuit-breaker-check',
+        step(['rest', '--method', 'get', '--uri', 'https://evil.test/', '-o', 'json']),
+      ),
     /not an ARM resource path/,
   );
   assert.doesNotThrow(() =>
-    resolveAzOperation('circuit-breaker-check', step(['rest', '--method', 'get', '--uri', '/subscriptions/x/backends/y'])),
+    resolveAzOperation(
+      'circuit-breaker-check',
+      step([
+        'rest',
+        '--method',
+        'get',
+        '--uri',
+        '/subscriptions/00000000-1111-2222-3333-444444444444/resourceGroups/rg/providers/Microsoft.ApiManagement/service/apim/backends/y?api-version=2024-06-01-preview',
+        '-o',
+        'json',
+      ]),
+    ),
   );
 });
 
