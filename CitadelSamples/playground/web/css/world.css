@@ -1,0 +1,496 @@
+/* ============================================================================
+   Citadel Publish Playground — foundation
+
+   THE WORLD is the Citadel control plane, rebuilt here rather than borrowed:
+   a deep Azure-blue masthead frames a bright paper sheet, and colour owns that
+   one region so the working surface stays legible. Rules are hairlines. A
+   control is a well sunk into the sheet with a single inner shadow along its
+   top, never a filled grey block — an empty recess reads as absence, where an
+   empty block reads as presence. Two elevations exist and nothing sits between
+   them.
+
+   RAMPS, named for role rather than hue:
+     --nav / --nav-active / --nav-rule   the frame: masthead, selection, rules
+     --ground / --band / --sunk          the chrome: rails, sticky bands
+     --sheet / --well / --zebra          the paper: surface, control, banding
+     --ink-1 / --ink-2 / --ink-3         one ink at three weights
+
+   COLOUR IS SEMANTIC. Azure blue carries action and current position; cloud
+   teal identifies a value sourced outside this page — a discovered endpoint, a
+   deployment output; status hues communicate outcome and nothing else.
+
+   TYPE: Segoe UI Variable at its intended optical sizes, and Cascadia Mono for
+   every identifier, path, endpoint and value, because those are data. No
+   uppercasing: it deletes the word boundaries that make an identifier legible.
+
+   SIZING: no layout pixel. Tracks are ch/fr/minmax, type runs on a clamp()
+   scale, control widths are stated in rem and keyed to the length of the value
+   they hold rather than to the space beside them.
+   ========================================================================== */
+
+:root {
+  /* --- the chrome ------------------------------------------------------- */
+  --ground: #f1f5f9;
+  --band: #f6f9fc;
+  --sunk: #d5e0eb;
+
+  /* --- the frame: the one region colour owns ---------------------------- */
+  --nav: #0b3c68;
+  --nav-hover: #10497b;
+  --nav-active: #15558e;
+  --nav-rule: #2a6ba3;
+  --nav-ink: #ffffff;
+  --nav-muted: #c3dcf2;
+
+  /* --- the paper -------------------------------------------------------- */
+  --sheet: #ffffff;
+  --well: #fafcfe;
+  --zebra: #f5f9fc;
+
+  /* --- rules: a hairline, never a border -------------------------------- */
+  --rule: #d8e2ec;
+  --rule-strong: #b3c3d2;
+  --rule-soft: #e6ecf3;
+  --control-stroke: #64758a;
+
+  /* --- ink -------------------------------------------------------------- */
+  --ink-1: #111827;
+  --ink-2: #344150;
+  --ink-3: #526171;
+
+  /* --- action, current position, focus ---------------------------------- */
+  --brand: #0f6cbd;
+  --brand-hover: #115ea3;
+  --brand-pressed: #0c3b5e;
+  --brand-wash: #eaf3fc;
+  --brand-line: #b4d6f4;
+  --on-brand: #ffffff;
+
+  /* --- provenance: sourced outside this page ---------------------------- */
+  --cloud: #006b8f;
+  --cloud-wash: #e6f4f8;
+  --cloud-line: #a4d5e3;
+
+  /* --- validity --------------------------------------------------------- */
+  --success: #107c10;
+  --success-wash: #e8f5e9;
+  --success-line: #9fd39f;
+
+  --warning: #8a3707;
+  --warning-wash: #fff4ce;
+  --warning-line: #e6c96c;
+
+  --danger: #c50f1f;
+  --danger-wash: #fde7e9;
+  --danger-line: #e7a7ad;
+  --danger-ink: #111827;
+
+  /* --- type ------------------------------------------------------------- */
+  --sans: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --sans-display: 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --sans-small: 'Segoe UI Variable Small', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'Cascadia Mono', 'Cascadia Code', ui-monospace, Consolas, 'Liberation Mono', monospace;
+
+  --t-mark: 0.6875rem;
+  --t-meta: 0.78125rem;
+  --t-body: 0.875rem;
+  --t-lead: 1rem;
+  --t-micro: var(--t-mark);
+  --t-small: var(--t-meta);
+  --t-h3: var(--t-lead);
+  --t-h2: clamp(1rem, 0.95rem + 0.2vw, 1.0625rem);
+  --t-h1: clamp(1.125rem, 1.05rem + 0.3vw, 1.25rem);
+
+  /* --- space: 2 · 4 · 8 · 12 · 16 · 24 · 32 · 48 ------------------------ */
+  --sp-1: 0.125rem;
+  --sp-2: 0.25rem;
+  --sp-3: 0.25rem;
+  --sp-4: 0.5rem;
+  --sp-5: 0.75rem;
+  --sp-6: 1rem;
+  --sp-7: 1.5rem;
+  --sp-8: 2rem;
+  --sp-9: 3rem;
+
+  --gutter: clamp(0.75rem, 0.4rem + 1.1vw, 1.5rem);
+
+  --r-1: 4px;
+  --r-2: 5px;
+  --r-3: 6px;
+
+  /* --- control geometry: four widths, keyed to the value ---------------- */
+  --w-num: 5.5rem;
+  --w-short: 12.5rem;
+  --w-id: 20rem;
+  --w-long: 28.75rem;
+
+  --ctl-h: 1.875rem;
+  --ctl-h-sm: 1.625rem;
+  --row-h: 2rem;
+
+  /* --- elevation: exactly two ------------------------------------------- */
+  --lift: 0 6px 20px -6px rgba(15, 18, 22, 0.18), 0 1px 3px rgba(15, 18, 22, 0.1);
+  --focus-ring: 0 0 0 2px var(--sheet), 0 0 0 4px var(--brand);
+  --sink: inset 0 1px 0 rgba(15, 18, 22, 0.06);
+
+  /* --- motion ----------------------------------------------------------- */
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --fast: 140ms;
+  --slow: 180ms;
+
+  /* --- shell tracks ----------------------------------------------------- */
+  --rail-directory: clamp(13rem, 17vw, 19rem);
+  --rail-context: clamp(13rem, 16vw, 18rem);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--ground);
+  color: var(--ink-1);
+  font: var(--t-body) / 1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--mono);
+  font-size: 0.94em;
+  font-variant-ligatures: none;
+}
+
+pre {
+  margin: 0;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-family: var(--sans-display);
+  font-weight: 600;
+  line-height: 1.22;
+  letter-spacing: -0.006em;
+}
+
+p {
+  margin: 0;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+a {
+  color: var(--brand);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+a:active {
+  color: var(--brand-pressed);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--r-2);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip {
+  position: absolute;
+  left: var(--sp-4);
+  top: -3rem;
+  z-index: 100;
+  padding: var(--sp-4) var(--sp-5);
+  background: var(--sheet);
+  color: var(--brand);
+  border: 1px solid var(--brand);
+  border-radius: var(--r-2);
+  font-weight: 600;
+  transition: top var(--fast) var(--ease);
+}
+
+.skip:focus {
+  top: var(--sp-4);
+  text-decoration: none;
+}
+
+/* ============================================================== the shell */
+
+/* Four regions on two rows. Each rail is its own named track so it can be
+   removed at a narrow width without a second grid definition. */
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail-directory) minmax(0, 1fr) var(--rail-context);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    'masthead masthead masthead'
+    'directory sheet context';
+  height: 100dvh;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------- the masthead */
+
+.masthead {
+  grid-area: masthead;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: var(--sp-5);
+  min-height: 2.5rem;
+  padding: var(--sp-3) var(--gutter);
+  background: var(--nav);
+  color: var(--nav-ink);
+  border-bottom: 1px solid var(--nav-rule);
+}
+
+.mh-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex: none;
+  min-height: var(--ctl-h);
+  color: var(--nav-ink);
+}
+
+.mh-mark {
+  width: 0.625rem;
+  height: 0.625rem;
+  flex: none;
+  background: var(--nav-ink);
+  transform: rotate(45deg);
+  border-radius: 2px;
+}
+
+.mh-name {
+  font-family: var(--sans-display);
+  font-size: var(--t-small);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.mh-mode {
+  font-size: var(--t-small);
+  font-weight: 400;
+  color: var(--nav-muted);
+}
+
+.mh-source {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.mh-source-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  min-width: 0;
+  font-size: var(--t-small);
+}
+
+.mh-source-label {
+  flex: none;
+  color: var(--nav-muted);
+}
+
+.mh-source-file {
+  min-width: 0;
+  color: var(--nav-ink);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mh-source-hash {
+  min-width: 0;
+  color: var(--nav-muted);
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mh-capability {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex: none;
+  min-height: var(--ctl-h);
+  padding: 0 var(--sp-5);
+  border: 1px solid var(--nav-rule);
+  border-radius: var(--r-2);
+  background: var(--nav-hover);
+  color: var(--nav-ink);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 600;
+}
+
+.mh-capability::before {
+  content: '';
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--warning-line);
+}
+
+.mh-capability[data-can-execute='true']::before {
+  background: var(--success-line);
+}
+
+/* ------------------------------------------------------------------ rails */
+
+.rail {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  background: var(--band);
+}
+
+.rail-directory {
+  grid-area: directory;
+  border-right: 1px solid var(--rule-strong);
+}
+
+.rail-context {
+  grid-area: context;
+  border-left: 1px solid var(--rule-strong);
+}
+
+.rail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-5) var(--sp-5) var(--sp-3);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--ink-3);
+}
+
+.rail-count {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: var(--t-micro);
+  color: var(--ink-3);
+}
+
+/* ---------------------------------------------------------------- the sheet */
+
+.sheet {
+  grid-area: sheet;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  background: var(--sheet);
+}
+
+.sheetwrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  max-width: min(100%, 100rem);
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+
+/* ------------------------------------------------------------- responsive */
+
+/* Below ~66rem the two rails cannot hold their labels alongside the sheet.
+   Both are removed and replaced by controls that live in the sheet itself: a
+   native selector for the directory, a disclosure for the context. This is a
+   different shape, not a squeezed one. */
+@media (max-width: 66rem) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'masthead'
+      'sheet';
+  }
+
+  .rail {
+    display: none;
+  }
+
+  .masthead {
+    grid-template-columns: max-content minmax(0, 1fr);
+    row-gap: var(--sp-3);
+  }
+
+  .mh-capability {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+}
+
+@media (min-width: 66.0625rem) {
+  .compact-only {
+    display: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

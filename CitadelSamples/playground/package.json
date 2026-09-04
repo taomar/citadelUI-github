@@ -1,0 +1,19 @@
+{
+  "name": "citadel-publish-playground",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Zero-build guided playground for the Citadel publish-contract validation notebook.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test",
+    "check": "node scripts/check.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "verify": "node scripts/check.mjs && node --test && node scripts/smoke.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

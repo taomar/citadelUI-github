@@ -1,0 +1,99 @@
+{
+  "$comment": "Provenance for the imported source notebook and the sample-to-cell map. Verified by test/catalogue.test.mjs, which recomputes the SHA-256 from the file on disk.",
+  "schemaVersion": 1,
+  "importedAt": "2026-09-04",
+  "importedBy": "Citadel Publish Playground build",
+  "upstream": {
+    "repository": "Azure-Samples/AI-Hub-Gateway-Solution-Accelerator",
+    "url": "https://github.com/Azure-Samples/AI-Hub-Gateway-Solution-Accelerator",
+    "path": "validation/citadel-publish-contract-tests.ipynb",
+    "ref": "main",
+    "commit": "ede33909b10800700bc1a5394af84efbe2add892",
+    "commitDate": "2026-08-14",
+    "gitBlobSha1": "e07fdb18607db6ea1b0f8eef6920f24a88cb7e73",
+    "rawUrl": "https://raw.githubusercontent.com/Azure-Samples/AI-Hub-Gateway-Solution-Accelerator/main/validation/citadel-publish-contract-tests.ipynb",
+    "verifiedAgainstUpstream": true,
+    "verificationNote": "The upstream raw file was fetched and hashed during the build; its SHA-256 matches the imported copy byte for byte."
+  },
+  "importedFile": {
+    "path": "CitadelSamples/citadel-publish-contract-tests.ipynb",
+    "sha256": "ee706b4dac2978d4f35885ea5f77a7d6a12add337e7f959690550be28d4523bb",
+    "bytes": 66241,
+    "lineEndings": "LF",
+    "modified": false,
+    "note": "Imported unchanged. This repository also carries the same notebook at validation/citadel-publish-contract-tests.ipynb, which differs only in line endings (CRLF from the Windows checkout) and therefore has a different SHA-256 (3026014e8639773261166f00ced36085c7595d10fc2498215da9fa7ff8df0b0e) while sharing the same git blob SHA-1."
+  },
+  "notebook": {
+    "cellCount": 36,
+    "markdownCellCount": 17,
+    "codeCellCount": 19,
+    "outputCount": 0,
+    "attachmentCount": 0,
+    "codeCellIndexes": [2, 4, 6, 8, 10, 12, 14, 15, 17, 18, 20, 22, 24, 26, 28, 29, 31, 33, 35],
+    "nbformat": "4.5"
+  },
+  "sampleCount": 19,
+  "sampleToCellMap": [
+    { "id": "azure-context-check", "group": "discover", "cells": [3, 4], "codeCells": [4] },
+    { "id": "apim-discovery", "group": "discover", "cells": [5, 6], "codeCells": [6] },
+    { "id": "foundry-enable-a2a", "group": "prepare", "cells": [7, 8], "codeCells": [8] },
+    { "id": "apim-foundry-grant", "group": "prepare", "cells": [9, 10], "codeCells": [10] },
+    { "id": "weather-api-ensure", "group": "prepare", "cells": [11, 12], "codeCells": [12] },
+    { "id": "publish-assets", "group": "publish-grant", "cells": [13, 14, 15], "codeCells": [14, 15] },
+    { "id": "access-contract-deploy", "group": "publish-grant", "cells": [16, 17], "codeCells": [17] },
+    { "id": "access-contract-kv-verify", "group": "publish-grant", "cells": [18], "codeCells": [18] },
+    { "id": "weather-mcp-discovery", "group": "exercise", "cells": [19, 20], "codeCells": [20] },
+    { "id": "learn-mcp-discovery", "group": "exercise", "cells": [19, 20], "codeCells": [20] },
+    { "id": "a2a-agent-card", "group": "exercise", "cells": [21, 22], "codeCells": [22] },
+    { "id": "a2a-message-send", "group": "exercise", "cells": [21, 22], "codeCells": [22] },
+    { "id": "agent-framework-hr-question", "group": "exercise", "cells": [27, 28], "codeCells": [28] },
+    { "id": "weather-tools-call", "group": "exercise", "cells": [29], "codeCells": [29] },
+    { "id": "usage-metrics", "group": "observe", "cells": [23, 24], "codeCells": [24] },
+    { "id": "circuit-breaker-check", "group": "observe", "cells": [25, 26], "codeCells": [26] },
+    { "id": "tool-rate-limit-burst", "group": "policy", "cells": [30, 31], "codeCells": [31] },
+    { "id": "agent-rate-limit-burst", "group": "policy", "cells": [30, 31], "codeCells": [31] },
+    { "id": "cleanup", "group": "lifecycle", "cells": [34, 35], "codeCells": [35] }
+  ],
+  "nonRecipeCodeCells": [
+    {
+      "cell": 2,
+      "mappedTo": "shared profiles",
+      "reason": "Notebook variable initialisation. Modelled as the five shared profiles (Hub, Gateway access, Foundry, Key Vault, Policy) rather than a runnable recipe, because it only assigns configuration."
+    },
+    {
+      "cell": 33,
+      "mappedTo": "per-recipe expected results",
+      "reason": "Results summary. It prints the notebook's own `results` dict, which several cells never populate, so the playground reports each recipe's assertions directly instead of reproducing an incomplete roll-up."
+    }
+  ],
+  "excludedScenarios": [
+    {
+      "id": "image-generation",
+      "reason": "The source notebook contains no image or multimodal sample. None of its 19 code cells generates, uploads or interprets an image."
+    },
+    {
+      "id": "llm-inference",
+      "reason": "The notebook grants LLM APIs and writes an llm-token-limit into the product policy but never sends a completion or chat request."
+    },
+    {
+      "id": "model-rbac",
+      "reason": "validate-model-access and the allowed-model list appear in the generated policy but are never exercised."
+    },
+    {
+      "id": "api-center",
+      "reason": "All three assets set publishToApiCenter to false, so no cell registers anything with API Center."
+    }
+  ],
+  "referenceFiles": [
+    {
+      "path": "bicep/infra/modules/apim/sample/weather/openapi.json",
+      "usedBy": ["weather-api-ensure", "weather-tools-call"],
+      "note": "Read verbatim by notebook cell 12. Defines the get-weather operation and the CityWeather response schema."
+    },
+    {
+      "path": "bicep/infra/modules/apim/sample/weather/policy.xml",
+      "usedBy": ["weather-api-ensure", "weather-tools-call"],
+      "note": "Read verbatim by notebook cell 12. Returns synthetic weather data, using Fahrenheit for Seattle, New York City and Los Angeles and Celsius otherwise."
+    }
+  ]
+}

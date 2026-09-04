@@ -1,0 +1,250 @@
+/**
+ * Validation matrices: required, conditional, typed, and the acknowledgement
+ * guards that stand between a risky recipe and an executor.
+ */
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { CATALOGUE, acknowledgementFor, buildSamplePlan, getSample, validateSample } from '../src/catalogue/index.mjs';
+import { coerceValue, errorsOf, evaluateCondition, isBlank, validateFields } from '../src/core/validation.mjs';
+import { createUnavailableExecutor, runPlan } from '../src/core/executor.mjs';
+import { makeEmptyReader, makeFixtureReader } from './helpers/fixtures.mjs';
+
+function errorPaths(sample, read) {
+  return errorsOf(validateSample(sample, read).issues).map((issue) => issue.path);
+}
+
+test('a blank, whitespace, empty-array or REPLACE value counts as not supplied', () => {
+  for (const value of ['', '   ', 'REPLACE', null, undefined, []]) {
+    assert.equal(isBlank(value), true, `${JSON.stringify(value)} should be blank`);
+  }
+  for (const value of ['x', 0, false, ['a']]) {
+    assert.equal(isBlank(value), false, `${JSON.stringify(value)} should not be blank`);
+  }
+});
+
+test('required hub fields block every recipe that uses them', () => {
+  const read = makeEmptyReader();
+  const sample = getSample('apim-discovery');
+  const paths = errorPaths(sample, read);
+  assert.ok(paths.includes('hub.subscriptionId'));
+  assert.ok(paths.includes('hub.resourceGroupName'));
+  assert.ok(paths.includes('hub.location'));
+});
+
+test('a complete configuration produces no errors for any recipe', () => {
+  const read = makeFixtureReader();
+  for (const sample of CATALOGUE.samples) {
+    const result = validateSample(sample, read);
+    assert.equal(
+      result.satisfied,
+      true,
+      `${sample.id} is not satisfied: ${JSON.stringify(errorsOf(result.issues))}`,
+    );
+  }
+});
+
+test('conditional Foundry fields are required only when the A2A asset is on', () => {
+  const sample = getSample('foundry-enable-a2a');
+  const withoutFoundry = {
+    'foundry.accountName': '',
+    'foundry.projectName': '',
+    'foundry.agentName': '',
+  };
+
+  const on = errorPaths(sample, makeFixtureReader({ ...withoutFoundry, 'foundry.enableA2aAsset': true }));
+  assert.deepEqual(on.sort(), ['foundry.accountName', 'foundry.agentName', 'foundry.projectName']);
+
+  const off = errorPaths(sample, makeFixtureReader({ ...withoutFoundry, 'foundry.enableA2aAsset': false }));
+  assert.deepEqual(off, [], 'nothing should be required when the A2A asset is off');
+});
+
+test('the Key Vault name is required only when Key Vault publishing is on', () => {
+  const sample = getSample('access-contract-deploy');
+  const on = errorPaths(sample, makeFixtureReader({ 'keyVault.name': '', 'keyVault.useAccessContractKv': true }));
+  assert.ok(on.includes('keyVault.name'));
+
+  const off = errorPaths(sample, makeFixtureReader({ 'keyVault.name': '', 'keyVault.useAccessContractKv': false }));
+  assert.ok(!off.includes('keyVault.name'));
+});
+
+test('the conditional matrix holds for every conditional field in the catalogue', () => {
+  const conditionals = [];
+  for (const profile of CATALOGUE.profiles) {
+    for (const field of profile.fields) {
+      if (field.requiredWhen) conditionals.push({ path: `${profile.id}.${field.name}`, field });
+    }
+  }
+  assert.ok(conditionals.length >= 4, 'the catalogue should have conditional fields');
+
+  for (const { path, field } of conditionals) {
+    const read = makeFixtureReader({ [path]: '' });
+    const holds = evaluateCondition(field.requiredWhen, read);
+    const users = CATALOGUE.samples.filter((sample) =>
+      sample.usesProfiles.includes(path.split('.')[0]),
+    );
+    for (const sample of users) {
+      const paths = errorPaths(sample, read);
+      assert.equal(
+        paths.includes(path),
+        holds,
+        `${sample.id}: ${path} required=${paths.includes(path)} but condition holds=${holds}`,
+      );
+    }
+  }
+});
+
+test('type validation rejects a non-numeric integer, an out-of-range value and a bad GUID', () => {
+  const fields = [
+    { name: 'count', label: 'Count', type: 'integer', classification: 'required', min: 1, max: 10 },
+  ];
+  const bad = validateFields(fields, () => 'twelve');
+  assert.ok(bad.issues.some((issue) => /whole number/.test(issue.message)));
+
+  const high = validateFields(fields, () => '99');
+  assert.ok(high.issues.some((issue) => /at most 10/.test(issue.message)));
+
+  const low = validateFields(fields, () => '0');
+  assert.ok(low.issues.some((issue) => /at least 1/.test(issue.message)));
+
+  const guid = validateFields(
+    [
+      {
+        name: 'subscriptionId',
+        label: 'Subscription',
+        type: 'string',
+        classification: 'required',
+        pattern: /^[0-9a-f-]{36}$/,
+        patternMessage: 'Subscription ID must be a GUID.',
+      },
+    ],
+    () => 'not-a-guid',
+  );
+  assert.ok(guid.issues.some((issue) => /must be a GUID/.test(issue.message)));
+});
+
+test('an https-only URL field rejects http and a bare host', () => {
+  const fields = [{ name: 'gatewayUrl', label: 'Gateway URL', type: 'url', classification: 'required' }];
+  for (const value of ['http://example.net', 'example.net', 'ftp://example.net']) {
+    const result = validateFields(fields, () => value);
+    assert.ok(result.issues.some((issue) => /https:\/\/ URL/.test(issue.message)), `${value} should be rejected`);
+  }
+  assert.equal(validateFields(fields, () => 'https://example.net').issues.length, 0);
+});
+
+test('a blank derived value warns rather than blocking', () => {
+  const sample = getSample('access-contract-kv-verify');
+  const read = makeFixtureReader({ 'keyVault.keySecretName': '', 'keyVault.endpointSecretNames': [] });
+  const result = validateSample(sample, read);
+  assert.equal(result.satisfied, true, 'derived values must not block plan generation');
+  const warnings = result.issues.filter((issue) => issue.severity === 'warning').map((issue) => issue.path);
+  assert.ok(warnings.includes('keyVault.keySecretName'));
+  assert.ok(warnings.includes('keyVault.endpointSecretNames'));
+});
+
+test('coercion handles integers, booleans and lists from raw form values', () => {
+  const integer = { name: 'n', label: 'N', type: 'integer' };
+  assert.equal(coerceValue(integer, '42'), 42);
+  assert.equal(coerceValue(integer, ' 42 '), 42);
+  assert.ok(Number.isNaN(coerceValue(integer, 'x')));
+  assert.equal(coerceValue(integer, ''), undefined);
+
+  const boolean = { name: 'b', label: 'B', type: 'boolean' };
+  assert.equal(coerceValue(boolean, 'true'), true);
+  assert.equal(coerceValue(boolean, 'false'), false);
+  assert.equal(coerceValue(boolean, false), false);
+
+  const list = { name: 'l', label: 'L', type: 'string-list' };
+  assert.deepEqual(coerceValue(list, 'a\nb , c'), ['a', 'b', 'c']);
+  assert.deepEqual(coerceValue(list, ['a', ' b ']), ['a', 'b']);
+});
+
+/* --------------------------------------------------- acknowledgement gate */
+
+test('read-only recipes need no acknowledgement; the other eight do', () => {
+  for (const sample of CATALOGUE.samples) {
+    const gate = acknowledgementFor(sample, false);
+    if (sample.risk.level === 'read-only') {
+      assert.equal(gate.required, false, `${sample.id} should not require acknowledgement`);
+      assert.equal(gate.satisfied, true);
+    } else {
+      assert.equal(gate.required, true, `${sample.id} should require acknowledgement`);
+      assert.equal(gate.satisfied, false);
+      assert.ok(gate.issues[0].message.length > 30);
+    }
+  }
+});
+
+test('a risky plan is blocked without acknowledgement, even with a capable executor', async () => {
+  const capable = {
+    id: 'fake',
+    describeCapability: () => ({ id: 'fake', kind: 'fake', canExecute: true, supportedStepTypes: ['http', 'azure-cli', 'artifact', 'library', 'assertion'] }),
+    supports: () => ({ supported: true, unsupportedStepTypes: [] }),
+    execute: async () => {
+      throw new Error('the executor must never be reached without acknowledgement');
+    },
+  };
+  const sample = getSample('cleanup');
+  const { plan, validation } = buildSamplePlan(sample, makeFixtureReader());
+  const result = await runPlan(capable, plan, {
+    validation,
+    acknowledgement: acknowledgementFor(sample, false),
+  });
+  assert.equal(result.state, 'blocked');
+  assert.equal(result.meta.reason, 'acknowledgement');
+});
+
+test('an invalid configuration is blocked before the executor is reached', async () => {
+  const capable = {
+    id: 'fake',
+    describeCapability: () => ({ canExecute: true, supportedStepTypes: ['http'] }),
+    supports: () => ({ supported: true, unsupportedStepTypes: [] }),
+    execute: async () => {
+      throw new Error('the executor must never be reached for an invalid configuration');
+    },
+  };
+  const sample = getSample('weather-mcp-discovery');
+  const read = makeFixtureReader();
+  const { plan } = buildSamplePlan(sample, read);
+  const result = await runPlan(capable, plan, {
+    validation: { satisfied: false, issues: [{ message: 'Gateway URL is required.' }] },
+    acknowledgement: acknowledgementFor(sample, true),
+  });
+  assert.equal(result.state, 'blocked');
+  assert.equal(result.meta.reason, 'validation');
+});
+
+test('the non-production confirmation must be true, not merely present', () => {
+  for (const id of ['tool-rate-limit-burst', 'agent-rate-limit-burst', 'cleanup']) {
+    const sample = getSample(id);
+    const path = `samples.${id}.confirmNonProduction`;
+
+    const unconfirmed = validateSample(sample, makeFixtureReader({ [path]: false }));
+    assert.equal(unconfirmed.satisfied, false, `${id} must not be runnable unconfirmed`);
+    assert.ok(errorsOf(unconfirmed.issues).some((issue) => issue.path === path));
+
+    const confirmed = validateSample(sample, makeFixtureReader({ [path]: true }));
+    assert.equal(confirmed.satisfied, true, `${id} should be satisfied once confirmed`);
+  }
+});
+
+test('an unconfirmed burst produces no plan at all', () => {
+  const sample = getSample('tool-rate-limit-burst');
+  const { plan } = buildSamplePlan(
+    sample,
+    makeFixtureReader({ 'samples.tool-rate-limit-burst.confirmNonProduction': false }),
+  );
+  assert.equal(plan, null, 'no plan should be generated without the confirmation');
+});
+
+test('an acknowledged risky plan still reaches only an executor that can run it', async () => {
+  const sample = getSample('publish-assets');
+  const { plan, validation } = buildSamplePlan(sample, makeFixtureReader());
+  const result = await runPlan(createUnavailableExecutor(), plan, {
+    validation,
+    acknowledgement: acknowledgementFor(sample, true),
+  });
+  assert.equal(result.state, 'blocked');
+  assert.equal(result.meta.executor, 'unavailable');
+});

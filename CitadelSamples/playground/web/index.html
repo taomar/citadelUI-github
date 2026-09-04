@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Citadel Publish Playground</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/web/css/world.css" />
+    <link rel="stylesheet" href="/web/css/workbench.css" />
+  </head>
+  <body>
+    <!--
+      THESIS: A validation notebook is a run book, so this is a workbench, not a
+      gallery: one recipe on the bench at a time, everything else an index.
+      OWN-WORLD: Azure control plane. Deep Azure-blue masthead over a bright
+      paper sheet, cool chrome rails, Fluent blue for action and position, cloud
+      teal for values sourced outside the sheet, hairline rules, recessed wells,
+      Segoe for prose and Cascadia Mono for every identifier and value.
+      STORY: Find the recipe, read what it does and needs, fill only its inputs,
+      read the exact operation that would run, then see an honest result -
+      generated, blocked, or failed, never a fabricated pass.
+      FIRST VIEWPORT: Masthead carrying capability state; grouped recipe
+      directory left; the selected recipe centre under Guide, Configure,
+      Request, Response; readiness and provenance right.
+      FORM: Operations workbench. Brief-pinned direction.
+    -->
+    <a class="skip" href="#workbench">Skip to the selected recipe</a>
+
+    <div class="shell">
+      <header class="masthead">
+        <span class="mh-brand">
+          <span class="mh-mark" aria-hidden="true"></span>
+          <span class="mh-name">Citadel</span>
+          <span class="mh-mode">Publish Playground</span>
+        </span>
+
+        <div class="mh-source">
+          <span class="mh-source-line">
+            <span class="mh-source-label">Source notebook</span>
+            <code class="mh-source-file" id="source-file">citadel-publish-contract-tests.ipynb</code>
+          </span>
+          <code class="mh-source-hash" id="source-hash">sha256 …</code>
+        </div>
+
+        <span class="mh-capability" id="capability" data-can-execute="false">
+          <span id="capability-label">Checking execution capability…</span>
+        </span>
+      </header>
+
+      <nav class="rail rail-directory" id="directory" aria-label="Recipe directory">
+        <h2 class="rail-head" id="directory-heading">
+          Recipes
+          <span class="rail-count" id="directory-count"></span>
+        </h2>
+        <div class="dir-search">
+          <label class="visually-hidden" for="directory-search">Search recipes by name, group, risk or notebook cell</label>
+          <input
+            class="ctl ctl-sm"
+            id="directory-search"
+            type="search"
+            placeholder="Search name, group, risk, cell…"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+        <div class="dir-groups" id="directory-groups"></div>
+      </nav>
+
+      <main class="sheet" id="workbench" tabindex="-1">
+        <div class="sheetwrap">
+          <div class="sheet-sticky">
+            <div class="strip">
+              <div class="strip-top">
+                <h1 class="strip-title" id="sample-title">Select a recipe</h1>
+                <span class="strip-meta" id="sample-meta"></span>
+              </div>
+              <p class="strip-summary" id="sample-summary"></p>
+              <div class="strip-compact compact-only">
+                <label for="sample-select">Recipe</label>
+                <select class="ctl" id="sample-select"></select>
+              </div>
+              <div class="tabs" role="tablist" aria-label="Recipe views" id="tablist"></div>
+            </div>
+          </div>
+
+          <div class="sheet-body">
+            <div class="panel" id="panel-guide" role="tabpanel" aria-labelledby="tab-guide" tabindex="0"></div>
+            <div class="panel" id="panel-configure" role="tabpanel" aria-labelledby="tab-configure" tabindex="0" hidden></div>
+            <div class="panel" id="panel-request" role="tabpanel" aria-labelledby="tab-request" tabindex="0" hidden></div>
+            <div class="panel" id="panel-response" role="tabpanel" aria-labelledby="tab-response" tabindex="0" hidden></div>
+
+            <details class="ctx-compact compact-only" id="context-compact">
+              <summary>Readiness and provenance</summary>
+              <div id="context-compact-body"></div>
+            </details>
+          </div>
+        </div>
+      </main>
+
+      <aside class="rail rail-context" id="context" aria-label="Readiness and provenance"></aside>
+
+      <p class="visually-hidden" id="live" role="status" aria-live="polite"></p>
+    </div>
+
+    <script type="module" src="/web/js/main.mjs"></script>
+  </body>
+</html>

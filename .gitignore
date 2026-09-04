@@ -446,6 +446,10 @@ CitadelUI/.srv.log
 !CitadelUI/test/
 !CitadelUI/test/**
 
+# Citadel Samples playground tests are source too, for the same reason.
+!CitadelSamples/playground/test/
+!CitadelSamples/playground/test/**
+
 # Local agent recovery checkpoint
 /AGENT_PROGRESS.md
 
