@@ -20,8 +20,8 @@
       read the exact operation that would run, then see an honest result -
       generated, blocked, or failed, never a fabricated pass.
       FIRST VIEWPORT: Masthead carrying capability state; grouped recipe
-      directory left; the selected recipe centre under Guide, Code, Configure,
-      Review & approve, Output; readiness and provenance right.
+      directory left; protected source centre with its parameters and readiness
+      beside it; then Review & approve and Output.
       FORM: Operations workbench. Brief-pinned direction.
     -->
     <a class="skip" href="#workbench">Skip to the selected recipe</a>
@@ -67,8 +67,15 @@
 
       <nav class="rail rail-directory" id="directory" aria-label="Recipe directory">
         <h2 class="rail-head" id="directory-heading">
-          Recipes
+          <span class="rail-head-label">Recipes</span>
           <span class="rail-count" id="directory-count"></span>
+          <button
+            class="btn btn-ghost btn-sm directory-toggle"
+            type="button"
+            id="directory-toggle"
+            aria-label="Collapse recipe navigator"
+            aria-expanded="true"
+          >Hide</button>
         </h2>
         <div class="dir-search">
           <label class="visually-hidden" for="directory-search">Search recipes by name, group, risk or notebook cell</label>
@@ -93,6 +100,13 @@
                 <span class="strip-meta" id="sample-meta"></span>
               </div>
               <p class="strip-summary" id="sample-summary"></p>
+              <ol class="run-path" aria-label="Run path">
+                <li><span>1</span>Execution identity</li>
+                <li><span>2</span>Parameters</li>
+                <li><span>3</span>Protected code</li>
+                <li><span>4</span>Approve &amp; Run</li>
+                <li><span>5</span>Output</li>
+              </ol>
               <div class="strip-compact compact-only">
                 <label for="sample-select">Recipe</label>
                 <select class="ctl" id="sample-select"></select>
@@ -104,19 +118,11 @@
           <div class="sheet-body">
             <div class="panel" id="panel-guide" role="tabpanel" aria-labelledby="tab-guide" tabindex="0"></div>
             <div class="panel" id="panel-code" role="tabpanel" aria-labelledby="tab-code" tabindex="0" hidden></div>
-            <div class="panel" id="panel-configure" role="tabpanel" aria-labelledby="tab-configure" tabindex="0" hidden></div>
             <div class="panel" id="panel-request" role="tabpanel" aria-labelledby="tab-request" tabindex="0" hidden></div>
             <div class="panel" id="panel-response" role="tabpanel" aria-labelledby="tab-response" tabindex="0" hidden></div>
-
-            <details class="ctx-compact compact-only" id="context-compact">
-              <summary>Readiness and provenance</summary>
-              <div id="context-compact-body"></div>
-            </details>
           </div>
         </div>
       </main>
-
-      <aside class="rail rail-context" id="context" aria-label="Readiness and provenance"></aside>
 
       <p class="visually-hidden" id="live" role="status" aria-live="polite"></p>
     </div>

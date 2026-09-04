@@ -75,7 +75,7 @@ test('landmarks are present and labelled', () => {
   assert.match(html, /<header class="masthead">/);
   assert.match(html, /<nav class="rail rail-directory" id="directory" aria-label="Recipe directory">/);
   assert.match(html, /<main class="sheet" id="workbench" tabindex="-1">/);
-  assert.match(html, /<aside class="rail rail-context" id="context" aria-label="Readiness and provenance">/);
+  assert.doesNotMatch(html, /rail-context/, 'the former context rail must not create a fourth desktop column');
 });
 
 test('a skip link targets the main region', () => {
@@ -86,7 +86,7 @@ test('a skip link targets the main region', () => {
 test('the tab list and its panels are wired for assistive technology', () => {
   assert.match(html, /role="tablist"/);
   assert.match(html, /aria-label="Recipe views"/);
-  for (const id of ['guide', 'configure', 'request', 'response']) {
+  for (const id of ['guide', 'code', 'request', 'response']) {
     assert.match(html, new RegExp(`id="panel-${id}"[^>]*role="tabpanel"`), `panel-${id} is not a tabpanel`);
     assert.match(html, new RegExp(`id="panel-${id}"[^>]*aria-labelledby="tab-${id}"`), `panel-${id} is unlabelled`);
     assert.match(html, new RegExp(`id="panel-${id}"[^>]*tabindex="0"`), `panel-${id} is not focusable`);
@@ -167,7 +167,7 @@ test('every interactive component declares its states', () => {
     [/\.btn:disabled/, 'button disabled'],
     [/\.btn\[aria-busy='true'\]/, 'button loading'],
     [/\.ctl:hover:not\(:disabled\)/, 'input hover'],
-    [/\.ctl:focus/, 'input focus'],
+    [/\.ctl:focus-visible/, 'input focus'],
     [/\.ctl:disabled/, 'input disabled'],
     [/\.ctl\[aria-invalid='true'\]/, 'input error'],
     [/\.ctl\[data-needed='true'\]/, 'input needed'],
@@ -202,12 +202,32 @@ test('reduced motion is respected globally and for the busy indicator', () => {
   assert.match(workbench, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?animation: none/);
 });
 
+test('current interface guidelines keep zoom, paste, touch and motion safe', () => {
+  assert.doesNotMatch(html, /user-scalable\s*=\s*no|maximum-scale\s*=\s*1/);
+  assert.doesNotMatch(css, /transition:\s*all/);
+  assert.doesNotMatch(html, /\bonpaste\s*=/i);
+  assert.match(world, /touch-action: manipulation/);
+  assert.match(world, /-webkit-tap-highlight-color:/);
+});
+
 test('the layout changes shape rather than shrinking on a narrow viewport', () => {
   assert.match(world, /@media \(max-width: 66rem\)[\s\S]*?grid-template-areas:\s*\n?\s*'masthead'/);
   assert.match(world, /@media \(max-width: 66rem\)[\s\S]*?\.rail\s*\{\s*display: none/);
   assert.match(world, /\.compact-only\s*\{\s*display: none/, 'the compact controls are hidden on desktop');
   assert.match(html, /class="strip-compact compact-only"/, 'a native selector replaces the rail');
-  assert.match(html, /class="ctx-compact compact-only"/, 'a disclosure replaces the context rail');
+  assert.match(workbench, /\.parameter-pane\s*\{[\s\S]*?position: sticky/, 'parameters stay related to source on desktop');
+  assert.match(
+    workbench,
+    /@media \(max-width: 72rem\)[\s\S]*?\.parameter-pane\s*\{[\s\S]*?position: static/,
+    'the same parameter pane enters the narrow document flow',
+  );
+});
+
+test('Code owns one canonical parameter pane and there is no Configure workflow', () => {
+  assert.doesNotMatch(html, /panel-configure|tab-configure/);
+  assert.match(workbench, /\.code-workspace\s*\{[\s\S]*?grid-template-columns:/);
+  assert.match(workbench, /\.parameter-pane-summary/);
+  assert.match(workbench, /\.parameter-pane \.prow\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/);
 });
 
 test('no layout track is written in fixed pixels', () => {

@@ -139,8 +139,7 @@
   --slow: 180ms;
 
   /* --- shell tracks ----------------------------------------------------- */
-  --rail-directory: clamp(13rem, 17vw, 19rem);
-  --rail-context: clamp(13rem, 16vw, 18rem);
+  --rail-directory: clamp(10.5rem, 13vw, 14rem);
 }
 
 *,
@@ -185,6 +184,7 @@ h4 {
   font-weight: 600;
   line-height: 1.22;
   letter-spacing: -0.006em;
+  scroll-margin-top: 10rem;
 }
 
 p {
@@ -217,6 +217,15 @@ select,
 textarea {
   font: inherit;
   color: inherit;
+}
+
+a,
+button,
+summary,
+select,
+input[type='checkbox'] {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: rgb(15 108 189 / 0.16);
 }
 
 :focus-visible {
@@ -262,17 +271,21 @@ textarea {
 
 /* ============================================================== the shell */
 
-/* Four regions on two rows. Each rail is its own named track so it can be
-   removed at a narrow width without a second grid definition. */
+/* Three regions on two rows: navigation and the Code workspace never grow a
+   fourth column. Parameters live inside the workspace itself. */
 .shell {
   display: grid;
-  grid-template-columns: var(--rail-directory) minmax(0, 1fr) var(--rail-context);
+  grid-template-columns: var(--rail-directory) minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas:
-    'masthead masthead masthead'
-    'directory sheet context';
+    'masthead masthead'
+    'directory sheet';
   height: 100dvh;
   overflow: hidden;
+}
+
+.shell[data-directory-collapsed='true'] {
+  --rail-directory: 3.25rem;
 }
 
 /* ---------------------------------------------------------- the masthead */
@@ -516,10 +529,7 @@ textarea {
   border-right: 1px solid var(--rule-strong);
 }
 
-.rail-context {
-  grid-area: context;
-  border-left: 1px solid var(--rule-strong);
-}
+
 
 .rail-head {
   display: flex;
@@ -531,6 +541,18 @@ textarea {
   font-weight: 700;
   letter-spacing: 0.03em;
   color: var(--ink-3);
+}
+
+.shell[data-directory-collapsed='true'] .rail-head {
+  justify-content: center;
+  padding-inline: var(--sp-3);
+}
+
+.shell[data-directory-collapsed='true'] .rail-head-label,
+.shell[data-directory-collapsed='true'] .rail-count,
+.shell[data-directory-collapsed='true'] .dir-search,
+.shell[data-directory-collapsed='true'] .dir-groups {
+  display: none;
 }
 
 .rail-count {
@@ -563,10 +585,8 @@ textarea {
 
 /* ------------------------------------------------------------- responsive */
 
-/* Below ~66rem the two rails cannot hold their labels alongside the sheet.
-   Both are removed and replaced by controls that live in the sheet itself: a
-   native selector for the directory, a disclosure for the context. This is a
-   different shape, not a squeezed one. */
+/* Below ~66rem the recipe rail becomes a native selector. The parameter pane
+   already lives in the Code workspace, where it becomes a disclosure. */
 @media (max-width: 66rem) {
   .shell {
     grid-template-columns: minmax(0, 1fr);

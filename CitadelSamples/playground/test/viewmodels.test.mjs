@@ -18,6 +18,7 @@ import {
   buildConfigureModel,
   buildContextModel,
   buildDirectoryModel,
+  buildExecutionIdentityModel,
   buildExecutionEnvironmentModel,
   buildGuideModel,
   buildRequestModel,
@@ -32,6 +33,111 @@ import { FAKE_API_KEY, FIXTURE_SECRETS, makeEmptyReader, makeFixtureReader } fro
 
 const capability = createUnavailableExecutor().describeCapability();
 const read = makeFixtureReader();
+
+test('execution identity stays honest while unavailable and maps safe ready context', () => {
+  const unavailable = buildExecutionIdentityModel({
+    contextState: { status: 'unavailable', message: 'Start with npm run start:execute.' },
+  });
+  assert.equal(unavailable.state, 'unavailable');
+  assert.equal(unavailable.canSignIn, false);
+  assert.match(unavailable.summary, /start:execute/);
+
+  const ready = buildExecutionIdentityModel({
+    contextState: {
+      status: 'ready',
+      context: {
+        kind: 'azure-cli-management',
+        label: 'Azure CLI user',
+        summary: 'Signed in for this local operator run.',
+        state: 'ready',
+        canExecute: true,
+        authority: {
+          type: 'azure-cli-user',
+          principalName: 'Ada Lovelace',
+          principalType: 'user',
+          tenantId: 'tenant-1',
+        },
+        subscription: { activeId: 'sub-1', activeName: 'Sandbox', configuredId: 'sub-1', matches: true },
+        guarantees: { tokensExposed: false, credentialsPersisted: false },
+      },
+    },
+  });
+  assert.equal(ready.runsAs, 'Ada Lovelace');
+  assert.equal(ready.credentialSource, 'Azure CLI device sign-in');
+  assert.equal(ready.subscription.matches, true);
+});
+
+test('execution identity exposes device login without treating it as ready', () => {
+  const model = buildExecutionIdentityModel({
+    contextState: {
+      status: 'ready',
+      context: {
+        kind: 'azure-cli-management',
+        label: 'Azure CLI',
+        summary: 'Sign in before this sample can run.',
+        state: 'signed-out',
+        canExecute: false,
+      },
+    },
+    loginState: {
+      status: 'ready',
+      login: {
+        loginId: 'login-1',
+        state: 'waiting-for-user',
+        verificationUrl: 'https://microsoft.com/devicelogin',
+        userCode: 'ABCD-EFGH',
+        message: 'Enter this code.',
+      },
+    },
+  });
+  assert.equal(model.canSignIn, false);
+  assert.equal(model.login.active, true);
+  assert.equal(model.login.userCode, 'ABCD-EFGH');
+  assert.notEqual(model.badge.label, 'Ready');
+});
+
+test('execution identity names gateway, offline Python, hosted, and deferred credential sources', () => {
+  const modelFor = (context) =>
+    buildExecutionIdentityModel({ contextState: { status: 'ready', context: { canExecute: false, ...context } } });
+
+  assert.equal(
+    modelFor({
+      kind: 'gateway-key',
+      label: 'Gateway key',
+      summary: 'A key is required.',
+      state: 'missing-key',
+      gateway: { keyPresent: false, headerName: 'api-key' },
+    }).credentialSource,
+    'APIM subscription key held in this browser tab',
+  );
+  assert.equal(
+    modelFor({
+      kind: 'offline-python',
+      label: 'Offline Python parser',
+      summary: 'No cloud contact.',
+      state: 'ready',
+    }).runsAs,
+    'Local parser only',
+  );
+  assert.equal(
+    modelFor({
+      kind: 'hosted-relay',
+      label: 'Hosted relay',
+      summary: 'Managed identity.',
+      state: 'ready',
+    }).credentialSource,
+    'Hosted managed identity',
+  );
+  assert.equal(
+    modelFor({
+      kind: 'future-hosted-process',
+      label: 'Future hosted process',
+      summary: 'No isolated worker exists yet.',
+      state: 'deferred',
+    }).runsAs,
+    'No hosted process identity',
+  );
+});
 
 function sourcePayload(sample) {
   return {
@@ -77,7 +183,7 @@ function workbench(id, overrides = {}) {
     read: makeFixtureReader(overrides.values ?? {}),
     hasSecret: () => true,
     secrets: FIXTURE_SECRETS,
-    activeTab: overrides.activeTab ?? 'guide',
+    activeTab: overrides.activeTab ?? 'code',
     acknowledged: overrides.acknowledged ?? false,
     result: overrides.result ?? null,
     capability: overrides.capability ?? capability,
@@ -542,27 +648,26 @@ test('a completed run keeps the evidence environment captured when it started', 
 test('the workbench exposes the protected code-to-output journey in a fixed order', () => {
   const model = workbench('weather-mcp-discovery');
   assert.deepEqual(model.tabs.map((tab) => [tab.id, tab.label]), [
-    ['guide', 'Guide'],
     ['code', 'Code'],
-    ['configure', 'Configure'],
+    ['guide', 'Guide'],
     ['request', 'Review & approve'],
     ['response', 'Output'],
   ]);
-  assert.equal(model.activeTab, 'guide');
+  assert.equal(model.activeTab, 'code');
 });
 
-test('the configure tab counts the values still missing, and nothing else', () => {
+test('the Code tab counts the parameter values still missing, and nothing else', () => {
   const clean = workbench('apim-discovery');
-  assert.equal(clean.tabs.find((tab) => tab.id === 'configure').count, 0);
+  assert.equal(clean.tabs.find((tab) => tab.id === 'code').count, 0);
 
   const dirty = buildWorkbenchModel({
     sample: getSample('apim-discovery'),
     read: makeEmptyReader(),
     hasSecret: () => false,
-    activeTab: 'configure',
+    activeTab: 'code',
     capability,
   });
-  assert.equal(dirty.tabs.find((tab) => tab.id === 'configure').count, 2);
+  assert.equal(dirty.tabs.find((tab) => tab.id === 'code').count, 2);
   assert.match(dirty.runBlockedReason, /2 required values still missing/);
 });
 
@@ -626,7 +731,7 @@ test('a full workbench model for every recipe never leaks the fixture secret', (
 
 test('every recipe produces a complete workbench model without throwing', () => {
   for (const sample of CATALOGUE.samples) {
-    for (const tab of ['guide', 'code', 'configure', 'request', 'response']) {
+    for (const tab of ['guide', 'code', 'request', 'response']) {
       const model = workbench(sample.id, { activeTab: tab });
       assert.equal(model.activeTab, tab);
       assert.ok(model.guide.purpose);

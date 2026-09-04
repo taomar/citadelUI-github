@@ -40,7 +40,7 @@ export function createPlaygroundState({ catalogue }) {
   const touched = new Set();
   const listeners = new Set();
   let selectedSampleId = catalogue.samples[0]?.id ?? null;
-  let activeTab = 'guide';
+  let activeTab = 'code';
   let directoryQuery = '';
 
   const secretPaths = new Set(catalogue.secretFieldPaths);
@@ -76,7 +76,7 @@ export function createPlaygroundState({ catalogue }) {
     selectSample(sampleId) {
       if (!catalogue.byId.has(sampleId) || sampleId === selectedSampleId) return;
       selectedSampleId = sampleId;
-      activeTab = 'guide';
+      activeTab = 'code';
       emit('selection');
     },
 

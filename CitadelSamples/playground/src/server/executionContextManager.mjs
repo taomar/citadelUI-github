@@ -116,9 +116,9 @@ export function createExecutionContextManager({
   let loginSequence = 0;
   let login = null;
 
-  async function describe(payload, catalogue) {
+  async function describe(payload, catalogue, { signal } = {}) {
     const request = validateExecutionContextRequest(payload, catalogue);
-    return responseFor(request.sampleId, await contextFor(request, { useRelay: true }));
+    return responseFor(request.sampleId, await contextFor(request, { useRelay: true, signal }));
   }
 
   async function forRun({ sampleId, configuredSubscriptionId = null, gateway = null }) {
@@ -128,7 +128,7 @@ export function createExecutionContextManager({
         configuredSubscriptionId: normaliseOptional(configuredSubscriptionId),
         gateway,
       },
-      { useRelay: false },
+      { useRelay: false, signal: undefined },
     );
     if (!context.canExecute) {
       throw new RequestRefused(context.summary, { status: 409, code: context.code ?? 'execution-context-unavailable' });
@@ -136,7 +136,7 @@ export function createExecutionContextManager({
     return context;
   }
 
-  async function contextFor({ sampleId, configuredSubscriptionId, gateway }, { useRelay }) {
+  async function contextFor({ sampleId, configuredSubscriptionId, gateway }, { useRelay, signal }) {
     const descriptor = sampleExecutionContext(sampleId);
     if (useRelay && relay.enabled) {
       return hostedRelayContext({ available: relay.allowedSampleIds?.includes(sampleId) === true });
@@ -147,7 +147,7 @@ export function createExecutionContextManager({
     if (!isAzureCliContext(descriptor.kind)) {
       throw new Error(`Unsupported execution-context kind "${descriptor.kind}".`);
     }
-    const account = await readAzureCliAccount();
+    const account = await readAzureCliAccount({ signal });
     return azureContext(sampleId, descriptor, account, configuredSubscriptionId);
   }
 

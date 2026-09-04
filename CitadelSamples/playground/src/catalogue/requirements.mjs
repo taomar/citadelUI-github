@@ -16,7 +16,7 @@
  * `test/requirements.test.mjs`: perturbing any catalogue field must change the
  * generated plan only when the sample declares it. A field a recipe does not
  * declare is therefore provably irrelevant to that recipe, which is what lets
- * the Configure view refuse to render it.
+ * the Code parameter pane refuse to render it.
  */
 
 import { CLASSIFICATION_REQUIREMENT, REQUIREMENT_GROUPS, REQUIREMENT_LEVELS } from '../core/types.mjs';
@@ -31,7 +31,7 @@ import { coerceValue, evaluateCondition, isBlank } from '../core/validation.mjs'
  *
  * The cross-sample form is deliberate rather than accidental: the access
  * contract and cleanup legitimately read the publish contract's asset names,
- * and the Configure view shows them as belonging to that other recipe.
+ * and the Code parameter pane shows them as belonging to that other recipe.
  */
 export function resolveDeclaredPath(sampleId, path) {
   const separator = path.indexOf(':');
@@ -230,4 +230,3 @@ export const secret = (path, reason, { blocking = true, fallback = '' } = {}) =>
 
 /** A precondition the executor checks rather than a value it interpolates. */
 export const guard = (path, reason) => ({ path, requirement: 'mandatory', reason, guard: true });
-

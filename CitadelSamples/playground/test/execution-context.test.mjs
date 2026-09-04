@@ -262,11 +262,45 @@ test('an Azure CLI account probe timeout is unavailable, not signed-out', async 
     mode: 'execute',
     transports: { spawn },
   });
+
   const result = await manager.describe(contextRequest('weather-api-ensure'), CATALOGUE);
   assert.equal(result.context.state, 'unavailable');
   assert.equal(result.context.code, 'azure-cli-timeout');
   assert.match(result.context.summary, /timed out/);
   assert.doesNotMatch(result.context.summary, /sign in/i);
+});
+
+test('an execution-context request abort reaches the Azure CLI account probe', async () => {
+  const spawn = recordingSpawn(
+    (options) =>
+      new Promise((resolvePromise) => {
+        options.signal.addEventListener(
+          'abort',
+          () =>
+            resolvePromise({
+              code: null,
+              stdout: '',
+              stderr: '',
+              timedOut: false,
+              aborted: true,
+            }),
+          { once: true },
+        );
+      }),
+  );
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    transports: { spawn },
+  });
+  const controller = new AbortController();
+  const pending = manager.describe(contextRequest('azure-context-check'), CATALOGUE, {
+    signal: controller.signal,
+  });
+  controller.abort();
+  const result = await pending;
+  assert.equal(spawn.calls[0].signal, controller.signal);
+  assert.equal(result.context.code, 'azure-cli-cancelled');
 });
 
 test('a missing Azure CLI executable is unavailable, not signed-out', async () => {

@@ -236,8 +236,8 @@ async function main() {
     check('page title is set', first.title === 'Citadel Publish Playground', first.title);
     check('all 19 recipes render in the directory', first.directoryButtons === 19, String(first.directoryButtons));
     check('all 7 groups render', first.groups === 7, String(first.groups));
-    check('five tabs are present', first.tabs.length === 5, first.tabs.join(','));
-    check('the Guide tab is selected first', first.selectedTab === 'tab-guide', first.selectedTab);
+    check('four tabs are present', first.tabs.length === 4, first.tabs.join(','));
+    check('the Code tab is selected first', first.selectedTab === 'tab-code', first.selectedTab);
     check('exactly one panel is visible', first.visiblePanels === 1, String(first.visiblePanels));
     check('capability reports preview only', /preview only/i.test(first.capability), first.capability);
     check('the notebook hash is shown', /^sha256 ee706b4d/.test(first.hash), first.hash);
@@ -266,7 +266,7 @@ async function main() {
     check('the compact selector follows', selection.selectValue === 'cleanup', selection.selectValue);
     check('the risk chip reads Destructive', selection.risk.includes('Destructive'), selection.risk.join(','));
     check('selection is announced politely', /Cleanup selected/.test(selection.live), selection.live);
-    check('selection resets to the Guide tab', selection.tab === 'tab-guide', selection.tab);
+    check('selection resets to the Code tab', selection.tab === 'tab-code', selection.tab);
 
     /* ----------------------------------------------------------------- tabs */
     const tabs = await evaluate(
@@ -294,7 +294,7 @@ async function main() {
     check('clicking a tab switches the panel', tabs.before === 'tab-request' && tabs.requestVisible, tabs.before);
     check('ArrowRight moves to the next tab', tabs.after === 'tab-response', tabs.after);
     check('focus follows the newly selected tab', tabs.focused === 'tab-response', tabs.focused);
-    check('Home returns to the first tab', tabs.home === 'tab-guide', tabs.home);
+    check('Home returns to the first tab', tabs.home === 'tab-code', tabs.home);
     check('exactly one tab is in the tab order', tabs.roving === 1, String(tabs.roving));
     check('still exactly one panel visible after keyboard nav', tabs.visible.length === 1, tabs.visible.join(','));
 
@@ -304,7 +304,7 @@ async function main() {
       `(() => {
         // A shared helper: find a control by its visible label and set it.
         window.__set = (label, value) => {
-          const field = [...document.querySelectorAll('#panel-configure .prow')]
+          const field = [...document.querySelectorAll('#panel-code .prow')]
             .find(row => row.querySelector('.prow-label')?.textContent.trim() === label);
           if (!field) return 'no field: ' + label;
           const control = field.querySelector('input, select, textarea');
@@ -319,9 +319,9 @@ async function main() {
           return 'ok';
         };
         window.__groupTitles = () =>
-          [...document.querySelectorAll('#panel-configure .sec-title')].map(t => t.textContent.trim());
+          [...document.querySelectorAll('#panel-code .parameter-group-title')].map(t => t.textContent.trim());
         document.querySelector('[data-sample="cleanup"]').click();
-        document.getElementById('tab-configure').click();
+        document.getElementById('tab-code').click();
         const outcomes = [
           window.__set('Subscription ID', '00000000-1111-2222-3333-444444444444'),
           window.__set('Governance hub resource group', 'rg-smoke'),
@@ -330,23 +330,29 @@ async function main() {
         ];
         return {
           outcomes,
-          errors: document.querySelectorAll('#panel-configure .field-error').length,
+          errors: document.querySelectorAll('#panel-code .field-error').length,
           groups: window.__groupTitles(),
-          rowCount: document.querySelectorAll('#panel-configure .prow').length,
+          rowCount: document.querySelectorAll('#panel-code .prow').length,
+          paneTitle: document.querySelector('.parameter-pane-title')?.textContent ?? '',
+          identityTitle: document.querySelector('.identity-section .task-section-title')?.textContent ?? '',
           // A field cleanup never reads must not be on the form at all.
           hasGatewayUrl: window.__set('Gateway URL', 'x') === 'ok',
           hasKeyVaultName: window.__set('Key Vault name', 'x') === 'ok',
         };
       })()`,
     );
-    check('every configure field could be set by its label', filled.outcomes.every((o) => o === 'ok'), filled.outcomes.join(','));
+    check('every Code parameter could be set by its label', filled.outcomes.every((o) => o === 'ok'), filled.outcomes.join(','));
     check('a complete configuration clears every inline error', filled.errors === 0, String(filled.errors));
     check(
-      'the configure view leads with editable zones',
-      filled.groups[0] === 'Editable zones',
+      'the Code view exposes the Parameters pane',
+      filled.paneTitle === 'Prepare this run' && /^1\. Execution identity/.test(filled.identityTitle),
+      `${filled.paneTitle} | ${filled.identityTitle}`,
+    );
+    check(
+      'required and default groups are visible and named',
+      filled.groups.includes('Required inputs') && filled.groups.includes('Defaults'),
       filled.groups.join(' | '),
     );
-    check('mandatory and optional groups are visible and named', filled.groups.includes('Mandatory') && filled.groups.includes('Optional (defaults)'), filled.groups.join(' | '));
     check('a field the recipe never reads is not rendered', filled.hasGatewayUrl === false && filled.hasKeyVaultName === false);
 
     /* ------------------------------------------------------------- exports */
@@ -364,7 +370,7 @@ async function main() {
         return {
           present: buttons.every(Boolean),
           labels: buttons.map(b => b && b.textContent.trim()),
-          contract: document.querySelector('#panel-configure .prose')?.textContent ?? '',
+          contract: document.querySelector('.parameters-section .identity-summary')?.textContent ?? '',
         };
       })()`,
     );
@@ -376,7 +382,7 @@ async function main() {
     );
     check(
       'the contract line states that only declared controls are editable',
-      /only editable part/i.test(exports.contract),
+      /only what this recipe needs/i.test(exports.contract) && /protected code stays read only/i.test(exports.contract),
       exports.contract,
     );
 
@@ -413,12 +419,16 @@ async function main() {
     check('the acknowledgement carries the destructive tone', gate.after.riskTone === 'destructive', gate.after.riskTone);
     check('the acknowledgement records the choice', gate.after.ackStillChecked === true);
     check('run stays disabled while the server is preview-only', gate.after.runDisabled === true);
-    check('the missing runtime is explained', /preview mode|runtime|not attached/i.test(gate.after.reason), gate.after.reason);
+    check(
+      'the missing runtime is explained',
+      /preview mode|runtime|not attached|execution identity|start:execute/i.test(gate.after.reason),
+      gate.after.reason,
+    );
 
     const invalidated = await evaluate(
       page,
       `(() => {
-        document.getElementById('tab-configure').click();
+        document.getElementById('tab-code').click();
         window.__set('Governance hub resource group', 'rg-smoke-2');
         document.getElementById('tab-request').click();
         return { ackChecked: document.getElementById('ack-check')?.checked };
@@ -431,22 +441,22 @@ async function main() {
       page,
       `(() => {
         document.querySelector('[data-sample="weather-mcp-discovery"]').click();
-        document.getElementById('tab-configure').click();
+        document.getElementById('tab-code').click();
         // Deliberately clear a value the sample genuinely needs. The gateway URL
         // is conditional here: it is required only while no deployed endpoint
         // has been recorded, which is the state this page is in.
         window.__set('Gateway URL', '');
         const errors = [...document.querySelectorAll('.field-error')].map(e => e.textContent);
-        const invalid = document.querySelectorAll('#panel-configure [aria-invalid="true"]').length;
-        const described = document.querySelector('#panel-configure [aria-describedby]') !== null;
+        const invalid = document.querySelectorAll('#panel-code [aria-invalid="true"]').length;
+        const described = document.querySelector('#panel-code [aria-describedby]') !== null;
         document.getElementById('tab-request').click();
         const blockedText = document.getElementById('panel-request').textContent;
         // Restore it and add the secret, then read the preview.
-        document.getElementById('tab-configure').click();
+        document.getElementById('tab-code').click();
         window.__set('Gateway URL', 'https://apim-smoke.azure-api.net');
         window.__set('Access-contract api-key', 'FAKE-SMOKE-KEY-0000');
-        const cleared = document.querySelectorAll('#panel-configure .field-error').length;
-        const configText = document.getElementById('panel-configure').textContent;
+        const cleared = document.querySelectorAll('#panel-code .field-error').length;
+        const configText = document.querySelector('[data-parameter-pane]').textContent;
         document.getElementById('tab-request').click();
         const preview = document.querySelector('#panel-request .preview')?.textContent ?? '';
         return {
@@ -471,7 +481,7 @@ async function main() {
       validation.blockedText.slice(0, 80),
     );
     check('fixing the input clears the inline error', validation.cleared === 0, String(validation.cleared));
-    check('the configure view never renders the typed secret', !validation.configText.includes('FAKE-SMOKE-KEY-0000'));
+    check('the Code parameter pane never renders the typed secret', !validation.configText.includes('FAKE-SMOKE-KEY-0000'));
     check('the preview never contains the typed secret', !validation.preview.includes('FAKE-SMOKE-KEY-0000'));
     check(
       'the preview uses an environment placeholder',
@@ -631,26 +641,26 @@ async function main() {
       page,
       `(() => {
         const rail = document.getElementById('directory');
-        const context = document.getElementById('context');
         const compactSelect = document.querySelector('.strip-compact');
-        const compactContext = document.getElementById('context-compact');
+        document.getElementById('tab-code').click();
+        const parameters = document.getElementById('code-parameters');
         return {
           docWidth: document.documentElement.scrollWidth,
           winWidth: window.innerWidth,
           railHidden: getComputedStyle(rail).display === 'none',
-          contextHidden: getComputedStyle(context).display === 'none',
           selectVisible: getComputedStyle(compactSelect).display !== 'none',
-          contextDisclosure: getComputedStyle(compactContext).display !== 'none',
+          parameterDisclosure: parameters?.tagName === 'DETAILS' && getComputedStyle(parameters).display !== 'none',
+          parameterPosition: getComputedStyle(parameters).position,
           tabsVisible: document.querySelectorAll('[role="tab"]').length,
         };
       })()`,
     );
     check('no horizontal overflow at 320px', narrow.docWidth <= narrow.winWidth, `${narrow.docWidth} > ${narrow.winWidth}`);
     check('the directory rail is replaced at 320px', narrow.railHidden === true);
-    check('the context rail is replaced at 320px', narrow.contextHidden === true);
     check('a native recipe selector appears', narrow.selectVisible === true);
-    check('a context disclosure appears', narrow.contextDisclosure === true);
-    check('tabs remain horizontal and present', narrow.tabsVisible === 5, String(narrow.tabsVisible));
+    check('the canonical parameter pane is a disclosure at 320px', narrow.parameterDisclosure === true);
+    check('the narrow parameter disclosure is in document flow', narrow.parameterPosition === 'static', narrow.parameterPosition);
+    check('tabs remain horizontal and present', narrow.tabsVisible === 4, String(narrow.tabsVisible));
 
     /* ------------------------------------------------ offline self-test (320px) */
     // The disclosure's body used to be positioned absolutely off the toggle,
@@ -718,7 +728,7 @@ async function main() {
         const problems = [];
         for (const id of ids) {
           document.querySelector('[data-sample="' + id + '"]').click();
-          for (const tab of ['guide','code','configure','request','response']) {
+          for (const tab of ['guide','code','request','response']) {
             document.getElementById('tab-' + tab).click();
             const panel = document.getElementById('panel-' + tab);
             if (panel.hidden) problems.push(id + '/' + tab + ': hidden');
@@ -728,7 +738,7 @@ async function main() {
         return { count: ids.length, problems };
       })()`,
     );
-    check('every recipe renders all five tabs with content', sweep.problems.length === 0, sweep.problems.join('; '));
+    check('every recipe renders all four tabs with content', sweep.problems.length === 0, sweep.problems.join('; '));
     check('the sweep visited all 19 recipes', sweep.count === 19, String(sweep.count));
 
     /* ------------------------------------------------- offline self-test */

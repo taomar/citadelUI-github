@@ -91,7 +91,7 @@ export const REQUIREMENT_LEVELS = Object.freeze([
   'secret',
 ]);
 
-/** Display order of the requirement groups in the Configure view. */
+/** Display order of the requirement groups in the Code parameter pane. */
 export const REQUIREMENT_GROUPS = Object.freeze([
   Object.freeze({
     id: 'mandatory',
@@ -163,7 +163,7 @@ export const RUNTIME_DEPENDENCIES = Object.freeze([
   'foundry-network', // outbound HTTPS to the Foundry data plane
 ]);
 
-/** Input control types the configure view knows how to render. */
+/** Input control types the Code parameter pane knows how to render. */
 export const FIELD_TYPES = Object.freeze([
   'string',
   'multiline',
@@ -268,4 +268,3 @@ export const RUN_WORKSPACE_ROOT = '.runs';
 
 /** Wire version of the local execution request. Bumped on a breaking change. */
 export const EXECUTION_PROTOCOL_VERSION = 2;
-

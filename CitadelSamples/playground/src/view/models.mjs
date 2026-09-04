@@ -80,6 +80,116 @@ export function buildExecutionEnvironmentModel(capability) {
   };
 }
 
+const EXECUTION_CONTEXT_TONE = Object.freeze({
+  ready: { tone: 'success', label: 'Ready' },
+  unavailable: { tone: 'warning', label: 'Unavailable' },
+  'signed-out': { tone: 'warning', label: 'Sign-in required' },
+  'subscription-mismatch': { tone: 'danger', label: 'Subscription mismatch' },
+  'missing-key': { tone: 'warning', label: 'Key required' },
+  deferred: { tone: 'neutral', label: 'Not available yet' },
+});
+
+function credentialSource(context) {
+  if (!context) return 'Not reported';
+  if (context.kind === 'offline-python') return 'Local Python parser; no cloud credential';
+  if (context.kind === 'hosted-relay') return 'Hosted managed identity';
+  if (context.gateway) return 'APIM subscription key held in this browser tab';
+  if (context.kind?.startsWith('azure-cli-') || context.authority?.type === 'azure-cli-user') {
+    return 'Azure CLI device sign-in';
+  }
+  if (context.state === 'deferred') return 'No credential source is attached';
+  return context.label;
+}
+
+function runsAs(context) {
+  if (!context) return 'Not reported';
+  if (context.authority?.principalName) return context.authority.principalName;
+  if (context.kind === 'offline-python') return 'Local parser only';
+  if (context.gateway) return 'Gateway caller';
+  if (context.state === 'signed-out') return 'No Azure CLI user signed in';
+  if (context.state === 'deferred') return 'No hosted process identity';
+  return context.label;
+}
+
+export function buildExecutionIdentityModel({ contextState = {}, loginState = {} } = {}) {
+  const context = contextState.status === 'ready' ? contextState.context : null;
+  const login =
+    loginState.status === 'ready'
+      ? loginState.login
+      : loginState.status === 'starting'
+        ? {
+            loginId: '',
+            state: 'starting',
+            message: loginState.message ?? 'Starting Azure device sign-in…',
+          }
+        : loginState.status === 'error'
+          ? { loginId: '', state: 'failed', message: loginState.message ?? 'Azure sign-in could not be completed.' }
+          : null;
+  const loginActive = login && ['starting', 'waiting-for-user'].includes(login.state);
+  const loginModel = login
+    ? {
+        id: login.loginId,
+        state: login.state,
+        active: loginActive,
+        cancelAvailable:
+          loginActive || (Boolean(login.loginId) && !['succeeded', 'cancelled', 'timed-out'].includes(login.state)),
+        verificationUrl: login.verificationUrl ?? '',
+        userCode: login.userCode ?? '',
+        message: login.message ?? '',
+      }
+    : null;
+  if (!context) {
+    const loading = contextState.status === 'loading' || !contextState.status;
+    return {
+      state: loading ? 'loading' : 'unavailable',
+      badge: loading ? { tone: 'neutral', label: 'Checking…' } : EXECUTION_CONTEXT_TONE.unavailable,
+      label: loading ? 'Checking execution identity' : 'Execution identity unavailable',
+      summary:
+        contextState.message ??
+        (loading
+          ? 'Checking which identity and target this sample would use.'
+          : 'Start the loopback execute server to inspect or sign in to an execution identity.'),
+      runsAs: 'Not reported',
+      credentialSource: 'Not reported',
+      authority: null,
+      subscription: null,
+      gateway: null,
+      guarantees: [],
+      canSignIn: false,
+      canRefresh: !loginActive,
+      refreshing: loading,
+      login: loginModel,
+    };
+  }
+
+  const state = context.state;
+  return {
+    state,
+    code: context.code ?? '',
+    badge: EXECUTION_CONTEXT_TONE[state] ?? { tone: 'neutral', label: state },
+    label: context.label,
+    summary: context.summary,
+    runsAs: runsAs(context),
+    credentialSource: credentialSource(context),
+    authority: context.authority ?? null,
+    subscription: context.subscription ?? null,
+    gateway: context.gateway ?? null,
+    hostedRelay: context.hostedRelay ?? null,
+    guarantees: Array.isArray(context.guarantees)
+      ? context.guarantees.map(String)
+      : Object.entries(context.guarantees ?? {}).map(([key, value]) => {
+          if (key === 'tokensExposed' && value === false) return 'No access token is exposed to the browser.';
+          if (key === 'credentialsPersisted' && value === false) return 'Credentials are not persisted by the playground.';
+          return `${key}: ${String(value)}`;
+        }),
+    canExecute: context.canExecute === true,
+    canSignIn: state === 'signed-out' && !loginActive,
+    canRefresh: !loginActive,
+    refreshing: false,
+    login: loginModel,
+  };
+}
+
 function buildResultEnvironmentModel(result, capability) {
   switch (result?.meta?.evidenceClass) {
     case 'offline':
@@ -490,7 +600,7 @@ function ownerLabel(owner, sample) {
 }
 
 /**
- * The Configure tab.
+ * The Code-side parameter pane.
  *
  * Grouped by what the sample needs, not by where the value happens to live, and
  * filtered to exactly the fields this sample reads. A field a recipe does not
@@ -505,13 +615,15 @@ export function buildConfigureModel({ sample, read, hasSecret, issues, isTouched
     const field = fieldByPath(entry.path);
     const fieldIssues = issuesFor(entry.path);
     const isSecret = entry.secret;
-    const rawValue = read(entry.path);
+    const rawValue = isSecret ? '' : read(entry.path);
     // "Nothing supplied yet" for an ordinary field means empty. For a
     // confirmation checkbox it means the box is not yet ticked: `false` is not
     // blank, but it is equally "the user has not answered this".
-    const unanswered = Object.prototype.hasOwnProperty.call(field, 'mustEqual')
-      ? rawValue !== field.mustEqual
-      : rawValue === undefined || rawValue === null || rawValue === '' || (Array.isArray(rawValue) && rawValue.length === 0);
+    const unanswered = isSecret
+      ? !entry.supplied
+      : Object.prototype.hasOwnProperty.call(field, 'mustEqual')
+        ? rawValue !== field.mustEqual
+        : rawValue === undefined || rawValue === null || rawValue === '' || (Array.isArray(rawValue) && rawValue.length === 0);
     const touched = Boolean(isTouched(entry.path));
     const errors = fieldIssues.filter((issue) => issue.severity === 'error').map((issue) => issue.message);
     // An untouched, still-unanswered field states what it needs. A field the
@@ -531,6 +643,7 @@ export function buildConfigureModel({ sample, read, hasSecret, issues, isTouched
       fallback: entry.fallback,
       producedBy: entry.producedBy,
       blocking: entry.blocking,
+      supplied: entry.supplied,
       owner: entry.owner,
       ownerLabel: ownerLabel(entry.owner, sample),
       width: field.width ?? 'id',
@@ -567,7 +680,7 @@ export function buildConfigureModel({ sample, read, hasSecret, issues, isTouched
     fields: group.entries.map(toField),
   }));
 
-  const exportBundle = buildExportBundle({ sample, manifest, plan, capability, read, hasSecret });
+  const exportBundle = buildExportBundle({ sample, manifest, plan, capability });
 
   return {
     sampleId: sample.id,
@@ -594,7 +707,7 @@ function contractLine(manifest) {
 }
 
 /** The copyable/downloadable configuration, built once per render. */
-function buildExportBundle({ sample, manifest, plan, capability, read, hasSecret }) {
+function buildExportBundle({ sample, manifest, plan, capability }) {
   const names = configurationFileNames(sample.id);
   const document = buildConfigurationDocument({
     sample,
@@ -602,9 +715,9 @@ function buildExportBundle({ sample, manifest, plan, capability, read, hasSecret
     plan,
     capability,
     notebook: CATALOGUE.sourceNotebook,
-    // The guard runs over the finished document; the values themselves are
-    // never read into it.
-    secrets: collectSecretValuesForGuard(sample, read, hasSecret),
+    // The view model never reads a live secret. The document is structurally
+    // presence-only, and clipboard/download actions apply their own live guard.
+    secrets: {},
   });
   return {
     fileNames: names,
@@ -613,22 +726,6 @@ function buildExportBundle({ sample, manifest, plan, capability, read, hasSecret
     env: buildEnvExample(document),
     secretCount: document.secrets.length,
   };
-}
-
-/**
- * The live secret values, used ONLY as the argument to `assertNoSecretValues`.
- * Nothing downstream of this call receives them.
- */
-function collectSecretValuesForGuard(sample, read, hasSecret) {
-  const values = {};
-  for (const entry of sample.configurationEntries) {
-    if (!entry.secret) continue;
-    if (hasSecret?.(entry.path)) {
-      const value = read(entry.path);
-      if (typeof value === 'string' && value.length > 0) values[entry.path] = value;
-    }
-  }
-  return values;
 }
 
 /** The Request tab. */
@@ -737,7 +834,7 @@ export function buildWorkbenchModel({
   hasSecret,
   isTouched,
   secrets = {},
-  activeTab = 'guide',
+  activeTab = 'code',
   acknowledged = false,
   result = null,
   running = false,
@@ -787,9 +884,8 @@ export function buildWorkbenchModel({
     },
     activeTab,
     tabs: [
+      { id: 'code', label: 'Code', count: configure.blockingCount },
       { id: 'guide', label: 'Guide' },
-      { id: 'code', label: 'Code' },
-      { id: 'configure', label: 'Configure', count: configure.blockingCount },
       { id: 'request', label: 'Review & approve' },
       { id: 'response', label: 'Output', state: running ? 'running' : (result?.state ?? 'not-run') },
     ],

@@ -720,15 +720,26 @@ async function handleExecutionContext(request, response, { manager, port, host }
     sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
     return;
   }
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const abortOnClose = () => {
+    if (!response.writableEnded) abort();
+  };
+  request.once('aborted', abort);
+  response.once('close', abortOnClose);
   try {
     const payload = JSON.parse(await readBody(request, 16 * 1024));
-    sendJson(response, 200, await manager.describe(payload, CATALOGUE));
+    sendJson(response, 200, await manager.describe(payload, CATALOGUE, { signal: controller.signal }));
   } catch (error) {
+    if (controller.signal.aborted && response.destroyed) return;
     if (error instanceof RequestRefused) {
       sendJson(response, error.status, { state: 'blocked', summary: error.message, code: error.code });
       return;
     }
     sendJson(response, 500, { state: 'failed', summary: 'The execution context could not be read.' });
+  } finally {
+    request.off('aborted', abort);
+    response.off('close', abortOnClose);
   }
 }
 
@@ -738,12 +749,24 @@ async function handleAzureLogin(request, response, { action, manager, port, host
     sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
     return;
   }
+  let startedLoginId = null;
+  const cancelDisconnectedStart = () => {
+    if (action !== 'start' || !startedLoginId || response.writableEnded) return;
+    try {
+      manager.cancelLogin(startedLoginId);
+    } catch {
+      // The login may already have reached a terminal state.
+    }
+  };
+  request.once('aborted', cancelDisconnectedStart);
+  response.once('close', cancelDisconnectedStart);
   try {
     const payload = JSON.parse(await readBody(request, 4096));
     let result;
     if (action === 'start') {
       validateLoginStartRequest(payload);
       result = manager.startLogin();
+      startedLoginId = result.login.id;
     } else {
       const loginId = validateLoginTargetRequest(payload);
       result = action === 'status' ? manager.statusLogin(loginId) : manager.cancelLogin(loginId);
@@ -755,6 +778,9 @@ async function handleAzureLogin(request, response, { action, manager, port, host
       return;
     }
     sendJson(response, 500, { state: 'failed', summary: 'The Azure CLI login request could not be completed.' });
+  } finally {
+    request.off('aborted', cancelDisconnectedStart);
+    response.off('close', cancelDisconnectedStart);
   }
 }
 

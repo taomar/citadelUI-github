@@ -76,7 +76,7 @@ async function selectSample(harness, sampleId) {
     const target = document.querySelector('[data-sample=${JSON.stringify(sampleId)}]');
     if (!target) return false;
     target.click();
-    document.getElementById('tab-guide')?.click();
+    document.getElementById('tab-code')?.click();
     return true;
   })()`);
   await harness.waitFor(
@@ -102,11 +102,11 @@ async function sourceDomSnapshot(harness) {
 
 async function writableSnapshot(harness) {
   return harness.evaluate(`(() => [...document.querySelectorAll(
-    '#panel-configure input:not([disabled]):not([readonly]),' +
-    '#panel-configure textarea:not([disabled]):not([readonly]),' +
-    '#panel-configure select:not([disabled]),' +
-    '#panel-configure [contenteditable="true"]'
-  )].filter((control) => control.getClientRects().length > 0).map((control) => {
+    '[data-parameter-path] input:not([disabled]):not([readonly]),' +
+    '[data-parameter-path] textarea:not([disabled]):not([readonly]),' +
+    '[data-parameter-path] select:not([disabled]),' +
+    '[data-parameter-path] [contenteditable="true"]'
+  )].map((control) => {
     const row = control.closest('[data-parameter-path]');
     return {
       path: row?.dataset.parameterPath ?? '',
@@ -141,7 +141,7 @@ async function checkSourceContracts(harness, notebook, notebookMeta) {
       validateSourceDomSnapshot(await sourceDomSnapshot(harness), expected.cells),
     );
 
-    await harness.evaluate(`document.getElementById('tab-configure')?.click()`);
+    await harness.evaluate(`document.getElementById('tab-code')?.click()`);
     reportIssues(
       `${sample.id}: only declared parameter, configuration, and secret fields are writable`,
       validateWritableControls(
@@ -153,6 +153,454 @@ async function checkSourceContracts(harness, notebook, notebookMeta) {
   }
   reporter.equal('all 19 protected-source contracts were exercised', sourceBySample.size, 19);
   return sourceBySample;
+}
+
+async function checkCodeParameterWorkspace(harness) {
+  const sample = getSample('tool-rate-limit-burst');
+  const expectedPaths = expectedParameterPaths(sample);
+  const expectedGroups = [...new Set(sample.configurationEntries.map((entry) => entry.requirement))];
+  await selectSample(harness, sample.id);
+  await harness.evaluate(`document.getElementById('tab-code')?.click()`);
+
+  const workspace = await harness.evaluate(`(() => {
+    const controls = [...document.querySelectorAll('[data-parameter-path] input, [data-parameter-path] textarea, [data-parameter-path] select')];
+    const pathCounts = Object.fromEntries(${JSON.stringify(expectedPaths)}.map((path) => [
+      path,
+      controls.filter((control) => control.closest('[data-parameter-path]')?.dataset.parameterPath === path).length,
+    ]));
+    const groups = [...document.querySelectorAll('[data-requirement-group]')].map((group) => group.dataset.requirementGroup);
+    const rows = [...document.querySelectorAll('[data-parameter-path]')];
+    const advanced = document.querySelector('.advanced-parameters');
+    const firstPrimary = document.querySelector('.parameters-section > .parameter-group');
+    return {
+      paneCount: document.querySelectorAll('[data-parameter-pane]').length,
+      pathCounts,
+      groups,
+      allInCode: controls.every((control) => Boolean(control.closest('#panel-code [data-parameter-pane]'))),
+      labelled: controls.every((control) => {
+        const label = document.querySelector('label[for="' + CSS.escape(control.id) + '"]');
+        return Boolean(label?.textContent.trim() || control.getAttribute('aria-label'));
+      }),
+      named: controls.every((control) => control.name === control.closest('[data-parameter-path]')?.dataset.parameterPath),
+      autocomplete: controls.every((control) => Boolean(control.autocomplete)),
+      readinessLabel: document.querySelector('.parameters-section')?.getAttribute('aria-labelledby') ?? '',
+      secretTypes: controls
+        .filter((control) => control.closest('[data-parameter-secret="true"]'))
+        .map((control) => control.type),
+      hasConfigureTab: Boolean(document.getElementById('tab-configure') || document.getElementById('panel-configure')),
+      guidedFields: rows.every((row) =>
+        Boolean(
+          row.querySelector('.prow-purpose')?.textContent.trim() &&
+          row.querySelectorAll('.prow-badges .chip').length >= 2 &&
+          row.querySelector('.prow-pattern')?.textContent.trim() &&
+          /Where do I get this\\?/.test(row.querySelector('.field-source > summary')?.textContent ?? '')
+        )
+      ),
+      advancedClosed: Boolean(advanced && !advanced.open),
+      advancedGroups: [...(advanced?.querySelectorAll('[data-requirement-group]') ?? [])].map(
+        (group) => group.dataset.requirementGroup
+      ),
+      primaryBeforeAdvanced: Boolean(
+        firstPrimary && advanced && firstPrimary.compareDocumentPosition(advanced) & Node.DOCUMENT_POSITION_FOLLOWING
+      ),
+      sourceNavCount: document.querySelectorAll('.source-nav a').length,
+      sourceCellCount: document.querySelectorAll('[data-source-cell]').length,
+    };
+  })()`);
+
+  reporter.equal('Code renders exactly one canonical parameter pane', workspace.paneCount, 1);
+  reporter.check(
+    'every declared input has exactly one canonical control',
+    Object.values(workspace.pathCounts).every((count) => count === 1),
+    JSON.stringify(workspace.pathCounts),
+  );
+  reporter.check('every parameter control belongs to Code', workspace.allInCode === true);
+  reporter.check(
+    'all declared requirement groups are present and scannable',
+    workspace.groups.length === expectedGroups.length && expectedGroups.every((group) => workspace.groups.includes(group)),
+    JSON.stringify(workspace.groups),
+  );
+  reporter.check(
+    'parameter controls have labels, names, and autocomplete metadata',
+    workspace.labelled === true && workspace.named === true && workspace.autocomplete === true,
+    JSON.stringify(workspace),
+  );
+  reporter.check('parameter readiness is programmatically labelled', workspace.readinessLabel === 'parameters-section-title');
+  reporter.check(
+    'every declared secret uses a masked password control',
+    workspace.secretTypes.length > 0 && workspace.secretTypes.every((type) => type === 'password'),
+    workspace.secretTypes.join(', '),
+  );
+  reporter.check('the disconnected Configure workflow is absent', workspace.hasConfigureTab === false);
+  reporter.check('each field shows purpose, requirement, readiness, pattern, and acquisition help', workspace.guidedFields === true);
+  reporter.check(
+    'defaulted and generated fields are progressively disclosed after required inputs',
+    workspace.advancedClosed === true &&
+      workspace.primaryBeforeAdvanced === true &&
+      JSON.stringify(workspace.advancedGroups) === JSON.stringify(['optional', 'generated']),
+    JSON.stringify(workspace),
+  );
+  reporter.check(
+    'protected source navigation names every cited cell',
+    workspace.sourceNavCount === workspace.sourceCellCount && workspace.sourceCellCount > 0,
+    JSON.stringify(workspace),
+  );
+
+  const wrapping = await harness.evaluate(`(() => {
+    const button = [...document.querySelectorAll('.source-tools button')].find((node) => /Wrap long lines/.test(node.textContent));
+    button.focus();
+    button.click();
+    const source = document.querySelector('.source-code');
+    const activeButton = [...document.querySelectorAll('.source-tools button')].find((node) => /horizontal scrolling/.test(node.textContent));
+    const wrapped = {
+      pressed: activeButton?.getAttribute('aria-pressed') ?? '',
+      whiteSpace: getComputedStyle(source).whiteSpace,
+      focused: document.activeElement?.id ?? '',
+    };
+    activeButton?.click();
+    return wrapped;
+  })()`);
+  reporter.check(
+    'protected source offers a keyboard button that wraps long lines',
+    wrapping.pressed === 'true' && wrapping.whiteSpace === 'pre-wrap' && wrapping.focused === 'source-wrap-toggle',
+    JSON.stringify(wrapping),
+  );
+
+  const advancedState = await harness.evaluate(`(async () => {
+    const details = document.querySelector('.advanced-parameters');
+    details.open = true;
+    const path = 'samples.tool-rate-limit-burst.requestCount';
+    const control = document.querySelector('[data-parameter-path="' + CSS.escape(path) + '"] input');
+    control.focus();
+    control.value = '41';
+    control.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    return {
+      open: document.querySelector('.advanced-parameters')?.open,
+      focused: document.activeElement?.id ?? '',
+      value: document.querySelector('[data-parameter-path="' + CSS.escape(path) + '"] input')?.value,
+    };
+  })()`);
+  reporter.check(
+    'advanced disclosure and focus survive canonical parameter edits',
+    advancedState.open === true &&
+      advancedState.focused === 'f-samples-tool-rate-limit-burst-requestCount' &&
+      advancedState.value === '41',
+    JSON.stringify(advancedState),
+  );
+
+  const directory = await harness.evaluate(`(async () => {
+    const shell = document.querySelector('.shell');
+    const before = document.getElementById('directory').getBoundingClientRect().width;
+    document.getElementById('directory-toggle').click();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const after = document.getElementById('directory').getBoundingClientRect().width;
+    const collapsed = {
+      state: shell.dataset.directoryCollapsed,
+      track: getComputedStyle(shell).getPropertyValue('--rail-directory').trim(),
+      label: document.getElementById('directory-toggle').getAttribute('aria-label'),
+      hiddenGroups: getComputedStyle(document.getElementById('directory-groups')).display === 'none',
+    };
+    document.getElementById('directory-toggle').click();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    return { before, after, ...collapsed };
+  })()`);
+  reporter.check(
+    'desktop recipe navigation is narrow and explicitly collapsible',
+    directory.before <= 224 &&
+      directory.track === '3.25rem' &&
+      directory.state === 'true' &&
+      directory.label === 'Expand recipe navigator' &&
+      directory.hiddenGroups === true,
+    JSON.stringify(directory),
+  );
+
+  await harness.evaluate(`(() => {
+    const control = document.querySelector('[data-parameter-path="gatewayAccess.apiKey"] input');
+    control.focus();
+  })()`);
+  const typedSecret = 'ABCDE12345';
+  for (const character of typedSecret) {
+    await harness.page.send('Input.dispatchKeyEvent', { type: 'char', key: character, text: character });
+  }
+  const secretDuringTyping = await harness.evaluate(`(() => {
+    const control = document.querySelector('[data-parameter-path="gatewayAccess.apiKey"] input');
+    return {
+      type: control?.type ?? '',
+      value: control?.value ?? '',
+      textLeak: document.body.textContent.includes(${JSON.stringify(typedSecret)}),
+      markupLeak: document.body.innerHTML.includes(${JSON.stringify(typedSecret)}),
+    };
+  })()`);
+  await harness.evaluate(`document.getElementById('source-wrap-toggle').focus()`);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const secretAfterBlur = await harness.evaluate(`(() => {
+    const row = document.querySelector('[data-parameter-path="gatewayAccess.apiKey"]');
+    return {
+      value: row?.querySelector('input')?.value ?? '',
+      ready: [...(row?.querySelectorAll('.prow-badges .chip') ?? [])].some((chip) => chip.textContent === 'Ready'),
+      textLeak: document.body.textContent.includes(${JSON.stringify(typedSecret)}),
+      markupLeak: document.body.innerHTML.includes(${JSON.stringify(typedSecret)}),
+    };
+  })()`);
+  reporter.check(
+    'masked secret controls preserve sequential typing without rendering the value',
+    secretDuringTyping.type === 'password' &&
+      secretDuringTyping.value === typedSecret &&
+      secretDuringTyping.textLeak === false &&
+      secretDuringTyping.markupLeak === false &&
+      secretAfterBlur.value === '' &&
+      secretAfterBlur.ready === true &&
+      secretAfterBlur.textLeak === false &&
+      secretAfterBlur.markupLeak === false,
+    JSON.stringify({ secretDuringTyping, secretAfterBlur }),
+  );
+
+  const conditional = await harness.evaluate(`(() => {
+    const setValue = (path, value) => {
+      const row = document.querySelector('[data-parameter-path="' + CSS.escape(path) + '"]');
+      const control = row?.querySelector('input, textarea, select');
+      if (!control) return false;
+      control.value = value;
+      control.dispatchEvent(new Event(control.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+      return true;
+    };
+    setValue('samples.tool-rate-limit-burst.deployedEndpoint', '');
+    setValue('hub.gatewayUrl', '');
+    const beforeRow = document.querySelector('[data-parameter-path="hub.gatewayUrl"]');
+    const beforeControl = beforeRow?.querySelector('input');
+    const before = {
+      required: beforeControl?.getAttribute('aria-required'),
+      text: beforeRow?.textContent ?? '',
+    };
+    setValue('samples.tool-rate-limit-burst.deployedEndpoint', 'https://gateway.invalid/weather');
+    const afterRow = document.querySelector('[data-parameter-path="hub.gatewayUrl"]');
+    const afterControl = afterRow?.querySelector('input');
+    return {
+      before,
+      after: {
+        required: afterControl?.getAttribute('aria-required'),
+        text: afterRow?.textContent ?? '',
+      },
+    };
+  })()`);
+  reporter.check(
+    'a conditional input is required while its declared condition holds',
+    conditional.before.required === 'true' && /condition holds now/i.test(conditional.before.text),
+    JSON.stringify(conditional.before),
+  );
+  reporter.check(
+    'the same conditional control becomes non-required when its condition clears',
+    conditional.after.required === null && /condition does not hold now/i.test(conditional.after.text),
+    JSON.stringify(conditional.after),
+  );
+
+  const directEdit = await harness.evaluate(`(() => {
+    const path = 'samples.tool-rate-limit-burst.requestCount';
+    const control = document.querySelector('[data-parameter-path="' + CSS.escape(path) + '"] input');
+    control.value = '37';
+    control.dispatchEvent(new Event('input', { bubbles: true }));
+    document.getElementById('tab-request').click();
+    document.getElementById('tab-code').click();
+    return document.querySelector('[data-parameter-path="' + CSS.escape(path) + '"] input')?.value;
+  })()`);
+  reporter.equal('parameters edit directly on Code and retain canonical state', directEdit, '37');
+
+  await selectSample(harness, 'azure-context-check');
+  const invalid = await harness.evaluate(`(() => {
+    document.getElementById('tab-code').click();
+    const control = document.getElementById('f-hub-subscriptionId');
+    control.value = 'not-a-guid';
+    control.dispatchEvent(new Event('input', { bubbles: true }));
+    return {
+      error: document.querySelector('[data-parameter-path="hub.subscriptionId"] .field-error')?.textContent ?? '',
+      status: document.querySelector('#parameter-pane-summary .chip')?.textContent ?? '',
+      reviewDisabled: document.getElementById('parameter-review-button')?.disabled,
+    };
+  })()`);
+  reporter.check(
+    'invalid parameter values never produce a ready pane or enabled review',
+    /guid/i.test(invalid.error) && invalid.status !== 'Ready' && invalid.reviewDisabled === true,
+    JSON.stringify(invalid),
+  );
+}
+
+async function checkExecutionIdentity(harness) {
+  await selectSample(harness, 'azure-context-check');
+  const signedOut = await harness.evaluate(`(() => {
+    const hooks = globalThis.__citadelTestHooks;
+    const context = {
+      kind: 'azure-cli-management',
+      label: 'Azure CLI user',
+      summary: 'Sign in before this local operator sample can run.',
+      state: 'signed-out',
+      code: 'azure-cli-signed-out',
+      canExecute: false,
+      authority: null,
+      subscription: { activeId: null, activeName: null, configuredId: null, matches: null },
+      gateway: null,
+      hostedRelay: null,
+      guarantees: { tokensExposed: false, credentialsPersisted: false },
+      futureHostedProcess: null,
+    };
+    globalThis.__acceptanceSignedOutContext = context;
+    hooks.setExecutionContext(context);
+    const identity = document.querySelector('[data-execution-identity]');
+    const parameters = document.querySelector('.parameters-section');
+    return {
+      journey: [...document.querySelectorAll('.run-path li')].map((item) => ({
+        step: item.querySelector('span')?.textContent ?? '',
+        label: [...item.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE).map((node) => node.textContent).join('').trim(),
+      })),
+      identityBeforeParameters: Boolean(
+        identity.compareDocumentPosition(parameters) & Node.DOCUMENT_POSITION_FOLLOWING
+      ),
+      heading: identity.querySelector('.task-section-title')?.textContent ?? '',
+      text: identity.textContent,
+      signInLabel: document.getElementById('start-azure-login')?.textContent ?? '',
+      badge: identity.querySelector('.chip')?.textContent ?? '',
+    };
+  })()`);
+  reporter.check(
+    'the 5-step run path is visible in task order',
+    JSON.stringify(signedOut.journey) ===
+      JSON.stringify([
+        { step: '1', label: 'Execution identity' },
+        { step: '2', label: 'Parameters' },
+        { step: '3', label: 'Protected code' },
+        { step: '4', label: 'Approve & Run' },
+        { step: '5', label: 'Output' },
+      ]),
+    JSON.stringify(signedOut.journey),
+  );
+  reporter.check(
+    'Execution identity is the first task in the right pane',
+    signedOut.identityBeforeParameters === true && /^1\. Execution identity/.test(signedOut.heading),
+    signedOut.heading,
+  );
+  reporter.check(
+    'signed-out Azure context names the specific sign-in action without claiming readiness',
+    signedOut.signInLabel === 'Sign In to Azure' && signedOut.badge !== 'Ready' && /Runs as/.test(signedOut.text),
+    JSON.stringify(signedOut),
+  );
+
+  const pending = await harness.evaluate(`(() => {
+    globalThis.__citadelTestHooks.setAzureLogin({
+      loginId: 'login-acceptance',
+      state: 'waiting-for-user',
+      verificationUrl: 'https://microsoft.com/devicelogin',
+      userCode: 'ABCD-EFGH',
+      message: 'Open Microsoft sign-in and enter the short code.',
+      timestamps: {},
+    });
+    return {
+      link: document.querySelector('.device-login a')?.getAttribute('href') ?? '',
+      code: document.getElementById('azure-device-code')?.textContent ?? '',
+      cancel: document.getElementById('cancel-azure-login')?.textContent ?? '',
+      signInPresent: Boolean(document.getElementById('start-azure-login')),
+    };
+  })()`);
+  reporter.check(
+    'device-code pending state exposes its URL, short code, and cancellation',
+    pending.link === 'https://microsoft.com/devicelogin' &&
+      pending.code === 'ABCD-EFGH' &&
+      pending.cancel === 'Cancel Azure sign-in' &&
+      pending.signInPresent === false,
+    JSON.stringify(pending),
+  );
+
+  const loginDuringRefresh = await harness.evaluate(`(() => {
+    const hooks = globalThis.__citadelTestHooks;
+    hooks.setAdvertisedExecutionContext(globalThis.__acceptanceSignedOutContext);
+    hooks.setValue('hub.subscriptionId', 'subscription-changed-during-login');
+    const snapshot = {
+      state: document.querySelector('[data-execution-identity]')?.dataset.executionIdentity ?? '',
+      code: document.getElementById('azure-device-code')?.textContent ?? '',
+      cancel: document.getElementById('cancel-azure-login')?.textContent ?? '',
+    };
+    hooks.setExecutionContext(globalThis.__acceptanceSignedOutContext);
+    hooks.setAzureLogin({
+      loginId: 'login-acceptance',
+      state: 'waiting-for-user',
+      verificationUrl: 'https://microsoft.com/devicelogin',
+      userCode: 'ABCD-EFGH',
+      message: 'Open Microsoft sign-in and enter the short code.',
+      timestamps: {},
+    });
+    return snapshot;
+  })()`);
+  reporter.check(
+    'active device login remains visible and cancellable while context refreshes',
+    loginDuringRefresh.state === 'unavailable' &&
+      loginDuringRefresh.code === 'ABCD-EFGH' &&
+      loginDuringRefresh.cancel === 'Cancel Azure sign-in',
+    JSON.stringify(loginDuringRefresh),
+  );
+
+  const ready = await harness.evaluate(`(() => {
+    globalThis.__citadelTestHooks.setAzureLogin({
+      loginId: 'login-acceptance',
+      state: 'succeeded',
+      verificationUrl: '',
+      userCode: '',
+      message: 'Signed in.',
+      timestamps: {},
+    });
+    const context = {
+      kind: 'azure-cli-management',
+      label: 'Azure CLI user',
+      summary: 'Signed in for this local operator sample.',
+      state: 'ready',
+      code: 'azure-cli-ready',
+      canExecute: true,
+      authority: {
+        type: 'azure-cli-user',
+        principalName: 'Acceptance User',
+        principalType: 'user',
+        tenantId: 'tenant-acceptance'
+      },
+      subscription: {
+        activeId: 'sub-acceptance',
+        activeName: 'Acceptance Sandbox',
+        configuredId: 'sub-acceptance',
+        matches: true
+      },
+      gateway: null,
+      hostedRelay: null,
+      guarantees: { tokensExposed: false, credentialsPersisted: false },
+      futureHostedProcess: null,
+    };
+    globalThis.__acceptanceExecutionContext = context;
+    globalThis.__citadelTestHooks.setExecutionContext(context);
+    const identity = document.querySelector('[data-execution-identity]');
+    return { badge: identity.querySelector('.chip')?.textContent ?? '', text: identity.textContent };
+  })()`);
+  reporter.check(
+    'signed-in context states principal, tenant, subscription, and match',
+    ready.badge === 'Ready' &&
+      /Acceptance User/.test(ready.text) &&
+      /tenant-acceptance/.test(ready.text) &&
+      /Acceptance Sandbox/.test(ready.text) &&
+      /matches/.test(ready.text),
+    JSON.stringify(ready),
+  );
+
+  const stale = await harness.evaluate(`(() => {
+    const hooks = globalThis.__citadelTestHooks;
+    hooks.setAdvertisedExecutionContext(globalThis.__acceptanceExecutionContext);
+    hooks.setValue('hub.subscriptionId', 'sub-changed-after-context');
+    const snapshot = {
+      state: document.querySelector('[data-execution-identity]')?.dataset.executionIdentity ?? '',
+      text: document.querySelector('[data-execution-identity]')?.textContent ?? '',
+    };
+    hooks.setExecutionContext(globalThis.__acceptanceExecutionContext);
+    return snapshot;
+  })()`);
+  reporter.check(
+    'changing identity-bound inputs invalidates execution context immediately',
+    stale.state === 'unavailable' && /being rechecked/.test(stale.text),
+    JSON.stringify(stale),
+  );
 }
 
 async function checkOfflineValidation(harness, sourceBySample) {
@@ -280,8 +728,10 @@ async function checkApprovalGate(harness) {
       disabled: document.getElementById('run-button')?.disabled,
       checked: document.getElementById('ack-check')?.checked,
     };
-    document.getElementById('tab-configure').click();
-    hooks.setValue('hub.resourceGroupName', 'rg-acceptance-changed');
+    document.getElementById('tab-code').click();
+    const input = document.getElementById('f-hub-resourceGroupName');
+    input.value = 'rg-acceptance-changed';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
     document.getElementById('tab-request').click();
     const invalidated = {
       disabled: document.getElementById('run-button')?.disabled,
@@ -304,7 +754,7 @@ async function checkApprovalGate(harness) {
 
   reporter.check('risky execution is blocked before approval', gate.before.disabled === true && /acknowledge/i.test(gate.before.reason));
   reporter.check('one explicit approval enables the reviewed run', gate.approved.disabled === false && gate.approved.checked === true);
-  reporter.check('editing configuration invalidates approval', gate.invalidated.disabled === true && gate.invalidated.checked === false);
+  reporter.check('editing a parameter directly on Code invalidates approval', gate.invalidated.disabled === true && gate.invalidated.checked === false);
   reporter.check('approval is spent by one run', gate.afterRun.disabled === true && gate.afterRun.checked === false);
 }
 
@@ -528,6 +978,8 @@ async function checkSecretRendering(harness) {
 async function checkKeyboardOrder(harness) {
   await harness.page.send('Page.navigate', { url: `${harness.baseUrl}/?testExecutor` });
   await harness.waitFor('document.querySelectorAll(".dir-item").length === 19', { label: 'page reload for keyboard checks' });
+  await harness.evaluate(`document.getElementById('tab-code')?.click()`);
+  await harness.waitFor('Boolean(document.querySelector("[data-parameter-pane] input"))', { label: 'Code parameter controls' });
   const expected = await harness.evaluate(`(() => {
     const selector = [
       'a[href]', 'button:not([disabled])', 'input:not([disabled])', 'select:not([disabled])',
@@ -557,20 +1009,126 @@ async function checkKeyboardOrder(harness) {
   const actual = [];
   for (let index = 0; index < expected.length; index += 1) {
     await harness.pressKey('Tab');
-    actual.push(await harness.evaluate(`document.activeElement?.dataset.acceptanceFocus ?? ''`));
+    actual.push(
+      await harness.evaluate(`(() => {
+        const active = document.activeElement;
+        if (!active) return '';
+        return active.id ? 'id:' + active.id : 'index:' + (active.dataset.acceptanceFocus ?? '');
+      })()`),
+    );
   }
   reporter.check(
     'Tab follows visible DOM order without traps or skipped controls',
-    JSON.stringify(actual) === JSON.stringify(expected.map((entry) => entry.index)),
-    `expected ${expected.length} controls, observed ${actual.filter(Boolean).length}`,
+    JSON.stringify(actual) ===
+      JSON.stringify(expected.map((entry) => (entry.id ? `id:${entry.id}` : `index:${entry.index}`))),
+    JSON.stringify({
+      expected: expected.map((entry) => `${entry.index}:${entry.id || entry.text}`),
+      actual,
+    }),
   );
   const tabStops = await harness.evaluate(
     `[...document.querySelectorAll('[role="tab"]')].filter((node) => node.tabIndex === 0).length`,
   );
   reporter.equal('the tablist contributes exactly one stop to page Tab order', tabStops, 1);
+
+  const focus = await harness.evaluate(`(() => {
+    const input = document.querySelector('[data-parameter-pane] input:not([type="checkbox"])');
+    input?.focus();
+    const style = input ? getComputedStyle(input) : null;
+    const strip = document.querySelector('.sheet-sticky')?.getBoundingClientRect();
+    const rect = input?.getBoundingClientRect();
+    return {
+      visible: Boolean(style && style.boxShadow !== 'none'),
+      belowStickyHeader: Boolean(rect && strip && rect.top >= strip.bottom - 1),
+      inViewport: Boolean(rect && rect.top >= 0 && rect.bottom <= window.innerHeight),
+    };
+  })()`);
+  reporter.check('keyboard focus is visibly styled on parameter controls', focus.visible === true, JSON.stringify(focus));
+  reporter.check(
+    'the sticky Code regions do not cover a focused parameter',
+    focus.belowStickyHeader === true && focus.inViewport === true,
+    JSON.stringify(focus),
+  );
+
+  const reverse = await harness.evaluate(`(async () => {
+    const input = document.getElementById('f-hub-subscriptionId');
+    input.focus();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return input.id;
+  })()`);
+  await harness.page.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Tab', modifiers: 8 });
+  await harness.page.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', modifiers: 8 });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const reverseTarget = await harness.evaluate(`document.activeElement?.id ?? ''`);
+  reporter.check(
+    'Shift+Tab keeps focus on the preceding Code-pane control after validation renders',
+    reverse === 'f-hub-subscriptionId' && reverseTarget === 'refresh-execution-context',
+    reverseTarget,
+  );
 }
 
 async function checkResponsiveLayout(harness) {
+  await selectSample(harness, 'tool-rate-limit-burst');
+  await harness.evaluate(`document.getElementById('tab-code')?.click()`);
+
+  await harness.setViewport({ width: 1440, height: 900, mobile: false });
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const desktop = await harness.evaluate(`(() => {
+    const sheet = document.querySelector('.sheet');
+    const workspace = document.querySelector('.code-workspace');
+    const source = document.querySelector('.code-source');
+    const pane = document.querySelector('[data-parameter-pane]');
+    sheet.scrollTop = 420;
+    const strip = document.querySelector('.sheet-sticky').getBoundingClientRect();
+    const workspaceRect = workspace.getBoundingClientRect();
+    const sourceRect = source.getBoundingClientRect();
+    const paneRect = pane.getBoundingClientRect();
+    pane.scrollTop = pane.scrollHeight;
+    const reviewRect = document.getElementById('parameter-review-button').getBoundingClientRect();
+    return {
+      viewport: window.innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      columns: getComputedStyle(workspace).gridTemplateColumns.split(' ').length,
+      position: getComputedStyle(pane).position,
+      sourceBeforePane: sourceRect.left < paneRect.left,
+      paneContained: paneRect.right <= workspaceRect.right + 1,
+      stickyBelowHeader: paneRect.top >= strip.bottom - 1,
+      finalActionVisible: reviewRect.top >= paneRect.top && reviewRect.bottom <= Math.min(paneRect.bottom, window.innerHeight) + 1,
+    };
+  })()`);
+  reporter.check(
+    'desktop keeps protected source and Parameters in 2 related columns',
+    desktop.columns === 2 && desktop.sourceBeforePane === true && desktop.paneContained === true,
+    JSON.stringify(desktop),
+  );
+  reporter.check(
+    'desktop Parameters stays sticky below the recipe header',
+    desktop.position === 'sticky' && desktop.stickyBelowHeader === true && desktop.finalActionVisible === true,
+    JSON.stringify(desktop),
+  );
+  reporter.check('desktop has no page-level horizontal overflow', desktop.documentWidth <= desktop.viewport);
+
+  await harness.setViewport({ width: 820, height: 800, mobile: false });
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const tablet = await harness.evaluate(`(() => {
+    const source = document.querySelector('.code-source').getBoundingClientRect();
+    const pane = document.querySelector('[data-parameter-pane]');
+    const paneRect = pane.getBoundingClientRect();
+    return {
+      viewport: window.innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      position: getComputedStyle(pane).position,
+      paneAfterSource: paneRect.top >= source.top,
+      paneWidth: paneRect.width,
+    };
+  })()`);
+  reporter.check(
+    'tablet stacks the canonical Parameters pane coherently',
+    tablet.position === 'static' && tablet.paneAfterSource === true && tablet.paneWidth <= tablet.viewport,
+    JSON.stringify(tablet),
+  );
+  reporter.check('tablet has no page-level horizontal overflow', tablet.documentWidth <= tablet.viewport);
+
   await harness.setViewport({ width: 320, height: 640, mobile: true });
   await new Promise((resolve) => setTimeout(resolve, 250));
   const narrow = await harness.evaluate(`(() => ({
@@ -579,10 +1137,38 @@ async function checkResponsiveLayout(harness) {
     sourceOverflowsViewport: [...document.querySelectorAll(${JSON.stringify(SOURCE_SELECTOR)})]
       .some((node) => node.getBoundingClientRect().right > window.innerWidth + 1),
     compactRecipeVisible: getComputedStyle(document.querySelector('.strip-compact')).display !== 'none',
+    parameterDisclosure: document.querySelector('[data-parameter-pane]')?.tagName === 'DETAILS',
+    parameterPosition: getComputedStyle(document.querySelector('[data-parameter-pane]')).position,
+    sourceFirst: document.querySelector('.code-source').compareDocumentPosition(document.querySelector('[data-parameter-pane]')) & Node.DOCUMENT_POSITION_FOLLOWING,
+    jumpTarget: document.querySelector('.parameter-jump')?.getAttribute('href') ?? '',
   }))()`);
   reporter.check('320px layout has no page-level horizontal overflow', narrow.documentWidth <= narrow.viewport, `${narrow.documentWidth} > ${narrow.viewport}`);
   reporter.check('320px layout keeps protected source inside the viewport', narrow.sourceOverflowsViewport === false);
   reporter.check('320px layout exposes the compact recipe control', narrow.compactRecipeVisible === true);
+  reporter.check(
+    '320px keeps source first and Parameters immediately reachable as a disclosure',
+    Boolean(narrow.sourceFirst) &&
+      narrow.parameterDisclosure === true &&
+      narrow.parameterPosition === 'static' &&
+      narrow.jumpTarget === '#code-parameters',
+    JSON.stringify(narrow),
+  );
+  const jump = await harness.evaluate(`(async () => {
+    const link = document.querySelector('.parameter-jump');
+    link.click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const strip = document.querySelector('.sheet-sticky').getBoundingClientRect();
+    const summary = document.getElementById('parameter-pane-summary').getBoundingClientRect();
+    return {
+      focused: document.activeElement?.id ?? '',
+      visibleBelowHeader: summary.top >= strip.bottom - 1 && summary.bottom <= window.innerHeight + 1,
+    };
+  })()`);
+  reporter.check(
+    'the narrow parameter jump reveals and focuses the disclosure below the sticky header',
+    jump.focused === 'parameter-pane-summary' && jump.visibleBelowHeader === true,
+    JSON.stringify(jump),
+  );
 
   // A 640 CSS-pixel viewport models 200% zoom on a 1280-pixel display.
   await harness.setViewport({ width: 640, height: 480, mobile: false });
@@ -617,6 +1203,8 @@ async function main() {
     await harness.waitFor('Boolean(globalThis.__citadelTestHooks)', { label: 'the loopback-only test executor seam' });
 
     const sourceBySample = await checkSourceContracts(harness, notebook, notebookMeta);
+    await checkCodeParameterWorkspace(harness);
+    await checkExecutionIdentity(harness);
     await checkOfflineValidation(harness, sourceBySample);
     await checkApprovalGate(harness);
     await checkRunIdIsolation(harness);

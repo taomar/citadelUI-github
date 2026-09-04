@@ -4,12 +4,12 @@ import { bullets, chip, disclosure, el, facts, link, linkList, replace, section 
 
 const WIDTH_CLASS = { num: 'ctl-w-num', short: 'ctl-w-short', id: 'ctl-w-id', long: 'ctl-w-long' };
 
-const CLASSIFICATION_LABEL = {
-  required: 'required',
-  conditional: 'conditional',
-  derived: 'derived',
-  'sample-default': 'sample default',
-  secret: 'secret · memory only',
+const REQUIREMENT_LABEL = {
+  mandatory: 'Required',
+  conditional: 'Conditional',
+  optional: 'Default',
+  generated: 'Generated / override',
+  secret: 'Secret · memory only',
 };
 
 /** The group chip tone: only a blocking group is coloured for attention. */
@@ -19,6 +19,14 @@ const GROUP_TONE = {
   optional: 'neutral',
   generated: 'cloud',
   secret: 'danger',
+};
+
+const GROUP_HEADING = {
+  mandatory: 'Required inputs',
+  conditional: 'Conditional inputs',
+  optional: 'Defaults',
+  generated: 'Generated overrides',
+  secret: 'Credentials',
 };
 
 /* --------------------------------------------------------------- guide */
@@ -85,6 +93,33 @@ export function renderGuide(panel, guide) {
 
 function fieldControlId(path) {
   return `f-${path.replace(/[^a-zA-Z0-9-]/g, '-')}`;
+}
+
+function keyedDisclosure(key, summary, children, options) {
+  const node = disclosure(summary, children, options);
+  node.dataset.disclosureKey = key;
+  return node;
+}
+
+function inputPlaceholder(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return undefined;
+  return text.endsWith('…') ? text : `${text.replace(/\.*$/, '')}…`;
+}
+
+function fieldPattern(field) {
+  if (field.placeholder) return `Example: ${String(field.placeholder).replace(/…$/, '')}`;
+  if (field.type === 'url') return 'Format: HTTPS URL';
+  if (field.type === 'integer') {
+    if (field.min != null && field.max != null) return `Format: whole number from ${field.min} to ${field.max}`;
+    if (field.min != null) return `Format: whole number, ${field.min} or greater`;
+    return 'Format: whole number';
+  }
+  if (field.type === 'string-list') return 'Format: one value per line';
+  if (field.type === 'multiline') return 'Format: plain text; line breaks are preserved';
+  if (field.type === 'enum') return `Choose: ${field.options.map((option) => option.label).join(', ')}`;
+  if (field.type === 'secret') return 'Format: masked credential value';
+  return 'Format: text';
 }
 
 function renderValidation(validation, { onValidate, onDownload }) {
@@ -196,11 +231,34 @@ function stateBadgeTone(state) {
   return 'neutral';
 }
 
-export function renderSource(panel, source, validation, { onRetry, onConfigure, onValidate, onDownload } = {}) {
+export function renderSource(
+  panel,
+  source,
+  validation,
+  configure,
+  executionIdentity,
+  {
+    onRetry,
+    onConfigure,
+    onValidate,
+    onChange,
+    onBlur,
+    onCopy,
+    onDownload,
+    onReview,
+    onRefreshIdentity,
+    onSignIn,
+    onCancelLogin,
+    onCopyCode,
+    wrapSource,
+    onToggleWrap,
+  } = {},
+) {
+  const sourceNodes = [];
   if (source.state !== 'ready') {
-    replace(panel, [
+    sourceNodes.push(
       section(
-        'Protected notebook source',
+        '3. Protected code & operation',
         [
           el('div', { class: 'strip-meta' }, [
             chip('Protected code', 'brand'),
@@ -215,123 +273,150 @@ export function renderSource(panel, source, validation, { onRetry, onConfigure, 
         ],
         { note: 'server-owned' },
       ),
-    ]);
-    return;
-  }
-
-  const nodes = [
-    section(
-      'Protected notebook source',
-      [
-        el('div', { class: 'strip-meta' }, [
-          chip('Protected code', 'brand'),
-          chip('Read only', 'neutral'),
-          chip('Imported notebook', 'cloud'),
-        ]),
-        el('p', { class: 'prose', text: source.protection.statement }),
-        facts([
-          ['Notebook', source.notebook.fileName, { mono: true }],
-          ['Notebook SHA-256', source.notebook.sha256, { mono: true }],
-          ['Notebook bytes', source.notebook.bytes, { mono: true }],
-        ]),
-        el('p', {
-          class: 'hint',
-          text: 'The server selects these cells and verifies the notebook digest. This page has no code editor and sends no source text back.',
-        }),
-      ],
-      { note: `${source.cells.length} cited cell${source.cells.length === 1 ? '' : 's'}` },
-    ),
-    section(
-      'Editable parameter zones',
-      [
-        el('p', {
-          class: 'prose',
-          text: 'Only the declared configuration controls and memory-only secret fields below may be changed. Protected code cannot be changed.',
-        }),
-        ...source.parameterZones.map((zone) =>
-          el('div', { class: 'parameter-zone', 'data-parameter-zone': zone.id }, [
-            el('div', { class: 'parameter-zone-head' }, [
-              el('h3', { class: 'step-title', text: zone.title }),
-              chip(`${zone.count} field${zone.count === 1 ? '' : 's'}`, 'neutral', { mono: true }),
-            ]),
+    );
+  } else {
+    sourceNodes.push(
+      section(
+        '3. Protected code & operation',
+        [
+          el('div', { class: 'strip-meta' }, [
+            chip('Protected code', 'brand'),
+            chip('Read only', 'neutral'),
+            chip('Imported notebook', 'cloud'),
+          ]),
+          el('p', {
+            class: 'prose',
+            text: 'Review the exact protected cells this recipe uses. The page cannot edit or submit source code.',
+          }),
+          el('a', {
+            class: 'btn btn-primary parameter-jump compact-only',
+            href: '#code-parameters',
+            text: 'Set identity & parameters',
+            onclick: (event) => {
+              event.preventDefault();
+              const details = document.getElementById('code-parameters');
+              const summary = document.getElementById('parameter-pane-summary');
+              if (!details || !summary) return;
+              details.open = true;
+              requestAnimationFrame(() => {
+                summary.focus({ preventScroll: true });
+                const sheet = document.querySelector('.sheet');
+                const sticky = document.querySelector('.sheet-sticky');
+                if (!sheet || !sticky) return;
+                const offset = summary.getBoundingClientRect().top - sticky.getBoundingClientRect().bottom - 8;
+                sheet.scrollTop += offset;
+              });
+            },
+          }),
+          el('nav', { class: 'source-tools', 'aria-label': 'Protected source controls' }, [
             el(
-              'ul',
-              { class: 'parameter-zone-fields' },
-              zone.fields.map((field) =>
-                el('li', { 'data-parameter-path': field.path }, [
-                  el('a', {
-                    href: `#${fieldControlId(field.path)}`,
-                    text: field.label,
-                    onclick: (event) => {
-                      event.preventDefault();
-                      onConfigure?.(field.path);
-                    },
-                  }),
-                  el('code', { class: 'mono', text: field.path }),
-                  field.secret ? chip('Secret · memory only', 'danger') : chip('Configuration', 'brand'),
-                  field.blockingWhenBlank ? chip('Required', 'warning') : null,
-                ]),
+              'div',
+              { class: 'source-nav' },
+              source.cells.map((cell) =>
+                el('a', { href: `#source-cell-${cell.cellIndex}`, text: `Cell ${cell.cellIndex}` }),
               ),
             ),
+            el('button', {
+              type: 'button',
+              class: 'btn btn-sm',
+              id: 'source-wrap-toggle',
+              'aria-pressed': wrapSource ? 'true' : 'false',
+              text: wrapSource ? 'Use horizontal scrolling' : 'Wrap long lines',
+              onclick: () => onToggleWrap?.(),
+            }),
           ]),
-        ),
-      ],
-      { note: 'editable only in Configure' },
-    ),
-  ];
+          keyedDisclosure('source-integrity', 'Source integrity', [
+            el('p', { class: 'hint', text: source.protection.statement }),
+            facts([
+              ['Notebook', source.notebook.fileName, { mono: true }],
+              ['Notebook SHA-256', source.notebook.sha256, { mono: true }],
+              ['Notebook bytes', source.notebook.bytes, { mono: true }],
+            ]),
+            el('p', {
+              class: 'hint',
+              text: 'The server selects these cells and verifies the notebook digest before showing them.',
+            }),
+          ]),
+        ],
+        { note: `${source.cells.length} cited cell${source.cells.length === 1 ? '' : 's'}` },
+      ),
+    );
 
-  for (const cell of source.cells) {
-    nodes.push(
+    for (const cell of source.cells) {
+      sourceNodes.push(
       el(
-        'article',
+        'details',
         {
           class: 'source-cell',
+          id: `source-cell-${cell.cellIndex}`,
+          open: true,
+          'data-disclosure-key': `source-cell-${cell.cellIndex}`,
           'data-source-cell': true,
           'data-cell-index': cell.cellIndex,
           'data-protected': 'true',
           'data-editable': 'false',
         },
         [
-          el('div', { class: 'source-cell-head' }, [
-            el('h2', { class: 'source-cell-title', text: `Notebook cell ${cell.cellIndex}` }),
+          el('summary', { class: 'source-cell-head' }, [
+            el('h3', { class: 'source-cell-title', text: `Notebook cell ${cell.cellIndex}` }),
             chip('Protected code', 'brand'),
             chip(cell.cellType, 'neutral', { mono: true }),
-            cell.language ? chip(cell.language, 'cloud', { mono: true }) : null,
+            cell.language && cell.language !== cell.cellType ? chip(cell.language, 'cloud', { mono: true }) : null,
           ]),
-          facts([
-            ['Cell SHA-256', cell.sha256, { mono: true }],
-            ['Exact bytes', cell.bytes, { mono: true }],
-          ]),
-          el('div', { class: 'source-code-frame' }, [
-            el(
-              'ol',
-              { class: 'source-line-numbers', 'aria-hidden': 'true' },
-              Array.from({ length: cell.lineCount }, (_, index) => el('li', { text: String(index + 1) })),
-            ),
-            el(
-              'pre',
-              {
-                class: 'source-code',
-                'data-source-code': true,
-                tabindex: '0',
-                'aria-label': `Protected source for notebook cell ${cell.cellIndex}`,
-              },
-              [el('code', { text: cell.text })],
-            ),
+          el('div', { class: 'source-cell-body' }, [
+            facts([
+              ['Cell SHA-256', cell.sha256, { mono: true }],
+              ['Exact bytes', cell.bytes, { mono: true }],
+            ]),
+            el('div', { class: 'source-code-frame' }, [
+              el(
+                'ol',
+                { class: 'source-line-numbers', 'aria-hidden': 'true' },
+                Array.from({ length: cell.lineCount }, (_, index) => el('li', { text: String(index + 1) })),
+              ),
+              el(
+                'pre',
+                {
+                  class: 'source-code',
+                  'data-source-code': true,
+                  tabindex: '0',
+                  'aria-label': `Protected source for notebook cell ${cell.cellIndex}`,
+                },
+                [el('code', { text: cell.text })],
+              ),
+            ]),
           ]),
         ],
+      ),
+      );
+    }
+
+    sourceNodes.push(
+      section(
+        'Offline source validation',
+        [renderValidation(validation, { onValidate, onDownload })],
+        { note: 'not live evidence' },
       ),
     );
   }
 
-  nodes.push(
-    section(
-      'Offline source validation',
-      [renderValidation(validation, { onValidate, onDownload })],
-      { note: 'not live evidence' },
-    ),
-  );
-  replace(panel, nodes);
+  replace(panel, [
+    el('div', { class: 'code-workspace' }, [
+      el('div', { class: 'code-source', 'data-wrap': wrapSource ? 'true' : 'false' }, sourceNodes),
+      renderParameters(configure, executionIdentity, {
+        onConfigure,
+        onChange,
+        onBlur,
+        onCopy,
+        onDownload,
+        onReview,
+        onRefreshIdentity,
+        onSignIn,
+        onCancelLogin,
+        onCopyCode,
+      }),
+    ]),
+  ]);
 }
 
 /* ----------------------------------------------------------- configure */
@@ -341,7 +426,9 @@ function renderField(field, { onChange, onBlur }) {
   const inputId = fieldControlId(field.path);
   const describedBy = [];
   const invalid = field.errors.length > 0;
-  const touch = () => onBlur?.(field.path);
+  // Let the browser complete focus navigation before touched-state rendering
+  // replaces the pane, then main.mjs restores the newly focused control.
+  const touch = () => setTimeout(() => onBlur?.(field.path), 0);
 
   // `control` is what gets laid out; `ariaTarget` is the focusable widget that
   // carries the programmatic state. For a checkbox they differ: the input is
@@ -354,6 +441,8 @@ function renderField(field, { onChange, onBlur }) {
       class: 'ctl-check',
       type: 'checkbox',
       id: inputId,
+      name: field.path,
+      autocomplete: 'off',
       checked: field.value === true,
       'aria-invalid': invalid ? 'true' : undefined,
       onblur: touch,
@@ -370,6 +459,8 @@ function renderField(field, { onChange, onBlur }) {
       {
         class: `ctl ${widthClass}`,
         id: inputId,
+        name: field.path,
+        autocomplete: 'off',
         'aria-invalid': invalid ? 'true' : undefined,
         onblur: touch,
         onchange: (event) => onChange(field.path, event.target.value),
@@ -382,8 +473,11 @@ function renderField(field, { onChange, onBlur }) {
     control = el('textarea', {
       class: `ctl ${widthClass}`,
       id: inputId,
+      name: field.path,
       rows: 3,
       value: field.value ?? '',
+      autocomplete: 'off',
+      spellcheck: 'false',
       'aria-invalid': invalid ? 'true' : undefined,
       onblur: touch,
       oninput: (event) => onChange(field.path, event.target.value),
@@ -392,9 +486,12 @@ function renderField(field, { onChange, onBlur }) {
     control = el('textarea', {
       class: `ctl ${widthClass}`,
       id: inputId,
+      name: field.path,
       rows: 2,
       value: Array.isArray(field.value) ? field.value.join('\n') : (field.value ?? ''),
-      placeholder: 'One value per line',
+      placeholder: 'One value per line…',
+      autocomplete: 'off',
+      spellcheck: 'false',
       'aria-invalid': invalid ? 'true' : undefined,
       onblur: touch,
       oninput: (event) => onChange(field.path, event.target.value),
@@ -403,10 +500,11 @@ function renderField(field, { onChange, onBlur }) {
     control = el('input', {
       class: `ctl ${widthClass}`,
       id: inputId,
+      name: field.path,
       type: 'password',
       autocomplete: 'off',
       spellcheck: 'false',
-      placeholder: field.secretSet ? 'Set for this tab only' : 'Paste the minted key',
+      placeholder: field.secretSet ? 'Set for this tab only…' : 'Paste the minted key…',
       'aria-invalid': invalid ? 'true' : undefined,
       onblur: touch,
       oninput: (event) => onChange(field.path, event.target.value),
@@ -415,13 +513,14 @@ function renderField(field, { onChange, onBlur }) {
     control = el('input', {
       class: `ctl ${widthClass}${field.type === 'integer' ? ' ctl-num' : ''}`,
       id: inputId,
-      type: field.type === 'integer' ? 'number' : 'text',
-      inputmode: field.type === 'integer' ? 'numeric' : undefined,
+      name: field.path,
+      type: field.type === 'integer' ? 'number' : field.type === 'url' ? 'url' : 'text',
+      inputmode: field.type === 'integer' ? 'numeric' : field.type === 'url' ? 'url' : undefined,
       min: field.min,
       max: field.max,
       spellcheck: 'false',
       autocomplete: 'off',
-      placeholder: field.placeholder,
+      placeholder: inputPlaceholder(field.placeholder),
       value: field.value ?? '',
       'aria-invalid': invalid ? 'true' : undefined,
       onblur: touch,
@@ -429,34 +528,35 @@ function renderField(field, { onChange, onBlur }) {
     });
   }
 
-  const helpNodes = [];
-  // The requirement is the first thing said about a field, because it answers
-  // the question the user actually has: must I supply this?
-  helpNodes.push(el('p', { class: 'prow-help prow-why', text: field.requirementReason }));
+  const purposeId = `${inputId}-purpose`;
+  describedBy.push(purposeId);
+  const sourceNodes = [];
+  sourceNodes.push(el('p', { class: 'prow-help', text: `Shared context: ${field.ownerLabel}.` }));
   if (field.condition) {
-    helpNodes.push(
-      el('p', { class: 'prow-help', text: `Required when: ${field.condition}${field.conditionActive ? ' — that condition holds now.' : ' — that condition does not hold now.'}` }),
+    sourceNodes.push(
+      el('p', {
+        class: 'prow-help',
+        text: `Required when ${field.condition.toLowerCase()} ${
+          field.conditionActive ? 'That condition holds now.' : 'That condition does not hold now.'
+        }`,
+      }),
     );
   }
-  if (field.fallback) {
-    helpNodes.push(el('p', { class: 'prow-help', text: `If left blank: ${field.fallback}` }));
-  }
-  if (field.producedBy) {
-    helpNodes.push(el('p', { class: 'prow-help', text: field.producedBy }));
-  }
+  if (field.fallback) sourceNodes.push(el('p', { class: 'prow-help', text: `If left blank: ${field.fallback}` }));
+  if (field.producedBy) sourceNodes.push(el('p', { class: 'prow-help', text: field.producedBy }));
   if (field.help) {
     const helpId = `${inputId}-help`;
     describedBy.push(helpId);
-    helpNodes.push(el('p', { class: 'prow-help', id: helpId, text: field.help }));
+    sourceNodes.push(el('p', { class: 'prow-help', id: helpId, text: field.help }));
   }
   if (field.howToObtain) {
-    helpNodes.push(el('p', { class: 'prow-help', text: `How to obtain: ${field.howToObtain}` }));
+    sourceNodes.push(el('p', { class: 'prow-help', text: field.howToObtain }));
   }
   if (field.secretNote) {
-    helpNodes.push(el('p', { class: 'prow-help', text: field.secretNote }));
+    sourceNodes.push(el('p', { class: 'prow-help', text: field.secretNote }));
   }
   if (field.notebookRef) {
-    helpNodes.push(el('p', { class: 'prow-help' }, [el('code', { class: 'mono', text: field.notebookRef })]));
+    sourceNodes.push(el('p', { class: 'prow-help' }, [el('code', { class: 'mono', text: field.notebookRef })]));
   }
 
   const messages = [];
@@ -487,134 +587,309 @@ function renderField(field, { onChange, onBlur }) {
     aria.setAttribute('aria-required', 'true');
   }
 
-  return el('div', { class: 'prow', 'data-requirement': field.requirement, 'data-parameter-path': field.path }, [
-    el('div', { class: 'prow-ident' }, [
+  const status =
+    field.errors.length > 0
+      ? chip('Needs correction', 'danger')
+      : field.blocking
+        ? chip('Needed', 'warning')
+        : field.supplied || field.secretSet
+          ? chip('Ready', 'success')
+          : chip('Uses fallback', 'neutral');
+
+  return el('div', {
+    class: 'prow',
+    'data-requirement': field.requirement,
+    'data-parameter-path': field.path,
+    'data-parameter-secret': field.requirement === 'secret' ? 'true' : 'false',
+  }, [
+    el('div', { class: 'prow-head' }, [
       el('label', { class: 'prow-label', for: inputId, text: field.label }),
-      el('span', { class: 'prow-owner', text: field.ownerLabel }),
-      el('span', {
-        class: 'prow-class',
-        'data-class': field.classification,
-        text: CLASSIFICATION_LABEL[field.classification] ?? field.classification,
-      }),
-      field.secretSet ? chip('set', 'success') : null,
-      field.blocking ? chip('needed', 'warning') : null,
+      el('span', { class: 'prow-badges' }, [
+        chip(REQUIREMENT_LABEL[field.requirement] ?? field.requirement, GROUP_TONE[field.requirement] ?? 'neutral'),
+        status,
+      ]),
     ]),
+    el('p', { class: 'prow-purpose', id: purposeId, text: field.requirementReason }),
     el('div', { class: 'prow-val' }, [
       control,
       ...messages,
-      ...helpNodes,
-      field.links?.length
-        ? el(
-            'p',
-            { class: 'prow-links' },
-            field.links.map((entry) => link(entry.label, entry.href)),
-          )
-        : null,
+      el('p', { class: 'prow-pattern', text: fieldPattern(field) }),
+      el('details', { class: 'field-source', 'data-disclosure-key': `${inputId}-source` }, [
+        el('summary', { id: `${inputId}-source`, text: 'Where do I get this?' }),
+        el('div', { class: 'field-source-body' }, [
+          ...sourceNodes,
+          field.links?.length
+            ? el(
+                'p',
+                { class: 'prow-links' },
+                field.links.map((entry, index) =>
+                  el('a', {
+                    id: `${inputId}-link-${index}`,
+                    href: entry.href,
+                    target: '_blank',
+                    rel: 'noreferrer noopener',
+                    text: entry.label,
+                  }),
+                ),
+              )
+            : null,
+        ]),
+      ]),
     ]),
   ]);
 }
 
-export function renderConfigure(panel, configure, { onChange, onBlur, onCopy, onDownload }) {
-  const nodes = [
-    section(
-      'Editable zones',
-      [
-        el('div', { class: 'strip-meta' }, [
-          chip('Parameters and configuration', 'brand'),
-          chip('Secrets · memory only', 'danger'),
-        ]),
-        el('p', {
-          class: 'prose',
-          text: 'These declared controls are the only editable part of the sample. The notebook code remains protected and read only.',
-        }),
-      ],
-      { note: 'declared inputs only' },
-    ),
+function renderExecutionIdentity(identity, { onRefreshIdentity, onSignIn, onCancelLogin, onCopyCode }) {
+  const details = [
+    el('div', { class: 'task-section-head' }, [
+      el('h3', { class: 'task-section-title', text: '1. Execution identity & target' }),
+      chip(identity.badge.label, identity.badge.tone),
+    ]),
+    el('p', { class: 'identity-summary', text: identity.summary }),
+    facts([
+      ['Runs as', identity.runsAs],
+      ['Credential source', identity.credentialSource],
+      identity.authority?.tenantId ? ['Tenant', identity.authority.tenantId, { mono: true }] : null,
+      identity.subscription?.activeName
+        ? ['Active subscription', `${identity.subscription.activeName} · ${identity.subscription.activeId}`, { mono: true }]
+        : identity.subscription?.activeId
+          ? ['Active subscription', identity.subscription.activeId, { mono: true }]
+          : null,
+      identity.subscription?.configuredId
+        ? [
+            'Configured subscription',
+            `${identity.subscription.configuredId}${
+              identity.subscription.matches === true
+                ? ' · matches'
+                : identity.subscription.matches === false
+                  ? ' · does not match'
+                  : ''
+            }`,
+            { mono: true },
+          ]
+        : null,
+      identity.gateway
+        ? [
+            'Gateway key',
+            `${identity.gateway.keyPresent ? 'Present in memory' : 'Missing'} · header ${
+              identity.gateway.headerName || 'not configured'
+            }`,
+            { mono: true },
+          ]
+        : null,
+    ].filter(Boolean)),
   ];
 
-  // The contract summary: what this sample needs, before any scrolling.
-  nodes.push(
-    section(
-      'Configuration contract',
-      [
-        el('p', { class: 'prose', text: configure.contractLine }),
-        el(
-          'div',
-          { class: 'strip-meta' },
-          configure.groups.map((group) =>
-            chip(`${group.title}: ${group.suppliedCount}/${group.count}`, GROUP_TONE[group.id] ?? 'neutral', { mono: true }),
-          ),
-        ),
-        configure.blockingCount > 0
-          ? el(
-              'ul',
-              { class: 'bullets bullets-warn' },
-              configure.blocking.map((entry) =>
-                el('li', {}, [el('span', {}, [el('code', { class: 'mono', text: entry.path }), ` — ${entry.label} is still needed.`])]),
-              ),
-            )
-          : el('p', { class: 'hint', text: 'Every value this sample needs is present. Optional and generated values fall back as documented.' }),
-        el('div', { class: 'runbar' }, [
-          el('button', {
-            type: 'button',
-            class: 'btn btn-sm',
-            id: 'copy-config',
-            text: 'Copy configuration (JSON)',
-            onclick: () => onCopy?.(configure.exports.json),
-          }),
-          el('button', {
-            type: 'button',
-            class: 'btn btn-sm',
-            id: 'download-config',
-            text: `Download ${configure.exports.fileNames.json}`,
-            onclick: () => onDownload?.(configure.exports.fileNames.json, configure.exports.json, 'application/json'),
-          }),
-          el('button', {
-            type: 'button',
-            class: 'btn btn-sm',
-            id: 'copy-env',
-            text: 'Copy .env.example',
-            onclick: () => onCopy?.(configure.exports.env),
-          }),
-          el('button', {
-            type: 'button',
-            class: 'btn btn-sm',
-            id: 'download-env',
-            text: `Download ${configure.exports.fileNames.env}`,
-            onclick: () => onDownload?.(configure.exports.fileNames.env, configure.exports.env, 'text/plain'),
-          }),
-        ]),
-        el('p', {
-          class: 'hint',
-          text:
-            configure.exports.secretCount > 0
-              ? `${configure.exports.secretCount} credential(s) are exported as environment placeholders only. No secret value is ever written into either file.`
-              : 'This sample needs no credential, so the exported environment file is empty by design.',
-        }),
-      ],
-      { note: `${configure.exports.fileNames.base}` },
-    ),
-  );
-
-  for (const group of configure.groups) {
-    nodes.push(
-      section(
-        group.title,
-        [
-          el('p', { class: 'prose', text: group.summary }),
-          el('div', { class: 'prows' }, group.fields.map((field) => renderField(field, { onChange, onBlur }))),
-        ],
-        {
-          note:
-            group.blockingCount > 0
-              ? `${group.blockingCount} of ${group.count} still needed`
-              : `${group.count} field${group.count === 1 ? '' : 's'}`,
-        },
-      ),
+  if (identity.login) {
+    details.push(
+      el('div', { class: 'device-login', 'data-login-state': identity.login.state }, [
+        el('p', { class: 'device-login-message', text: identity.login.message || `Azure sign-in is ${identity.login.state}.` }),
+        identity.login.verificationUrl
+          ? el('p', { class: 'device-login-link' }, [
+              el('a', {
+                href: identity.login.verificationUrl,
+                target: '_blank',
+                rel: 'noreferrer noopener',
+                text: 'Open Microsoft device sign-in',
+              }),
+            ])
+          : null,
+        identity.login.userCode
+          ? el('div', { class: 'device-code' }, [
+              el('code', { id: 'azure-device-code', text: identity.login.userCode }),
+              el('button', {
+                type: 'button',
+                class: 'btn btn-sm',
+                text: 'Copy device code',
+                onclick: () => onCopyCode?.(identity.login.userCode),
+              }),
+            ])
+          : null,
+        identity.login.cancelAvailable
+          ? el('button', {
+              type: 'button',
+              class: 'btn btn-sm',
+              id: 'cancel-azure-login',
+              text: 'Cancel Azure sign-in',
+              onclick: () => onCancelLogin?.(),
+            })
+          : null,
+      ]),
     );
   }
 
-  replace(panel, nodes);
+  details.push(
+    el('div', { class: 'identity-actions' }, [
+      identity.canSignIn
+        ? el('button', {
+            type: 'button',
+            class: 'btn btn-primary',
+            id: 'start-azure-login',
+            text: 'Sign In to Azure',
+            onclick: () => onSignIn?.(),
+          })
+        : null,
+      identity.canRefresh
+        ? el('button', {
+            type: 'button',
+            class: 'btn btn-sm',
+            id: 'refresh-execution-context',
+            'aria-busy': identity.refreshing ? 'true' : undefined,
+            'aria-disabled': identity.refreshing ? 'true' : undefined,
+            text: identity.refreshing ? 'Checking execution identity…' : 'Refresh execution identity',
+            onclick: () => {
+              if (!identity.refreshing) onRefreshIdentity?.();
+            },
+          })
+        : null,
+    ]),
+  );
+  if (identity.guarantees.length) {
+    details.push(keyedDisclosure('identity-security', 'Security boundary', [bullets(identity.guarantees)]));
+  }
+  return el('section', { class: 'identity-section', 'data-execution-identity': identity.state }, details);
+}
+
+function renderParameterGroup(group, options) {
+  return el('section', { class: 'parameter-group', 'data-requirement-group': group.id }, [
+    el('div', { class: 'parameter-group-head' }, [
+      el('h4', { class: 'parameter-group-title', text: GROUP_HEADING[group.id] ?? group.title }),
+      chip(
+        group.blockingCount > 0 ? `${group.blockingCount} needed` : `${group.suppliedCount}/${group.count} ready`,
+        group.blockingCount > 0 ? 'warning' : GROUP_TONE[group.id] ?? 'neutral',
+        { mono: true },
+      ),
+    ]),
+    el('p', { class: 'hint', text: group.summary }),
+    el('div', { class: 'prows' }, group.fields.map((field) => renderField(field, options))),
+  ]);
+}
+
+export function renderParameters(
+  configure,
+  executionIdentity,
+  { onConfigure, onChange, onBlur, onCopy, onDownload, onReview, onRefreshIdentity, onSignIn, onCancelLogin, onCopyCode },
+) {
+  const ready = configure.blockingCount === 0 && configure.errorCount === 0;
+  const readinessLabel = ready
+    ? 'Ready'
+    : configure.blockingCount > 0
+      ? `${configure.blockingCount} needed`
+      : `${configure.errorCount} invalid`;
+  const primaryGroups = configure.groups.filter((group) => !['optional', 'generated'].includes(group.id));
+  const advancedGroups = configure.groups.filter((group) => ['optional', 'generated'].includes(group.id));
+  const fieldOptions = { onChange, onBlur };
+
+  const exports = keyedDisclosure('configuration-exports', 'Configuration exports', [
+    el('div', { class: 'parameter-actions' }, [
+      el('button', {
+        type: 'button',
+        class: 'btn btn-sm',
+        id: 'copy-config',
+        text: 'Copy configuration (JSON)',
+        onclick: () => onCopy?.(configure.exports.json),
+      }),
+      el('button', {
+        type: 'button',
+        class: 'btn btn-sm',
+        id: 'download-config',
+        text: `Download ${configure.exports.fileNames.json}`,
+        onclick: () => onDownload?.(configure.exports.fileNames.json, configure.exports.json, 'application/json'),
+      }),
+      el('button', {
+        type: 'button',
+        class: 'btn btn-sm',
+        id: 'copy-env',
+        text: 'Copy .env.example',
+        onclick: () => onCopy?.(configure.exports.env),
+      }),
+      el('button', {
+        type: 'button',
+        class: 'btn btn-sm',
+        id: 'download-env',
+        text: `Download ${configure.exports.fileNames.env}`,
+        onclick: () => onDownload?.(configure.exports.fileNames.env, configure.exports.env, 'text/plain'),
+      }),
+    ]),
+    el('p', {
+      class: 'hint',
+      text:
+        configure.exports.secretCount > 0
+          ? `${configure.exports.secretCount} credential(s) are exported as environment placeholders only. No secret value is ever written into either file.`
+          : 'This sample needs no credential, so the exported environment file is empty by design.',
+    }),
+  ]);
+  exports.querySelector(':scope > summary').id = 'parameter-exports-summary';
+
+  return el('details', {
+    class: 'parameter-pane',
+    id: 'code-parameters',
+    'data-parameter-pane': true,
+    'data-state': ready ? 'ready' : 'needs-input',
+    open: true,
+  }, [
+    el('summary', { class: 'parameter-pane-summary', id: 'parameter-pane-summary' }, [
+      el('span', { class: 'parameter-pane-heading' }, [
+        el('h2', { class: 'parameter-pane-title', text: 'Prepare this run' }),
+        el('span', { class: 'parameter-pane-context', text: 'Identity first, then required inputs' }),
+      ]),
+      chip(
+        readinessLabel,
+        ready ? 'success' : configure.blockingCount > 0 ? 'warning' : configure.errorCount > 0 ? 'danger' : 'neutral',
+      ),
+    ]),
+    el('div', { class: 'parameter-pane-body' }, [
+      renderExecutionIdentity(executionIdentity, {
+        onRefreshIdentity,
+        onSignIn,
+        onCancelLogin,
+        onCopyCode,
+      }),
+      el('section', { class: 'parameters-section', 'aria-labelledby': 'parameters-section-title' }, [
+        el('div', { class: 'task-section-head' }, [
+          el('h3', { class: 'task-section-title', id: 'parameters-section-title', text: '2. Parameters' }),
+          chip(
+            readinessLabel,
+            ready ? 'success' : configure.blockingCount > 0 ? 'warning' : configure.errorCount > 0 ? 'danger' : 'neutral',
+          ),
+        ]),
+        el('p', {
+          class: 'identity-summary',
+          text: 'Complete only what this recipe needs. Protected code stays read only.',
+        }),
+        ...primaryGroups.map((group) => renderParameterGroup(group, fieldOptions)),
+        advancedGroups.length
+          ? el('details', { class: 'advanced-parameters', 'data-disclosure-key': 'advanced-parameters' }, [
+              el('summary', {
+                text: `Advanced, defaulted & generated (${advancedGroups.reduce((sum, group) => sum + group.count, 0)})`,
+              }),
+              el(
+                'div',
+                { class: 'advanced-parameters-body' },
+                advancedGroups.map((group) => renderParameterGroup(group, fieldOptions)),
+              ),
+            ])
+          : null,
+      ]),
+      exports,
+      el('div', { class: 'parameter-review' }, [
+        el('p', {
+          class: 'hint',
+          text: ready
+            ? 'Review the exact plan and approve any effect before running.'
+            : 'Supply the needed values before reviewing the exact plan.',
+        }),
+        el('button', {
+          type: 'button',
+          class: 'btn btn-primary',
+          id: 'parameter-review-button',
+          text: 'Review exact plan',
+          disabled: !ready,
+          onclick: () => onReview?.(),
+        }),
+      ]),
+    ]),
+  ]);
 }
 
 /* ------------------------------------------------------------- request */

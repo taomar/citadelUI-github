@@ -27,6 +27,7 @@ const VALIDATION_KEYS = Object.freeze([
   'azureContacted',
   'checks',
   'detail',
+  'executionContext',
   'liveEvidence',
   'mode',
   'networkContacted',
@@ -252,6 +253,18 @@ export function validateValidationPayload(payload, { sampleId, expectedSource })
   issue(issues, payload?.workspaceRemoved === true, 'validation workspace must be removed');
   issue(issues, Array.isArray(payload?.steps), 'validation steps must be an array');
   issue(issues, Array.isArray(payload?.checks), 'validation checks must be an array');
+  issue(issues, payload?.executionContext?.kind === 'offline-python', 'validation identity must be offline-python');
+  issue(
+    issues,
+    payload?.executionContext?.authority?.type === 'local-python-parser',
+    'validation identity must be the local Python parser',
+  );
+  issue(
+    issues,
+    payload?.executionContext?.guarantees?.tokensExposed === false &&
+      payload?.executionContext?.guarantees?.credentialsPersisted === false,
+    'validation identity must preserve its no-token, no-persistence guarantees',
+  );
 
   exactKeys(issues, payload?.source, VALIDATION_SOURCE_KEYS, 'validation source');
   issue(
