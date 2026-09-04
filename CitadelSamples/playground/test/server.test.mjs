@@ -268,6 +268,115 @@ test('the self-test endpoint accepts exactly { protocolVersion } and refuses eve
   });
 });
 
+/* ---------------------------------------------------- protected source */
+
+test('protected source is readable in every mode, but Python validation is execute-only', async () => {
+  await withServer({ mode: 'preview' }, async ({ call }) => {
+    const capabilities = await (await call('/api/capabilities')).json();
+    assert.equal(capabilities.protectedSource.available, true);
+    assert.equal(capabilities.protectedSource.editable, false);
+    assert.equal(capabilities.sourceValidation.available, false);
+
+    const response = await call('/api/source/azure-context-check');
+    assert.equal(response.status, 200);
+    const source = await response.json();
+    assert.equal(source.sampleId, 'azure-context-check');
+    assert.equal(source.notebook.sha256, CATALOGUE.sourceNotebook.sha256);
+    assert.equal(source.protection.editable, false);
+    assert.ok(source.cells.length > 0);
+    assert.ok(source.cells.every((cell) => cell.editable === false && cell.protected === true));
+
+    const validation = await call('/api/source/azure-context-check/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
+    });
+    assert.equal(validation.status, 501);
+    const result = await validation.json();
+    assert.equal(result.state, 'blocked');
+    assert.equal(result.sourceExecuted, false);
+    assert.equal(result.azureContacted, false);
+    assert.equal(result.networkContacted, false);
+    assert.equal(result.liveEvidence, false);
+  });
+});
+
+test('protected source rejects unknown samples and non-GET methods', async () => {
+  await withServer({ mode: 'preview' }, async ({ call }) => {
+    assert.equal((await call('/api/source/not-a-sample')).status, 404);
+    assert.equal(
+      (
+        await call('/api/source/azure-context-check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        })
+      ).status,
+      405,
+    );
+  });
+});
+
+test('execute-mode source validation accepts only the fixed protocol request', async () => {
+  const calls = [];
+  const manager = {
+    start: async (sampleId, payload) => {
+      calls.push({ sampleId, payload });
+      return {
+        scenario: 'offline-python-source-validation',
+        sampleId,
+        runId: 'code-azure-context-check-0001',
+        state: 'passed',
+        summary: 'Protected source compiled.',
+        mode: 'offline-local',
+        validation: 'python-compile-only',
+        sourceEditable: false,
+        sourceExecuted: false,
+        azureContacted: false,
+        networkContacted: false,
+        liveEvidence: false,
+        source: null,
+        steps: [],
+        checks: [],
+        artifact: null,
+        workspaceRemoved: true,
+      };
+    },
+    cancelAll: () => {},
+  };
+  await withServer({ mode: 'execute', codeValidationManager: manager }, async ({ call }) => {
+    const capabilities = await (await call('/api/capabilities')).json();
+    assert.equal(capabilities.sourceValidation.available, true);
+
+    const response = await call('/api/source/azure-context-check/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).state, 'passed');
+    assert.deepEqual(calls, [
+      {
+        sampleId: 'azure-context-check',
+        payload: { protocolVersion: EXECUTION_PROTOCOL_VERSION },
+      },
+    ]);
+  });
+
+  await withServer({ mode: 'execute' }, async ({ call }) => {
+    const response = await call('/api/source/azure-context-check/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        protocolVersion: EXECUTION_PROTOCOL_VERSION,
+        code: 'print("browser supplied")',
+      }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'forbidden-member');
+  });
+});
+
 /* --------------------------------------------------------- relay wiring */
 
 /** A relay config for tests: no network, no env vars, a fully injectable seam. */

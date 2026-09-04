@@ -207,6 +207,7 @@ async function validateInWorkspace({
     signal,
     timeoutMs: bounds.timeoutMs,
     maxOutputBytes: bounds.maxOutputBytes,
+    allowedExecutables: [pythonExecutable],
   });
   const durationMs = Date.now() - began;
   const stdout = safeOutput(processResult.stdout, workspace.root, playgroundRoot);

@@ -14,6 +14,7 @@ import { createRelayExecutor, createUnavailableExecutor, runPlan } from '../../s
 import { assertNoSecretValues } from '../../src/core/secrets.mjs';
 import { EXECUTION_PROTOCOL_VERSION } from '../../src/core/types.mjs';
 import { buildDirectoryModel, buildExecutionEnvironmentModel, buildWorkbenchModel } from '../../src/view/models.mjs';
+import { createRunProgress, reduceRunProgress } from '../../src/view/runProgress.mjs';
 import { createLocalExecutorClient } from './localClient.mjs';
 import { chip, el, replace } from './render/dom.mjs';
 import { renderDirectory, renderSampleSelect } from './render/directory.mjs';
@@ -58,6 +59,7 @@ let capability = executor.describeCapability();
 /** Per-dependency probe results from the server. Empty means "preview only". */
 let runtimeProbe = { mode: 'preview' };
 let capabilitySummary = null;
+let sourceValidationAvailable = false;
 const results = new Map();
 const sourceStates = new Map();
 const sourceValidationStates = new Map();
@@ -85,6 +87,7 @@ async function probeCapability() {
       ...probeFromCapabilityPayload(payload, CATALOGUE.byId),
     };
     capabilitySummary = payload.capability ?? null;
+    sourceValidationAvailable = payload.sourceValidation?.available === true;
     if (payload.executor?.kind === 'local' && payload.executor.canExecute) {
       executor = createLocalExecutorClient({
         allowedSampleIds: CATALOGUE.samples.map((sample) => sample.id),
@@ -159,6 +162,10 @@ async function loadProtectedSource(sampleId = state.selectedSampleId) {
 
 async function validateProtectedSource() {
   const sampleId = state.selectedSampleId;
+  if (!sourceValidationAvailable) {
+    announce('Offline Python validation requires the loopback execute server.');
+    return;
+  }
   if (sourceStates.get(sampleId)?.status !== 'ready') {
     announce('Load the protected source before validating it.');
     return;
@@ -393,17 +400,14 @@ async function runSelected() {
   running = true;
   runningSampleId = sample.id;
   runId = null;
-  results.set(sample.id, {
-    state: 'running',
-    sampleId: sample.id,
-    summary: 'Starting the approved run…',
-    detail: '',
-    steps: [],
-    assertions: [],
-    configurationUpdates: {},
-    secretUpdates: {},
-    meta: { executor: capability.kind ?? 'local' },
-  });
+  results.set(
+    sample.id,
+    createRunProgress({
+      sampleId: sample.id,
+      mode: runtimeProbe.mode,
+      executorKind: capability.kind,
+    }),
+  );
   state.setActiveTab('response');
   announce(`Running ${sample.title}…`);
   const result = await runPlan(executor, plan, {
@@ -418,10 +422,20 @@ async function runSelected() {
   // Consent is per run, so it is spent whether or not the run got anywhere.
   state.consumeAcknowledgement(sample.id);
   applyUpdates(result);
-  results.set(sample.id, result);
+  const progress = reduceRunProgress(results.get(sample.id), { type: 'result', result });
+  const displayedResult = Object.freeze({
+    ...result,
+    meta: Object.freeze({
+      ...(result.meta ?? {}),
+      runId: result.meta?.runId ?? progress.meta.runId,
+      workspace: result.meta?.workspace ?? progress.meta.workspace,
+      evidenceClass: progress.meta.evidenceClass,
+    }),
+  });
+  results.set(sample.id, displayedResult);
   running = false;
   runningSampleId = null;
-  runId = result.meta?.runId ?? null;
+  runId = displayedResult.meta.runId ?? null;
   render();
   announce(`${sample.title}: ${result.summary}`);
 }
@@ -434,51 +448,17 @@ function applyRunProgress(sample, event) {
     announce('A progress update was hidden because it contained a credential.');
     return;
   }
-  const current = results.get(sample.id) ?? {
-    state: 'running',
-    sampleId: sample.id,
-    summary: 'Running. Each step reports as it finishes.',
-    detail: '',
-    steps: [],
-    assertions: [],
-    configurationUpdates: {},
-    secretUpdates: {},
-    meta: { executor: capability.kind ?? 'local' },
-  };
-
-  if (event.type === 'run-start') {
-    runId = event.runId ?? runId;
-    results.set(sample.id, {
-      ...current,
-      meta: { ...(current.meta ?? {}), runId, workspace: event.workspace ?? '' },
+  const current =
+    results.get(sample.id) ??
+    createRunProgress({
+      sampleId: sample.id,
+      mode: runtimeProbe.mode,
+      executorKind: capability.kind,
     });
-  } else if (event.type === 'step-start' && event.step?.id) {
-    results.set(sample.id, {
-      ...current,
-      summary: `Running ${event.step.title ?? event.step.id}…`,
-      steps: upsertProgressStep(current.steps, { ...event.step, state: 'running', evidence: {} }),
-    });
-  } else if (event.type === 'step' && event.step?.id) {
-    results.set(sample.id, {
-      ...current,
-      summary: `${event.step.title ?? event.step.id}: ${event.step.state ?? 'reported'}.`,
-      steps: upsertProgressStep(current.steps, event.step),
-    });
-  } else if (event.type === 'result' && event.result?.sampleId === sample.id) {
-    runId = event.result.meta?.runId ?? runId;
-    results.set(sample.id, event.result);
-  } else {
-    return;
-  }
+  const next = reduceRunProgress(current, event);
+  runId = next.meta.runId ?? runId;
+  results.set(sample.id, next);
   render();
-}
-
-function upsertProgressStep(steps = [], step) {
-  const next = [...steps];
-  const index = next.findIndex((candidate) => candidate.id === step.id);
-  if (index >= 0) next[index] = step;
-  else next.push(step);
-  return next;
 }
 
 /**
@@ -538,7 +518,10 @@ function render() {
     capability,
     runtimeProbe,
     sourceState: sourceStates.get(sample.id) ?? { status: 'loading' },
-    sourceValidationState: sourceValidationStates.get(sample.id) ?? { status: 'not-run' },
+    sourceValidationState: {
+      ...(sourceValidationStates.get(sample.id) ?? { status: 'not-run' }),
+      available: sourceValidationAvailable,
+    },
   });
 
   nodes.title.textContent = model.sample.title;

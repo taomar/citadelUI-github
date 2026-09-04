@@ -59,6 +59,7 @@ export function buildExecutionEnvironmentModel(capability) {
       detail: 'Plans and protected source can be inspected, but no live Azure operation can run.',
     };
   }
+
   if (capability.kind === 'relay') {
     return {
       mode: 'hosted-relay',
@@ -77,6 +78,28 @@ export function buildExecutionEnvironmentModel(capability) {
     liveCapable: true,
     detail: 'The local executor can run this plan from this machine and return live evidence.',
   };
+}
+
+function buildResultEnvironmentModel(result, capability) {
+  switch (result?.meta?.evidenceClass) {
+    case 'offline':
+      return {
+        mode: 'offline-local',
+        label: 'Offline local validation',
+        evidenceMode: 'offline-validation',
+        evidenceLabel: 'No live evidence',
+        liveCapable: false,
+        detail: 'This result validates protected local source only. It did not contact Azure or produce live evidence.',
+      };
+    case 'local-live-capable':
+      return buildExecutionEnvironmentModel({ kind: 'local', canExecute: true });
+    case 'hosted-relay':
+      return buildExecutionEnvironmentModel({ kind: 'relay', canExecute: true });
+    case 'preview':
+      return buildExecutionEnvironmentModel({ kind: 'unavailable', canExecute: false });
+    default:
+      return buildExecutionEnvironmentModel(capability);
+  }
 }
 
 function sourceError(sampleId, message) {
@@ -214,6 +237,7 @@ export function buildSourceModel({ sample, sourceState = {} }) {
 export function buildSourceValidationModel(validationState = {}) {
   const status = validationState.status ?? 'not-run';
   const base = {
+    available: validationState.available !== false,
     mode: 'offline-local',
     validationMode: 'python-compile-only',
     evidenceLabel: 'Offline validation',
@@ -224,6 +248,14 @@ export function buildSourceValidationModel(validationState = {}) {
     checks: [],
     steps: [],
   };
+  if (!base.available) {
+    return {
+      ...base,
+      state: 'blocked',
+      badge: validationBadge('blocked'),
+      summary: 'Start the loopback execute server to compile protected Python cells offline.',
+    };
+  }
   if (status === 'loading') {
     return { ...base, state: 'running', badge: validationBadge('running'), summary: 'Compiling protected Python cells without executing them…' };
   }
@@ -616,7 +648,7 @@ export function buildRequestModel({ sample, read, acknowledged = false, secrets 
 export function buildResponseModel({ sample, result, capability, running = false, runId = null }) {
   const state = running ? 'running' : (result?.state ?? 'not-run');
   const badge = stateBadge(state);
-  const environment = buildExecutionEnvironmentModel(capability);
+  const environment = buildResultEnvironmentModel(result, capability);
   const steps = (result?.steps ?? []).map((step) => ({
     ...step,
     badge: stateBadge(step.state === 'skipped' ? 'not-run' : step.state),

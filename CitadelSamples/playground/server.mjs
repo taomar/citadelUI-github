@@ -31,6 +31,9 @@ import { EXECUTION_PROTOCOL_VERSION } from './src/core/types.mjs';
 import { createRunManager } from './src/server/runManager.mjs';
 import { RequestRefused } from './src/server/runRequest.mjs';
 import { spawnProcess } from './src/server/transports.mjs';
+import { createCodeValidationManager, CODE_VALIDATION_SCENARIO } from './src/server/codeValidation.mjs';
+import { validateSourceSampleId } from './src/server/recipeRequest.mjs';
+import { readSampleSource, SourceViewError } from './src/server/sourceView.mjs';
 import {
   createManagedIdentityCredentialProvider,
   createStaticTokenCredentialProvider,
@@ -226,7 +229,12 @@ async function probePython(python, modules, spawn) {
     'print(json.dumps({"version":sys.version.split()[0],"modules":{m:present(m) for m in mods}}))',
   ].join('\n');
   try {
-    const result = await spawn({ executable: python, args: ['-c', probeSource], timeoutMs: 30_000 });
+    const result = await spawn({
+      executable: python,
+      args: ['-c', probeSource],
+      timeoutMs: 30_000,
+      allowedExecutables: [python],
+    });
     if (result.code !== 0) {
       return {
         available: false,
@@ -316,6 +324,23 @@ export function capabilitiesPayload({ mode = 'preview', probe = {}, relay = DEFA
       endpoint: '/api/self-test',
       available: true,
       scenario: SELF_TEST_SCENARIO,
+    }),
+    protectedSource: Object.freeze({
+      endpointTemplate: '/api/source/{sampleId}',
+      available: true,
+      editable: false,
+      source: 'imported-notebook',
+    }),
+    sourceValidation: Object.freeze({
+      endpointTemplate: '/api/source/{sampleId}/validate',
+      available: mode === 'execute',
+      scenario: CODE_VALIDATION_SCENARIO,
+      mode: 'offline-local',
+      validation: 'python-compile-only',
+      sourceExecuted: false,
+      azureContacted: false,
+      networkContacted: false,
+      liveEvidence: false,
     }),
   };
 }
@@ -748,6 +773,103 @@ async function handleSelfTest(request, response, { mode, port, host }) {
   sendJson(response, 200, result);
 }
 
+async function handleProtectedSource(response, sampleId) {
+  try {
+    const { sample } = validateSourceSampleId(sampleId, CATALOGUE);
+    sendJson(response, 200, await readSampleSource({ playgroundRoot: ROOT, sample }));
+  } catch (error) {
+    if (error instanceof RequestRefused) {
+      sendJson(response, error.status, { state: 'blocked', summary: error.message, code: error.code });
+      return;
+    }
+    if (error instanceof SourceViewError) {
+      sendJson(response, 409, { state: 'failed', summary: error.message, code: error.code });
+      return;
+    }
+    sendJson(response, 500, { state: 'failed', summary: 'The protected source could not be read.' });
+  }
+}
+
+async function handleSourceValidation(request, response, { mode, manager, sampleId, port, host }) {
+  if (mode !== 'execute' || !manager) {
+    sendJson(response, 501, {
+      scenario: CODE_VALIDATION_SCENARIO,
+      state: 'blocked',
+      summary: 'Offline Python validation is available only from the loopback execute server.',
+      mode: 'offline-local',
+      validation: 'python-compile-only',
+      sourceExecuted: false,
+      azureContacted: false,
+      networkContacted: false,
+      liveEvidence: false,
+    });
+    return;
+  }
+  const guard = checkStateChangingRequest(request, { port, host });
+  if (!guard.ok) {
+    sendJson(response, guard.status, {
+      scenario: CODE_VALIDATION_SCENARIO,
+      state: 'blocked',
+      summary: guard.message,
+      sourceExecuted: false,
+      azureContacted: false,
+      networkContacted: false,
+      liveEvidence: false,
+    });
+    return;
+  }
+  let payload;
+  try {
+    payload = JSON.parse(await readBody(request, 4096));
+  } catch (error) {
+    const status = error instanceof RequestRefused ? error.status : 400;
+    sendJson(response, status, {
+      scenario: CODE_VALIDATION_SCENARIO,
+      state: 'failed',
+      summary: error?.message ?? 'Malformed request body.',
+      sourceExecuted: false,
+      azureContacted: false,
+      networkContacted: false,
+      liveEvidence: false,
+    });
+    return;
+  }
+  try {
+    sendJson(response, 200, await manager.start(sampleId, payload));
+  } catch (error) {
+    if (error instanceof RequestRefused) {
+      sendJson(response, error.status, {
+        scenario: CODE_VALIDATION_SCENARIO,
+        state: 'blocked',
+        summary: error.message,
+        code: error.code,
+        sourceExecuted: false,
+        azureContacted: false,
+        networkContacted: false,
+        liveEvidence: false,
+      });
+      return;
+    }
+    sendJson(response, 500, {
+      scenario: CODE_VALIDATION_SCENARIO,
+      state: 'failed',
+      summary: 'Offline Python validation could not be started.',
+      sourceExecuted: false,
+      azureContacted: false,
+      networkContacted: false,
+      liveEvidence: false,
+    });
+  }
+}
+
+function decodeSampleId(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return '';
+  }
+}
+
 /**
  * @param {object} options
  * @param {'preview'|'execute'} [options.mode]
@@ -758,6 +880,7 @@ async function handleSelfTest(request, response, { mode, port, host }) {
 export function createPlaygroundServer({
   mode = 'preview',
   runManager = null,
+  codeValidationManager = null,
   probe = {},
   port = PORT,
   host = HOST,
@@ -765,6 +888,10 @@ export function createPlaygroundServer({
 } = {}) {
   const manager =
     mode === 'execute' ? (runManager ?? createRunManager({ playgroundRoot: ROOT, pythonExecutable: PYTHON })) : runManager;
+  const validationManager =
+    mode === 'execute'
+      ? (codeValidationManager ?? createCodeValidationManager({ playgroundRoot: ROOT, pythonExecutable: PYTHON }))
+      : codeValidationManager;
   let runtimeProbe = probe;
 
   const server = createServer(async (request, response) => {
@@ -816,6 +943,32 @@ export function createPlaygroundServer({
         return;
       }
 
+      const validationRoute = /^\/api\/source\/([^/]+)\/validate$/.exec(path);
+      if (validationRoute) {
+        if (request.method !== 'POST') {
+          sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
+          return;
+        }
+        await handleSourceValidation(request, response, {
+          mode,
+          manager: validationManager,
+          sampleId: decodeSampleId(validationRoute[1]),
+          port,
+          host,
+        });
+        return;
+      }
+
+      const sourceRoute = /^\/api\/source\/([^/]+)$/.exec(path);
+      if (sourceRoute) {
+        if (request.method !== 'GET') {
+          sendJson(response, 405, { state: 'failed', summary: 'Use GET.' });
+          return;
+        }
+        await handleProtectedSource(response, decodeSampleId(sourceRoute[1]));
+        return;
+      }
+
       if (request.method !== 'GET' && request.method !== 'HEAD') {
         send(response, 405, securityHeaders('text/plain; charset=utf-8'), 'Method not allowed');
         return;
@@ -846,6 +999,7 @@ export function createPlaygroundServer({
     runtimeProbe = next;
   };
   server.runManager = manager;
+  server.codeValidationManager = validationManager;
   return server;
 }
 
@@ -885,6 +1039,7 @@ if (invokedDirectly) {
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => {
       server.runManager?.cancelAll();
+      server.codeValidationManager?.cancelAll();
       server.close(() => process.exit(0));
     });
   }

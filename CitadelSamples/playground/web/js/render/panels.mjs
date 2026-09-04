@@ -141,9 +141,14 @@ function renderValidation(validation, { onValidate }) {
         type: 'button',
         class: 'btn btn-primary',
         id: 'validate-source-button',
-        disabled: validation.state === 'running',
+        disabled: !validation.available || validation.state === 'running',
         'aria-busy': validation.state === 'running' ? 'true' : undefined,
-        text: validation.state === 'running' ? 'Validating…' : 'Validate protected code offline',
+        text:
+          validation.state === 'running'
+            ? 'Validating…'
+            : validation.available
+              ? 'Validate protected code offline'
+              : 'Local execute mode required',
         onclick: () => onValidate?.(),
       }),
     ]),

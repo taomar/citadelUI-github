@@ -52,7 +52,13 @@ async function pathExists(path) {
 
 test('the real Python runner compiles exact protected source and removes its workspace', async (t) => {
   const python = process.env.CITADEL_PLAYGROUND_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
-  const probe = await spawnProcess({ executable: python, args: ['--version'], timeoutMs: 5000 });
+  const probe = await spawnProcess({
+    executable: python,
+    args: ['--version'],
+    cwd: PLAYGROUND_ROOT,
+    timeoutMs: 5000,
+    allowedExecutables: [python],
+  });
   if (probe.spawnFailed || probe.code !== 0) {
     t.skip('Python is not installed on this test host');
     return;

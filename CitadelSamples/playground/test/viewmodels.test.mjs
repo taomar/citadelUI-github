@@ -204,6 +204,13 @@ test('offline validation accepts only a compile-only response with no live evide
   assert.match(unsafe.summary, /did not preserve/);
 });
 
+test('offline Python validation is unavailable unless the execute server advertises it', () => {
+  const model = buildSourceValidationModel({ status: 'not-run', available: false });
+  assert.equal(model.available, false);
+  assert.equal(model.state, 'blocked');
+  assert.match(model.summary, /loopback execute server/);
+});
+
 /* ----------------------------------------------------------- configure */
 
 /** Find one field across the requirement groups. */
@@ -484,6 +491,37 @@ test('execution environments distinguish preview, local machine, and hosted rela
       ['Hosted relay', 'Live-capable'],
     ],
   );
+});
+
+test('a completed run keeps the evidence environment captured when it started', () => {
+  const sample = getSample('azure-context-check');
+  const hosted = buildResponseModel({
+    sample,
+    capability: { kind: 'local', canExecute: true },
+    result: executionResult({
+      state: 'completed',
+      sampleId: sample.id,
+      summary: 'Read-only check completed.',
+      meta: { executor: 'relay', evidenceClass: 'hosted-relay' },
+    }),
+  });
+  assert.equal(hosted.environment.mode, 'hosted-relay');
+
+  const offline = buildResponseModel({
+    sample,
+    capability: { kind: 'local', canExecute: true },
+    result: {
+      state: 'passed',
+      sampleId: sample.id,
+      summary: 'Protected source compiled.',
+      steps: [],
+      assertions: [],
+      meta: { evidenceClass: 'offline' },
+    },
+  });
+  assert.equal(offline.environment.mode, 'offline-local');
+  assert.equal(offline.environment.liveCapable, false);
+  assert.equal(offline.environment.evidenceLabel, 'No live evidence');
 });
 
 /* ----------------------------------------------------------- workbench */
