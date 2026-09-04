@@ -261,6 +261,30 @@ test('runPlan never reaches an executor for an unacknowledged risky plan', async
   assert.equal(allowed.state, 'completed');
 });
 
+test('runPlan forwards progress only after validation and acknowledgement pass', async () => {
+  const reported = [];
+  const onProgress = (event) => reported.push(event);
+  const executor = {
+    describeCapability: () => ({ canExecute: true, supportedStepTypes: ['azure-cli', 'assertion'] }),
+    supports: () => ({ supported: true, unsupportedStepTypes: [] }),
+    execute: async (_plan, context) => {
+      assert.equal(context.onProgress, onProgress);
+      context.onProgress({ type: 'step-start', step: { id: 'account-show' } });
+      return executionResult({ state: 'completed', sampleId: 'azure-context-check', summary: 'ran' });
+    },
+  };
+  const sample = getSample('azure-context-check');
+  const { plan, validation } = buildSamplePlan(sample, makeFixtureReader());
+  const result = await runPlan(executor, plan, {
+    validation,
+    acknowledgement: { required: false, satisfied: true, issues: [] },
+    onProgress,
+  });
+
+  assert.equal(result.state, 'completed');
+  assert.deepEqual(reported, [{ type: 'step-start', step: { id: 'account-show' } }]);
+});
+
 test('the local client learns the run id before completion so it can cancel the active run', async () => {
   let finishRun;
   const runBody = new Promise((resolve) => {
