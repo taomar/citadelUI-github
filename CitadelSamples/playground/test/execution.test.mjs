@@ -571,6 +571,43 @@ test('a missing Python module blocks the sample and shows the approved install c
   );
 });
 
+test('a Python module preflight timeout fails before missing-module classification', async () => {
+  const spawn = fakeSpawn([
+    {
+      match: (options) => options.args[0] === '-c',
+      result: {
+        code: -1,
+        stderr: "ModuleNotFoundError: No module named 'azure.mgmt.apimanagement'",
+        timedOut: true,
+      },
+    },
+  ]);
+  const { result } = await run('weather-api-ensure', { spawn });
+  assert.equal(result.state, 'failed');
+  assert.equal(result.steps[0].state, 'failed');
+  assert.match(result.steps[0].detail, /Python module check.*timeout/i);
+  assert.deepEqual(result.steps[0].evidence, { exitCode: -1 });
+});
+
+test('a cancelled Python module preflight cancels before missing-module classification', async () => {
+  const spawn = fakeSpawn([
+    {
+      match: (options) => options.args[0] === '-c',
+      result: {
+        code: -1,
+        stderr: "ModuleNotFoundError: No module named 'azure.mgmt.apimanagement'",
+        timedOut: false,
+        aborted: true,
+      },
+    },
+  ]);
+  const { result } = await run('weather-api-ensure', { spawn });
+  assert.equal(result.state, 'cancelled');
+  assert.equal(result.steps[0].state, 'cancelled');
+  assert.match(result.steps[0].detail, /Cancelled while checking required Python modules/);
+  assert.deepEqual(result.steps[0].evidence, { exitCode: -1 });
+});
+
 test('a Python wrapper runs a shipped script with parameters on stdin, never generated source', async () => {
   const spawn = fakeSpawn([
     { match: (options) => options.args[0] === '-c', result: { code: 0, stdout: '' } },

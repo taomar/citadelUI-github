@@ -244,6 +244,7 @@ export function spawnProcess({
     let settled = false;
     let timedOut = false;
     let aborted = false;
+    let stdinFailed = false;
     let termination;
 
     const collect = (chunk, which) => {
@@ -302,12 +303,21 @@ export function spawnProcess({
       collect(String(error?.message ?? error), 'err');
       void finish(-1);
     });
-    child.on('close', (code) => void finish(code ?? -1));
+    child.on('close', (code) => void finish(stdinFailed ? -1 : (code ?? -1)));
 
-    if (typeof stdin === 'string') {
-      child.stdin?.end(stdin, 'utf-8');
-    } else {
-      child.stdin?.end();
+    const onStdinError = (error) => {
+      stdinFailed = true;
+      collect(`Process stdin failed: ${String(error?.message ?? error)}`, 'err');
+    };
+    child.stdin?.on('error', onStdinError);
+    try {
+      if (typeof stdin === 'string') {
+        child.stdin?.end(stdin, 'utf-8');
+      } else {
+        child.stdin?.end();
+      }
+    } catch (error) {
+      onStdinError(error);
     }
   });
 }

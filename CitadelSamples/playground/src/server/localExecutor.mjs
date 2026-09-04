@@ -464,9 +464,9 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
         id: step.id,
         kind: 'library',
         title: step.title,
-        state: 'blocked',
+        state: preflight.state,
         detail: preflight.detail,
-        evidence: { missingModules: preflight.missing, install: preflight.install },
+        evidence: preflight.evidence,
       };
     }
     const params = wrapper.params({ inputs, step, plan, contract, outputs });
@@ -588,12 +588,28 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
     const probe = modules.map((name) => `import ${name}`).join('; ');
     const result = await runProcess(pythonExecutable, ['-c', probe], { signal, deadlineAt });
     if (result.code === 0) return { ok: true };
+    if (result.timedOut) {
+      return {
+        ok: false,
+        state: 'failed',
+        detail: `The Python module check exceeded its ${Math.round(bounds.stepTimeoutMs / 1000)}s timeout.`,
+        evidence: { exitCode: result.code },
+      };
+    }
+    if (result.aborted || signal?.aborted) {
+      return {
+        ok: false,
+        state: 'cancelled',
+        detail: 'Cancelled while checking required Python modules.',
+        evidence: { exitCode: result.code },
+      };
+    }
     const missing = modules.filter((name) => result.stderr.includes(name.split('.')[0]));
     const install = 'python -m pip install -r runtime/requirements.txt';
     return {
       ok: false,
-      missing: missing.length > 0 ? missing : modules,
-      install,
+      state: 'blocked',
+      evidence: { missingModules: missing.length > 0 ? missing : modules, install },
       detail:
         result.spawnFailed === true
           ? `No Python interpreter was found at \`${pythonExecutable}\`. Install Python 3.10 or newer, then run: ${install}`

@@ -81,6 +81,26 @@ test('a multibyte sequence crossing the output limit cannot expand past it', { t
   assert.ok(Buffer.byteLength(result.stdout, 'utf-8') <= 2);
 });
 
+test(
+  'an early Windows exit during a large stdin write returns a controlled process result',
+  { timeout: 15_000, skip: process.platform !== 'win32' },
+  async () => {
+    const result = await spawnProcess({
+      executable: process.execPath,
+      args: ['-e', 'process.exit(0)'],
+      cwd: ROOT,
+      stdin: 'x'.repeat(1024 * 1024),
+      timeoutMs: 5000,
+      maxOutputBytes: 1024,
+      allowedExecutables: [process.execPath],
+    });
+    assert.equal(result.code, -1);
+    assert.equal(result.timedOut, false);
+    assert.equal(result.aborted, false);
+    assert.match(result.stderr, /Process stdin failed:.*(?:EPIPE|EOF)/i);
+  },
+);
+
 test('timeout terminates the spawned process tree without a shell', { timeout: 15_000 }, async () => {
   const childSource = [
     "const { spawn } = require('node:child_process');",

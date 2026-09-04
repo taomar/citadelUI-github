@@ -21,7 +21,7 @@ import { fakeFetch, fakeFileSystem, fakeSpawn } from './helpers/transports.mjs';
 const PLAYGROUND_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const ACCELERATOR_ROOT = resolve(PLAYGROUND_ROOT, 'runtime', 'accelerator');
 
-function manager({ spawn, fetch, maxConcurrentRuns = 2 } = {}) {
+function manager({ spawn, fetch, maxConcurrentRuns = 2, fs } = {}) {
   const filesystem = fakeFileSystem({ realReadRoots: [ACCELERATOR_ROOT] });
   return {
     filesystem,
@@ -33,7 +33,7 @@ function manager({ spawn, fetch, maxConcurrentRuns = 2 } = {}) {
         writeFile: filesystem.writeFile,
         access: filesystem.access,
       },
-      fs: filesystem.fs,
+      fs: fs ?? filesystem.fs,
       pythonExecutable: 'python',
       maxConcurrentRuns,
     }),
@@ -239,6 +239,76 @@ test('concurrency is bounded and the limit is reported rather than queued silent
   );
   release();
   await first;
+});
+
+test('workspace creation reserves concurrency before its first await completes', async () => {
+  let workspaceStarted;
+  const started = new Promise((resolveStarted) => {
+    workspaceStarted = resolveStarted;
+  });
+  let releaseWorkspace;
+  const held = new Promise((resolveHeld) => {
+    releaseWorkspace = resolveHeld;
+  });
+  const fs = {
+    async mkdir() {
+      workspaceStarted();
+      await held;
+    },
+  };
+  const spawn = fakeSpawn([
+    {
+      match: () => true,
+      result: { code: 0, stdout: JSON.stringify({ id: FIXTURE_VALUES['hub.subscriptionId'] }) },
+    },
+  ]);
+  const { instance } = manager({ spawn, maxConcurrentRuns: 1, fs });
+  const inputs = { 'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'] };
+  const first = instance.start(request('azure-context-check', inputs));
+  await started;
+  try {
+    assert.equal(instance.activeCount, 1);
+    await assert.rejects(
+      () => instance.start(request('azure-context-check', inputs)),
+      (error) => error instanceof RequestRefused && error.code === 'too-many-runs',
+    );
+  } finally {
+    releaseWorkspace();
+  }
+  await first;
+  assert.equal(instance.activeCount, 0);
+});
+
+test('validation and workspace setup failures release their concurrency reservation', async () => {
+  let failWorkspace = true;
+  const fs = {
+    async mkdir() {
+      if (failWorkspace) {
+        failWorkspace = false;
+        throw new Error('workspace setup failed');
+      }
+    },
+  };
+  const spawn = fakeSpawn([
+    {
+      match: () => true,
+      result: { code: 0, stdout: JSON.stringify({ id: FIXTURE_VALUES['hub.subscriptionId'] }) },
+    },
+  ]);
+  const { instance } = manager({ spawn, maxConcurrentRuns: 1, fs });
+  await assert.rejects(
+    () => instance.start(request('apim-discovery', {})),
+    (error) => error instanceof RequestRefused && error.code === 'incomplete-configuration',
+  );
+  assert.equal(instance.activeCount, 0);
+
+  const inputs = { 'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'] };
+  await assert.rejects(() => instance.start(request('azure-context-check', inputs)), /workspace setup failed/);
+  assert.equal(instance.activeCount, 0);
+
+  const result = await instance.start(request('azure-context-check', inputs));
+  assert.equal(result.state, 'completed');
+  assert.equal(instance.activeCount, 0);
 });
 
 test('cancelling names the run it stopped, and an unknown run id is reported honestly', async () => {

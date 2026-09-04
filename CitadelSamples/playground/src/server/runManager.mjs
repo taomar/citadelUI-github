@@ -34,38 +34,54 @@ export function createRunManager({
   fs,
 } = {}) {
   const active = new Map();
+  let reservations = 0;
   let sequence = 0;
 
   async function start(payload, { onStart, onProgress } = {}) {
-    if (active.size >= maxConcurrentRuns) {
+    const inFlight = active.size + reservations;
+    if (inFlight >= maxConcurrentRuns) {
       throw new RequestRefused(
-        `${active.size} run(s) are already in flight and the limit is ${maxConcurrentRuns}. Wait for one to finish or cancel it.`,
+        `${inFlight} run(s) are already in flight and the limit is ${maxConcurrentRuns}. Wait for one to finish or cancel it.`,
         { status: 429, code: 'too-many-runs' },
       );
     }
-    const request = validateRunRequest(payload, catalogue);
-    const { plan, resolvedInputs } = rebuildPlan(request, catalogue, { buildSamplePlan, requirementsFor });
+    reservations += 1;
+    let request;
+    let plan;
+    let resolvedInputs;
+    let runId;
+    let workspace;
+    let controller;
+    let executor;
+    let contract;
+    let activeRun;
+    try {
+      request = validateRunRequest(payload, catalogue);
+      ({ plan, resolvedInputs } = rebuildPlan(request, catalogue, { buildSamplePlan, requirementsFor }));
 
-    sequence += 1;
-    const runId = makeRunId(request.sample.id, sequence);
-    const workspace = createRunWorkspace({ playgroundRoot, runId, ...(fs ? { fs } : {}) });
-    await workspace.ensureRoot();
+      sequence += 1;
+      runId = makeRunId(request.sample.id, sequence);
+      workspace = createRunWorkspace({ playgroundRoot, runId, ...(fs ? { fs } : {}) });
+      await workspace.ensureRoot();
 
-    const controller = new AbortController();
-    const executor = createLocalExecutor({
-      transports,
-      workspace,
-      limits,
-      pythonExecutable,
-      pythonRoot: resolve(playgroundRoot, 'runtime', 'python'),
-    });
+      controller = new AbortController();
+      executor = createLocalExecutor({
+        transports,
+        workspace,
+        limits,
+        pythonExecutable,
+        pythonRoot: resolve(playgroundRoot, 'runtime', 'python'),
+      });
 
-    // The access-contract fallback needs the same subscription name the
-    // contract produced, which only the catalogue's own classifier knows.
-    const contract = contractFor(request.sample.id, resolvedInputs);
+      // The access-contract fallback needs the same subscription name the
+      // contract produced, which only the catalogue's own classifier knows.
+      contract = contractFor(request.sample.id, resolvedInputs);
 
-    const activeRun = { runId, sampleId: request.sample.id, controller, startedAt: Date.now(), promise: null };
-    active.set(runId, activeRun);
+      activeRun = { runId, sampleId: request.sample.id, controller, startedAt: Date.now(), promise: null };
+      active.set(runId, activeRun);
+    } finally {
+      reservations -= 1;
+    }
     try {
       onStart?.({
         runId,
@@ -122,7 +138,7 @@ export function createRunManager({
     cancel,
     cancelAll,
     get activeCount() {
-      return active.size;
+      return active.size + reservations;
     },
     listActive() {
       return [...active.values()].map((run) => ({ runId: run.runId, sampleId: run.sampleId, startedAt: run.startedAt }));
