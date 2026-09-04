@@ -17,7 +17,7 @@ export const RUN_EVIDENCE_CLASSES = Object.freeze([
 
 const RESULT_STATES = new Set(['blocked', 'completed', 'failed', 'cancelled', 'inconclusive']);
 const STEP_STATES = new Set(['running', 'completed', 'failed', 'cancelled', 'skipped', 'inconclusive']);
-const TERMINAL_STEP_STATES = new Set(['completed', 'failed', 'cancelled', 'skipped', 'inconclusive']);
+const TERMINAL_STEP_STATES = new Set(['passed', 'completed', 'failed', 'cancelled', 'skipped', 'inconclusive']);
 const STREAM_WARNING_CODES = new Set(['malformed-ndjson', 'partial-ndjson']);
 const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -89,9 +89,11 @@ export function reduceRunProgress(current, event) {
 }
 
 /**
- * Return a sanitized ExecutionResult-compatible handoff after a streamed result
- * event. The normal local client result remains authoritative because it also
- * carries private in-memory updates that must never enter view state.
+ * Return a sanitized result-shaped handoff after a streamed result event. A
+ * validation state of `passed` is display-only and must not be passed through
+ * the sample executor's stricter ExecutionResult constructor. The normal local
+ * client result remains authoritative because it also carries private in-memory
+ * updates that must never enter view state.
  */
 export function finalRunProgressResult(progress) {
   if (!isProgress(progress) || !progress.final) return null;
@@ -125,7 +127,7 @@ function reduceRunStart(current, event) {
 }
 
 function reduceStep(current, input, starting) {
-  const step = projectStep(input, starting);
+  const step = projectStep(input, starting, current.meta.evidenceClass === 'offline');
   if (!step) return withStream(current, { malformedEvents: current.stream.malformedEvents + 1 });
 
   const steps = [...current.steps];
@@ -146,13 +148,17 @@ function reduceStep(current, input, starting) {
 }
 
 function reduceFinalResult(current, result) {
-  if (!result || typeof result !== 'object' || Array.isArray(result) || !RESULT_STATES.has(result.state)) {
+  const offline = current.meta.evidenceClass === 'offline';
+  const validState = RESULT_STATES.has(result?.state) || (offline && result?.state === 'passed');
+  if (!result || typeof result !== 'object' || Array.isArray(result) || !validState) {
     return withStream(current, { malformedEvents: current.stream.malformedEvents + 1 });
   }
 
   let steps = [...current.steps];
-  for (const input of Array.isArray(result.steps) ? result.steps : []) {
-    const step = projectStep(input, false);
+  const reportedSteps = Array.isArray(result.steps) ? result.steps : [];
+  const validationChecks = offline && Array.isArray(result.checks) ? result.checks.map(checkAsStep) : [];
+  for (const input of [...reportedSteps, ...validationChecks]) {
+    const step = projectStep(input, false, offline);
     if (!step) continue;
     const index = steps.findIndex((candidate) => candidate.id === step.id);
     if (index >= 0) steps[index] = mergeStep(steps[index], step, false);
@@ -186,11 +192,11 @@ function reduceStreamWarning(current, event) {
   });
 }
 
-function projectStep(input, starting) {
+function projectStep(input, starting, allowPassed = false) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   const id = identifier(input.id);
   if (!id) return null;
-  const reportedState = STEP_STATES.has(input.state) ? input.state : null;
+  const reportedState = STEP_STATES.has(input.state) || (allowPassed && input.state === 'passed') ? input.state : null;
   return Object.freeze({
     id,
     kind: identifier(input.kind) ?? 'step',
@@ -200,6 +206,18 @@ function projectStep(input, starting) {
     detail: clipText(input.detail),
     evidenceAvailable: hasPublicEvidence(input.evidence),
   });
+}
+
+function checkAsStep(check) {
+  if (!check || typeof check !== 'object' || Array.isArray(check)) return check;
+  return {
+    id: check.id,
+    kind: 'check',
+    title: check.title ?? check.label,
+    state: check.state ?? (check.passed === true ? 'passed' : check.passed === false ? 'failed' : undefined),
+    durationMs: check.durationMs,
+    detail: check.detail,
+  };
 }
 
 function mergeStep(previous, next, starting) {
@@ -259,6 +277,7 @@ function duration(value) {
 }
 
 function terminalSummary(state) {
+  if (state === 'passed') return 'Validation passed.';
   if (state === 'completed') return 'Run complete.';
   if (state === 'cancelled') return 'Run cancelled.';
   if (state === 'blocked') return 'Run blocked.';

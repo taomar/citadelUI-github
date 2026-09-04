@@ -165,6 +165,53 @@ test('a final result updates existing rows, appends unseen rows and produces a s
   assert.ok(!JSON.stringify(result).includes('hidden'));
 });
 
+test('offline validation accepts passed results and checks without changing provenance', () => {
+  let state = createRunProgress({
+    sampleId: 'source-validation',
+    mode: 'offline-local',
+    executorKind: 'local',
+  });
+  state = reduceRunProgress(state, {
+    type: 'step',
+    step: { id: 'syntax', title: 'Syntax', state: 'passed', detail: 'Parsed.' },
+  });
+  state = reduceRunProgress(state, {
+    type: 'result',
+    result: {
+      state: 'passed',
+      summary: 'Source validation passed.',
+      steps: [{ id: 'syntax', title: 'Syntax', state: 'passed', detail: 'Parsed.' }],
+      checks: [
+        { id: 'imports', label: 'Imports', passed: true, detail: 'Resolved.' },
+        { id: 'policy', label: 'Policy', state: 'passed', detail: 'Allowed.' },
+      ],
+    },
+  });
+
+  assert.equal(state.final, true);
+  assert.equal(state.state, 'passed');
+  assert.equal(state.meta.evidenceClass, 'offline');
+  assert.deepEqual(state.steps.map((step) => step.id), ['syntax', 'imports', 'policy']);
+  assert.deepEqual(state.steps.map((step) => step.state), ['passed', 'passed', 'passed']);
+  assert.equal(finalRunProgressResult(state).state, 'passed');
+});
+
+test('passed cannot be claimed by a preview or live sample result', () => {
+  for (const state of [
+    createRunProgress({ sampleId: 'source-validation', mode: 'preview', executorKind: 'unavailable' }),
+    progress(),
+  ]) {
+    const reduced = reduceRunProgress(state, {
+      type: 'result',
+      result: { state: 'passed', summary: 'Spoofed.' },
+    });
+    assert.equal(reduced.final, false);
+    assert.equal(reduced.state, 'running');
+    assert.equal(reduced.meta.evidenceClass, state.meta.evidenceClass);
+    assert.equal(reduced.stream.malformedEvents, 1);
+  }
+});
+
 test('malformed and partial stream warnings are counted without retaining line content', () => {
   let state = reduceRunProgress(progress(), null);
   state = reduceRunProgress(state, { type: 'stream-warning', code: 'malformed-ndjson', line: 'private' });
