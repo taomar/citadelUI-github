@@ -966,15 +966,22 @@ test('the catalogue defaults point inside the vendored bundle, never at the wide
   assert.ok(!everything.includes('../bicep/'), 'a default still reaches outside CitadelSamples');
 });
 
-test('the shipped Python wrappers exist and never build a command from a parameter', async () => {
-  const scripts = await readdir(join(PLAYGROUND_ROOT, 'runtime', 'python'));
-  assert.deepEqual(scripts.sort(), ['agent_framework_ask.py', 'apim_subscription_key.py', 'apim_weather_api.py']);
+test('the shipped Python programs exist and never build a command from a parameter', async () => {
+  const scripts = (await readdir(join(PLAYGROUND_ROOT, 'runtime', 'python'))).filter((name) => name.endsWith('.py'));
+  assert.deepEqual(scripts.sort(), [
+    'agent_framework_ask.py',
+    'apim_subscription_key.py',
+    'apim_weather_api.py',
+    'validate_notebook_source.py',
+  ]);
   for (const script of scripts) {
     const text = await readFile(join(PLAYGROUND_ROOT, 'runtime', 'python', script), 'utf-8');
     for (const forbidden of ['os.system', 'subprocess', 'shell=True', 'eval(', 'exec(']) {
       assert.ok(!text.includes(forbidden), `${script} uses ${forbidden}`);
     }
-    assert.ok(text.includes('json.load(sys.stdin)'), `${script} must read its parameters from stdin`);
+    if (script !== 'validate_notebook_source.py') {
+      assert.ok(text.includes('json.load(sys.stdin)'), `${script} must read its parameters from stdin`);
+    }
   }
 });
 
