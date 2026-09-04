@@ -91,7 +91,7 @@ import { RequestRefused } from '../server/runRequest.mjs';
 import { rebuildRelayPlan, validateExecuteRequest } from './requestSchema.mjs';
 import { authenticatePrincipal } from './principalAuth.mjs';
 import { createNonceStore } from './nonceStore.mjs';
-import { planDestinationOrigins, planRequestUrls, verifyAcknowledgement } from './acknowledgement.mjs';
+import { canonicalInputDigest, planDestinationOrigins, planRequestUrls, verifyAcknowledgement } from './acknowledgement.mjs';
 import { raceDeadline, DEADLINE_EXCEEDED } from './deadline.mjs';
 
 /** Acknowledgement-binding failure codes that are a client-fixable request problem, not a policy refusal. */
@@ -107,6 +107,68 @@ function securityHeaders() {
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
   };
+}
+
+function managedRunIdFromPath(requestPath, runsPath) {
+  const match = requestPath.match(new RegExp(`^${runsPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/(run_[A-Za-z0-9_-]{24,128})(?:/cancel)?$`));
+  return match?.[1] ?? null;
+}
+
+function durableAcknowledgement(acknowledgement) {
+  if (!acknowledgement || typeof acknowledgement !== 'object' || Array.isArray(acknowledgement)) return acknowledgement;
+  // `verifyAcknowledgement` validates these values again immediately before
+  // execution. Copying only its fixed vocabulary prevents arbitrary extra
+  // caller data from becoming durable run-state.
+  const fields = ['accepted', 'sampleId', 'caller', 'tenant', 'target', 'inputDigest', 'riskText', 'issuedAt', 'expiresAt', 'nonce'];
+  return Object.fromEntries(fields.filter((field) => Object.prototype.hasOwnProperty.call(acknowledgement, field)).map((field) => [field, acknowledgement[field]]));
+}
+
+async function canonicalizeManagedRunRequest(payload, { catalogue, tenantPolicy, auth, runTimeoutMs }) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), runTimeoutMs);
+  try {
+    const bundle = await raceDeadline(
+      tenantPolicy.resolve({ tenant: auth.tenant, principal: auth.principal, roles: auth.roles, signal: controller.signal }),
+      controller.signal,
+    );
+    if (bundle === DEADLINE_EXCEEDED) {
+      throw new RequestRefused('The tenant policy could not be resolved within the run-time budget.', {
+        status: 504,
+        code: 'run-timeout',
+      });
+    }
+    if (!bundle) {
+      throw new RequestRefused('This tenant is not authorized to use the relay.', { status: 403, code: 'tenant-not-authorized' });
+    }
+    const { sample, inputs, secretRefs, acknowledgement } = validateExecuteRequest(payload, catalogue, {
+      relayAllowedSampleIds: bundle.allowedSampleIds,
+    });
+    return {
+      requestDigest: canonicalInputDigest({ sampleId: sample.id, inputs, secretRefs }),
+      bundle,
+      sample,
+      inputs,
+      secretRefs,
+      auth,
+      // Keep only this canonical, exact-schema request in the job closure. It
+      // is never stored and is independently validated again when it runs.
+      payload: {
+        protocolVersion: payload.protocolVersion,
+        sampleId: sample.id,
+        inputs,
+        secretRefs,
+        acknowledgement: durableAcknowledgement(acknowledgement),
+      },
+    };
+  } catch (error) {
+    if (error instanceof RequestRefused) throw error;
+    if (controller.signal.aborted) {
+      throw new RequestRefused('The tenant policy could not be resolved within the run-time budget.', { status: 504, code: 'run-timeout' });
+    }
+    throw new RequestRefused('The tenant policy could not be resolved.', { status: 502, code: 'tenant-policy-unavailable' });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function blockedResult(sampleId, summary, detail = '') {
@@ -169,6 +231,7 @@ export async function handleExecuteRequest(payload, deps) {
     runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS,
     now = () => Date.now(),
     externalSignal,
+    admitted = false,
   } = deps;
 
   if (!auth || typeof auth.principal !== 'string' || auth.principal === '' || typeof auth.tenant !== 'string' || auth.tenant === '') {
@@ -202,6 +265,7 @@ export async function handleExecuteRequest(payload, deps) {
       nonceStore,
       now,
       signal: controller.signal,
+      admitted,
     });
   } finally {
     clearTimeout(timer);
@@ -218,7 +282,7 @@ function runTimeoutResponse() {
 }
 
 async function handleAuthenticatedExecuteRequest(payload, deps) {
-  const { catalogue, tenantPolicy, auth, nonceStore, now, signal } = deps;
+  const { catalogue, tenantPolicy, auth, nonceStore, now, signal, admitted } = deps;
 
   // Cheap, defensive early exit: a caller that is already gone (the run
   // deadline already fired, or `externalSignal` was already aborted before
@@ -335,7 +399,8 @@ async function handleAuthenticatedExecuteRequest(payload, deps) {
   // the caller merely asserts about them. A mismatch here means the
   // acknowledgement, however genuine, was not granted for this specific
   // caller, tenant, or run.
-  const verification = verifyAcknowledgement(
+  if (!admitted) {
+    const verification = verifyAcknowledgement(
     acknowledgement,
     {
       sampleId: sample.id,
@@ -348,22 +413,21 @@ async function handleAuthenticatedExecuteRequest(payload, deps) {
     },
     { now },
   );
-  if (!verification.ok) {
-    const status = ACKNOWLEDGEMENT_BAD_REQUEST_CODES.has(verification.code)
-      ? 400
-      : verification.code === 'acknowledgement-expired'
-        ? 409
-        : 403;
-    return { status, body: { state: 'blocked', summary: verification.message, code: verification.code } };
-  }
+    if (!verification.ok) {
+      const status = ACKNOWLEDGEMENT_BAD_REQUEST_CODES.has(verification.code)
+        ? 400
+        : verification.code === 'acknowledgement-expired'
+          ? 409
+          : 403;
+      return { status, body: { state: 'blocked', summary: verification.message, code: verification.code } };
+    }
 
-  // Only once every structural/binding check above has passed do we spend
-  // the nonce: a second delivery of the same nonce — even of an otherwise
-  // perfectly valid, correctly bound acknowledgement — is either a
-  // network-level retry or a captured-and-replayed request, and this
-  // endpoint has no way to tell those apart, so both are refused.
-  if (!nonceStore.consume(acknowledgement.nonce)) {
-    return { status: 409, body: { state: 'blocked', summary: 'This request has already been served, or its nonce has expired.', code: 'nonce-replayed' } };
+    // Only once every structural/binding check above has passed do we spend
+    // the nonce: a second delivery of the same nonce — even of an otherwise
+    // valid request — is either a retry or a captured replay.
+    if (!nonceStore.consume(acknowledgement.nonce)) {
+      return { status: 409, body: { state: 'blocked', summary: 'This request has already been served, or its nonce has expired.', code: 'nonce-replayed' } };
+    }
   }
 
   const secrets = {};
@@ -420,6 +484,224 @@ async function handleAuthenticatedExecuteRequest(payload, deps) {
   }
 }
 
+function admitManagedRun(canonical, { catalogue, nonceStore, now }) {
+  const { bundle, sample, inputs, secretRefs, payload } = canonical;
+  let plan;
+  try {
+    ({ plan } = rebuildRelayPlan({ sample, inputs }, catalogue, { buildSamplePlan, requirementsFor }));
+  } catch (error) {
+    if (error instanceof RequestRefused) throw error;
+    throw new RequestRefused('Could not reconstruct this sample’s execution plan.', { status: 502, code: 'plan-rebuild-failed' });
+  }
+  const disallowedOrigins = [...planDestinationOrigins(plan)].filter((origin) => !bundle.originAllowlist.origins.includes(origin));
+  if (disallowedOrigins.length > 0) {
+    throw new RequestRefused(`"${sample.id}" would contact a destination outside this tenant's allowlist.`, {
+      status: 403,
+      code: 'destination-not-allowed',
+    });
+  }
+  const requestPolicyCheck = bundle.requestPolicy.authorizeStaticPlan(sample.id, plan);
+  if (!requestPolicyCheck.ok) {
+    throw new RequestRefused(requestPolicyCheck.message, { status: 403, code: requestPolicyCheck.code });
+  }
+  const verification = verifyAcknowledgement(
+    payload.acknowledgement,
+    {
+      sampleId: sample.id,
+      inputs,
+      secretRefs,
+      target: [...planRequestUrls(plan)],
+      riskText: sample.risk?.effect,
+      caller: canonical.auth.principal,
+      tenant: canonical.auth.tenant,
+    },
+    { now },
+  );
+  if (!verification.ok) {
+    const status = ACKNOWLEDGEMENT_BAD_REQUEST_CODES.has(verification.code)
+      ? 400
+      : verification.code === 'acknowledgement-expired'
+        ? 409
+        : 403;
+    throw new RequestRefused(verification.message, { status, code: verification.code });
+  }
+  if (!nonceStore.consume(payload.acknowledgement.nonce)) {
+    throw new RequestRefused('This request has already been served, or its nonce has expired.', { status: 409, code: 'nonce-replayed' });
+  }
+}
+
+async function authenticateRunRequest(request, { authenticator, isLoopbackHost, host }) {
+  const auth = await authenticatePrincipal(request, { isLoopbackHost, host, authenticator });
+  if (!auth.ok) return null;
+  return { principal: auth.principal, tenant: auth.tenant, roles: auth.roles ?? [] };
+}
+
+async function handleManagedRunCreate(request, response, deps) {
+  const auth = await authenticateRunRequest(request, deps);
+  if (!auth) {
+    response.writeHead(401, securityHeaders());
+    response.end(JSON.stringify({ state: 'blocked', summary: 'Not run — the caller could not be authenticated.', code: 'unauthenticated' }));
+    return;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(await readBody(request, deps.bodyLimitBytes));
+  } catch (error) {
+    const status = error instanceof RequestRefused ? error.status : 400;
+    response.writeHead(status, securityHeaders());
+    response.end(JSON.stringify({ state: 'blocked', summary: error?.message ?? 'Malformed request body.' }));
+    return;
+  }
+
+  let canonical;
+  try {
+    canonical = await canonicalizeManagedRunRequest(payload, { ...deps, auth });
+  } catch (error) {
+    const status = error instanceof RequestRefused ? error.status : 502;
+    response.writeHead(status, securityHeaders());
+    response.end(JSON.stringify({ state: 'blocked', summary: error?.message ?? 'Malformed request body.', code: error?.code }));
+    return;
+  }
+
+  const idempotencyKey = request.headers['idempotency-key'];
+  const key = Array.isArray(idempotencyKey) ? '' : idempotencyKey;
+  try {
+    const prior = await deps.runOrchestrator.idempotency({
+      owner: auth.principal,
+      tenant: auth.tenant,
+      idempotencyKey: key,
+      requestDigest: canonical.requestDigest,
+    });
+    if (prior.outcome === 'existing') {
+      if (!prior.run || typeof prior.run !== 'object') {
+        response.writeHead(500, securityHeaders());
+        response.end(JSON.stringify({ state: 'failed', summary: 'The managed run could not be retrieved.', code: 'run-lookup-failed' }));
+        return;
+      }
+      response.writeHead(200, securityHeaders());
+      response.end(JSON.stringify(prior.run));
+      return;
+    }
+    if (prior.outcome === 'conflict') {
+      response.writeHead(409, securityHeaders());
+      response.end(JSON.stringify({ state: 'blocked', summary: 'This Idempotency-Key was already used for a different request.', code: 'idempotency-conflict' }));
+      return;
+    }
+    admitManagedRun(canonical, { ...deps, now: deps.now });
+  } catch (error) {
+    const status = error instanceof RequestRefused ? error.status : 500;
+    response.writeHead(status, securityHeaders());
+    response.end(JSON.stringify({ state: 'blocked', summary: error?.message ?? 'The managed run could not be admitted.', code: error?.code }));
+    return;
+  }
+  try {
+    const created = await deps.runOrchestrator.create({
+      owner: auth.principal,
+      tenant: auth.tenant,
+      sampleId: canonical.payload.sampleId,
+      requestDigest: canonical.requestDigest,
+      idempotencyKey: key,
+      // The descriptor has already passed the exact-schema gate, contains no
+      // secret values, and is omitted from every public run projection. A
+      // hosted worker reloads it by run ID and calls executeManagedRunWork.
+      work: {
+        payload: canonical.payload,
+        auth,
+        admitted: true,
+      },
+    });
+    if (created.outcome === 'conflict') {
+      response.writeHead(409, securityHeaders());
+      response.end(JSON.stringify({ state: 'blocked', summary: 'This Idempotency-Key was already used for a different request.', code: 'idempotency-conflict' }));
+      return;
+    }
+    if (created.outcome === 'limit') {
+      response.writeHead(429, securityHeaders());
+      response.end(
+        JSON.stringify({
+          state: 'blocked',
+          summary: created.scope === 'principal' ? 'This principal already has the maximum number of active runs.' : 'The relay already has the maximum number of active runs.',
+          code: 'run-concurrency-limit',
+        }),
+      );
+      return;
+    }
+    response.writeHead(created.outcome === 'created' ? 202 : 200, securityHeaders());
+    response.end(JSON.stringify(created.run));
+  } catch {
+    response.writeHead(500, securityHeaders());
+    response.end(JSON.stringify({ state: 'failed', summary: 'The managed run could not be created.', code: 'run-create-failed' }));
+  }
+}
+
+async function handleManagedRunStatus(request, response, deps, runId) {
+  const auth = await authenticateRunRequest(request, deps);
+  if (!auth) {
+    response.writeHead(401, securityHeaders());
+    response.end(JSON.stringify({ state: 'blocked', summary: 'Not run — the caller could not be authenticated.', code: 'unauthenticated' }));
+    return;
+  }
+  const run = await deps.runOrchestrator.status({ owner: auth.principal, tenant: auth.tenant, runId });
+  if (!run) {
+    response.writeHead(404, securityHeaders());
+    response.end(JSON.stringify({ state: 'blocked', summary: 'Run not found.' }));
+    return;
+  }
+  response.writeHead(200, securityHeaders());
+  response.end(JSON.stringify(run));
+}
+
+async function handleManagedRunCancel(request, response, deps, runId) {
+  const auth = await authenticateRunRequest(request, deps);
+  if (!auth) {
+    response.writeHead(401, securityHeaders());
+    response.end(JSON.stringify({ state: 'blocked', summary: 'Not run — the caller could not be authenticated.', code: 'unauthenticated' }));
+    return;
+  }
+  const run = await deps.runOrchestrator.cancel({ owner: auth.principal, tenant: auth.tenant, runId });
+  if (!run) {
+    response.writeHead(404, securityHeaders());
+    response.end(JSON.stringify({ state: 'blocked', summary: 'Run not found.' }));
+    return;
+  }
+  response.writeHead(200, securityHeaders());
+  response.end(JSON.stringify(run));
+}
+
+/**
+ * Execute the durable, non-secret descriptor a hosted job receives for a run.
+ * A job worker can obtain `work` from its durable run-store record by run ID
+ * after a relay restart; this function deliberately has no browser request or
+ * in-process closure dependency.
+ */
+export async function executeManagedRunWork(work, {
+  catalogue = CATALOGUE,
+  tenantPolicy,
+  nonceStore,
+  runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS,
+  now = () => Date.now(),
+  signal,
+  reportPartial = () => {},
+} = {}) {
+  if (!work || typeof work !== 'object' || !work.payload || !work.auth) {
+    throw new TypeError('Managed run work must include its validated payload and authenticated owner context.');
+  }
+  if (work.admitted !== true) throw new TypeError('Managed run work must be admitted before execution.');
+  const outcome = await handleExecuteRequest(work.payload, {
+    catalogue,
+    tenantPolicy,
+    auth: work.auth,
+    nonceStore,
+    runTimeoutMs,
+    now,
+    externalSignal: signal,
+    admitted: true,
+  });
+  await reportPartial(outcome.body?.steps);
+  return outcome.body;
+}
+
 /**
  * @param {object} options
  * @param {object} [options.catalogue]              defaults to the bundled CATALOGUE
@@ -430,6 +712,8 @@ async function handleAuthenticatedExecuteRequest(payload, deps) {
  * @param {object} options.authenticator             REQUIRED: `{ authenticate(request) }`
  * @param {object} [options.nonceStore]               defaults to a fresh in-memory store
  * @param {string} [options.path]                     default `/execute`
+ * @param {string} [options.runsPath]                 default `/runs`; authenticated POST creates a run, GET polls it, POST `/cancel` cancels it
+ * @param {object} [options.runOrchestrator]          REQUIRED to enable `/runs`: a hosted, shared durable state/job adapter
  * @param {number} [options.bodyLimitBytes]
  * @param {number} [options.runTimeoutMs]
  * @param {(host:string)=>boolean} [options.isLoopbackHost]  loopback bypass for local dev/testing
@@ -442,6 +726,8 @@ export function createRelayServer({
   authenticator,
   nonceStore,
   path = '/execute',
+  runsPath = '/runs',
+  runOrchestrator,
   bodyLimitBytes = DEFAULT_BODY_LIMIT_BYTES,
   runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS,
   isLoopbackHost = () => false,
@@ -454,7 +740,23 @@ export function createRelayServer({
   if (!authenticator || typeof authenticator.authenticate !== 'function') {
     throw new TypeError('createRelayServer requires an authenticator.');
   }
+  if (typeof runsPath !== 'string' || !/^\/[A-Za-z0-9._-]+$/.test(runsPath)) {
+    throw new TypeError('runsPath must be one URL path segment beginning with "/".');
+  }
   const nonces = nonceStore ?? createNonceStore();
+  const managedRuns = runOrchestrator ?? null;
+  if (
+    managedRuns &&
+    (
+    typeof managedRuns.idempotency !== 'function' ||
+    typeof managedRuns.create !== 'function' ||
+    typeof managedRuns.status !== 'function' ||
+    typeof managedRuns.cancel !== 'function' ||
+    typeof managedRuns.recover !== 'function'
+    )
+  ) {
+    throw new TypeError('runOrchestrator must provide create, status, and cancel methods.');
+  }
 
   const server = createServer(async (request, response) => {
     try {
@@ -467,6 +769,46 @@ export function createRelayServer({
         }
         response.writeHead(200, securityHeaders());
         response.end(JSON.stringify({ status: 'ok' }));
+        return;
+      }
+
+      const runId = managedRunIdFromPath(requestPath, runsPath);
+      if (managedRuns && requestPath === runsPath) {
+        if (request.method !== 'POST') {
+          response.writeHead(405, securityHeaders());
+          response.end(JSON.stringify({ state: 'blocked', summary: 'Use POST.' }));
+          return;
+        }
+        await handleManagedRunCreate(request, response, {
+          catalogue,
+          tenantPolicy,
+          authenticator,
+          nonceStore: nonces,
+          runOrchestrator: managedRuns,
+          bodyLimitBytes,
+          runTimeoutMs,
+          isLoopbackHost,
+          host,
+          now,
+        });
+        return;
+      }
+      if (managedRuns && runId && requestPath === `${runsPath}/${runId}`) {
+        if (request.method !== 'GET') {
+          response.writeHead(405, securityHeaders());
+          response.end(JSON.stringify({ state: 'blocked', summary: 'Use GET.' }));
+          return;
+        }
+        await handleManagedRunStatus(request, response, { authenticator, runOrchestrator: managedRuns, isLoopbackHost, host }, runId);
+        return;
+      }
+      if (managedRuns && runId && requestPath === `${runsPath}/${runId}/cancel`) {
+        if (request.method !== 'POST') {
+          response.writeHead(405, securityHeaders());
+          response.end(JSON.stringify({ state: 'blocked', summary: 'Use POST.' }));
+          return;
+        }
+        await handleManagedRunCancel(request, response, { authenticator, runOrchestrator: managedRuns, isLoopbackHost, host }, runId);
         return;
       }
       if (requestPath !== path) {
@@ -549,5 +891,12 @@ export function createRelayServer({
 
   server.tenantPolicy = tenantPolicy;
   server.nonceStore = nonces;
+  server.runOrchestrator = managedRuns;
+  // A durable orchestrator re-enqueues records that were accepted before a
+  // prior relay process exited. Its own store/job adapter reports any recovery
+  // failure to the hosting environment without exposing internal details.
+  if (managedRuns) {
+    void managedRuns.recover().catch(() => console.error('Managed run recovery failed.'));
+  }
   return server;
 }

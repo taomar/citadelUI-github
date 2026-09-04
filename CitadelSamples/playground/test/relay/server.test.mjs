@@ -23,6 +23,7 @@ import { createRelayHttpExecutor } from '../../src/relay/httpExecutor.mjs';
 import { createOriginAllowlist } from '../../src/relay/originAllowlist.mjs';
 import { createInMemorySecretProvider } from '../../src/relay/secretProvider.mjs';
 import { createNonceStore } from '../../src/relay/nonceStore.mjs';
+import { createInMemoryManagedRunStore, createManagedRunOrchestrator } from '../../src/relay/managedRun.mjs';
 import { computeRelayAllowedSampleIds } from '../../src/relay/requestSchema.mjs';
 import {
   createDenyAllAuthenticator,
@@ -1026,6 +1027,8 @@ test('an unknown path is 404 and a non-POST method is 405, both before authentic
   await withServer(serverDeps(), async (base) => {
     const wrongPath = await fetch(`${base}/not-execute`, { method: 'POST' });
     assert.equal(wrongPath.status, 404);
+    const unmanagedRuns = await fetch(`${base}/runs`, { method: 'POST' });
+    assert.equal(unmanagedRuns.status, 404, 'managed routes require an explicitly injected durable orchestrator');
     const wrongMethod = await fetch(`${base}/execute`, { method: 'GET' });
     assert.equal(wrongMethod.status, 405);
   });
@@ -1056,6 +1059,77 @@ test('every response carries the fixed security headers, never a cacheable body'
   });
 });
 
+test('the managed-run routes authenticate every action, bind runs to their owner, and preserve idempotency', async () => {
+  const completion = {};
+  completion.promise = new Promise((resolve) => {
+    completion.resolve = resolve;
+  });
+  let observedSignal;
+  const runs = createManagedRunOrchestrator({
+    store: createInMemoryManagedRunStore(),
+    random: () => 'abcdefghijklmnopqrstuvwx123456',
+    jobLauncher: {
+      launch: ({ signal }) => {
+        observedSignal = signal;
+        return completion.promise;
+      },
+    },
+  });
+  const authenticator = {
+    async authenticate(request) {
+      const token = request.headers.authorization;
+      if (token === 'Bearer owner-a') return { ok: true, principal: CALLER_A, tenant: TENANT_A, roles: [] };
+      if (token === 'Bearer owner-b') return { ok: true, principal: CALLER_B, tenant: TENANT_A, roles: [] };
+      return { ok: false };
+    },
+  };
+
+  await withServer(serverDeps({ authenticator, runOrchestrator: runs }), async (base) => {
+    const unauthenticated = await fetch(`${base}/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'idempotency-key': 'managed-1' },
+      body: JSON.stringify(weatherPayload()),
+    });
+    assert.equal(unauthenticated.status, 401);
+
+    const create = await fetch(`${base}/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer owner-a', 'idempotency-key': 'managed-1' },
+      body: JSON.stringify({ ...weatherPayload(), secretRefs: WEATHER_SECRET_REFS }),
+    });
+    assert.equal(create.status, 202, await create.clone().text());
+    const run = await create.json();
+    assert.match(run.runId, /^run_/);
+
+    const repeated = await fetch(`${base}/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer owner-a', 'idempotency-key': 'managed-1' },
+      body: JSON.stringify(weatherPayload()),
+    });
+    assert.equal(repeated.status, 200);
+    assert.equal((await repeated.json()).runId, run.runId);
+
+    const conflict = await fetch(`${base}/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer owner-a', 'idempotency-key': 'managed-1' },
+      body: JSON.stringify(weatherPayload({ inputs: { ...WEATHER_INPUTS, 'hub.gatewayUrl': 'https://other.example.test' } })),
+    });
+    assert.equal(conflict.status, 409);
+
+    const otherOwner = await fetch(`${base}/runs/${run.runId}`, { headers: { authorization: 'Bearer owner-b' } });
+    assert.equal(otherOwner.status, 404);
+
+    const cancelled = await fetch(`${base}/runs/${run.runId}/cancel`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer owner-a' },
+    });
+    assert.equal(cancelled.status, 200);
+    assert.equal((await cancelled.json()).state, 'cancelled');
+    assert.equal(observedSignal.aborted, true);
+  });
+  completion.resolve({ state: 'completed', steps: [] });
+});
+
 test('an authenticator that throws (a real identity-provider outage) still gets a controlled 500 response over the socket, never a hang or a crash', async () => {
   // `handleExecuteRequest` already guards the boundaries it calls itself
   // (tenant policy, secret provider, http executor); this is the ONE
@@ -1081,4 +1155,3 @@ test('an authenticator that throws (a real identity-provider outage) still gets 
     assert.doesNotMatch(JSON.stringify(body), /leaked-detail-should-never-surface/);
   });
 });
-
