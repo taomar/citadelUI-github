@@ -18,6 +18,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  buildRelayConfig,
   capabilitiesPayload,
   checkStateChangingRequest,
   createPlaygroundServer,
@@ -25,10 +26,12 @@ import {
   probeRuntimes,
   resolveServedPath,
 } from '../server.mjs';
-import { CATALOGUE } from '../src/catalogue/index.mjs';
+import { CATALOGUE, getSample } from '../src/catalogue/index.mjs';
 import { ACCELERATOR_ROOT, EXECUTION_PROTOCOL_VERSION } from '../src/core/types.mjs';
 import { describeSampleCapability, probeFromCapabilityPayload, summariseCapability } from '../src/core/capability.mjs';
+import { canonicalInputDigest } from '../src/relay/acknowledgement.mjs';
 import { resolveSpawnInvocation, spawnProcess } from '../src/server/transports.mjs';
+import { createDenyAllAuthenticator, createSharedSecretAuthenticator } from '../src/relay/principalAuth.mjs';
 import { fakeSpawn } from './helpers/transports.mjs';
 
 const PLAYGROUND_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -93,63 +96,6 @@ test('operator mode reaches the run manager, and the manager decides', async () 
       body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION, sampleId: 'azure-context-check', inputs: {} }),
     });
 
-    test('the relay endpoint applies the same-origin JSON guard before forwarding', async () => {
-      await withServer({ mode: 'preview' }, async ({ call }) => {
-        const crossSite = await call('/api/execute', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'text/plain',
-            'Sec-Fetch-Site': 'cross-site',
-          },
-          body: '{}',
-        });
-        assert.equal(crossSite.status, 403);
-
-        const wrongType = await call('/api/execute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: '{}',
-        });
-        assert.equal(wrongType.status, 415);
-      });
-    });
-
-    test('operator mode exposes the run id in response headers before the run finishes', async () => {
-      let finish;
-      const held = new Promise((resolve) => {
-        finish = resolve;
-      });
-      const manager = {
-        start: async (_payload, { onStart }) => {
-          onStart({ runId: 'active-run-0001' });
-          await held;
-          return { runId: 'active-run-0001', state: 'cancelled', summary: 'cancelled', steps: [], assertions: [] };
-        },
-        cancel: (runId) => {
-          finish();
-          return { cancelled: true, runId };
-        },
-        cancelAll: () => finish(),
-        activeCount: 1,
-        listActive: () => [{ runId: 'active-run-0001' }],
-      };
-      await withServer({ mode: 'execute', runManager: manager }, async ({ call }) => {
-        const response = await call('/api/run', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION, sampleId: 'azure-context-check', inputs: {} }),
-        });
-        assert.equal(response.headers.get('X-Citadel-Run-Id'), 'active-run-0001');
-
-        const cancelled = await call('/api/run/cancel', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ runId: 'active-run-0001' }),
-        });
-        assert.equal((await cancelled.json()).cancelled, true);
-        assert.equal((await response.json()).state, 'cancelled');
-      });
-    });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).runId, 'test-0001');
     assert.equal(started.length, 1);
@@ -160,6 +106,458 @@ test('operator mode reaches the run manager, and the manager decides', async () 
       body: JSON.stringify({ runId: 'test-0001' }),
     });
     assert.deepEqual(await cancelled.json(), { cancelled: true, runId: 'test-0001' });
+  });
+});
+
+test('the relay endpoint applies the same-origin JSON guard before forwarding', async () => {
+  await withServer({ mode: 'preview' }, async ({ call }) => {
+    const crossSite = await call('/api/execute', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain',
+        'Sec-Fetch-Site': 'cross-site',
+      },
+      body: '{}',
+    });
+    assert.equal(crossSite.status, 403);
+
+    const wrongType = await call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: '{}',
+    });
+    assert.equal(wrongType.status, 415);
+  });
+});
+
+/* --------------------------------------------------------- relay wiring */
+
+/** A relay config for tests: no network, no env vars, a fully injectable seam. */
+function fakeRelay({
+  fetchImpl,
+  authenticator = createDenyAllAuthenticator(),
+  allowedSampleIds = ['weather-mcp-discovery'],
+  callerPrincipal = 'citadel-playground-proxy',
+  tenant = 'default-tenant',
+} = {}) {
+  return {
+    enabled: true,
+    url: 'https://relay.internal.example/execute',
+    fetchImpl,
+    credentialProvider: { getAuthorizationHeader: async () => 'test-credential' },
+    authenticator,
+    allowedSampleIds,
+    callerPrincipal,
+    tenant,
+  };
+}
+
+const WEATHER_MCP_REQUEST = {
+  protocolVersion: EXECUTION_PROTOCOL_VERSION,
+  sampleId: 'weather-mcp-discovery',
+  inputs: { 'hub.gatewayUrl': 'https://gw.example.net' },
+};
+
+test('buildRelayConfig is disabled with no URL configured, and never touches other env vars', () => {
+  assert.deepEqual(buildRelayConfig({}), { enabled: false });
+});
+
+test('buildRelayConfig defaults callerPrincipal/tenant to fixed, non-blank values when unset', () => {
+  const config = buildRelayConfig({ CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.example/execute' });
+  assert.equal(config.enabled, true);
+  assert.equal(config.callerPrincipal, 'citadel-playground-proxy');
+  assert.equal(config.tenant, 'default-tenant');
+});
+
+test('buildRelayConfig reads callerPrincipal/tenant from their own env vars when configured', () => {
+  const config = buildRelayConfig({
+    CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.example/execute',
+    CITADEL_PLAYGROUND_RELAY_CALLER_PRINCIPAL: 'proxy-east-1',
+    CITADEL_PLAYGROUND_RELAY_TENANT: 'tenant-east',
+  });
+  assert.equal(config.callerPrincipal, 'proxy-east-1');
+  assert.equal(config.tenant, 'tenant-east');
+});
+
+test('a relay-disabled server answers /api/execute with 501, never forwarding anything', async () => {
+  await withServer({ mode: 'preview', relay: { enabled: false } }, async ({ call }) => {
+    const response = await call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(WEATHER_MCP_REQUEST),
+    });
+    assert.equal(response.status, 501);
+    assert.equal((await response.json()).state, 'blocked');
+  });
+});
+
+test('a loopback caller reaches an enabled relay without presenting a credential', async () => {
+  const calls = [];
+  const relay = fakeRelay({
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ state: 'completed', summary: 'Ran on the relay.' }),
+      };
+    },
+  });
+  await withServer({ mode: 'preview', relay }, async ({ call }) => {
+    const response = await call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(WEATHER_MCP_REQUEST),
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).state, 'completed');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, relay.url);
+  });
+});
+
+test('the local proxy mints its own nonce and forwards only the canonical, validated shape', async () => {
+  const calls = [];
+  const relay = fakeRelay({
+    fetchImpl: async (url, init) => {
+      calls.push(init);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ state: 'completed', summary: 'ok' }) };
+    },
+  });
+  await withServer({ mode: 'preview', relay }, async ({ call }) => {
+    // The caller supplies forbidden members (a URL, a header set, a plan) —
+    // none of it may reach the relay.
+    const response = await call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...WEATHER_MCP_REQUEST,
+        url: 'https://attacker.example/steal',
+        headers: { 'X-Injected': 'yes' },
+        plan: { steps: [] },
+      }),
+    });
+    assert.equal(response.status, 400, 'a forbidden member must be rejected before anything is forwarded');
+    assert.equal(calls.length, 0);
+  });
+
+  const response = await withServer({ mode: 'preview', relay }, ({ call }) =>
+    call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(WEATHER_MCP_REQUEST),
+    }),
+  );
+  assert.equal(response.status, 200);
+  assert.equal(calls.length, 1);
+  const forwarded = JSON.parse(calls[0].body);
+  assert.deepEqual(Object.keys(forwarded).sort(), ['acknowledgement', 'inputs', 'protocolVersion', 'sampleId', 'secretRefs']);
+  assert.equal(forwarded.sampleId, 'weather-mcp-discovery');
+  assert.equal(forwarded.protocolVersion, EXECUTION_PROTOCOL_VERSION);
+  assert.deepEqual(forwarded.secretRefs, ['gatewayAccess.apiKey']);
+  assert.ok(!('url' in forwarded));
+  assert.ok(!('headers' in forwarded));
+  assert.ok(!('plan' in forwarded));
+  assert.equal(typeof forwarded.acknowledgement.nonce, 'string');
+  assert.ok(forwarded.acknowledgement.nonce.length >= 8);
+  assert.equal(forwarded.acknowledgement.sampleId, 'weather-mcp-discovery');
+  assert.equal(calls[0].headers.Authorization, 'test-credential');
+});
+
+test('the acknowledgement the proxy mints is bound to the destination, inputs and risk text of THIS request', async () => {
+  const calls = [];
+  const relay = fakeRelay({
+    fetchImpl: async (url, init) => {
+      calls.push(init);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ state: 'completed', summary: 'ok' }) };
+    },
+  });
+  await withServer({ mode: 'preview', relay }, ({ call }) =>
+    call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(WEATHER_MCP_REQUEST),
+    }),
+  );
+  const forwarded = JSON.parse(calls[0].body);
+  const ack = forwarded.acknowledgement;
+  assert.equal(ack.accepted, true);
+  assert.equal(ack.target, 'https://gw.example.net/mcp/weather-tool-mcp/mcp', 'target is the literal request URL this plan will actually contact, not merely the gateway origin');
+  assert.equal(ack.riskText, getSample('weather-mcp-discovery').risk.effect);
+  assert.equal(ack.caller, 'citadel-playground-proxy', "the acknowledgement is bound to the relay's own configured caller identity for this proxy, not the browser-facing /api/execute principal");
+  assert.equal(ack.tenant, 'default-tenant', "the acknowledgement is bound to the relay's own configured tenant for this proxy");
+  assert.equal(
+    ack.inputDigest,
+    canonicalInputDigest({ sampleId: 'weather-mcp-discovery', inputs: WEATHER_MCP_REQUEST.inputs, secretRefs: ['gatewayAccess.apiKey'] }),
+  );
+  assert.ok(ack.expiresAt > Date.now(), 'a freshly minted acknowledgement has not already expired');
+  assert.ok(!('accepted' in (WEATHER_MCP_REQUEST.acknowledgement ?? {})), 'sanity: the browser sent no acknowledgement at all');
+});
+
+test('the acknowledgement target follows a recorded deployedEndpoint, not hub.gatewayUrl, when only the endpoint is set', async () => {
+  // `deployedEndpoint` is authoritative once set (`mcpEndpoint()` in
+  // `src/core/endpoints.mjs`): the plan this sample builds contacts that
+  // endpoint directly, not anything composed from a gateway URL. Nothing
+  // else is supplied here — `hub.gatewayUrl` is conditional and blank is
+  // fine once a deployed endpoint is recorded — so a correct acknowledgement
+  // MUST bind to the endpoint's own origin.
+  const calls = [];
+  const relay = fakeRelay({
+    fetchImpl: async (url, init) => {
+      calls.push(init);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ state: 'completed', summary: 'ok' }) };
+    },
+  });
+  await withServer({ mode: 'preview', relay }, ({ call }) =>
+    call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...WEATHER_MCP_REQUEST,
+        inputs: { 'samples.weather-mcp-discovery.deployedEndpoint': 'https://deployed.example.net' },
+      }),
+    }),
+  );
+  assert.equal(calls.length, 1);
+  const forwarded = JSON.parse(calls[0].body);
+  assert.equal(
+    forwarded.acknowledgement.target,
+    'https://deployed.example.net/',
+    'the recorded deployed endpoint is the only destination this plan actually contacts',
+  );
+});
+
+test('the acknowledgement target follows deployedEndpoint over hub.gatewayUrl when both are set', async () => {
+  // The regression this guards against: the OLD code derived the
+  // acknowledgement target from raw `inputs['hub.gatewayUrl']` directly,
+  // so setting both fields would have bound the acknowledgement to
+  // `gw.example.net` even though `mcpEndpoint()` — and therefore the plan
+  // this sample actually executes — contacts `deployed.example.net`
+  // instead, because a recorded deployed endpoint always wins. Deriving the
+  // target from the proxy's own rebuilt plan (via `planRequestUrls`) fixes
+  // this: the acknowledgement now binds to the literal URL the plan will
+  // actually reach.
+  const calls = [];
+  const relay = fakeRelay({
+    fetchImpl: async (url, init) => {
+      calls.push(init);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ state: 'completed', summary: 'ok' }) };
+    },
+  });
+  await withServer({ mode: 'preview', relay }, ({ call }) =>
+    call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...WEATHER_MCP_REQUEST,
+        inputs: {
+          'hub.gatewayUrl': 'https://gw.example.net',
+          'samples.weather-mcp-discovery.deployedEndpoint': 'https://deployed.example.net',
+        },
+      }),
+    }),
+  );
+  assert.equal(calls.length, 1);
+  const forwarded = JSON.parse(calls[0].body);
+  assert.equal(
+    forwarded.acknowledgement.target,
+    'https://deployed.example.net/',
+    'deployedEndpoint is authoritative and overrides hub.gatewayUrl, so the acknowledgement must not bind to the gateway URL',
+  );
+});
+
+test('a sample whose gateway URL input is not a well-formed https URL is refused before a plan is ever rebuilt, never forwarded', async () => {
+  // `hub.gatewayUrl` is a `type: 'url'` field, so `not-a-url` fails the
+  // catalogue's own https-only format check inside `rebuildRelayPlan` — the
+  // very same validation the proxy's own `buildSamplePlan` call performs —
+  // long before the plan-rebuild's destination-derivation step is reached.
+  // That earlier, more specific failure (400, `invalid-configuration`) is
+  // what a malformed URL actually produces today; the generic 502 "no
+  // resolvable gateway destination" path guards a plan that rebuilds
+  // successfully yet resolves no origin at all, which no catalogue sample
+  // currently reaches (see the acknowledgement/target tests below for the
+  // path that IS reachable: a valid but different destination).
+  const calls = [];
+  const relay = fakeRelay({
+    fetchImpl: async (url, init) => {
+      calls.push(init);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ state: 'completed', summary: 'ok' }) };
+    },
+  });
+  await withServer({ mode: 'preview', relay }, async ({ call }) => {
+    const response = await call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...WEATHER_MCP_REQUEST, inputs: { 'hub.gatewayUrl': 'not-a-url' } }),
+    });
+    assert.equal(response.status, 400);
+    const payload = await response.json();
+    assert.equal(payload.code, 'invalid-configuration');
+    assert.match(payload.summary, /https:\/\/ URL/);
+    assert.equal(calls.length, 0, 'nothing is forwarded when the configuration itself does not validate');
+  });
+});
+
+test('two forwarded requests for the same sample carry two different nonces', async () => {
+  const bodies = [];
+  const relay = fakeRelay({
+    fetchImpl: async (url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return { ok: true, status: 200, text: async () => JSON.stringify({ state: 'completed', summary: 'ok' }) };
+    },
+  });
+  await withServer({ mode: 'preview', relay }, async ({ call }) => {
+    for (let i = 0; i < 2; i++) {
+      await call('/api/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(WEATHER_MCP_REQUEST),
+      });
+    }
+  });
+  assert.equal(bodies.length, 2);
+  assert.notEqual(bodies[0].acknowledgement.nonce, bodies[1].acknowledgement.nonce);
+});
+
+test('the relay endpoint rejects a sample outside its own allow-list, before forwarding', async () => {
+  const calls = [];
+  const relay = fakeRelay({
+    allowedSampleIds: ['a2a-agent-card'],
+    fetchImpl: async () => {
+      calls.push(1);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ state: 'completed', summary: 'ok' }) };
+    },
+  });
+  await withServer({ mode: 'preview', relay }, async ({ call }) => {
+    const response = await call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(WEATHER_MCP_REQUEST),
+    });
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).state, 'blocked');
+    assert.equal(calls.length, 0);
+  });
+});
+
+test('a non-loopback bind refuses every /api/execute caller by default (fail closed)', async () => {
+  const calls = [];
+  const relay = fakeRelay({
+    fetchImpl: async () => {
+      calls.push(1);
+      return { ok: true, status: 200, text: async () => '{}' };
+    },
+  });
+  await withServer({ mode: 'preview', relay, host: 'playground.example.net' }, async ({ call }) => {
+    const response = await call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(WEATHER_MCP_REQUEST),
+    });
+    assert.equal(response.status, 401);
+    assert.equal(calls.length, 0);
+  });
+});
+
+test('a non-loopback bind accepts a caller that presents the configured shared secret', async () => {
+  const calls = [];
+  const relay = fakeRelay({
+    authenticator: createSharedSecretAuthenticator({ token: 'operator-secret' }),
+    fetchImpl: async () => {
+      calls.push(1);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ state: 'completed', summary: 'ok' }) };
+    },
+  });
+  await withServer({ mode: 'preview', relay, host: 'playground.example.net' }, async ({ call }) => {
+    const unauthenticated = await call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(WEATHER_MCP_REQUEST),
+    });
+    assert.equal(unauthenticated.status, 401);
+
+    const authenticated = await call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer operator-secret' },
+      body: JSON.stringify(WEATHER_MCP_REQUEST),
+    });
+    assert.equal(authenticated.status, 200);
+    assert.equal(calls.length, 1);
+  });
+});
+
+test('the relay endpoint maps an unreachable relay and a non-JSON relay answer to 502', async () => {
+  const offline = fakeRelay({
+    fetchImpl: async () => {
+      throw new Error('connect ECONNREFUSED');
+    },
+  });
+  await withServer({ mode: 'preview', relay: offline }, async ({ call }) => {
+    const response = await call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(WEATHER_MCP_REQUEST),
+    });
+    assert.equal(response.status, 502);
+  });
+
+  const garbled = fakeRelay({
+    fetchImpl: async () => ({ ok: true, status: 200, text: async () => 'not json' }),
+  });
+  await withServer({ mode: 'preview', relay: garbled }, async ({ call }) => {
+    const response = await call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(WEATHER_MCP_REQUEST),
+    });
+    assert.equal(response.status, 502);
+  });
+});
+
+test('the capability payload reports the exact relay allow-list, and nothing wider', () => {
+  const relay = fakeRelay({ allowedSampleIds: ['weather-mcp-discovery', 'a2a-agent-card'] });
+  const payload = capabilitiesPayload({ mode: 'preview', relay });
+  assert.equal(payload.executor.kind, 'relay');
+  assert.deepEqual([...payload.executor.allowedSampleIds].sort(), ['a2a-agent-card', 'weather-mcp-discovery']);
+  assert.equal(payload.relayConfigured, true);
+  const serialized = JSON.stringify(payload);
+  assert.ok(!serialized.includes(relay.url), 'the relay URL must never be disclosed to the browser');
+});
+
+test('operator mode exposes the run id in response headers before the run finishes', async () => {
+  let finish;
+  const held = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const manager = {
+    start: async (_payload, { onStart }) => {
+      onStart({ runId: 'active-run-0001' });
+      await held;
+      return { runId: 'active-run-0001', state: 'cancelled', summary: 'cancelled', steps: [], assertions: [] };
+    },
+    cancel: (runId) => {
+      finish();
+      return { cancelled: true, runId };
+    },
+    cancelAll: () => finish(),
+    activeCount: 1,
+    listActive: () => [{ runId: 'active-run-0001' }],
+  };
+  await withServer({ mode: 'execute', runManager: manager }, async ({ call }) => {
+    const response = await call('/api/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION, sampleId: 'azure-context-check', inputs: {} }),
+    });
+    assert.equal(response.headers.get('X-Citadel-Run-Id'), 'active-run-0001');
+
+    const cancelled = await call('/api/run/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId: 'active-run-0001' }),
+    });
+    assert.equal((await cancelled.json()).cancelled, true);
+    assert.equal((await response.json()).state, 'cancelled');
   });
 });
 

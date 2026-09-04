@@ -14,9 +14,13 @@
  *   execute(plan, ctx)   -> Promise<ExecutionResult>
  */
 
-import { EXECUTION_STATES } from './types.mjs';
+import { EXECUTION_PROTOCOL_VERSION, EXECUTION_STATES } from './types.mjs';
 
-export const RELAY_PROTOCOL_VERSION = 1;
+/**
+ * @deprecated kept for backward compatibility; equal to `EXECUTION_PROTOCOL_VERSION`,
+ * the same wire version the local `/api/execute` and `/api/run` contracts use.
+ */
+export const RELAY_PROTOCOL_VERSION = EXECUTION_PROTOCOL_VERSION;
 
 /** Build a typed result. `state` must be one of EXECUTION_STATES. */
 export function executionResult({ state, sampleId, summary, detail = '', steps = [], assertions = [], meta = {} }) {
@@ -118,19 +122,25 @@ export function createRelayExecutor({
       };
     },
     /** Exposed so tests can assert the exact wire shape without a network. */
-    buildRequestBody(plan, { inputs = {} } = {}) {
+    buildRequestBody(plan, { inputs = {}, acknowledgement } = {}) {
       if (!allowed.has(plan?.sampleId)) {
         throw new Error(`Relay refused unknown sample "${plan?.sampleId}"`);
       }
-      return {
+      const body = {
         protocolVersion: RELAY_PROTOCOL_VERSION,
         sampleId: plan.sampleId,
         inputs: JSON.parse(JSON.stringify(inputs)),
         secretRefs: [...(plan.secretRefs ?? [])],
       };
+      // Only present when the caller actually supplies one, so a request that
+      // never carried a risk acknowledgement is not forced to invent one.
+      if (acknowledgement) {
+        body.acknowledgement = JSON.parse(JSON.stringify(acknowledgement));
+      }
+      return body;
     },
-    async execute(plan, { inputs = {}, signal } = {}) {
-      const body = this.buildRequestBody(plan, { inputs });
+    async execute(plan, { inputs = {}, acknowledgement, signal } = {}) {
+      const body = this.buildRequestBody(plan, { inputs, acknowledgement });
       const missing = unsupportedStepTypes(plan, supportedStepTypes);
       if (missing.length > 0) {
         return executionResult({
@@ -194,7 +204,7 @@ export function createRelayExecutor({
           meta: { executor: id },
         });
       }
-      return executionResult({
+      const result = executionResult({
         state: payload.state,
         sampleId: plan.sampleId,
         summary: payload.summary ?? 'Relay result.',
@@ -202,6 +212,14 @@ export function createRelayExecutor({
         steps: payload.steps ?? [],
         assertions: payload.assertions ?? [],
         meta: { ...(payload.meta ?? {}), executor: id },
+      });
+      // `configurationUpdates` are public and offered to the user;
+      // `secretUpdates` go straight into the in-memory secret store — same
+      // contract as the local executor (`web/js/localClient.mjs`).
+      return Object.freeze({
+        ...result,
+        configurationUpdates: payload.configurationUpdates ?? {},
+        secretUpdates: payload.secretUpdates ?? {},
       });
     },
   });

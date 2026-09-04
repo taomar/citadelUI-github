@@ -34,18 +34,19 @@ intended operations.
 | 1 | Preserve fresh-checkout invariants | Complete | Notebook bytes remain exact on Windows and `.runs/` is ignored |
 | 2 | Independent offline QA | Complete | Catalogue, security, accessibility, responsive, and automated baselines pass without Azure |
 | 3 | Trace and threat-model the external relay | Complete | Protocol, trust boundaries, deployment shape, and required controls are documented |
-| 4 | Harden the relay protocol and proxy; implement an HTTP/assertion-only relay | In progress | Server-authoritative validation, authentication, target allowlists, acknowledgement binding, limits, cancellation, and redaction pass offline tests |
-| 5 | Add managed run state and hosted job orchestration | Pending | Run ownership, polling, cancellation, idempotency, concurrency, timeout, and partial-failure behavior are deterministic |
-| 6 | Add Container Apps, managed identity, Key Vault, and least-privilege deployment assets | Pending | Bicep and container checks prove the intended topology without provisioning Azure |
-| 7 | Run relay security, protocol, deployment-static, and local end-to-end tests | Pending | Required abuse cases fail closed and no process executor is reachable remotely |
-| 8 | Update operator documentation and handover | Pending | Local, hosted, security, deployment, and remaining-unproven behavior agree |
-| 9 | Firefox, Safari, and real screen-reader validation | Pending | Release evidence covers the outstanding browser and assistive-technology matrix |
-| 10 | Select and approve an isolated non-production environment | Blocked | Environment owner records approval, rollback, target IDs, permissions, and cost boundary |
-| 11 | Run live scenarios 1-16 and verify `a2aProperties` | Blocked by item 10 | Every baseline scenario has redacted evidence and the BCP089/API-version behavior is resolved |
-| 12 | Record redacted golden live fixtures | Blocked by item 11 | Fixtures contain evidence but no secret or credential material |
-| 13 | Run Policy bursts, then Lifecycle cleanup | Blocked by items 11-12 | Load and cleanup outcomes, cost, rollback, and residue are independently verified |
-| 14 | Deploy and integration-test the hosted relay | Blocked by items 5-7 and 10 | Identity, authorization, rotation, cancellation, timeout, retry, and partial failure pass live |
-| 15 | Push, review, and merge | Pending | All applicable release gates pass and unproven gates remain explicitly labelled |
+| 4 | Harden the relay protocol and proxy; implement an HTTP/assertion-only relay | Complete | Server-authoritative validation, authentication, target allowlists, acknowledgement binding, limits, cancellation, and redaction pass offline tests |
+| 5 | Add a zero-setup offline self-test | In progress | A user can run a clearly labelled local demonstration through the real UI/server path without Azure; its result cannot be mistaken for live evidence |
+| 6 | Add managed run state and hosted job orchestration | Pending | Run ownership, polling, cancellation, idempotency, concurrency, timeout, and partial-failure behavior are deterministic |
+| 7 | Add Container Apps, managed identity, Key Vault, and least-privilege deployment assets | Pending | Bicep and container checks prove the intended topology without provisioning Azure |
+| 8 | Run relay security, protocol, deployment-static, and local end-to-end tests | Pending | Required abuse cases fail closed and no process executor is reachable remotely |
+| 9 | Update operator documentation and handover | Pending | Local, hosted, security, deployment, and remaining-unproven behavior agree |
+| 10 | Firefox, Safari, and real screen-reader validation | Pending | Release evidence covers the outstanding browser and assistive-technology matrix |
+| 11 | Select and approve an isolated non-production environment | Blocked | Environment owner records approval, rollback, target IDs, permissions, and cost boundary |
+| 12 | Run live scenarios 1-16 and verify `a2aProperties` | Blocked by item 11 | Every baseline scenario has redacted evidence and the BCP089/API-version behavior is resolved |
+| 13 | Record redacted golden live fixtures | Blocked by item 12 | Fixtures contain evidence but no secret or credential material |
+| 14 | Run Policy bursts, then Lifecycle cleanup | Blocked by items 12-13 | Load and cleanup outcomes, cost, rollback, and residue are independently verified |
+| 15 | Deploy and integration-test the hosted relay | Blocked by items 6-8 and 11 | Identity, authorization, rotation, cancellation, timeout, retry, and partial failure pass live |
+| 16 | Push, review, and merge | Pending | All applicable release gates pass and unproven gates remain explicitly labelled |
 
 The imported source remains:
 

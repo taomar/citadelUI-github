@@ -79,7 +79,10 @@ async function probeCapability() {
       });
     } else if (payload.executor?.kind === 'relay' && payload.executor.canExecute) {
       executor = createRelayExecutor({
-        allowedSampleIds: CATALOGUE.samples.map((sample) => sample.id),
+        // The relay only ever runs a fixed, server-reported subset. Falling
+        // back to the full catalogue here would let the UI offer a "run"
+        // affordance for samples the relay will always refuse.
+        allowedSampleIds: payload.executor.allowedSampleIds ?? [],
         endpoint: '/api/execute',
         supportedStepTypes: payload.executor.supportedStepTypes ?? ['http'],
       });

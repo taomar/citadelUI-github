@@ -100,6 +100,64 @@ test('the relay refuses a sample id that is not in the catalogue', () => {
   assert.throws(() => relay.buildRequestBody({ sampleId: 'anything-else' }, {}), /refused unknown sample/);
 });
 
+test('the relay body carries an acknowledgement only when one is actually supplied', () => {
+  const relay = createRelayExecutor({ allowedSampleIds: ALL_IDS });
+  const plan = planFor('weather-mcp-discovery');
+  const withoutAck = relay.buildRequestBody(plan, { inputs: {} });
+  assert.deepEqual(Object.keys(withoutAck).sort(), ['inputs', 'protocolVersion', 'sampleId', 'secretRefs']);
+  const withAck = relay.buildRequestBody(plan, {
+    inputs: {},
+    acknowledgement: { accepted: true, sampleId: plan.sampleId },
+  });
+  assert.deepEqual(Object.keys(withAck).sort(), ['acknowledgement', 'inputs', 'protocolVersion', 'sampleId', 'secretRefs']);
+  assert.deepEqual(withAck.acknowledgement, { accepted: true, sampleId: plan.sampleId });
+});
+
+test('the relay forwards the acknowledgement supplied to execute()', async () => {
+  const calls = [];
+  const relay = createRelayExecutor({
+    allowedSampleIds: ALL_IDS,
+    fetchImpl: async (url, init) => {
+      calls.push(JSON.parse(init.body));
+      return { ok: true, status: 200, json: async () => ({ state: 'completed', summary: 'ran' }) };
+    },
+  });
+  await relay.execute(planFor('a2a-agent-card'), {
+    inputs: {},
+    acknowledgement: { accepted: true, sampleId: 'a2a-agent-card' },
+  });
+  assert.deepEqual(calls[0].acknowledgement, { accepted: true, sampleId: 'a2a-agent-card' });
+});
+
+test('a relay result propagates configurationUpdates and secretUpdates, same as the local client', async () => {
+  const relay = createRelayExecutor({
+    allowedSampleIds: ALL_IDS,
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        state: 'completed',
+        summary: 'ran',
+        configurationUpdates: { 'hub.gatewayUrl': 'https://gw.example.net' },
+        secretUpdates: { 'gatewayAccess.apiKey': 'rotated-value' },
+      }),
+    }),
+  });
+  const result = await relay.execute(planFor('a2a-agent-card'), { inputs: {} });
+  assert.deepEqual(result.configurationUpdates, { 'hub.gatewayUrl': 'https://gw.example.net' });
+  assert.deepEqual(result.secretUpdates, { 'gatewayAccess.apiKey': 'rotated-value' });
+});
+
+test('a relay result with no updates reports empty objects, never undefined', async () => {
+  const relay = createRelayExecutor({
+    allowedSampleIds: ALL_IDS,
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ state: 'completed', summary: 'ran' }) }),
+  });
+  const result = await relay.execute(planFor('a2a-agent-card'), { inputs: {} });
+  assert.deepEqual(result.configurationUpdates, {});
+  assert.deepEqual(result.secretUpdates, {});
+});
+
 test('the relay posts to its fixed same-origin endpoint and nowhere else', async () => {
   const calls = [];
   const relay = createRelayExecutor({

@@ -25,12 +25,23 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { extname, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { CATALOGUE } from './src/catalogue/index.mjs';
+import { buildSamplePlan, CATALOGUE, requirementsFor } from './src/catalogue/index.mjs';
 import { summariseCapability } from './src/core/capability.mjs';
 import { EXECUTION_PROTOCOL_VERSION } from './src/core/types.mjs';
 import { createRunManager } from './src/server/runManager.mjs';
 import { RequestRefused } from './src/server/runRequest.mjs';
 import { spawnProcess } from './src/server/transports.mjs';
+import {
+  createManagedIdentityCredentialProvider,
+  createStaticTokenCredentialProvider,
+} from './src/relay/relayCredential.mjs';
+import {
+  authenticatePrincipal,
+  createDenyAllAuthenticator,
+  createSharedSecretAuthenticator,
+} from './src/relay/principalAuth.mjs';
+import { computeRelayAllowedSampleIds, rebuildRelayPlan, validateExecuteRequest } from './src/relay/requestSchema.mjs';
+import { mintAcknowledgement, planRequestUrls } from './src/relay/acknowledgement.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const SERVED_ROOTS = ['web', 'src'].map((dir) => resolve(ROOT, dir));
@@ -47,12 +58,75 @@ export function isLoopbackHost(host) {
 }
 
 /**
- * Relay configuration. The URL and the token are read here and never sent to
- * the browser: the browser only ever posts to the same-origin `/api/execute`.
+ * Relay configuration. The URL and every credential are read here and never
+ * sent to the browser: the browser only ever posts to the same-origin
+ * `/api/execute`, and only the fixed shape `validateExecuteRequest` accepts.
+ *
+ * Three independent identity concepts are involved here, and they must not
+ * be confused with one another:
+ *   - `credentialProvider`  what THIS server presents TO the relay
+ *     (`relayCredential.mjs`). Managed identity by default; a static token is
+ *     opt-in only, for development or a relay not yet wired to a real
+ *     identity provider.
+ *   - `callerPrincipal`/`tenant`   the identity and tenant the RELAY'S OWN
+ *     authenticator/tenant-policy resolves FOR THAT SAME credential. This is
+ *     an operator-coordinated pairing, fixed for the lifetime of this
+ *     deployment: whoever configures the relay's tenant policy for this
+ *     proxy's credential must set these to the exact same values, or every
+ *     forwarded acknowledgement fails the relay's own caller/tenant binding
+ *     check. Never derived from a browser caller — a single proxy has one
+ *     outbound identity to the relay, no matter how many browser sessions
+ *     use it.
+ *   - `authenticator`       what a CALLER of THIS server's `/api/execute`
+ *     must present, when this server itself is bound to a non-loopback host
+ *     (`principalAuth.mjs`). Loopback callers remain implicitly trusted, same
+ *     as `/api/run` always has been. This is unrelated to the two identities
+ *     above — it is about who may ask THIS proxy to run something, not
+ *     about how this proxy identifies itself to the relay.
+ *
+ * `createPlaygroundServer({ relay })` can override this wholesale, so tests
+ * never need to touch `process.env` or reach a real network.
  */
-const RELAY_URL = process.env.CITADEL_PLAYGROUND_RELAY_URL ?? '';
-const RELAY_TOKEN = process.env.CITADEL_PLAYGROUND_RELAY_TOKEN ?? '';
-const RELAY_ENABLED = RELAY_URL !== '';
+export function buildRelayConfig(env = process.env) {
+  const url = env.CITADEL_PLAYGROUND_RELAY_URL ?? '';
+  if (url === '') return Object.freeze({ enabled: false });
+
+  const authMode = env.CITADEL_PLAYGROUND_RELAY_AUTH_MODE ?? 'managed-identity';
+  const credentialProvider =
+    authMode === 'static-token'
+      ? createStaticTokenCredentialProvider({ token: env.CITADEL_PLAYGROUND_RELAY_TOKEN ?? '' })
+      : createManagedIdentityCredentialProvider({
+          resource: env.CITADEL_PLAYGROUND_RELAY_RESOURCE ?? url,
+          clientId: env.CITADEL_PLAYGROUND_RELAY_CLIENT_ID || undefined,
+        });
+
+  const executeToken = env.CITADEL_PLAYGROUND_EXECUTE_TOKEN ?? '';
+  // Fail closed: a non-loopback bind with nothing configured refuses every
+  // `/api/execute` caller rather than accepting them all.
+  const authenticator = executeToken
+    ? createSharedSecretAuthenticator({ token: executeToken })
+    : createDenyAllAuthenticator();
+
+  // Fixed, operator-configured identity this proxy presents to the relay's
+  // OWN tenant-policy check — see the doc comment above. Never blank: a
+  // relay that now requires a non-empty caller/tenant on every binding would
+  // otherwise reject every forwarded request outright.
+  const callerPrincipal = env.CITADEL_PLAYGROUND_RELAY_CALLER_PRINCIPAL || 'citadel-playground-proxy';
+  const tenant = env.CITADEL_PLAYGROUND_RELAY_TENANT || 'default-tenant';
+
+  return Object.freeze({
+    enabled: true,
+    url,
+    fetchImpl: null,
+    credentialProvider,
+    authenticator,
+    allowedSampleIds: Object.freeze(computeRelayAllowedSampleIds(CATALOGUE, { buildSamplePlan, requirementsFor })),
+    callerPrincipal,
+    tenant,
+  });
+}
+
+const DEFAULT_RELAY_CONFIG = buildRelayConfig();
 
 const MIME = new Map(
   Object.entries({
@@ -193,7 +267,7 @@ function cliReason(result) {
 }
 
 /** What the browser is told about execution capability. No secrets, ever. */
-export function capabilitiesPayload({ mode = 'preview', probe = {} } = {}) {
+export function capabilitiesPayload({ mode = 'preview', probe = {}, relay = DEFAULT_RELAY_CONFIG } = {}) {
   const capability = summariseCapability(CATALOGUE.samples, { ...probe, mode });
   return {
     status: 'ok',
@@ -201,13 +275,17 @@ export function capabilitiesPayload({ mode = 'preview', probe = {} } = {}) {
     protocolVersion: EXECUTION_PROTOCOL_VERSION,
     mode,
     capability,
-    executor: RELAY_ENABLED
+    executor: relay.enabled
       ? {
           kind: 'relay',
           canExecute: true,
           endpoint: '/api/execute',
           supportedStepTypes: ['http', 'assertion'],
-          reason: 'An approved relay is configured on the local server. It executes a fixed set of catalogue samples.',
+          // The exact sample ids the relay will run — never a claim wider
+          // than reality. A caller has no way to widen this from the wire.
+          allowedSampleIds: [...relay.allowedSampleIds],
+          reason:
+            'An approved relay is configured on the local server. It executes a fixed, explicitly allow-listed set of read-only catalogue samples.',
         }
       : mode === 'execute'
         ? {
@@ -225,8 +303,8 @@ export function capabilitiesPayload({ mode = 'preview', probe = {} } = {}) {
             reason:
               'No execution runtime is attached. Plans are generated and previewed only; nothing is sent anywhere. Start with `npm run start:execute` to attach the local executor.',
           },
-    // Presence only. The URL and the token are never disclosed.
-    relayConfigured: RELAY_ENABLED,
+    // Presence only. The URL and every credential are never disclosed.
+    relayConfigured: relay.enabled,
   };
 }
 
@@ -278,47 +356,178 @@ export function checkStateChangingRequest(request, { port = PORT, host = HOST } 
   return { ok: true };
 }
 
-async function handleExecute(request, response, { port, host }) {
+async function handleExecute(request, response, { port, host, relay }) {
   const guard = checkStateChangingRequest(request, { port, host });
   if (!guard.ok) {
     sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
     return;
   }
-  if (!RELAY_ENABLED) {
+  if (!relay.enabled) {
     sendJson(response, 501, {
       state: 'blocked',
       summary: 'Not run — no relay is configured on this server.',
       detail:
-        'Set CITADEL_PLAYGROUND_RELAY_URL (and a token if the relay needs one) to attach an approved execution relay, or start the server with `npm run start:execute` to use the local executor instead.',
+        'Set CITADEL_PLAYGROUND_RELAY_URL to attach an approved execution relay, or start the server with `npm run start:execute` to use the local executor instead.',
     });
     return;
   }
+
+  // Loopback callers remain implicitly trusted, exactly like `/api/run`. A
+  // non-loopback bind must present a principal the configured authenticator
+  // accepts; nothing here fails open.
+  const auth = await authenticatePrincipal(request, {
+    isLoopbackHost,
+    host,
+    authenticator: relay.authenticator ?? createDenyAllAuthenticator(),
+  });
+  if (!auth.ok) {
+    sendJson(response, 401, {
+      state: 'blocked',
+      summary: 'Not run — the caller could not be authenticated.',
+      code: 'unauthenticated',
+    });
+    return;
+  }
+
   let payload;
   try {
     payload = JSON.parse(await readBody(request));
-  } catch {
+  } catch (error) {
+    const status = error instanceof RequestRefused ? error.status : 400;
+    sendJson(response, status, { state: 'blocked', summary: error?.message ?? 'Malformed request body.' });
+    return;
+  }
+
+  // Exact-schema validation against the server's OWN catalogue and the
+  // relay's own allow-list. The browser cannot smuggle a plan, a URL, a
+  // header set or an out-of-list sample through this endpoint — only the
+  // canonical, server-validated shape below is ever forwarded.
+  let sample;
+  let inputs;
+  let secretRefs;
+  let acknowledgement;
+  try {
+    ({ sample, inputs, secretRefs, acknowledgement } = validateExecuteRequest(payload, CATALOGUE, {
+      relayAllowedSampleIds: relay.allowedSampleIds,
+    }));
+  } catch (error) {
+    if (error instanceof RequestRefused) {
+      sendJson(response, error.status, { state: 'blocked', summary: error.message, code: error.code });
+      return;
+    }
     sendJson(response, 400, { state: 'failed', summary: 'Malformed request body.' });
     return;
   }
-  if (typeof payload?.sampleId !== 'string' || payload.sampleId === '') {
-    sendJson(response, 400, { state: 'failed', summary: 'A sampleId is required.' });
+
+  // The local proxy — never the browser — mints the acknowledgement the
+  // relay's own `verifyAcknowledgement` re-checks, on every forwarded
+  // request regardless of whether this particular sample required a
+  // user-facing risk prompt. It is bound to exactly the request about to be
+  // forwarded: the server-validated sample id, the server-validated inputs
+  // (never whatever the browser happened to send), the destination
+  // origin(s) THIS PROXY'S OWN REBUILT PLAN will actually contact, and that
+  // sample's current risk description — so a captured acknowledgement
+  // cannot be replayed against a different sample, a different destination,
+  // different inputs, or a stale risk disclosure. `caller`/`tenant` name the
+  // fixed, operator-configured identity the RELAY'S OWN
+  // authenticator/tenant-policy resolves for THIS proxy's credential (see
+  // `buildRelayConfig`'s doc comment) — never `auth.principal` above, which
+  // is a browser-facing identity for an entirely different hop and has no
+  // bearing on what the relay authorizes for this proxy. `acknowledgement`
+  // here is the browser's own consent flag for the local risk prompt
+  // (irrelevant to relay-eligible samples today, since only
+  // `risk.level === 'read-only'` samples are ever relay-allowed) and is not
+  // forwarded — the relay only trusts what this proxy just minted, never
+  // what the browser asserted.
+  //
+  // The destination is derived from a PLAN THIS PROXY REBUILDS ITSELF —
+  // never from `inputs['hub.gatewayUrl']` directly — because a sample whose
+  // `deployedEndpoint` is set contacts that authoritative endpoint instead
+  // (see `mcpEndpoint()` in `src/core/endpoints.mjs`); reading the raw
+  // gateway-URL input would bind the acknowledgement to an origin the plan
+  // will never actually contact. The relay rebuilds the identical plan from
+  // the identical catalogue and validated inputs and independently derives
+  // the same request-URL set — this proxy never tells it what to expect.
+  //
+  // The acknowledgement binds to the EXACT literal request URL(s), not
+  // merely their origin(s): the relay's own per-tenant request policy
+  // (`requestPolicy.mjs`) authorizes a sample/step by its exact URL and
+  // secret-bearing header name, precisely because an allowed ORIGIN alone
+  // cannot distinguish a legitimate route from a caller-controlled path or
+  // renamed header on that same origin. Binding the acknowledgement one
+  // level coarser than that policy would let it silently cover requests the
+  // policy itself would refuse.
+  void acknowledgement;
+  let plan;
+  try {
+    ({ plan } = rebuildRelayPlan({ sample, inputs }, CATALOGUE, { buildSamplePlan, requirementsFor }));
+  } catch (error) {
+    if (error instanceof RequestRefused) {
+      sendJson(response, error.status, { state: 'blocked', summary: error.message, code: error.code });
+      return;
+    }
+    sendJson(response, 502, { state: 'failed', summary: 'Not run — could not reconstruct this sample\u2019s execution plan.' });
     return;
   }
-  // Only the declared members are forwarded. A caller cannot smuggle a URL, a
-  // header set, or a raw request through this endpoint.
-  const forwarded = {
-    protocolVersion: payload.protocolVersion ?? 1,
-    sampleId: payload.sampleId,
-    inputs: payload.inputs ?? {},
-    secretRefs: Array.isArray(payload.secretRefs) ? payload.secretRefs : [],
-  };
+  // Sorted so a sample whose plan legitimately touches more than one request
+  // URL binds deterministically to its full set, regardless of step order —
+  // never to one arbitrarily chosen member of it.
+  const requestUrls = [...planRequestUrls(plan)].sort();
+  if (requestUrls.length === 0) {
+    sendJson(response, 502, {
+      state: 'failed',
+      summary: 'Not run — this sample has no resolvable gateway destination to bind the acknowledgement to.',
+    });
+    return;
+  }
+  const target = requestUrls.length === 1 ? requestUrls[0] : requestUrls;
+
+  let forwarded;
   try {
-    const upstream = await fetch(RELAY_URL, {
+    forwarded = {
+      protocolVersion: EXECUTION_PROTOCOL_VERSION,
+      sampleId: sample.id,
+      inputs,
+      secretRefs,
+      acknowledgement: mintAcknowledgement({
+        sampleId: sample.id,
+        inputs,
+        secretRefs,
+        target,
+        riskText: sample.risk?.effect ?? '',
+        caller: relay.callerPrincipal,
+        tenant: relay.tenant,
+      }),
+    };
+  } catch (error) {
+    sendJson(response, 502, {
+      state: 'failed',
+      summary: 'Not run — could not mint a bound acknowledgement for this request.',
+      detail: String(error?.message ?? error),
+    });
+    return;
+  }
+
+  let authorization;
+  try {
+    authorization = await relay.credentialProvider.getAuthorizationHeader();
+  } catch (error) {
+    sendJson(response, 502, {
+      state: 'failed',
+      summary: 'Could not obtain a credential for the relay.',
+      detail: String(error?.message ?? error),
+    });
+    return;
+  }
+
+  try {
+    const doFetch = relay.fetchImpl ?? fetch;
+    const upstream = await doFetch(relay.url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        ...(RELAY_TOKEN ? { Authorization: `Bearer ${RELAY_TOKEN}` } : {}),
+        Authorization: authorization,
       },
       body: JSON.stringify(forwarded),
     });
@@ -452,56 +661,84 @@ async function handleCancel(request, response, { manager, port, host }) {
  * @param {'preview'|'execute'} [options.mode]
  * @param {object} [options.runManager]   injected for tests
  * @param {object} [options.probe]        injected for tests
+ * @param {object} [options.relay]        injected relay config for tests (see buildRelayConfig)
  */
-export function createPlaygroundServer({ mode = 'preview', runManager = null, probe = {}, port = PORT, host = HOST } = {}) {
+export function createPlaygroundServer({
+  mode = 'preview',
+  runManager = null,
+  probe = {},
+  port = PORT,
+  host = HOST,
+  relay = DEFAULT_RELAY_CONFIG,
+} = {}) {
   const manager =
     mode === 'execute' ? (runManager ?? createRunManager({ playgroundRoot: ROOT, pythonExecutable: PYTHON })) : runManager;
   let runtimeProbe = probe;
 
   const server = createServer(async (request, response) => {
-    const path = (request.url ?? '/').split('?')[0];
+    try {
+      const path = (request.url ?? '/').split('?')[0];
 
-    if (path === '/api/health' || path === '/api/capabilities') {
-      if (request.method !== 'GET') {
-        sendJson(response, 405, { status: 'error', detail: 'Use GET.' });
+      if (path === '/api/health' || path === '/api/capabilities') {
+        if (request.method !== 'GET') {
+          sendJson(response, 405, { status: 'error', detail: 'Use GET.' });
+          return;
+        }
+        sendJson(response, 200, capabilitiesPayload({ mode, probe: runtimeProbe, relay }));
         return;
       }
-      sendJson(response, 200, capabilitiesPayload({ mode, probe: runtimeProbe }));
-      return;
-    }
 
-    if (path === '/api/run') {
-      if (request.method !== 'POST') {
-        sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
+      if (path === '/api/run') {
+        if (request.method !== 'POST') {
+          sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
+          return;
+        }
+        await handleRun(request, response, { mode, manager, port, host });
         return;
       }
-      await handleRun(request, response, { mode, manager, port, host });
-      return;
-    }
 
-    if (path === '/api/run/cancel') {
-      if (request.method !== 'POST') {
-        sendJson(response, 405, { cancelled: false, reason: 'Use POST.' });
+      if (path === '/api/run/cancel') {
+        if (request.method !== 'POST') {
+          sendJson(response, 405, { cancelled: false, reason: 'Use POST.' });
+          return;
+        }
+        await handleCancel(request, response, { manager, port, host });
         return;
       }
-      await handleCancel(request, response, { manager, port, host });
-      return;
-    }
 
-    if (path === '/api/execute') {
-      if (request.method !== 'POST') {
-        sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
+      if (path === '/api/execute') {
+        if (request.method !== 'POST') {
+          sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
+          return;
+        }
+        await handleExecute(request, response, { port, host, relay });
         return;
       }
-      await handleExecute(request, response, { port, host });
-      return;
-    }
 
-    if (request.method !== 'GET' && request.method !== 'HEAD') {
-      send(response, 405, securityHeaders('text/plain; charset=utf-8'), 'Method not allowed');
-      return;
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        send(response, 405, securityHeaders('text/plain; charset=utf-8'), 'Method not allowed');
+        return;
+      }
+      await handleStatic(request, response);
+    } catch (error) {
+      // A defensive last resort: nothing above is expected to throw (every
+      // handler already catches its own risky calls — credential
+      // acquisition, the relay fetch, the local executor), but an unforeseen
+      // failure anywhere in this chain must still answer the socket rather
+      // than leave the caller hanging or crash the process with an
+      // unhandled rejection. The client never sees `error.message` — it
+      // could carry a path, a stack frame or other internal detail.
+      void error;
+      try {
+        if (!response.headersSent) {
+          sendJson(response, 500, { state: 'failed', summary: 'Not run — an unexpected server error occurred.' });
+        } else {
+          response.end();
+        }
+      } catch {
+        response.destroy?.();
+      }
     }
-    await handleStatic(request, response);
   });
 
   server.setProbe = (next) => {
@@ -533,12 +770,15 @@ if (invokedDirectly) {
       process.stdout.write('Probing local runtimes…\n');
       const probe = await probeRuntimes({ mode, python: PYTHON });
       server.setProbe(probe);
-      const { capability } = capabilitiesPayload({ mode, probe });
+      const { capability } = capabilitiesPayload({ mode, probe, relay: DEFAULT_RELAY_CONFIG });
       process.stdout.write(`Local execution: ${capability.label} (${capability.ready}/${capability.total} samples ready)\n`);
       process.stdout.write('Risk gates still apply. Nothing runs without a fresh acknowledgement.\n');
     } else {
       process.stdout.write('Preview only — plans are generated and inspected, and nothing is executed.\n');
       process.stdout.write('Run `npm run start:execute` to attach the local executor.\n');
+    }
+    if (DEFAULT_RELAY_CONFIG.enabled) {
+      process.stdout.write(`Execution relay: ${DEFAULT_RELAY_CONFIG.url}\n`);
     }
   });
   for (const signal of ['SIGINT', 'SIGTERM']) {
@@ -549,4 +789,4 @@ if (invokedDirectly) {
   }
 }
 
-export { PORT, HOST, RELAY_ENABLED };
+export { PORT, HOST, DEFAULT_RELAY_CONFIG };

@@ -174,16 +174,30 @@ function checkedValue(entry, value) {
  * anything the browser did not send, so a client that omits an optional value
  * gets the documented behaviour rather than an empty string.
  */
-export function rebuildPlan({ sample, inputs, secrets }, catalogue, { buildSamplePlan, requirementsFor }) {
+export function rebuildPlan(
+  { sample, inputs, secrets },
+  catalogue,
+  {
+    buildSamplePlan,
+    requirementsFor,
+    // Overridable so a caller that resolves secrets out-of-band (the relay:
+    // it never sees a live value, only a declaration that one will be
+    // supplied server-side) can satisfy the manifest gate without a real
+    // secret ever passing through this function. Every catalogue sample
+    // builder embeds a `secretRef(...)` literal rather than reading a
+    // secret's live value into the plan, so overriding this cannot cause a
+    // secret value to leak into the rebuilt plan — see
+    // `src/catalogue/samples/*.mjs`.
+    hasSecret = (path) => typeof secrets[path] === 'string' && secrets[path].length > 0,
+  },
+) {
   const read = (path) => {
     if (Object.prototype.hasOwnProperty.call(secrets, path)) return secrets[path];
     if (Object.prototype.hasOwnProperty.call(inputs, path)) return inputs[path];
     return catalogue.defaultValues[path];
   };
 
-  const manifest = requirementsFor(sample, read, {
-    hasSecret: (path) => typeof secrets[path] === 'string' && secrets[path].length > 0,
-  });
+  const manifest = requirementsFor(sample, read, { hasSecret });
   if (!manifest.satisfied) {
     throw new RequestRefused(
       `The configuration is incomplete: ${manifest.blocking.map((entry) => entry.label).join(', ')}.`,
