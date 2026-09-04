@@ -132,6 +132,7 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
             ...(payload.meta ?? {}),
             executor: 'local',
             runId: payload.runId ?? activeRunId,
+            workspace: payload.workspace ?? payload.meta?.workspace ?? '',
           },
         });
         // `configurationUpdates` are public and offered to the user.
@@ -157,17 +158,44 @@ function responseHeader(response, name) {
 
 async function readNdjsonResponse(response, onProgress) {
   let finalResult = null;
-  const consume = (line) => {
+  let runId = null;
+  let workspace = '';
+  const consume = (line, { partial = false } = {}) => {
     const trimmed = line.trim();
     if (!trimmed) return;
-    const event = JSON.parse(trimmed);
-    if (event?.type === 'result') finalResult = event.result ?? null;
-    else onProgress?.(event);
+    let event;
+    try {
+      event = JSON.parse(trimmed);
+    } catch {
+      onProgress?.({ type: 'stream-warning', code: partial ? 'partial-ndjson' : 'malformed-ndjson' });
+      return;
+    }
+    if (!event || typeof event !== 'object' || Array.isArray(event)) {
+      onProgress?.({ type: 'stream-warning', code: 'malformed-ndjson' });
+      return;
+    }
+    if (event.type === 'result') {
+      finalResult = event.result ?? null;
+      return;
+    }
+    if (event.type === 'run-start') {
+      runId = typeof event.runId === 'string' ? event.runId : runId;
+      workspace = typeof event.workspace === 'string' ? event.workspace : workspace;
+    }
+    onProgress?.(event);
+  };
+  const completedResult = () => {
+    if (!finalResult || typeof finalResult !== 'object' || Array.isArray(finalResult)) return finalResult;
+    return {
+      ...finalResult,
+      runId: finalResult.runId ?? runId,
+      workspace: finalResult.workspace ?? workspace,
+    };
   };
 
   if (!response.body?.getReader) {
     for (const line of String(await response.text()).split('\n')) consume(line);
-    return finalResult;
+    return completedResult();
   }
 
   const reader = response.body.getReader();
@@ -181,6 +209,6 @@ async function readNdjsonResponse(response, onProgress) {
     for (const line of lines) consume(line);
     if (done) break;
   }
-  consume(buffered);
-  return finalResult;
+  consume(buffered, { partial: true });
+  return completedResult();
 }
