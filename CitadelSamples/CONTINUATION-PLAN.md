@@ -16,11 +16,36 @@ specific Windows username, drive, or local checkout path.
 | Item | Value |
 | --- | --- |
 | Branch | `citadel-samples-playground` |
-| Pushed commit | `2a88d4bc646e296b2195f9fb00155c5f5b00f0e8` |
+| Pushed commit | `1fd4326341329db0e2a6b6c39252bcf164ef4b5b` |
 | Repository | `taomar/citadelUI-github` |
 | Main handover | `CitadelSamples/AGENT_PROGRESS.md` |
 | Automated baseline | 279/279 tests and 81/81 browser checks |
 | Live Azure validation | Not performed |
+
+### Authoritative execution queue
+
+This queue governs continuation work. Hosted development and offline verification
+do not require Azure authentication. Every live item remains blocked until an
+isolated non-production environment is selected and its owner approves the
+intended operations.
+
+| Order | Work item | Status | Exit condition |
+| ---: | --- | --- | --- |
+| 1 | Preserve fresh-checkout invariants | Complete | Notebook bytes remain exact on Windows and `.runs/` is ignored |
+| 2 | Independent offline QA | Complete | Catalogue, security, accessibility, responsive, and automated baselines pass without Azure |
+| 3 | Trace and threat-model the external relay | Complete | Protocol, trust boundaries, deployment shape, and required controls are documented |
+| 4 | Harden the relay protocol and proxy; implement an HTTP/assertion-only relay | In progress | Server-authoritative validation, authentication, target allowlists, acknowledgement binding, limits, cancellation, and redaction pass offline tests |
+| 5 | Add managed run state and hosted job orchestration | Pending | Run ownership, polling, cancellation, idempotency, concurrency, timeout, and partial-failure behavior are deterministic |
+| 6 | Add Container Apps, managed identity, Key Vault, and least-privilege deployment assets | Pending | Bicep and container checks prove the intended topology without provisioning Azure |
+| 7 | Run relay security, protocol, deployment-static, and local end-to-end tests | Pending | Required abuse cases fail closed and no process executor is reachable remotely |
+| 8 | Update operator documentation and handover | Pending | Local, hosted, security, deployment, and remaining-unproven behavior agree |
+| 9 | Firefox, Safari, and real screen-reader validation | Pending | Release evidence covers the outstanding browser and assistive-technology matrix |
+| 10 | Select and approve an isolated non-production environment | Blocked | Environment owner records approval, rollback, target IDs, permissions, and cost boundary |
+| 11 | Run live scenarios 1-16 and verify `a2aProperties` | Blocked by item 10 | Every baseline scenario has redacted evidence and the BCP089/API-version behavior is resolved |
+| 12 | Record redacted golden live fixtures | Blocked by item 11 | Fixtures contain evidence but no secret or credential material |
+| 13 | Run Policy bursts, then Lifecycle cleanup | Blocked by items 11-12 | Load and cleanup outcomes, cost, rollback, and residue are independently verified |
+| 14 | Deploy and integration-test the hosted relay | Blocked by items 5-7 and 10 | Identity, authorization, rotation, cancellation, timeout, retry, and partial failure pass live |
+| 15 | Push, review, and merge | Pending | All applicable release gates pass and unproven gates remain explicitly labelled |
 
 The imported source remains:
 
@@ -767,6 +792,30 @@ Record only redacted evidence:
 Store no gateway key, Foundry token, or PAT in the evidence.
 
 ## Phase 4: Container Apps architecture
+
+### Security gates discovered during continuation
+
+The original relay seam is not itself a safe hosted execution boundary. Before
+deployment, the implementation must satisfy these additional gates:
+
+1. Same-origin and fetch-metadata checks remain CSRF controls, not caller
+   authentication. Authenticate the browser-facing API with Entra/OIDC and the
+   service-to-service hop with managed identity. Validate issuer, audience,
+   tenant, expiry, client, and operation role.
+2. Never attach a gateway key or access token to a caller-selected URL. Resolve
+   approved subscriptions, resources, gateway origins, Foundry audiences, vaults,
+   and secret names from server-side tenant configuration. Reject redirects and
+   unapproved primary or discovered secondary destinations.
+3. Replace the relay v1 risk gate with a short-lived, one-use acknowledgement
+   bound to caller, tenant, target, sample, canonical input digest, risk text,
+   and expiry. Pair state-changing work with idempotency and owned run state.
+4. Do not accept caller-selected Azure scopes, role-assignment principals, plans,
+   commands, headers, scripts, paths, executables, or arbitrary secret references.
+   Rebuild every plan from the pinned server catalogue and default-deny remote
+   operation types.
+5. Context-encode every generated XML, Bicep, ARM path, JSON, query, and header
+   value. Validate final generated policies structurally so an identifier cannot
+   introduce an APIM policy element.
 
 ### Recommended topology
 
