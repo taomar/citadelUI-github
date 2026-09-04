@@ -17,12 +17,13 @@
  * them is the failure mode this module exists to prevent.
  */
 
-import { ALLOWED_EXECUTABLES, executableIdentity, isAllowedExecutable } from '../core/types.mjs';
+import { executableIdentity, isAllowedExecutable } from '../core/types.mjs';
+import { isAbsolute, relative, resolve } from 'node:path';
 import { isSecretRef } from '../core/secrets.mjs';
 import { parseHttpResponse, readHeader } from '../core/parsing.mjs';
 import { evaluateAssertion } from './assertions.mjs';
 import { clip, createRedactor } from './redaction.mjs';
-import { PARSERS, resolveAzOperation, resolvePythonWrapper } from './registry.mjs';
+import { PARSERS, resolveAzOperation, resolvePythonWrapper, validateResolvedAzArguments } from './registry.mjs';
 
 export const DEFAULT_LIMITS = Object.freeze({
   stepTimeoutMs: 180_000,
@@ -32,6 +33,16 @@ export const DEFAULT_LIMITS = Object.freeze({
   maxBurstRequests: 200,
   maxConcurrency: 16,
   maxArtifactBytes: 512 * 1024,
+});
+
+const HARD_LIMITS = Object.freeze({
+  stepTimeoutMs: 5 * 60 * 1000,
+  runTimeoutMs: 15 * 60 * 1000,
+  maxOutputBytes: 1024 * 1024,
+  maxResponseBytes: 4 * 1024 * 1024,
+  maxBurstRequests: 500,
+  maxConcurrency: 32,
+  maxArtifactBytes: 1024 * 1024,
 });
 
 /** Only https, and only a host — never a file, data or loopback-bypass URL. */
@@ -94,7 +105,18 @@ function resolveValue(value, outputs, secrets) {
  * @param {string} [options.pythonExecutable]
  */
 export function createLocalExecutor({ transports, workspace, limits = {}, pythonExecutable = 'python', pythonRoot }) {
-  const bounds = { ...DEFAULT_LIMITS, ...limits };
+  const bounds = validateLimits(limits);
+  if (!workspace || typeof workspace.root !== 'string' || !isAbsolute(workspace.root)) {
+    throw new Error('The local executor requires an absolute run-workspace root.');
+  }
+  if (typeof pythonExecutable !== 'string' || !isAllowedExecutable(pythonExecutable)) {
+    throw new Error(`Refused Python executable "${pythonExecutable}".`);
+  }
+  if (typeof pythonRoot !== 'string' || !isAbsolute(pythonRoot)) {
+    throw new Error('The local executor requires an absolute shipped-wrapper root.');
+  }
+  const approvedExecutables = Object.freeze([...new Set(['az', pythonExecutable])]);
+  const approvedPythonRoot = resolve(pythonRoot);
 
   /**
    * @param {object} plan       rebuilt server-side
@@ -111,7 +133,7 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
 
     const report = (record) => {
       stepResults.push(record);
-      onProgress?.({ type: 'step', step: publicStep(record) });
+      onProgress?.({ type: 'step', step: progressStep(record, redactor) });
       return record;
     };
 
@@ -132,8 +154,9 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
         });
         break;
       }
-      onProgress?.({ type: 'step-start', step: { id: step.id, title: step.title, kind: step.type } });
+      onProgress?.({ type: 'step-start', step: progressIdentity(step, redactor) });
       const began = Date.now();
+      const deadlineAt = Math.min(startedAt + bounds.runTimeoutMs, began + bounds.stepTimeoutMs);
       let record;
       try {
         record = await runStep(step, {
@@ -147,6 +170,7 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
           stepResults,
           redactor,
           signal,
+          deadlineAt,
         });
       } catch (error) {
         record = {
@@ -241,17 +265,18 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
     };
   }
 
-  async function runAzureCli(step, { sampleId, inputs, outputs, secrets, redactor, signal }) {
+  async function runAzureCli(step, { sampleId, inputs, outputs, secrets, redactor, signal, deadlineAt }) {
     const entry = resolveAzOperation(sampleId, step);
     const command = step.command ?? {};
     if (!isAllowedExecutable(command.executable) || executableIdentity(command.executable) !== 'az') {
       throw new Error(`Refused to spawn "${command.executable}" for an azure-cli step.`);
     }
     const args = (command.args ?? []).map((arg) => String(resolveValue(arg, outputs, secrets)));
+    validateResolvedAzArguments(sampleId, step.id, args);
     // A path argument is executed against the run workspace, not against
     // whatever the plan text says.
-    const mapped = await mapPathArguments(args);
-    const result = await runProcess(command.executable, mapped, { signal, cwd: workspace.root });
+    const mapped = await mapPathArguments(args, entry);
+    const result = await runProcess(command.executable, mapped, { signal, deadlineAt });
     const stdout = clip(result.stdout, bounds.maxOutputBytes);
     const stderr = clip(result.stderr, bounds.maxOutputBytes);
     if (result.code !== 0) {
@@ -304,7 +329,7 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
     };
   }
 
-  async function runHttp(step, { outputs, secrets, redactor, signal }) {
+  async function runHttp(step, { outputs, secrets, redactor, signal, deadlineAt }) {
     const request = step.request ?? {};
     const url = assertExecutableUrl(resolveValue(request.url, outputs, secrets));
     const headers = resolveValue(request.headers ?? {}, outputs, secrets);
@@ -314,10 +339,10 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
         : typeof request.body === 'string'
           ? resolveValue(request.body, outputs, secrets)
           : JSON.stringify(resolveValue(request.body, outputs, secrets));
-    const timeoutMs = Math.min((request.timeoutSeconds ?? 60) * 1000, bounds.stepTimeoutMs);
+    const timeoutMs = remainingTimeout(deadlineAt, (request.timeoutSeconds ?? 60) * 1000);
 
     if (request.repeat) {
-      return runBurst(step, { url, headers, body, request, outputs, redactor, signal });
+      return runBurst(step, { url, headers, body, request, outputs, redactor, signal, deadlineAt });
     }
 
     const response = await fetchOnce({ url, method: request.method ?? 'GET', headers, body, timeoutMs, signal });
@@ -361,19 +386,31 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
     };
   }
 
-  async function runBurst(step, { url, headers, body, request, outputs, redactor, signal }) {
+  async function runBurst(step, { url, headers, body, request, outputs, redactor, signal, deadlineAt }) {
     const count = Math.min(Number(request.repeat.count) || 1, bounds.maxBurstRequests);
     const concurrency = Math.max(1, Math.min(Number(request.repeat.concurrency) || 1, bounds.maxConcurrency));
-    const timeoutMs = Math.min((request.repeat.timeoutSeconds ?? 30) * 1000, bounds.stepTimeoutMs);
+    const requestTimeoutMs = Math.min((request.repeat.timeoutSeconds ?? 30) * 1000, bounds.stepTimeoutMs);
     const statusCodes = new Array(count).fill(0);
     const errors = [];
     let next = 0;
+    let deadlineExceeded = false;
 
     async function worker() {
       while (next < count) {
         if (signal?.aborted) return;
+        if (Date.now() >= deadlineAt) {
+          deadlineExceeded = true;
+          return;
+        }
         const index = next++;
-        const response = await fetchOnce({ url, method: request.method ?? 'POST', headers, body, timeoutMs, signal });
+        const response = await fetchOnce({
+          url,
+          method: request.method ?? 'POST',
+          headers,
+          body,
+          timeoutMs: remainingTimeout(deadlineAt, requestTimeoutMs),
+          signal,
+        });
         if (response.error) {
           statusCodes[index] = 0;
           if (errors.length < 20) errors.push(redactor.text(response.error));
@@ -393,8 +430,10 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
       id: step.id,
       kind: 'http',
       title: step.title,
-      state: signal?.aborted ? 'cancelled' : 'completed',
-      detail: `${count} request(s) at concurrency ${concurrency}.`,
+      state: signal?.aborted ? 'cancelled' : deadlineExceeded ? 'failed' : 'completed',
+      detail: deadlineExceeded
+        ? `The burst exceeded its ${Math.round(bounds.stepTimeoutMs / 1000)}s step budget.`
+        : `${count} request(s) at concurrency ${concurrency}.`,
       evidence: {
         url: url.toString(),
         requested: count,
@@ -407,7 +446,7 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
     };
   }
 
-  async function runLibrary(step, { sampleId, plan, inputs, outputs, secrets, contract, redactor, signal }) {
+  async function runLibrary(step, { sampleId, plan, inputs, outputs, secrets, contract, redactor, signal, deadlineAt }) {
     const wrapper = resolvePythonWrapper(sampleId, step);
     if (wrapper.skipWhen?.({ outputs })) {
       return {
@@ -419,7 +458,7 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
         evidence: {},
       };
     }
-    const preflight = await preflightPython(wrapper.modules ?? [], { signal });
+    const preflight = await preflightPython(wrapper.modules ?? [], { signal, deadlineAt });
     if (!preflight.ok) {
       return {
         id: step.id,
@@ -448,10 +487,14 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
       if (typeof value !== 'string' || value === '') throw new Error(`Missing secret value for ${ref}.`);
       env[name] = value;
     }
-    const script = `${pythonRoot}/${wrapper.script}`;
+    const script = resolve(approvedPythonRoot, wrapper.script);
+    const scriptRelative = relative(approvedPythonRoot, script);
+    if (scriptRelative.startsWith('..') || isAbsolute(scriptRelative)) {
+      throw new Error(`Refused Python wrapper path "${wrapper.script}".`);
+    }
     const result = await runProcess(pythonExecutable, [script], {
       signal,
-      cwd: workspace.root,
+      deadlineAt,
       stdin: JSON.stringify(params),
       env,
     });
@@ -509,10 +552,10 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
   /* --------------------------------------------------------------- plumbing */
 
   /** A path argument is rewritten to its run-workspace location. */
-  async function mapPathArguments(args) {
+  async function mapPathArguments(args, entry) {
     const out = [];
-    for (const arg of args) {
-      if (looksLikeWorkspacePath(arg)) {
+    for (const [index, arg] of args.entries()) {
+      if (entry.shape?.[index]?.workspacePath === true) {
         const target = workspace.resolve(arg);
         if (target.staged) await workspace.stageAccelerator();
         out.push(target.absolute);
@@ -523,26 +566,27 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
     return out;
   }
 
-  async function runProcess(executable, args, { signal, cwd, stdin, env = {} }) {
-    if (!isAllowedExecutable(executable)) {
+  async function runProcess(executable, args, { signal, deadlineAt, stdin, env = {} }) {
+    if (!approvedExecutables.includes(executable)) {
       throw new Error(`Refused to spawn "${executable}": it is not on the executable allow-list.`);
     }
     return transports.spawn({
       executable,
       args,
-      cwd,
+      cwd: workspace.root,
       stdin,
       env,
       signal,
-      timeoutMs: bounds.stepTimeoutMs,
+      timeoutMs: remainingTimeout(deadlineAt),
       maxOutputBytes: bounds.maxOutputBytes,
+      allowedExecutables: approvedExecutables,
     });
   }
 
-  async function preflightPython(modules, { signal }) {
+  async function preflightPython(modules, { signal, deadlineAt }) {
     if (modules.length === 0) return { ok: true };
     const probe = modules.map((name) => `import ${name}`).join('; ');
-    const result = await runProcess(pythonExecutable, ['-c', probe], { signal, cwd: workspace.root });
+    const result = await runProcess(pythonExecutable, ['-c', probe], { signal, deadlineAt });
     if (result.code === 0) return { ok: true };
     const missing = modules.filter((name) => result.stderr.includes(name.split('.')[0]));
     const install = 'python -m pip install -r runtime/requirements.txt';
@@ -591,10 +635,28 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
   return { execute, limits: bounds };
 }
 
-function looksLikeWorkspacePath(arg) {
-  const value = String(arg);
-  if (value.startsWith('-')) return false;
-  return /^runtime\/accelerator\//.test(value) || /\.(bicep|bicepparam|xml|json)$/i.test(value);
+function validateLimits(overrides) {
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) {
+    throw new Error('Executor limits must be an object.');
+  }
+  const unknown = Object.keys(overrides).filter((name) => !Object.hasOwn(DEFAULT_LIMITS, name));
+  if (unknown.length > 0) throw new Error(`Unknown executor limit "${unknown[0]}".`);
+
+  const limits = {};
+  for (const [name, defaultValue] of Object.entries(DEFAULT_LIMITS)) {
+    const value = overrides[name] ?? defaultValue;
+    if (!Number.isInteger(value) || value < 1 || value > HARD_LIMITS[name]) {
+      throw new Error(`Executor limit "${name}" must be an integer between 1 and ${HARD_LIMITS[name]}.`);
+    }
+    limits[name] = value;
+  }
+  return Object.freeze(limits);
+}
+
+function remainingTimeout(deadlineAt, requested = Number.POSITIVE_INFINITY) {
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) throw new Error('The step exhausted its execution-time budget.');
+  return Math.max(1, Math.min(remaining, requested));
 }
 
 async function readBounded(response, limitBytes) {
@@ -636,6 +698,34 @@ function captureFrom(source, { response, parsed, jsonRpcBody }) {
   const header = spec.match(/^response\.headers\['(.+)'\]$/);
   if (header) return readHeader(response.headers, header[1]) ?? '';
   return undefined;
+}
+
+function progressIdentity(step, redactor) {
+  return {
+    id: clip(String(step.id ?? ''), 128).text,
+    title: clip(redactor.text(step.title ?? ''), 512).text,
+    kind: clip(String(step.type ?? ''), 64).text,
+  };
+}
+
+function progressStep(record, redactor) {
+  const step = {
+    ...progressIdentity({ id: record.id, title: record.title, type: record.kind }, redactor),
+    state: record.state,
+    durationMs: record.durationMs ?? 0,
+    detail: clip(redactor.text(record.detail ?? ''), 2000).text,
+    evidence: {},
+  };
+  if (record.artifactPath) step.artifactPath = clip(String(record.artifactPath), 1000).text;
+  if (record.assertion) {
+    step.assertion = {
+      id: clip(String(record.assertion.id ?? ''), 128).text,
+      status: record.assertion.status,
+      detail: clip(redactor.text(record.assertion.detail ?? ''), 2000).text,
+      evidence: {},
+    };
+  }
+  return step;
 }
 
 /** The public shape of a step result. Never carries a credential. */

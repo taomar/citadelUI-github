@@ -236,7 +236,7 @@ async function main() {
     check('page title is set', first.title === 'Citadel Publish Playground', first.title);
     check('all 19 recipes render in the directory', first.directoryButtons === 19, String(first.directoryButtons));
     check('all 7 groups render', first.groups === 7, String(first.groups));
-    check('four tabs are present', first.tabs.length === 4, first.tabs.join(','));
+    check('five tabs are present', first.tabs.length === 5, first.tabs.join(','));
     check('the Guide tab is selected first', first.selectedTab === 'tab-guide', first.selectedTab);
     check('exactly one panel is visible', first.visiblePanels === 1, String(first.visiblePanels));
     check('capability reports preview only', /preview only/i.test(first.capability), first.capability);
@@ -342,8 +342,8 @@ async function main() {
     check('every configure field could be set by its label', filled.outcomes.every((o) => o === 'ok'), filled.outcomes.join(','));
     check('a complete configuration clears every inline error', filled.errors === 0, String(filled.errors));
     check(
-      'the configure view leads with the configuration contract',
-      filled.groups[0] === 'Configuration contract',
+      'the configure view leads with editable zones',
+      filled.groups[0] === 'Editable zones',
       filled.groups.join(' | '),
     );
     check('mandatory and optional groups are visible and named', filled.groups.includes('Mandatory') && filled.groups.includes('Optional (defaults)'), filled.groups.join(' | '));
@@ -374,7 +374,11 @@ async function main() {
       exports.labels[1] === 'Download citadel-cleanup.config.json' && exports.labels[3] === 'Download citadel-cleanup.env.example',
       exports.labels.join(' | '),
     );
-    check('the contract line summarises what the sample needs', /mandatory/i.test(exports.contract), exports.contract);
+    check(
+      'the contract line states that only declared controls are editable',
+      /only editable part/i.test(exports.contract),
+      exports.contract,
+    );
 
     const copied = await evaluate(page, 'window.__copied ?? []');
     check('copying produces a JSON document and an env example', (copied ?? []).length === 2, String((copied ?? []).length));
@@ -495,7 +499,14 @@ async function main() {
             steps: [{ id: 'mcp-initialize', kind: 'http', title: 'MCP initialize', state: 'cancelled', durationMs: 12, detail: 'Cancelled.', evidence: {} }],
             assertions: [], meta: { executor: 'local', runId: 'smoke-0001' }, configurationUpdates: {}, secretUpdates: {},
           }); return { cancelled: true }; },
-          execute: async () => pending,
+          execute: async (_plan, context = {}) => {
+            context.onProgress?.({ type: 'run-start', runId: 'smoke-0001', sampleId: 'weather-mcp-discovery', workspace: '.' });
+            context.onProgress?.({
+              type: 'step-start',
+              step: { id: 'mcp-initialize', kind: 'http', title: 'MCP initialize' },
+            });
+            return pending;
+          },
         });
         document.getElementById('tab-request').click();
         const runButton = document.getElementById('run-button');
@@ -508,6 +519,7 @@ async function main() {
           runDisabled: document.getElementById('run-button').disabled,
           cancelDisabled: document.getElementById('cancel-button').disabled,
           busy: document.getElementById('run-button').getAttribute('aria-busy'),
+          streamingStep: document.querySelector('#panel-response .step[data-state="running"]')?.textContent ?? '',
         };
         document.getElementById('cancel-button').click();
         await new Promise((r) => setTimeout(r, 120));
@@ -529,6 +541,7 @@ async function main() {
     check('cancel is disabled until a run is in flight', run.before.cancelDisabled === true);
     check('the run reports itself as busy while it is in flight', run.during.busy === 'true' && run.during.runDisabled === true);
     check('cancel becomes available during a run', run.during.cancelDisabled === false);
+    check('the output view streams the active step before completion', /MCP initialize/.test(run.during.streamingStep), run.during.streamingStep);
     check('cancelling reaches the executor', run.cancelled === true);
     check('a cancelled run is reported as cancelled, never completed', run.state === 'cancelled', String(run.state));
     check('per-step state is shown for the steps that ran', run.stepStates.includes('cancelled'), run.stepStates.join(','));
@@ -637,7 +650,7 @@ async function main() {
     check('the context rail is replaced at 320px', narrow.contextHidden === true);
     check('a native recipe selector appears', narrow.selectVisible === true);
     check('a context disclosure appears', narrow.contextDisclosure === true);
-    check('tabs remain horizontal and present', narrow.tabsVisible === 4, String(narrow.tabsVisible));
+    check('tabs remain horizontal and present', narrow.tabsVisible === 5, String(narrow.tabsVisible));
 
     /* ------------------------------------------------ offline self-test (320px) */
     // The disclosure's body used to be positioned absolutely off the toggle,
@@ -705,7 +718,7 @@ async function main() {
         const problems = [];
         for (const id of ids) {
           document.querySelector('[data-sample="' + id + '"]').click();
-          for (const tab of ['guide','configure','request','response']) {
+          for (const tab of ['guide','code','configure','request','response']) {
             document.getElementById('tab-' + tab).click();
             const panel = document.getElementById('panel-' + tab);
             if (panel.hidden) problems.push(id + '/' + tab + ': hidden');
@@ -715,7 +728,7 @@ async function main() {
         return { count: ids.length, problems };
       })()`,
     );
-    check('every recipe renders all four tabs with content', sweep.problems.length === 0, sweep.problems.join('; '));
+    check('every recipe renders all five tabs with content', sweep.problems.length === 0, sweep.problems.join('; '));
     check('the sweep visited all 19 recipes', sweep.count === 19, String(sweep.count));
 
     /* ------------------------------------------------- offline self-test */

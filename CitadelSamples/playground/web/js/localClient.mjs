@@ -67,7 +67,7 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
       }
     },
 
-    async execute(plan, { sampleId, inputs = {}, secrets = {}, acknowledgement = null } = {}) {
+    async execute(plan, { sampleId, inputs = {}, secrets = {}, acknowledgement = null, onProgress } = {}) {
       const fetchImplementation = doFetch();
       if (!fetchImplementation) {
         return executionResult({
@@ -82,7 +82,7 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
       try {
         response = await fetchImplementation('/api/run', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson, application/json' },
           body: JSON.stringify(body),
         });
       } catch (error) {
@@ -98,7 +98,9 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
         activeRunId = responseHeader(response, 'X-Citadel-Run-Id');
         let payload = null;
         try {
-          payload = await response.json();
+          payload = responseHeader(response, 'Content-Type')?.includes('application/x-ndjson')
+            ? await readNdjsonResponse(response, onProgress)
+            : await response.json();
         } catch {
           payload = null;
         }
@@ -130,6 +132,7 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
             ...(payload.meta ?? {}),
             executor: 'local',
             runId: payload.runId ?? activeRunId,
+            workspace: payload.workspace ?? payload.meta?.workspace ?? '',
           },
         });
         // `configurationUpdates` are public and offered to the user.
@@ -151,4 +154,61 @@ function responseHeader(response, name) {
   if (typeof response?.headers?.get === 'function') return response.headers.get(name);
   const match = Object.entries(response?.headers ?? {}).find(([key]) => key.toLowerCase() === name.toLowerCase());
   return match ? String(match[1]) : null;
+}
+
+async function readNdjsonResponse(response, onProgress) {
+  let finalResult = null;
+  let runId = null;
+  let workspace = '';
+  const consume = (line, { partial = false } = {}) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let event;
+    try {
+      event = JSON.parse(trimmed);
+    } catch {
+      onProgress?.({ type: 'stream-warning', code: partial ? 'partial-ndjson' : 'malformed-ndjson' });
+      return;
+    }
+    if (!event || typeof event !== 'object' || Array.isArray(event)) {
+      onProgress?.({ type: 'stream-warning', code: 'malformed-ndjson' });
+      return;
+    }
+    if (event.type === 'result') {
+      finalResult = event.result ?? null;
+      return;
+    }
+    if (event.type === 'run-start') {
+      runId = typeof event.runId === 'string' ? event.runId : runId;
+      workspace = typeof event.workspace === 'string' ? event.workspace : workspace;
+    }
+    onProgress?.(event);
+  };
+  const completedResult = () => {
+    if (!finalResult || typeof finalResult !== 'object' || Array.isArray(finalResult)) return finalResult;
+    return {
+      ...finalResult,
+      runId: finalResult.runId ?? runId,
+      workspace: finalResult.workspace ?? workspace,
+    };
+  };
+
+  if (!response.body?.getReader) {
+    for (const line of String(await response.text()).split('\n')) consume(line);
+    return completedResult();
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    buffered += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    const lines = buffered.split('\n');
+    buffered = lines.pop() ?? '';
+    for (const line of lines) consume(line);
+    if (done) break;
+  }
+  consume(buffered, { partial: true });
+  return completedResult();
 }

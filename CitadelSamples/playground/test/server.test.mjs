@@ -109,6 +109,42 @@ test('operator mode reaches the run manager, and the manager decides', async () 
   });
 });
 
+test('operator mode streams run lifecycle events as bounded NDJSON', async () => {
+  const manager = {
+    start: async (_payload, { onStart, onProgress }) => {
+      onStart({ runId: 'stream-0001', sampleId: 'azure-context-check', workspace: '.' });
+      onProgress({ type: 'step-start', step: { id: 'account-show', title: 'Read account', kind: 'azure-cli' } });
+      onProgress({
+        type: 'step',
+        step: { id: 'account-show', title: 'Read account', kind: 'azure-cli', state: 'completed', evidence: {} },
+      });
+      return { runId: 'stream-0001', state: 'completed', summary: 'ok', steps: [], assertions: [] };
+    },
+    cancel: (runId) => ({ cancelled: true, runId }),
+    cancelAll: () => {},
+    activeCount: 0,
+    listActive: () => [],
+  };
+
+  await withServer({ mode: 'execute', runManager: manager }, async ({ call }) => {
+    const response = await call('/api/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
+      body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION, sampleId: 'azure-context-check', inputs: {} }),
+    });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /application\/x-ndjson/);
+    assert.equal(response.headers.get('x-citadel-run-id'), 'stream-0001');
+
+    const events = (await response.text())
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(events.map((event) => event.type), ['run-start', 'step-start', 'step', 'result']);
+    assert.equal(events.at(-1).result.state, 'completed');
+  });
+});
+
 test('the relay endpoint applies the same-origin JSON guard before forwarding', async () => {
   await withServer({ mode: 'preview' }, async ({ call }) => {
     const crossSite = await call('/api/execute', {
@@ -229,6 +265,115 @@ test('the self-test endpoint accepts exactly { protocolVersion } and refuses eve
       body: '{}',
     });
     assert.equal(emptyBody.status, 400);
+  });
+});
+
+/* ---------------------------------------------------- protected source */
+
+test('protected source is readable in every mode, but Python validation is execute-only', async () => {
+  await withServer({ mode: 'preview' }, async ({ call }) => {
+    const capabilities = await (await call('/api/capabilities')).json();
+    assert.equal(capabilities.protectedSource.available, true);
+    assert.equal(capabilities.protectedSource.editable, false);
+    assert.equal(capabilities.sourceValidation.available, false);
+
+    const response = await call('/api/source/azure-context-check');
+    assert.equal(response.status, 200);
+    const source = await response.json();
+    assert.equal(source.sampleId, 'azure-context-check');
+    assert.equal(source.notebook.sha256, CATALOGUE.sourceNotebook.sha256);
+    assert.equal(source.protection.editable, false);
+    assert.ok(source.cells.length > 0);
+    assert.ok(source.cells.every((cell) => cell.editable === false && cell.protected === true));
+
+    const validation = await call('/api/source/azure-context-check/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
+    });
+    assert.equal(validation.status, 501);
+    const result = await validation.json();
+    assert.equal(result.state, 'blocked');
+    assert.equal(result.sourceExecuted, false);
+    assert.equal(result.azureContacted, false);
+    assert.equal(result.networkContacted, false);
+    assert.equal(result.liveEvidence, false);
+  });
+});
+
+test('protected source rejects unknown samples and non-GET methods', async () => {
+  await withServer({ mode: 'preview' }, async ({ call }) => {
+    assert.equal((await call('/api/source/not-a-sample')).status, 404);
+    assert.equal(
+      (
+        await call('/api/source/azure-context-check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        })
+      ).status,
+      405,
+    );
+  });
+});
+
+test('execute-mode source validation accepts only the fixed protocol request', async () => {
+  const calls = [];
+  const manager = {
+    start: async (sampleId, payload) => {
+      calls.push({ sampleId, payload });
+      return {
+        scenario: 'offline-python-source-validation',
+        sampleId,
+        runId: 'code-azure-context-check-0001',
+        state: 'passed',
+        summary: 'Protected source compiled.',
+        mode: 'offline-local',
+        validation: 'python-compile-only',
+        sourceEditable: false,
+        sourceExecuted: false,
+        azureContacted: false,
+        networkContacted: false,
+        liveEvidence: false,
+        source: null,
+        steps: [],
+        checks: [],
+        artifact: null,
+        workspaceRemoved: true,
+      };
+    },
+    cancelAll: () => {},
+  };
+  await withServer({ mode: 'execute', codeValidationManager: manager }, async ({ call }) => {
+    const capabilities = await (await call('/api/capabilities')).json();
+    assert.equal(capabilities.sourceValidation.available, true);
+
+    const response = await call('/api/source/azure-context-check/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).state, 'passed');
+    assert.deepEqual(calls, [
+      {
+        sampleId: 'azure-context-check',
+        payload: { protocolVersion: EXECUTION_PROTOCOL_VERSION },
+      },
+    ]);
+  });
+
+  await withServer({ mode: 'execute' }, async ({ call }) => {
+    const response = await call('/api/source/azure-context-check/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        protocolVersion: EXECUTION_PROTOCOL_VERSION,
+        code: 'print("browser supplied")',
+      }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, 'forbidden-member');
   });
 });
 
@@ -930,15 +1075,22 @@ test('the catalogue defaults point inside the vendored bundle, never at the wide
   assert.ok(!everything.includes('../bicep/'), 'a default still reaches outside CitadelSamples');
 });
 
-test('the shipped Python wrappers exist and never build a command from a parameter', async () => {
-  const scripts = await readdir(join(PLAYGROUND_ROOT, 'runtime', 'python'));
-  assert.deepEqual(scripts.sort(), ['agent_framework_ask.py', 'apim_subscription_key.py', 'apim_weather_api.py']);
+test('the shipped Python programs exist and never build a command from a parameter', async () => {
+  const scripts = (await readdir(join(PLAYGROUND_ROOT, 'runtime', 'python'))).filter((name) => name.endsWith('.py'));
+  assert.deepEqual(scripts.sort(), [
+    'agent_framework_ask.py',
+    'apim_subscription_key.py',
+    'apim_weather_api.py',
+    'validate_notebook_source.py',
+  ]);
   for (const script of scripts) {
     const text = await readFile(join(PLAYGROUND_ROOT, 'runtime', 'python', script), 'utf-8');
     for (const forbidden of ['os.system', 'subprocess', 'shell=True', 'eval(', 'exec(']) {
       assert.ok(!text.includes(forbidden), `${script} uses ${forbidden}`);
     }
-    assert.ok(text.includes('json.load(sys.stdin)'), `${script} must read its parameters from stdin`);
+    if (script !== 'validate_notebook_source.py') {
+      assert.ok(text.includes('json.load(sys.stdin)'), `${script} must read its parameters from stdin`);
+    }
   }
 });
 

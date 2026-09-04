@@ -36,7 +36,7 @@ export function createRunManager({
   const active = new Map();
   let sequence = 0;
 
-  async function start(payload, { onStart } = {}) {
+  async function start(payload, { onStart, onProgress } = {}) {
     if (active.size >= maxConcurrentRuns) {
       throw new RequestRefused(
         `${active.size} run(s) are already in flight and the limit is ${maxConcurrentRuns}. Wait for one to finish or cancel it.`,
@@ -64,6 +64,19 @@ export function createRunManager({
     // contract produced, which only the catalogue's own classifier knows.
     const contract = contractFor(request.sample.id, resolvedInputs);
 
+    const activeRun = { runId, sampleId: request.sample.id, controller, startedAt: Date.now(), promise: null };
+    active.set(runId, activeRun);
+    try {
+      onStart?.({
+        runId,
+        sampleId: request.sample.id,
+        workspace: workspace.describe(workspace.root) || '.',
+      });
+    } catch (error) {
+      active.delete(runId);
+      controller.abort();
+      throw error;
+    }
     const promise = executor
       .execute(plan, {
         sampleId: request.sample.id,
@@ -72,6 +85,7 @@ export function createRunManager({
         acknowledgement: request.acknowledgement,
         contract,
         signal: controller.signal,
+        onProgress,
       })
       .catch((error) => ({
         state: 'failed',
@@ -87,19 +101,7 @@ export function createRunManager({
       .finally(() => {
         active.delete(runId);
       });
-
-    active.set(runId, { runId, sampleId: request.sample.id, controller, startedAt: Date.now(), promise });
-    try {
-      onStart?.({
-        runId,
-        sampleId: request.sample.id,
-        workspace: workspace.describe(workspace.root) || '.',
-      });
-    } catch (error) {
-      controller.abort();
-      await promise;
-      throw error;
-    }
+    activeRun.promise = promise;
     const result = await promise;
     return { runId, workspace: workspace.describe(workspace.root) || '.', ...result };
   }

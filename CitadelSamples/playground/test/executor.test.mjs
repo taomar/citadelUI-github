@@ -261,6 +261,30 @@ test('runPlan never reaches an executor for an unacknowledged risky plan', async
   assert.equal(allowed.state, 'completed');
 });
 
+test('runPlan forwards progress only after validation and acknowledgement pass', async () => {
+  const reported = [];
+  const onProgress = (event) => reported.push(event);
+  const executor = {
+    describeCapability: () => ({ canExecute: true, supportedStepTypes: ['azure-cli', 'assertion'] }),
+    supports: () => ({ supported: true, unsupportedStepTypes: [] }),
+    execute: async (_plan, context) => {
+      assert.equal(context.onProgress, onProgress);
+      context.onProgress({ type: 'step-start', step: { id: 'account-show' } });
+      return executionResult({ state: 'completed', sampleId: 'azure-context-check', summary: 'ran' });
+    },
+  };
+  const sample = getSample('azure-context-check');
+  const { plan, validation } = buildSamplePlan(sample, makeFixtureReader());
+  const result = await runPlan(executor, plan, {
+    validation,
+    acknowledgement: { required: false, satisfied: true, issues: [] },
+    onProgress,
+  });
+
+  assert.equal(result.state, 'completed');
+  assert.deepEqual(reported, [{ type: 'step-start', step: { id: 'account-show' } }]);
+});
+
 test('the local client learns the run id before completion so it can cancel the active run', async () => {
   let finishRun;
   const runBody = new Promise((resolve) => {
@@ -311,6 +335,59 @@ test('the local client learns the run id before completion so it can cancel the 
   assert.equal(result.state, 'cancelled');
   assert.equal(result.meta.runId, 'weather-run-1');
   assert.equal(client.activeRunId, null);
+});
+
+test('the local client consumes streamed progress before returning the final result', async () => {
+  const encoder = new TextEncoder();
+  const events = [
+    { type: 'run-start', runId: 'stream-0001', sampleId: 'azure-context-check', workspace: '.' },
+    { type: 'step-start', step: { id: 'account-show', title: 'Read account', kind: 'azure-cli' } },
+    {
+      type: 'result',
+      result: {
+        runId: 'stream-0001',
+        state: 'completed',
+        summary: 'Completed.',
+        steps: [],
+        assertions: [],
+      },
+    },
+  ];
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(`${JSON.stringify(events[0])}\n${JSON.stringify(events[1]).slice(0, 20)}`));
+      controller.enqueue(encoder.encode(`${JSON.stringify(events[1]).slice(20)}\n${JSON.stringify(events[2])}\n`));
+      controller.close();
+    },
+  });
+  const client = createLocalExecutorClient({
+    allowedSampleIds: ALL_IDS,
+    supportedStepTypes: ['azure-cli', 'assertion'],
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      headers: {
+        get: (name) => {
+          if (name.toLowerCase() === 'x-citadel-run-id') return 'stream-0001';
+          if (name.toLowerCase() === 'content-type') return 'application/x-ndjson; charset=utf-8';
+          return null;
+        },
+      },
+      body,
+    }),
+  });
+  const progress = [];
+  const plan = planFor('azure-context-check');
+  const result = await client.execute(plan, {
+    sampleId: plan.sampleId,
+    inputs: {},
+    secrets: {},
+    onProgress: (event) => progress.push(event),
+  });
+
+  assert.equal(result.state, 'completed');
+  assert.equal(result.meta.runId, 'stream-0001');
+  assert.deepEqual(progress.map((event) => event.type), ['run-start', 'step-start']);
 });
 
 /* ------------------------------------------------------------ the server */

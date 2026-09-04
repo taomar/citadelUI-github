@@ -18,7 +18,12 @@ import { EXECUTION_PROTOCOL_VERSION } from '../src/core/types.mjs';
 import { createLocalExecutor, assertExecutableUrl } from '../src/server/localExecutor.mjs';
 import { createRunWorkspace, mapPlanPath, PathRefused } from '../src/server/workspace.mjs';
 import { RequestRefused, rebuildPlan, validateRunRequest } from '../src/server/runRequest.mjs';
-import { AZ_OPERATIONS, resolveAzOperation, resolvePythonWrapper } from '../src/server/registry.mjs';
+import {
+  AZ_OPERATIONS,
+  resolveAzOperation,
+  resolvePythonWrapper,
+  validateResolvedAzArguments,
+} from '../src/server/registry.mjs';
 import { createRedactor } from '../src/server/redaction.mjs';
 import { FAKE_API_KEY, FIXTURE_SECRETS, FIXTURE_VALUES, makeFixtureReader } from './helpers/fixtures.mjs';
 import { fakeFetch, fakeFileSystem, fakeSpawn, makeTransports, sseFrame } from './helpers/transports.mjs';
@@ -160,15 +165,34 @@ test('an unregistered az operation is refused before it can be spawned', () => {
 test('`az rest` is restricted to the approved method and to ARM resource paths', () => {
   const step = (args) => ({ id: 'read-backend-1', type: 'azure-cli', command: { executable: 'az', args } });
   assert.throws(
-    () => resolveAzOperation('circuit-breaker-check', step(['rest', '--method', 'post', '--uri', '/subscriptions/x'])),
+    () =>
+      resolveAzOperation(
+        'circuit-breaker-check',
+        step(['rest', '--method', 'post', '--uri', '/subscriptions/x', '-o', 'json']),
+      ),
     /not approved/,
   );
   assert.throws(
-    () => resolveAzOperation('circuit-breaker-check', step(['rest', '--method', 'get', '--uri', 'https://evil.test/'])),
+    () =>
+      resolveAzOperation(
+        'circuit-breaker-check',
+        step(['rest', '--method', 'get', '--uri', 'https://evil.test/', '-o', 'json']),
+      ),
     /not an ARM resource path/,
   );
   assert.doesNotThrow(() =>
-    resolveAzOperation('circuit-breaker-check', step(['rest', '--method', 'get', '--uri', '/subscriptions/x/backends/y'])),
+    resolveAzOperation(
+      'circuit-breaker-check',
+      step([
+        'rest',
+        '--method',
+        'get',
+        '--uri',
+        '/subscriptions/00000000-1111-2222-3333-444444444444/resourceGroups/rg/providers/Microsoft.ApiManagement/service/apim/backends/y?api-version=2024-06-01-preview',
+        '-o',
+        'json',
+      ]),
+    ),
   );
 });
 
@@ -843,4 +867,88 @@ test('every azure-cli step in every plan has a registered operation', () => {
       assert.doesNotThrow(() => resolveAzOperation(sample.id, step), `${sample.id}/${step.id} is not registered`);
     }
   }
+});
+
+test('registered operations accept valid customized catalogue values without widening executable or verb allowlists', () => {
+  const scenarios = [
+    {
+      sampleId: 'publish-assets',
+      overrides: {
+        'samples.publish-assets.deploymentName': 'custom-publish-deployment',
+        'samples.publish-assets.publishBicepDir': 'runtime/accelerator/custom-publish-contracts',
+        'samples.publish-assets.contractName': 'custom-assets',
+        'samples.publish-assets.contractEnv': 'qa',
+      },
+    },
+    {
+      sampleId: 'access-contract-deploy',
+      overrides: {
+        'samples.access-contract-deploy.accessBicepDir': 'runtime/accelerator/custom-access-contracts',
+        'samples.access-contract-deploy.deploymentNameSuffix': 'custom-02',
+      },
+    },
+    {
+      sampleId: 'usage-metrics',
+      overrides: {
+        'samples.usage-metrics.appInsightsName': 'appi-custom',
+        'samples.usage-metrics.lookbackMinutes': 1440,
+        'samples.usage-metrics.metricNames': ['Requests.Total', 'Tokens Used'],
+      },
+    },
+    {
+      sampleId: 'cleanup',
+      overrides: {
+        'policy.businessUnit': 'Research',
+        'policy.useCaseName': 'Forecasting',
+        'policy.environment': 'QA',
+        'samples.publish-assets.weatherToolName': 'forecast-tool',
+        'samples.publish-assets.learnToolName': 'docs-tool',
+        'samples.publish-assets.agentAssetName': 'forecast-agent',
+        'samples.cleanup.deleteAccessContract': true,
+        'samples.cleanup.deletePublishedAssets': true,
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const { plan } = planFor(scenario.sampleId, scenario.overrides);
+    for (const step of plan.steps.filter((candidate) => candidate.type === 'azure-cli')) {
+      const entry = resolveAzOperation(scenario.sampleId, step);
+      const args = step.command.args.map(String);
+      assert.equal(step.command.executable, 'az');
+      assert.deepEqual(args.slice(0, entry.verbs.length), entry.verbs);
+      assert.doesNotThrow(
+        () => validateResolvedAzArguments(scenario.sampleId, step.id, args),
+        `${scenario.sampleId}/${step.id} rejected valid customized inputs`,
+      );
+    }
+  }
+});
+
+test('only registry-marked path operands are mapped into the workspace', async () => {
+  const spawn = fakeSpawn([
+    {
+      match: (options) => options.args.slice(0, 3).join(' ') === 'deployment sub create',
+      result: { code: 0, stdout: JSON.stringify({ properties: { provisioningState: 'Succeeded', outputs: {} } }) },
+    },
+  ]);
+  const { transports, workspace } = await run('publish-assets', {
+    spawn,
+    overrides: { 'samples.publish-assets.deploymentName': 'release.json' },
+  });
+  const call = transports.spawn.calls.find((candidate) => candidate.args.slice(0, 3).join(' ') === 'deployment sub create');
+  assert.equal(call.args[call.args.indexOf('--name') + 1], 'release.json');
+  for (const option of ['--template-file', '--parameters']) {
+    const value = call.args[call.args.indexOf(option) + 1];
+    assert.ok(value.startsWith(workspace.root), `${option} must resolve inside the run workspace`);
+  }
+});
+
+test('the usage-metrics command guard rejects KQL injected through a metric name', () => {
+  const { plan } = planFor('usage-metrics', {
+    'samples.usage-metrics.appInsightsName': 'appi-custom',
+    'samples.usage-metrics.metricNames': ["Requests.Total') | take 1000 | where name in ('Tokens"],
+  });
+  const step = plan.steps.find((candidate) => candidate.id === 'query-metrics');
+  assert.throws(() => resolveAzOperation('usage-metrics', step), /bounded usage-metrics KQL query/);
 });

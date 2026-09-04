@@ -18,26 +18,149 @@ Success means every notebook scenario is represented faithfully, its prerequisit
 
 ## Positioning
 
-The playground is an executable companion to the source notebook: each guided sample remains traceable to its original cells while separating shared environment context, sample-specific configuration, request generation, execution capability, and result assertions.
+The playground is a maintained, executable companion to the source notebook. It
+adds a notebook-like reading surface without becoming a general-purpose
+notebook: the cited Markdown and code are visible, attributable, and protected,
+while only declared parameters and configuration values are editable.
+
+Each guided sample remains traceable to its exact source cells while separating
+shared environment context, sample-specific configuration, request generation,
+execution capability, and result assertions.
+
+## Product and Architecture Decision
+
+The product keeps the server-authoritative catalogue and typed, allowlisted
+executor. The browser selects a catalogue sample and supplies only that sample's
+declared inputs, transient declared secrets, and any required acknowledgement.
+It never supplies source code, a command, an executable, a plan, a URL, headers,
+or a filesystem path.
+
+The notebook-like surface is therefore a protected-source experience:
+
+- show the exact repository-owned cells cited by the selected sample;
+- identify every cell by notebook index, type, byte length, and digest;
+- keep source read-only and make the editable parameter zones explicit;
+- validate Python locally with a parser-only operation that does not import or
+  execute the sample; and
+- run real behavior only through the separately labelled registered executor.
+
+This is intentionally a maintained product rather than a generic notebook host.
+The tradeoff is deliberate: every upstream source or behavior change must be
+reviewed and reflected in provenance, catalogue metadata, typed builders,
+allowlists, assertions, and tests. That costs more maintenance than accepting
+editable cells, but preserves a reviewable operation, bounded authority,
+deterministic plans, honest evidence, and a usable path for operators who should
+not need to understand or safely edit the original notebook.
+
+## Why an Existing Notebook Product Was Not Adopted
+
+The evaluated products solve a different authority problem:
+
+- JupyterLab, VS Code notebooks, Codespaces, Azure Machine Learning, and Runme
+  expose editable code and/or a terminal by design.
+- JupyterLite is a strong offline presentation reference but cannot faithfully
+  provide the installed Azure CLI, native dependencies, or server-side Azure
+  identity required by these scenarios.
+- Papermill supplies useful parameter and output-run provenance, but not a
+  protected form, plan review, approval, or execution allowlist.
+- Voila, marimo app mode, Observable, and Streamlit offer useful presentation
+  and reactive-input patterns, but Citadel would still have to build its visible
+  provenance, typed schema, secret handling, risk approval, server-side plan,
+  operation allowlist, and evidence semantics.
+
+Replacing the current application would add framework, kernel, dependency, and
+supply-chain surface without replacing the Citadel-specific work. The
+lowest-risk and lowest-duplication choice is to extend the existing catalogue
+and executor while borrowing notebook interaction patterns.
+
+## Experience Model
+
+The product direction is a linear runbook:
+
+`Protected source -> declared inputs -> generated operation -> review and approval -> runner transcript and evidence`
+
+The trust boundary must be visible in the page structure. Protected source
+cells, playground parameter and secret cells, generated plan cells, and evidence
+cells use different labels and treatment. Primary controls say **Review sample**,
+**Run sample**, and **Cancel run**; they do not say "edit notebook", "run this
+code", or "terminal".
+
+The first protected-source delivery may preserve parts of the existing
+Guide/Configure/Request/Response workbench while the exact source path is added.
+That is an incremental delivery choice, not a decision to keep mutually
+exclusive tabs as the final information architecture.
 
 ## Operating Context
 
 - The authoritative source is `citadel-publish-contract-tests.ipynb`, imported unchanged from the Azure Samples repository.
 - Users may be preparing or validating Azure API Management, MCP, A2A, Foundry, Application Insights, Key Vault, rate-limit, and cleanup workflows.
 - Real Azure and gateway credentials were not available during development, so live behavior must remain explicitly unproven until a non-production integration run.
-- Preview mode performs no effects. An explicitly enabled loopback-only operator mode executes catalogue-owned Azure CLI, HTTPS, generated-artifact, assertion, and registered Python steps. A remote deployment uses the narrower relay boundary instead.
+- Preview mode performs no effects. Exact protected source retrieval is
+  available in every mode because it requires no process.
+- Parser-only Python validation is available only in explicit loopback local
+  operator mode. Keeping it out of public preview and the hosted relay preserves
+  their process-free boundary.
+- An explicitly enabled loopback-only operator mode executes catalogue-owned
+  Azure CLI, HTTPS, generated-artifact, assertion, and registered Python steps.
+- The existing hosted relay remains HTTP/assertion-only. Its managed run
+  admission is replica-safe for ownership, nonce/idempotency, distributed
+  concurrency, dispatcher leases, polling, cancellation, and timeouts, as
+  proved by offline tests only.
+- Any future hosted process execution must use a fresh, no-ingress, per-run
+  isolated job rather than the public playground or long-lived relay process.
+
+## Runner and Evidence Contract
+
+Runner locality and evidence source are separate facts and must never share one
+badge.
+
+| Runner badge | Meaning |
+| --- | --- |
+| **PREVIEW ONLY** | Generate and inspect without execution |
+| **OFFLINE SELF-TEST** | Run the fixed local checkout checks |
+| **LOCAL OPERATOR** | Run registered operations on this machine |
+| **HOSTED RELAY** | Run an eligible allowlisted HTTP/assertion plan through the narrow relay |
+
+| Evidence badge | Meaning |
+| --- | --- |
+| **NOT RUN** | No execution evidence exists |
+| **LOCAL CHECKOUT EVIDENCE** | Protected source, parser, or fixed self-test evidence; Azure was not contacted |
+| **LIVE TARGET EVIDENCE** | The approved target was contacted and the result derives from that run |
+
+Every result must also state `azureContacted` and `liveEvidence`. A local parser
+result is always local checkout evidence. A real sample may run through
+**LOCAL OPERATOR** and produce **LIVE TARGET EVIDENCE**; local must never be used
+as a synonym for simulated or offline.
 
 ## Capabilities and Constraints
 
 - Present one selected sample at a time rather than rendering every scenario on one page.
 - Preserve a catalogue of all 19 atomic recipes found in the notebook; do not invent image-generation, multimodal, LLM-inference, or other samples absent from the source.
+- Show the exact cited notebook cells in a read-only, notebook-like surface with
+  per-cell provenance.
 - Show only the fields a selected sample actually uses, grouped as mandatory, conditional, optional/defaulted, generated/override, or secret.
-- Provide Guide, Configure, Request, and Response views for every sample.
+- Provide Guide, protected Code, Configure, Review & approve, and Output views
+  for every sample during the incremental protected-source release.
 - Generate deterministic, redacted configuration manifests and execution plans that users can copy or download.
+- Distinguish parser-only Python validation from registered Python sample
+  execution in both controls and evidence.
 - Execute validated samples through an explicit local operator mode while keeping ordinary startup preview-only.
+- Stream bounded run and step progress, support cancellation by the exact active
+  run ID, and expose only declared, contained artifacts in the final result.
+- Keep partial progress free of raw evidence, commands, source, secret updates,
+  and artifact paths.
+- Treat durable redacted run manifests and authorized artifact history as a
+  future product capability, not as evidence already delivered by transient
+  local workspaces.
 - Treat missing executors, credentials, and target environments as `Not configured` or `Not run`, never as success.
 - Never persist secrets in browser storage, copied previews, URLs, logs, or fixtures.
 - Require explicit confirmation for state-changing, load-generating, and destructive operations.
+- Keep the hosted relay HTTP/assertion-only. Do not add Python, Azure CLI,
+  arbitrary files, or process creation to its image or request contract.
+- Treat future hosted process execution as a separate capability gated on
+  per-run no-ingress isolation, immutable images, least-privilege identity,
+  external egress enforcement, durable ownership, quota, cancellation, artifact
+  quarantine, cleanup, and independent security review.
 - Keep all project files and changes within `CitadelSamples`.
 
 ## Brand Commitments
@@ -54,10 +177,14 @@ Use the existing Citadel Control Plane visual language as the binding design aut
 ## Product Principles
 
 1. Source fidelity over invented convenience.
-2. Explain prerequisites before asking for parameters.
-3. Preview the exact operation before any effect.
-4. Keep secrets ephemeral and redact them everywhere else.
-5. Distinguish generated, blocked, running, passed, failed, and inconclusive states precisely.
+2. Protected code and declared inputs over arbitrary editability.
+3. Explain prerequisites before asking for parameters.
+4. Preview the exact operation before any effect.
+5. Keep secrets ephemeral and redact them everywhere else.
+6. Distinguish runner locality from evidence source, including local operator
+   runs that produce live target evidence.
+7. Distinguish queued, running, cancelled, passed, failed, blocked, and
+   inconclusive states precisely.
 
 ## Accessibility & Inclusion
 

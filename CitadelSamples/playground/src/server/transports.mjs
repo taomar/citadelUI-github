@@ -11,9 +11,79 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { writeFile, access } from 'node:fs/promises';
-import { win32 } from 'node:path';
+import { isAbsolute, win32 } from 'node:path';
 
 import { ALLOWED_EXECUTABLES, executableIdentity } from '../core/types.mjs';
+
+const MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
+const MAX_PROCESS_STDIN_BYTES = 1024 * 1024;
+const MAX_PROCESS_TIMEOUT_MS = 15 * 60 * 1000;
+const WINDOWS_TREE_KILL_TIMEOUT_MS = 5000;
+
+export const INHERITED_ENVIRONMENT_KEYS = Object.freeze([
+  'PATH',
+  'PATHEXT',
+  'SystemRoot',
+  'WINDIR',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'HOME',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'TEMP',
+  'TMP',
+  'TMPDIR',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  'AZURE_CONFIG_DIR',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+]);
+
+const EXPLICIT_ENVIRONMENT_KEYS = Object.freeze(['CITADEL_GATEWAY_ACCESS_API_KEY']);
+
+/**
+ * Build the complete child environment. Host credentials and unrelated service
+ * settings are not inherited; wrappers may add only reviewed, registry-owned
+ * secret variables.
+ */
+export function createProcessEnvironment(explicit = {}, source = process.env) {
+  if (!explicit || typeof explicit !== 'object' || Array.isArray(explicit)) {
+    throw new Error('Process environment overrides must be an object.');
+  }
+
+  const result = {};
+  for (const key of INHERITED_ENVIRONMENT_KEYS) {
+    const value = source[key];
+    if (typeof value === 'string' && value !== '' && !value.includes('\0')) result[key] = value;
+  }
+  for (const [key, value] of Object.entries(explicit)) {
+    if (!EXPLICIT_ENVIRONMENT_KEYS.includes(key)) {
+      throw new Error(`Refused unapproved process environment variable "${key}".`);
+    }
+    if (typeof value !== 'string' || value.includes('\0')) {
+      throw new Error(`Process environment variable "${key}" must be a string without NUL bytes.`);
+    }
+    result[key] = value;
+  }
+
+  return {
+    ...result,
+    NO_COLOR: '1',
+    PYTHONIOENCODING: 'utf-8',
+    PYTHONUTF8: '1',
+  };
+}
 
 /**
  * Resolve a Windows command without handing it to cmd.exe.
@@ -89,7 +159,7 @@ function resolveWindowsCommand(executable, { pathValue, pathExt, exists }) {
  * @param {object} options
  * @param {string} options.executable  must be on the allow-list
  * @param {string[]} options.args      passed as an array; never joined
- * @returns {Promise<{code:number, stdout:string, stderr:string, timedOut:boolean, spawnFailed?:boolean}>}
+ * @returns {Promise<{code:number, stdout:string, stderr:string, timedOut:boolean, aborted:boolean, spawnFailed?:boolean}>}
  */
 export function spawnProcess({
   executable,
@@ -102,12 +172,37 @@ export function spawnProcess({
   maxOutputBytes = 256 * 1024,
   allowedExecutables = ALLOWED_EXECUTABLES,
 }) {
-  const base = executableIdentity(executable);
-  if (!allowedExecutables.includes(base)) {
+  if (!Array.isArray(allowedExecutables) || !allowedExecutables.includes(executable)) {
     return Promise.reject(new Error(`Refused to spawn "${executable}": it is not on the executable allow-list.`));
   }
-  if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) {
+  if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string' || arg.includes('\0'))) {
     return Promise.reject(new Error('Process arguments must be an array of strings.'));
+  }
+  if (typeof cwd !== 'string' || !isAbsolute(cwd)) {
+    return Promise.reject(new Error('A process may run only with an absolute workspace cwd.'));
+  }
+  if (stdin !== undefined && typeof stdin !== 'string') {
+    return Promise.reject(new Error('Process stdin must be a string when supplied.'));
+  }
+  if (Buffer.byteLength(stdin ?? '', 'utf-8') > MAX_PROCESS_STDIN_BYTES) {
+    return Promise.reject(new Error(`Process stdin exceeds the ${MAX_PROCESS_STDIN_BYTES}-byte limit.`));
+  }
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_PROCESS_TIMEOUT_MS) {
+    return Promise.reject(new Error(`Process timeout must be between 1 and ${MAX_PROCESS_TIMEOUT_MS} milliseconds.`));
+  }
+  if (!Number.isInteger(maxOutputBytes) || maxOutputBytes < 1 || maxOutputBytes > MAX_PROCESS_OUTPUT_BYTES) {
+    return Promise.reject(
+      new Error(`Process output limit must be between 1 and ${MAX_PROCESS_OUTPUT_BYTES} bytes per stream.`),
+    );
+  }
+  let childEnv;
+  try {
+    childEnv = createProcessEnvironment(env);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  if (signal?.aborted) {
+    return Promise.resolve({ code: -1, stdout: '', stderr: '', timedOut: false, aborted: true });
   }
   let invocation;
   try {
@@ -127,31 +222,44 @@ export function spawnProcess({
         // A detached child on POSIX gets its own process group, so cancelling
         // kills the tree this run created and nothing else.
         detached: process.platform !== 'win32',
-        env: { ...process.env, ...env },
+        env: childEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (error) {
-      resolve({ code: -1, stdout: '', stderr: String(error?.message ?? error), timedOut: false, spawnFailed: true });
+      resolve({
+        code: -1,
+        stdout: '',
+        stderr: String(error?.message ?? error),
+        timedOut: false,
+        aborted: false,
+        spawnFailed: true,
+      });
       return;
     }
 
-    let stdout = '';
-    let stderr = '';
+    const stdout = [];
+    const stderr = [];
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let settled = false;
     let timedOut = false;
+    let aborted = false;
+    let termination;
 
     const collect = (chunk, which) => {
-      const text = chunk.toString('utf-8');
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf-8');
       if (which === 'out') {
-        if (stdoutBytes >= maxOutputBytes) return;
-        stdoutBytes += Buffer.byteLength(text, 'utf-8');
-        stdout += text;
+        const remaining = maxOutputBytes - stdoutBytes;
+        if (remaining <= 0) return;
+        const accepted = bytes.subarray(0, remaining);
+        stdout.push(accepted);
+        stdoutBytes += accepted.byteLength;
       } else {
-        if (stderrBytes >= maxOutputBytes) return;
-        stderrBytes += Buffer.byteLength(text, 'utf-8');
-        stderr += text;
+        const remaining = maxOutputBytes - stderrBytes;
+        if (remaining <= 0) return;
+        const accepted = bytes.subarray(0, remaining);
+        stderr.push(accepted);
+        stderrBytes += accepted.byteLength;
       }
     };
 
@@ -159,44 +267,137 @@ export function spawnProcess({
     child.stderr?.on('data', (chunk) => collect(chunk, 'err'));
 
     const killTree = () => {
-      try {
-        if (process.platform === 'win32') {
-          child.kill();
-        } else if (typeof child.pid === 'number') {
-          // Negative pid targets the process group created by `detached`.
-          process.kill(-child.pid, 'SIGTERM');
-        }
-      } catch {
-        /* the child had already exited */
-      }
+      if (!termination) termination = terminateProcessTree(child);
+      return termination;
     };
 
     const timer = setTimeout(() => {
       timedOut = true;
-      killTree();
+      void killTree();
     }, timeoutMs);
 
-    const onAbort = () => killTree();
+    const onAbort = () => {
+      aborted = true;
+      void killTree();
+    };
     signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
 
-    const finish = (code) => {
+    const finish = async (code) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
-      resolve({ code, stdout, stderr, timedOut });
+      if (termination) await termination;
+      resolve({
+        code,
+        stdout: decodeCollectedOutput(stdout, stdoutBytes, maxOutputBytes),
+        stderr: decodeCollectedOutput(stderr, stderrBytes, maxOutputBytes),
+        timedOut,
+        aborted,
+      });
     };
 
     child.on('error', (error) => {
-      stderr += String(error?.message ?? error);
-      finish(-1);
+      collect(String(error?.message ?? error), 'err');
+      void finish(-1);
     });
-    child.on('close', (code) => finish(code ?? -1));
+    child.on('close', (code) => void finish(code ?? -1));
 
     if (typeof stdin === 'string') {
       child.stdin?.end(stdin, 'utf-8');
     } else {
       child.stdin?.end();
+    }
+  });
+}
+
+function decodeCollectedOutput(chunks, byteLength, maxBytes) {
+  const text = Buffer.concat(chunks, byteLength).toString('utf-8');
+  if (Buffer.byteLength(text, 'utf-8') <= maxBytes) return text;
+
+  // Invalid or boundary-split UTF-8 can expand to a three-byte replacement
+  // character. Trim by string boundary so the returned evidence remains within
+  // the same byte ceiling as the raw collector.
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (Buffer.byteLength(text.slice(0, middle), 'utf-8') <= maxBytes) low = middle;
+    else high = middle - 1;
+  }
+  if (low > 0 && /[\uD800-\uDBFF]/.test(text[low - 1]) && /[\uDC00-\uDFFF]/.test(text[low] ?? '')) low -= 1;
+  return text.slice(0, low);
+}
+
+function terminateProcessTree(child) {
+  if (typeof child.pid !== 'number') {
+    try {
+      child.kill();
+    } catch {
+      /* the child had already exited */
+    }
+    return Promise.resolve();
+  }
+
+  if (process.platform !== 'win32') {
+    try {
+      // A negative pid targets the process group created by `detached`.
+      process.kill(-child.pid, 'SIGKILL');
+    } catch {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* the child had already exited */
+      }
+    }
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const taskkill = win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe');
+    let killer;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const fallback = () => {
+      try {
+        child.kill();
+      } catch {
+        /* the child had already exited */
+      }
+      finish();
+    };
+    const timer = setTimeout(() => {
+      try {
+        killer?.kill();
+      } catch {
+        /* taskkill had already exited */
+      }
+      fallback();
+    }, WINDOWS_TREE_KILL_TIMEOUT_MS);
+
+    try {
+      killer = spawn(taskkill, ['/PID', String(child.pid), '/T', '/F'], {
+        shell: false,
+        windowsHide: true,
+        env: createProcessEnvironment(),
+        stdio: 'ignore',
+      });
+      killer.once('error', fallback);
+      killer.once('close', (code) => {
+        if (code !== 0) {
+          fallback();
+          return;
+        }
+        finish();
+      });
+    } catch {
+      fallback();
     }
   });
 }

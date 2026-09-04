@@ -2,9 +2,109 @@
 
 ## Current Milestone
 
-Executable-playground checkpoint complete, portable across Windows checkouts, and ready for live validation on a non-production Citadel hub.
+Protected-source playground redesign implemented and verified at integration
+reference `47fd336`. The product decision is final:
+retain the server-authoritative catalogue and typed allowlisted local executor,
+add a notebook-like read-only source surface, and allow edits only to declared
+inputs. Do not introduce a general-purpose editable notebook.
 
-## Executable Playground Checkpoint
+## Redesign Decision Record
+
+### Fixed product boundary
+
+- The 19 catalogue IDs remain the stable identity across navigation,
+  configuration, exact notebook provenance, plans, execution, evidence, and
+  tests.
+- Repository-owned cited cells are visible and protected. The browser cannot
+  submit source text, code, a command, executable, plan, URL, header set, script,
+  path, identity, or dependency.
+- The server selects source by catalogue sample ID, verifies provenance, validates
+  declared inputs, and rebuilds the typed plan from its own catalogue.
+- This is a maintained product. Upstream notebook changes require deliberate
+  reconciliation across provenance, catalogue metadata, typed builders,
+  allowlists, assertions, runtime registrations, and tests.
+
+### Runner and evidence contract
+
+- Runner badges are **PREVIEW ONLY**, **OFFLINE SELF-TEST**,
+  **LOCAL OPERATOR**, and **HOSTED RELAY**.
+- Evidence badges are **NOT RUN**, **LOCAL CHECKOUT EVIDENCE**, and
+  **LIVE TARGET EVIDENCE**.
+- Runner locality and evidence source are separate facts. A
+  **LOCAL OPERATOR** run may produce **LIVE TARGET EVIDENCE**.
+- Parser-only validation accepts only the protocol version, produces
+  **LOCAL CHECKOUT EVIDENCE**, and always reports `azureContacted: false` and
+  `liveEvidence: false`.
+- Parser acceptance, executor readiness, process exit 0, and HTTP 2xx never
+  become live target evidence by themselves.
+
+### Execution boundaries
+
+- Local runs preserve server-authoritative reconstruction and operation
+  allowlists while streaming bounded lifecycle events into the response view.
+  Cancellation addresses the exact active run ID; declared artifacts stay under
+  the contained run workspace.
+- Partial progress stores state and evidence availability only. Raw evidence,
+  commands, source, secret updates, and artifact paths wait for the final typed
+  result.
+- Parser-only Python validation is not registered Python sample execution. It
+  validates protected source without imports, top-level execution, package
+  installation, network, credentials, source edits, or submitted configuration
+  values.
+- Exact protected source retrieval is available in every mode. Parser-only
+  validation is available only in explicit loopback local operator mode, keeping
+  public preview and the hosted relay process-free.
+- The existing hosted relay remains HTTP/assertion-only. Its structural absence
+  of Python, Azure CLI, process transports, workspaces, and artifact writers is a
+  security control, not a missing convenience.
+- Hosted relay admission and managed run state are replica-safe offline:
+  owner-bound nonce/idempotency, distributed concurrency and active-job capacity,
+  dispatcher lease recovery, polling, cancellation, and timeout behavior are
+  covered without claiming a live deployment.
+- Future hosted process work may run only in a fresh immutable no-ingress job per
+  run, with dedicated least-privilege identity, externally enforced egress,
+  owner-bound durable state, platform quotas, verified termination, artifact
+  quarantine, cleanup, supply-chain evidence, and independent security review.
+
+### Implemented redesign checkpoint
+
+- The protected Code view renders exact server-selected cited cells and
+  server-owned declared parameter zones without accepting source from the
+  browser.
+- Exact source retrieval works in preview and operator modes.
+- Compile-only Python validation is available only in loopback operator mode,
+  accepts only the protocol version, removes its ephemeral workspace, and reports
+  no execution, Azure contact, network contact, or live evidence.
+- The local executor validates fixed catalogue-owned Azure CLI and Python
+  operation shapes, builds child environments from an allowlist, bounds output,
+  and terminates timed-out process trees without a shell.
+- Local runs stream bounded NDJSON lifecycle events. The browser's pure reducer
+  preserves ordered terminal state and retains only evidence availability until
+  the final typed result.
+- The real Python validation path has been exercised across all 19 catalogue
+  scenarios, including workspace cleanup.
+- Full static, recursive Node, and browser verification passes after route,
+  provenance, protected-source acceptance, and smoke reconciliation.
+
+### Final verified baseline
+
+`npm run verify` at `47fd336` exited 0:
+
+- `npm run check` — 106 modules, 0 dependencies, nothing outside
+  `CitadelSamples`;
+- `node --test` — 670/670 passing;
+- `npm run smoke` — 89/89 passing.
+
+The separate protected-source Chromium acceptance passed 114/114 checks.
+
+No Azure endpoint, subscription, gateway key, Foundry project, Policy burst, or
+Cleanup operation was used by this verification.
+
+## Earlier Executable Playground Checkpoint
+
+The sections below record the pre-redesign checkpoint. Their test totals and
+four-view interface description are historical evidence, not the final
+protected-source redesign baseline.
 
 ### Delivered
 
@@ -138,7 +238,12 @@ The correction belongs at three boundaries:
 
 The verification also passes from a Windows checkout with `core.autocrlf=true`: the imported notebook remains 66,241 bytes with SHA-256 `ee706b4dac2978d4f35885ea5f77a7d6a12add337e7f959690550be28d4523bb`, and `.runs/` is reported as ignored.
 
-The smoke driver uses the DevTools Protocol over Node's built-in `WebSocket`, so browser-level verification adds no dependency. It covers selection, tab keyboard navigation, filling every field by label, inline validation appearing and clearing, the acknowledgement gate and its invalidation on input change, secret redaction in the live preview, directory search, and the 320px and 200%-zoom layouts. Screenshots of all four tabs at desktop, tablet and 320px were reviewed; two defects found that way were fixed — a grid-item bug that broke the error list onto stray rows, and a context-rail label breaking mid-word.
+At that earlier checkpoint, the smoke driver used the DevTools Protocol over
+Node's built-in `WebSocket`, so browser-level verification added no dependency.
+It covered selection, tab keyboard navigation, form labels, inline validation,
+acknowledgement invalidation, secret redaction, directory search, and the 320px
+and 200%-zoom layouts. Screenshots of the then-current four tabs found and fixed
+a grid-item bug and a context-rail label breaking mid-word.
 
 ### Independent QA
 
@@ -146,7 +251,9 @@ The smoke driver uses the DevTools Protocol over Node's built-in `WebSocket`, so
 - QA found and fixed two defects inside `CitadelSamples`: checkbox help/error ARIA was attached to the wrapping label rather than the focusable input, and untouched required confirmations rendered as errors rather than as needed inputs.
 - All 35 rendered boolean controls now expose their descriptions on the input, all three required confirmations expose `aria-required`, and untouched/touched confirmation states follow the same needed/error model as other fields.
 - Fourteen sampled text roles were independently measured for WCAG AA contrast; all passed, with the lowest ratio at 5.38:1.
-- The earlier independent QA suite remains part of the history below. Iteration 2 added execution and configuration-generation coverage after that pass; its current automated result is 279/279 unit/integration assertions and 81/81 browser checks.
+- The earlier independent QA suite remains part of the history below. Iteration 2
+  added execution and configuration-generation coverage after that pass and
+  recorded 279/279 unit/integration assertions and 81/81 browser checks.
 
 ### Scope
 
@@ -173,7 +280,10 @@ The smoke driver uses the DevTools Protocol over Node's built-in `WebSocket`, so
 - `scripts/smoke.mjs` drives the real button through the real server at two viewports: a normal desktop width (asserts the chip reads `Passed — offline only`, the summary states no Azure contact and no live evidence, exactly five checks render and all pass, and the live region announces the result) and 320px (the width that first exposed a popover-overflow bug during manual review; the fix is now covered by an assertion that running the self-test at 320px completes and leaves no horizontal overflow).
 - Fixing this smoke coverage also surfaced and corrected a latent bug in `scripts/smoke.mjs` itself: the driver created the playground server with an ephemeral `server.listen(0, …)` port while `createPlaygroundServer()` still defaulted its own notion of `port` to the fixed constant used for the same-origin `Origin` check, so any state-changing endpoint reached in smoke tests would have failed the guard once exercised for real. The driver now reserves a loopback port first and passes it explicitly to both `createPlaygroundServer({ port })` and `server.listen(port, …)`, so the guard's expected origin matches the port the browser actually navigates to.
 - Manual review with a real Chromium session (not the smoke driver) additionally covered keyboard operation — `Tab` reaches the disclosure `summary`, `Enter` opens it, a further `Tab` reaches the run button in document order, and `Enter` runs it — and confirmed no console errors either before or after the fix to the 320px layout.
-- Full suite after this work: `npm run check` — 89 modules, 0 dependencies, nothing outside `CitadelSamples`; `node --test` — 563/563 passing; `npm run smoke` — 88/88 passing. `npm run verify` runs all three and exits 0.
+- Historical baseline at the offline-self-test checkpoint:
+  `npm run check` — 89 modules, 0 dependencies, nothing outside
+  `CitadelSamples`; `node --test` — 563/563 passing; `npm run smoke` — 88/88
+  passing. The final protected-source baseline is recorded above.
 
 ### A defect found and fixed during this work
 
@@ -203,7 +313,10 @@ These are honest gaps, not deferred work described as done.
 
 1. **Nothing has been executed against Azure.** The local executor is covered with injected process, HTTP, filesystem, and Python transports. No subscription, gateway, key, Foundry project, burst, or cleanup was touched, so no recipe is yet proven against a live hub.
 2. **The current machine is partially ready.** Azure CLI 2.77 and Python 3.11 resolve correctly. The Weather API and Agent Framework recipes remain blocked until their modules from `runtime/requirements.txt` are installed. Access-contract deployment can run without Python unless its key fallback is needed.
-3. **The external relay remains an interface, not a deployed service.** It is the intended execution boundary for Container Apps or another remote host; no relay implementation has been deployed or integration-tested.
+3. **The HTTP/assertion relay has not been deployed or integration-tested.** Its
+   implementation and deployment assets preserve a narrower remote boundary,
+   but they are proved only by source inspection and offline tests. It is not an
+   execution path for Python, Azure CLI, generated artifacts, bursts, or cleanup.
 4. **Customer endpoint reachability and Azure permissions are not probed at startup.** The operator must satisfy each sample's in-product prerequisites and role guidance. Network, RBAC, policy-version, and service-state failures appear in the run result.
 5. **State-changing retries remain operator decisions.** Plans are deterministic and read-backs/assertions expose partial outcomes, but the UI does not automatically retry deployments, role assignments, bursts, or deletions.
 6. **Some expected results require corroboration across recipes.** In particular, proving an Agent Framework call traversed the gateway needs the usage metric, and the source API's anonymous 401 check is documented but not a separate notebook recipe.
@@ -213,7 +326,13 @@ These are honest gaps, not deferred work described as done.
 
 ## Exact Next Action
 
-Install the optional Python modules if the next session will exercise those recipes, start with `npm run start:execute`, and validate the 19 scenarios on an isolated non-production hub in catalogue order. Record redacted response fixtures and any service/API-version differences. The Container Apps continuation should implement the existing external relay contract with managed identity and Key Vault rather than exposing the loopback process executor remotely.
+Select and obtain owner approval for an isolated non-production environment.
+Then install optional Python modules only when a registered scenario needs them
+and validate the 19 scenarios in catalogue order. Record evidence class,
+execution location, `azureContacted`, `liveEvidence`, source digest, redacted
+step evidence, assertions, artifacts, and residue. Do not run Policy bursts or
+Cleanup until scenarios 1-16 pass, and do not describe any future hosted
+process-running job as implemented or approved.
 
 Azure authentication is not required for ordinary playground development or local verification. Authenticate only when an operator explicitly starts the live-validation phase.
 

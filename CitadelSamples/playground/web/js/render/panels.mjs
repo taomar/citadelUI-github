@@ -1,4 +1,4 @@
-/** The four workbench panels. */
+/** The five workbench panels. */
 
 import { bullets, chip, disclosure, el, facts, link, linkList, replace, section } from './dom.mjs';
 
@@ -81,11 +81,264 @@ export function renderGuide(panel, guide) {
   ]);
 }
 
+/* ---------------------------------------------------------------- code */
+
+function fieldControlId(path) {
+  return `f-${path.replace(/[^a-zA-Z0-9-]/g, '-')}`;
+}
+
+function renderValidation(validation, { onValidate, onDownload }) {
+  const details = [
+    el('div', { class: 'strip-meta' }, [
+      chip(validation.badge.label, validation.badge.tone),
+      chip(validation.evidenceLabel, 'neutral'),
+      chip('Python compile only', 'cloud', { mono: true }),
+    ]),
+    el('p', { class: 'prose', text: validation.summary }),
+    el('p', {
+      class: 'hint',
+      text: 'The validator never executes source, contacts Azure, contacts the network, or produces live evidence.',
+    }),
+    validation.workspaceRemoved
+      ? el('div', { class: 'strip-meta' }, [chip('Temporary workspace removed', 'success')])
+      : null,
+  ];
+  if (validation.checks.length) {
+    details.push(
+      el(
+        'div',
+        { class: 'validation-checks' },
+        validation.checks.map((check) =>
+          el('div', { class: 'validation-check' }, [
+            chip(check.passed ? 'Pass' : 'Fail', check.passed ? 'success' : 'danger'),
+            el('span', { class: 'validation-check-label', text: check.label }),
+            check.detail ? el('span', { class: 'validation-check-detail', text: check.detail }) : null,
+          ]),
+        ),
+      ),
+    );
+  }
+  if (validation.steps.length) {
+    details.push(
+      el(
+        'div',
+        { class: 'validation-steps' },
+        validation.steps.map((step) =>
+          el('div', { class: 'step', 'data-state': step.state }, [
+            el('div', { class: 'step-head' }, [
+              el('h3', { class: 'step-title', text: step.title }),
+              chip(step.state, stateBadgeTone(step.state)),
+            ]),
+            step.detail ? el('p', { class: 'step-detail', text: step.detail }) : null,
+          ]),
+        ),
+      ),
+    );
+  }
+  if (validation.artifact) {
+    details.push(
+      el('div', { class: 'validation-artifact' }, [
+        el('h3', { class: 'step-title', text: 'Validation report' }),
+        facts([
+          ['File', validation.artifact.fileName, { mono: true }],
+          ['SHA-256', validation.artifact.sha256, { mono: true }],
+          ['Bytes', validation.artifact.bytes, { mono: true }],
+          ['Retained in workspace', validation.artifact.retainedInWorkspace ? 'Yes' : 'No'],
+        ]),
+        el('button', {
+          type: 'button',
+          class: 'btn btn-sm',
+          'data-validation-artifact-download': true,
+          text: `Download ${validation.artifact.fileName}`,
+          onclick: () =>
+            onDownload?.(
+              validation.artifact.fileName,
+              validation.artifact.text,
+              validation.artifact.mediaType,
+            ),
+        }),
+      ]),
+    );
+  }
+  details.push(
+    el('div', { class: 'runbar' }, [
+      el('button', {
+        type: 'button',
+        class: 'btn btn-primary',
+        id: 'validate-source-button',
+        disabled: !validation.available || validation.state === 'running',
+        'aria-busy': validation.state === 'running' ? 'true' : undefined,
+        text:
+          validation.state === 'running'
+            ? 'Validating…'
+            : validation.available
+              ? 'Validate protected code offline'
+              : 'Local execute mode required',
+        onclick: () => onValidate?.(),
+      }),
+    ]),
+  );
+  return el(
+    'div',
+    {
+      class: 'validation-boundary',
+      'data-validation-mode': validation.validationMode,
+      'data-execution-mode': validation.mode,
+    },
+    details,
+  );
+}
+
+function stateBadgeTone(state) {
+  if (state === 'completed' || state === 'passed') return 'success';
+  if (state === 'failed') return 'danger';
+  if (state === 'blocked' || state === 'inconclusive') return 'warning';
+  return 'neutral';
+}
+
+export function renderSource(panel, source, validation, { onRetry, onConfigure, onValidate, onDownload } = {}) {
+  if (source.state !== 'ready') {
+    replace(panel, [
+      section(
+        'Protected notebook source',
+        [
+          el('div', { class: 'strip-meta' }, [
+            chip('Protected code', 'brand'),
+            chip('Read only', 'neutral'),
+          ]),
+          el('p', { class: source.state === 'error' ? 'field-error' : 'prose', text: source.message }),
+          source.state === 'error'
+            ? el('div', { class: 'runbar' }, [
+                el('button', { type: 'button', class: 'btn btn-sm', text: 'Retry source load', onclick: () => onRetry?.() }),
+              ])
+            : null,
+        ],
+        { note: 'server-owned' },
+      ),
+    ]);
+    return;
+  }
+
+  const nodes = [
+    section(
+      'Protected notebook source',
+      [
+        el('div', { class: 'strip-meta' }, [
+          chip('Protected code', 'brand'),
+          chip('Read only', 'neutral'),
+          chip('Imported notebook', 'cloud'),
+        ]),
+        el('p', { class: 'prose', text: source.protection.statement }),
+        facts([
+          ['Notebook', source.notebook.fileName, { mono: true }],
+          ['Notebook SHA-256', source.notebook.sha256, { mono: true }],
+          ['Notebook bytes', source.notebook.bytes, { mono: true }],
+        ]),
+        el('p', {
+          class: 'hint',
+          text: 'The server selects these cells and verifies the notebook digest. This page has no code editor and sends no source text back.',
+        }),
+      ],
+      { note: `${source.cells.length} cited cell${source.cells.length === 1 ? '' : 's'}` },
+    ),
+    section(
+      'Editable parameter zones',
+      [
+        el('p', {
+          class: 'prose',
+          text: 'Only the declared configuration controls and memory-only secret fields below may be changed. Protected code cannot be changed.',
+        }),
+        ...source.parameterZones.map((zone) =>
+          el('div', { class: 'parameter-zone', 'data-parameter-zone': zone.id }, [
+            el('div', { class: 'parameter-zone-head' }, [
+              el('h3', { class: 'step-title', text: zone.title }),
+              chip(`${zone.count} field${zone.count === 1 ? '' : 's'}`, 'neutral', { mono: true }),
+            ]),
+            el(
+              'ul',
+              { class: 'parameter-zone-fields' },
+              zone.fields.map((field) =>
+                el('li', { 'data-parameter-path': field.path }, [
+                  el('a', {
+                    href: `#${fieldControlId(field.path)}`,
+                    text: field.label,
+                    onclick: (event) => {
+                      event.preventDefault();
+                      onConfigure?.(field.path);
+                    },
+                  }),
+                  el('code', { class: 'mono', text: field.path }),
+                  field.secret ? chip('Secret · memory only', 'danger') : chip('Configuration', 'brand'),
+                  field.blockingWhenBlank ? chip('Required', 'warning') : null,
+                ]),
+              ),
+            ),
+          ]),
+        ),
+      ],
+      { note: 'editable only in Configure' },
+    ),
+  ];
+
+  for (const cell of source.cells) {
+    nodes.push(
+      el(
+        'article',
+        {
+          class: 'source-cell',
+          'data-source-cell': true,
+          'data-cell-index': cell.cellIndex,
+          'data-protected': 'true',
+          'data-editable': 'false',
+        },
+        [
+          el('div', { class: 'source-cell-head' }, [
+            el('h2', { class: 'source-cell-title', text: `Notebook cell ${cell.cellIndex}` }),
+            chip('Protected code', 'brand'),
+            chip(cell.cellType, 'neutral', { mono: true }),
+            cell.language ? chip(cell.language, 'cloud', { mono: true }) : null,
+          ]),
+          facts([
+            ['Cell SHA-256', cell.sha256, { mono: true }],
+            ['Exact bytes', cell.bytes, { mono: true }],
+          ]),
+          el('div', { class: 'source-code-frame' }, [
+            el(
+              'ol',
+              { class: 'source-line-numbers', 'aria-hidden': 'true' },
+              Array.from({ length: cell.lineCount }, (_, index) => el('li', { text: String(index + 1) })),
+            ),
+            el(
+              'pre',
+              {
+                class: 'source-code',
+                'data-source-code': true,
+                tabindex: '0',
+                'aria-label': `Protected source for notebook cell ${cell.cellIndex}`,
+              },
+              [el('code', { text: cell.text })],
+            ),
+          ]),
+        ],
+      ),
+    );
+  }
+
+  nodes.push(
+    section(
+      'Offline source validation',
+      [renderValidation(validation, { onValidate, onDownload })],
+      { note: 'not live evidence' },
+    ),
+  );
+  replace(panel, nodes);
+}
+
 /* ----------------------------------------------------------- configure */
 
 function renderField(field, { onChange, onBlur }) {
   const widthClass = WIDTH_CLASS[field.width] ?? WIDTH_CLASS.id;
-  const inputId = `f-${field.path.replace(/[^a-zA-Z0-9-]/g, '-')}`;
+  const inputId = fieldControlId(field.path);
   const describedBy = [];
   const invalid = field.errors.length > 0;
   const touch = () => onBlur?.(field.path);
@@ -234,7 +487,7 @@ function renderField(field, { onChange, onBlur }) {
     aria.setAttribute('aria-required', 'true');
   }
 
-  return el('div', { class: 'prow', 'data-requirement': field.requirement }, [
+  return el('div', { class: 'prow', 'data-requirement': field.requirement, 'data-parameter-path': field.path }, [
     el('div', { class: 'prow-ident' }, [
       el('label', { class: 'prow-label', for: inputId, text: field.label }),
       el('span', { class: 'prow-owner', text: field.ownerLabel }),
@@ -262,7 +515,22 @@ function renderField(field, { onChange, onBlur }) {
 }
 
 export function renderConfigure(panel, configure, { onChange, onBlur, onCopy, onDownload }) {
-  const nodes = [];
+  const nodes = [
+    section(
+      'Editable zones',
+      [
+        el('div', { class: 'strip-meta' }, [
+          chip('Parameters and configuration', 'brand'),
+          chip('Secrets · memory only', 'danger'),
+        ]),
+        el('p', {
+          class: 'prose',
+          text: 'These declared controls are the only editable part of the sample. The notebook code remains protected and read only.',
+        }),
+      ],
+      { note: 'declared inputs only' },
+    ),
+  ];
 
   // The contract summary: what this sample needs, before any scrolling.
   nodes.push(
@@ -362,7 +630,7 @@ const STEP_TYPE_TONE = {
 export function renderRequest(
   panel,
   request,
-  { onCopy, canRun, runBlockedReason, onAcknowledge, acknowledged, onRun, onCancel, running, runtime },
+  { onCopy, canRun, runBlockedReason, onAcknowledge, acknowledged, onRun, onCancel, running, runtime, environment },
 ) {
   if (!request.available) {
     replace(panel, [
@@ -386,6 +654,17 @@ export function renderRequest(
 
   const plan = request.plan;
   const nodes = [
+    section(
+      'Execution boundary',
+      [
+        el('div', { class: 'execution-boundary', 'data-execution-mode': environment.mode }, [
+          chip(environment.label, environment.liveCapable ? 'success' : 'neutral'),
+          chip(environment.evidenceLabel, environment.liveCapable ? 'brand' : 'neutral'),
+          el('p', { class: 'prose', text: environment.detail }),
+        ]),
+      ],
+      { note: 'review before approval' },
+    ),
     section(
       'Operation plan',
       [
@@ -556,8 +835,24 @@ const EXPECT_MARK = {
 
 export function renderResponse(panel, response) {
   const nodes = [
+    section(
+      'Execution environment',
+      [
+        el('div', { class: 'execution-boundary', 'data-execution-mode': response.environment.mode }, [
+          chip(response.environment.label, response.environment.liveCapable ? 'success' : 'neutral'),
+          chip(response.environment.evidenceLabel, response.environment.liveCapable ? 'brand' : 'neutral'),
+          el('p', { class: 'prose', text: response.environment.detail }),
+        ]),
+      ],
+    ),
     section('Result', [
-      el('div', { class: 'result', 'data-state': response.state }, [
+      el('div', {
+        class: 'result',
+        'data-state': response.state,
+        'data-execution-mode': response.environment.mode,
+        'data-evidence-mode': response.environment.evidenceMode,
+        'aria-live': response.running ? 'polite' : undefined,
+      }, [
         el('div', { class: 'result-head' }, [
           chip(response.badge.label, response.badge.tone),
           el('p', { class: 'result-summary', text: response.summary }),
