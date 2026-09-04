@@ -203,21 +203,21 @@ export async function probeRuntimes({ mode, python = PYTHON, spawn = spawnProces
   const modules = [...new Set(CATALOGUE.samples.flatMap((sample) => sample.runtime?.python?.modules ?? []))];
 
   const [azureCli, py, accelerator] = await Promise.all([
-    spawn({ executable: 'az', args: ['version', '-o', 'json'], timeoutMs: 30_000 })
+    spawn({ executable: 'az', args: ['version', '-o', 'json'], cwd: root, timeoutMs: 30_000 })
       .then((result) =>
         result.code === 0
           ? { available: true, version: cliVersion(result.stdout) }
           : { available: false, reason: cliReason(result) },
       )
       .catch((error) => ({ available: false, reason: String(error?.message ?? error) })),
-    probePython(python, modules, spawn),
+    probePython(python, modules, spawn, root),
     countAccelerator(root),
   ]);
 
   return { mode, azureCli, python: py, accelerator };
 }
 
-async function probePython(python, modules, spawn) {
+async function probePython(python, modules, spawn, root) {
   const probeSource = [
     'import json,sys,importlib.util',
     `mods=${JSON.stringify(modules)}`,
@@ -232,6 +232,7 @@ async function probePython(python, modules, spawn) {
     const result = await spawn({
       executable: python,
       args: ['-c', probeSource],
+      cwd: root,
       timeoutMs: 30_000,
       allowedExecutables: [python],
     });
@@ -381,7 +382,7 @@ export function checkStateChangingRequest(request, { port = PORT, host = HOST } 
   }
   const origin = request.headers.origin;
   if (origin) {
-    const expected = new Set([`http://${host}:${port}`, `http://localhost:${port}`, `http://127.0.0.1:${port}`]);
+    const expected = new Set([httpOrigin(host, port), httpOrigin('localhost', port), httpOrigin('127.0.0.1', port)]);
     if (!expected.has(origin)) {
       return { ok: false, status: 403, message: `Refused a request from origin ${origin}.` };
     }
@@ -391,6 +392,14 @@ export function checkStateChangingRequest(request, { port = PORT, host = HOST } 
     return { ok: false, status: 415, message: 'This endpoint accepts application/json only.' };
   }
   return { ok: true };
+}
+
+function httpOrigin(host, port) {
+  const hostname = String(host).replace(/^\[|\]$/g, '');
+  const url = new URL('http://localhost');
+  url.hostname = hostname.includes(':') ? `[${hostname}]` : hostname;
+  url.port = String(port);
+  return url.origin;
 }
 
 async function handleExecute(request, response, { port, host, relay }) {

@@ -14,7 +14,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -840,6 +840,32 @@ test('a state-changing call must be same-origin and carry a JSON content type', 
   assert.equal(formPost.status, 415);
 });
 
+test('the state-changing guard accepts IPv6 loopback only at the configured origin', () => {
+  const make = (origin) => ({
+    headers: {
+      origin,
+      'sec-fetch-site': 'same-origin',
+      'content-type': 'application/json',
+    },
+  });
+  const options = { port: 4173, host: '::1' };
+
+  assert.equal(checkStateChangingRequest(make('http://[::1]:4173'), options).ok, true);
+  assert.equal(checkStateChangingRequest(make('http://[::1]:4173'), { ...options, host: '[::1]' }).ok, true);
+
+  for (const origin of [
+    'https://[::1]:4173',
+    'http://[::1]:4174',
+    'http://[::2]:4173',
+    'http://127.0.0.2:4173',
+    'http://localhost.example:4173',
+  ]) {
+    const result = checkStateChangingRequest(make(origin), options);
+    assert.equal(result.ok, false, `${origin} must not be accepted`);
+    assert.equal(result.status, 403);
+  }
+});
+
 test('an oversized body is refused before it is parsed', async () => {
   const manager = { start: async () => ({ runId: 'x' }), cancel: () => ({}), cancelAll: () => {} };
   await withServer({ mode: 'execute', runManager: manager }, async ({ call }) => {
@@ -1003,6 +1029,34 @@ test('the runtime probe reads the CLI and the interpreter, and nothing on the ne
   assert.match(pythonProbe.args[1], /except \(ImportError, ModuleNotFoundError\)/);
   for (const call of spawn.calls) {
     assert.ok(['az', 'python'].includes(call.executable), `the probe spawned ${call.executable}`);
+    assert.equal(call.cwd, PLAYGROUND_ROOT);
+  }
+});
+
+test('the runtime probe satisfies the production transport workspace guard', async () => {
+  const calls = [];
+  const spawn = (options) => {
+    calls.push(options);
+    const stdout =
+      options.executable === 'az'
+        ? JSON.stringify({ 'azure-cli': '2.61.0' })
+        : JSON.stringify({ version: '3.12.1', modules: { httpx: true } });
+    return spawnProcess({
+      ...options,
+      executable: process.execPath,
+      args: ['-e', `process.stdout.write(${JSON.stringify(stdout)})`],
+      allowedExecutables: [process.execPath],
+    });
+  };
+
+  const probe = await probeRuntimes({ mode: 'execute', python: 'python', spawn, root: PLAYGROUND_ROOT });
+
+  assert.equal(probe.azureCli.available, true, probe.azureCli.reason);
+  assert.equal(probe.python.available, true, probe.python.reason);
+  assert.equal(calls.length, 2);
+  for (const call of calls) {
+    assert.equal(call.cwd, PLAYGROUND_ROOT);
+    assert.equal(isAbsolute(call.cwd), true);
   }
 });
 
