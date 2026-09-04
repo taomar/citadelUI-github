@@ -181,3 +181,6 @@ These are honest gaps, not deferred work described as done.
 ## Exact Next Action
 
 Install the optional Python modules if the next session will exercise those recipes, start with `npm run start:execute`, and validate the 19 scenarios on an isolated non-production hub in catalogue order. Record redacted response fixtures and any service/API-version differences. The Container Apps continuation should implement the existing external relay contract with managed identity and Key Vault rather than exposing the loopback process executor remotely.
+
+The complete continuation and operator runbook is in
+[`CONTINUATION-PLAN.md`](CONTINUATION-PLAN.md).
