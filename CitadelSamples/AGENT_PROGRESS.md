@@ -2,7 +2,7 @@
 
 ## Current Milestone
 
-Executable-playground checkpoint complete and ready for live validation on a non-production Citadel hub.
+Executable-playground checkpoint complete, portable across Windows checkouts, and ready for live validation on a non-production Citadel hub.
 
 ## Executable Playground Checkpoint
 
@@ -16,6 +16,8 @@ Executable-playground checkpoint complete and ready for live validation on a non
 - Runs report per-step state, duration, safe evidence, assertions, public configuration updates, and memory-only secret updates. Active run IDs are returned in response headers so cancellation can stop an in-flight run.
 - Windows resolves the official `az.cmd` launcher to the Azure CLI's bundled Python entry point without enabling a shell.
 - Runtime capability is evaluated per sample. Optional Python fallback support does not block access-contract deployment; missing primary Python modules block only the recipes that actually need them.
+- `CitadelSamples/.gitattributes` keeps the imported notebook byte-exact when Git is configured to convert line endings on Windows.
+- `playground/.gitignore` keeps generated `.runs/` workspaces out of source control and satisfies the existing workspace-isolation assertion.
 
 ### Review corrections included
 
@@ -134,6 +136,8 @@ The correction belongs at three boundaries:
 - `npm test` — 279 assertions across 14 files, 0 failures.
 - `npm run smoke` — 81 headless-browser checks, 0 failures.
 
+The verification also passes from a Windows checkout with `core.autocrlf=true`: the imported notebook remains 66,241 bytes with SHA-256 `ee706b4dac2978d4f35885ea5f77a7d6a12add337e7f959690550be28d4523bb`, and `.runs/` is reported as ignored.
+
 The smoke driver uses the DevTools Protocol over Node's built-in `WebSocket`, so browser-level verification adds no dependency. It covers selection, tab keyboard navigation, filling every field by label, inline validation appearing and clearing, the acknowledgement gate and its invalidation on input change, secret redaction in the live preview, directory search, and the 320px and 200%-zoom layouts. Screenshots of all four tabs at desktop, tablet and 320px were reviewed; two defects found that way were fixed — a grid-item bug that broke the error list onto stray rows, and a context-rail label breaking mid-word.
 
 ### Independent QA
@@ -181,3 +185,5 @@ These are honest gaps, not deferred work described as done.
 ## Exact Next Action
 
 Install the optional Python modules if the next session will exercise those recipes, start with `npm run start:execute`, and validate the 19 scenarios on an isolated non-production hub in catalogue order. Record redacted response fixtures and any service/API-version differences. The Container Apps continuation should implement the existing external relay contract with managed identity and Key Vault rather than exposing the loopback process executor remotely.
+
+Azure authentication is not required for ordinary playground development or local verification. Authenticate only when an operator explicitly starts the live-validation phase.
