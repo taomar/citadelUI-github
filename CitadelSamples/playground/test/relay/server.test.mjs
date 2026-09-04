@@ -33,7 +33,7 @@ import {
 } from '../../src/relay/principalAuth.mjs';
 import { createStaticTenantPolicy, createRelayTenantBundle } from '../../src/relay/tenantPolicy.mjs';
 import { createSampleRequestPolicy, deriveDefaultSampleRequestPolicy } from '../../src/relay/requestPolicy.mjs';
-import { mintAcknowledgement } from '../../src/relay/acknowledgement.mjs';
+import { mintAcknowledgement, ACKNOWLEDGEMENT_TTL_MS, ACKNOWLEDGEMENT_CLOCK_SKEW_MS } from '../../src/relay/acknowledgement.mjs';
 import { FAKE_API_KEY, makeFixtureReader } from '../helpers/fixtures.mjs';
 import { fakeFetch, sseFrame } from '../helpers/transports.mjs';
 
@@ -273,6 +273,34 @@ test('a replayed nonce is refused the second time it is delivered, even though e
   const second = await handleExecuteRequest(weatherPayload({ acknowledgement: ack }), deps);
   assert.equal(second.status, 409);
   assert.equal(second.body.code, 'nonce-replayed');
+});
+
+test('the reviewer reproduction: direct /execute at the exact future-skew boundary — a nonce consumed once is still refused on replay past the nonce store\'s OLD fixed default TTL, since real acknowledgement expiry (not that fixed default) now governs retention', async () => {
+  // An acknowledgement minted at the maximum allowed future skew: issuedAt
+  // sits exactly at `now + ACKNOWLEDGEMENT_CLOCK_SKEW_MS`, so its real
+  // expiresAt is a full `ACKNOWLEDGEMENT_TTL_MS + ACKNOWLEDGEMENT_CLOCK_SKEW_MS`
+  // (6 minutes) away from the verification instant below — one minute
+  // beyond the nonce store's own fixed 5-minute default TTL.
+  const t0 = Date.now();
+  const ack = weatherAcknowledgement({ now: () => t0 + ACKNOWLEDGEMENT_CLOCK_SKEW_MS });
+  assert.equal(ack.expiresAt, t0 + ACKNOWLEDGEMENT_CLOCK_SKEW_MS + ACKNOWLEDGEMENT_TTL_MS);
+
+  let now = t0;
+  const nonceStore = createNonceStore({ now: () => now });
+  const deps = baseDeps({ nonceStore, now: () => now });
+
+  const first = await handleExecuteRequest(weatherPayload({ acknowledgement: ack }), deps);
+  assert.equal(first.status, 200, 'the first, legitimate delivery executes normally');
+
+  // Advance past where the nonce store's OLD fixed 5-minute default TTL
+  // would have already swept this entry — but still well inside the real,
+  // skew-extended acknowledgement validity window.
+  now = t0 + 5 * 60_000 + 1;
+  assert.ok(ack.expiresAt > now, 'the acknowledgement itself must still be unexpired at this instant');
+
+  const replay = await handleExecuteRequest(weatherPayload({ acknowledgement: ack }), deps);
+  assert.equal(replay.status, 409, 'a nonce replay must still be refused, not wrongly re-admitted because the store forgot it early');
+  assert.equal(replay.body.code, 'nonce-replayed');
 });
 
 test('a schema/allow-list violation is surfaced with the RequestRefused status and code, not a 500', async () => {
@@ -1128,6 +1156,177 @@ test('the managed-run routes authenticate every action, bind runs to their owner
     assert.equal(observedSignal.aborted, true);
   });
   completion.resolve({ state: 'completed', steps: [] });
+});
+
+function managedRunAuthenticator(accepted = { '******': { principal: CALLER_A, tenant: TENANT_A } }) {
+  return {
+    async authenticate(request) {
+      const match = accepted[request.headers.authorization];
+      return match ? { ok: true, principal: match.principal, tenant: match.tenant, roles: [] } : { ok: false };
+    },
+  };
+}
+
+function countingManagedRunOrchestrator(onLaunch) {
+  let sequence = 0;
+  return createManagedRunOrchestrator({
+    store: createInMemoryManagedRunStore(),
+    // A run ID must be unique per created record; a fixed value would make
+    // two genuinely distinct runs collide in the store, so — unlike the
+    // single-run test above — these concurrency tests need a fresh token per
+    // call.
+    random: () => `abcdefghijklmnopqrstuvwx${String(++sequence).padStart(2, '0')}`,
+    // These tests never resolve or cancel their launched jobs (they only
+    // exercise the admission race, not lease/timeout timing), so real timers
+    // here would otherwise keep the process alive for the real
+    // runTimeoutMs/dispatchHeartbeatMs durations after the test ends.
+    setTimeoutFn: () => ({}),
+    clearTimeoutFn: () => {},
+    setIntervalFn: () => ({}),
+    clearIntervalFn: () => {},
+    jobLauncher: {
+      launch: (context) => {
+        onLaunch?.(context);
+        return new Promise(() => {});
+      },
+    },
+  });
+}
+
+test('concurrent managed-run requests with the same Idempotency-Key and the same payload/nonce coalesce onto exactly one run, never a 409 nonce-replayed', async () => {
+  let launches = 0;
+  const runs = countingManagedRunOrchestrator(() => {
+    launches += 1;
+  });
+  await withServer(serverDeps({ authenticator: managedRunAuthenticator(), runOrchestrator: runs }), async (base) => {
+    const headers = { 'content-type': 'application/json', authorization: '******', 'idempotency-key': 'concurrent-identical-key' };
+    const body = JSON.stringify(weatherPayload({ acknowledgement: weatherAcknowledgement({ nonce: 'concurrent-identical-nonce' }) }));
+    const [first, second] = await Promise.all([
+      fetch(`${base}/runs`, { method: 'POST', headers, body }),
+      fetch(`${base}/runs`, { method: 'POST', headers, body }),
+    ]);
+    const statuses = [first.status, second.status].sort();
+    assert.deepEqual(statuses, [200, 202], `expected exactly one 202-created and one 200-existing, got ${JSON.stringify([first.status, second.status])}`);
+    const [firstBody, secondBody] = await Promise.all([first.json(), second.json()]);
+    assert.match(firstBody.runId, /^run_/);
+    assert.equal(firstBody.runId, secondBody.runId, 'both concurrent requests must resolve to the SAME run');
+    assert.equal(launches, 1, 'the job must be dispatched exactly once, never once per racing request');
+  });
+});
+
+test('concurrent managed-run requests sharing an Idempotency-Key but carrying different payloads still resolve to exactly one created run and one idempotency-conflict, never two runs', async () => {
+  let launches = 0;
+  const runs = countingManagedRunOrchestrator(() => {
+    launches += 1;
+  });
+  await withServer(serverDeps({ authenticator: managedRunAuthenticator(), runOrchestrator: runs }), async (base) => {
+    const headers = { 'content-type': 'application/json', authorization: '******', 'idempotency-key': 'concurrent-conflicting-key' };
+    const bodyA = JSON.stringify(weatherPayload({ acknowledgement: weatherAcknowledgement({ nonce: 'concurrent-conflict-nonce-a' }) }));
+    const bodyB = JSON.stringify(
+      weatherPayload({
+        inputs: { ...WEATHER_INPUTS, 'hub.gatewayUrl': 'https://other.example.test' },
+        acknowledgement: weatherAcknowledgement({ nonce: 'concurrent-conflict-nonce-b' }),
+      }),
+    );
+    const [respA, respB] = await Promise.all([
+      fetch(`${base}/runs`, { method: 'POST', headers, body: bodyA }),
+      fetch(`${base}/runs`, { method: 'POST', headers, body: bodyB }),
+    ]);
+    const statuses = [respA.status, respB.status].sort();
+    assert.deepEqual(statuses, [202, 409], `expected exactly one 202-created and one 409-conflict, got ${JSON.stringify([respA.status, respB.status])}`);
+    assert.equal(launches, 1, "only the winning request's work is ever dispatched");
+  });
+});
+
+test('a nonce replayed under a different Idempotency-Key is still refused with 409 nonce-replayed, since single-use nonce tracking lives in the durable store shared by every key', async () => {
+  let launches = 0;
+  const runs = countingManagedRunOrchestrator(() => {
+    launches += 1;
+  });
+  await withServer(serverDeps({ authenticator: managedRunAuthenticator(), runOrchestrator: runs }), async (base) => {
+    const sharedAck = weatherAcknowledgement({ nonce: 'shared-nonce-across-different-keys' });
+    const first = await fetch(`${base}/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: '******', 'idempotency-key': 'key-for-first-use' },
+      body: JSON.stringify(weatherPayload({ acknowledgement: sharedAck })),
+    });
+    assert.equal(first.status, 202, await first.clone().text());
+
+    const replay = await fetch(`${base}/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: '******', 'idempotency-key': 'a-completely-different-key' },
+      body: JSON.stringify(weatherPayload({ acknowledgement: sharedAck })),
+    });
+    assert.equal(replay.status, 409);
+    assert.equal((await replay.json()).code, 'nonce-replayed');
+    assert.equal(launches, 1, 'the replay must never dispatch a second job');
+  });
+});
+
+test('a failed admission attempt (an expired acknowledgement) does not leave a poisoned reservation — a following request with the same Idempotency-Key still succeeds', async () => {
+  let launches = 0;
+  const runs = countingManagedRunOrchestrator(() => {
+    launches += 1;
+  });
+  await withServer(serverDeps({ authenticator: managedRunAuthenticator(), runOrchestrator: runs }), async (base) => {
+    const key = 'poison-check-key';
+    const expiredAck = weatherAcknowledgement({ now: () => Date.now() - 60 * 60_000, nonce: 'poison-check-nonce-expired' });
+    const refused = await fetch(`${base}/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: '******', 'idempotency-key': key },
+      body: JSON.stringify(weatherPayload({ acknowledgement: expiredAck })),
+    });
+    assert.equal(refused.status, 409);
+    assert.equal((await refused.json()).code, 'acknowledgement-expired');
+
+    const validAck = weatherAcknowledgement({ nonce: 'poison-check-nonce-valid' });
+    const succeeded = await fetch(`${base}/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: '******', 'idempotency-key': key },
+      body: JSON.stringify(weatherPayload({ acknowledgement: validAck })),
+    });
+    assert.equal(succeeded.status, 202, await succeeded.clone().text());
+    assert.equal(launches, 1, 'only the valid retry dispatches work');
+  });
+});
+
+test('a request whose acknowledgement claims an issuedAt far enough in the future to outlive the managed-run store\'s fixed nonce-retention cap is refused up front — the reviewer-reported reproduction: before the bounded clock-skew check, this exact acknowledgement (an ordinary TTL-bounded lifetime measured from its OWN issuedAt, and not yet expired relative to real time either) passed every prior check, got admitted, and its nonce retention would have been capped well BEFORE its claimed expiresAt, opening a window where a different Idempotency-Key replaying the same nonce inside that window would wrongly succeed', async () => {
+  let launches = 0;
+  const runs = countingManagedRunOrchestrator(() => {
+    launches += 1;
+  });
+  await withServer(serverDeps({ authenticator: managedRunAuthenticator(), runOrchestrator: runs }), async (base) => {
+    const key = 'future-issued-key';
+    // issuedAt ~26 minutes ahead of real time; expiresAt is issuedAt + the
+    // ordinary default TTL (5 minutes), so ITS OWN claimed lifetime is
+    // unremarkable and its expiresAt (~31 minutes from now) is still
+    // comfortably in the future relative to real time -- exactly the shape
+    // that used to pass every check before this session's bounded
+    // clock-skew validation existed.
+    const futureIssuedAck = weatherAcknowledgement({ now: () => Date.now() + 26 * 60_000, nonce: 'future-issued-nonce' });
+    const refused = await fetch(`${base}/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: '******', 'idempotency-key': key },
+      body: JSON.stringify(weatherPayload({ acknowledgement: futureIssuedAck })),
+    });
+    assert.equal(refused.status, 400, await refused.clone().text());
+    assert.equal((await refused.json()).code, 'acknowledgement-not-yet-valid');
+    assert.equal(launches, 0, 'a request refused for a future-dated issuedAt must never dispatch work');
+
+    // No poisoned reservation, and — critically — the refused nonce was
+    // never spent: a genuinely fresh, correctly-timed acknowledgement
+    // reusing the SAME nonce under the SAME Idempotency-Key still succeeds
+    // normally, exactly as the existing expired-acknowledgement poison
+    // check above proves for a different malformed-timing reason.
+    const validAck = weatherAcknowledgement({ nonce: 'future-issued-nonce' });
+    const succeeded = await fetch(`${base}/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: '******', 'idempotency-key': key },
+      body: JSON.stringify(weatherPayload({ acknowledgement: validAck })),
+    });
+    assert.equal(succeeded.status, 202, await succeeded.clone().text());
+    assert.equal(launches, 1, 'only the valid retry dispatches work');
+  });
 });
 
 test('an authenticator that throws (a real identity-provider outage) still gets a controlled 500 response over the socket, never a hang or a crash', async () => {

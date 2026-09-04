@@ -33,6 +33,16 @@ import { createHash, randomUUID } from 'node:crypto';
 export const ACKNOWLEDGEMENT_TTL_MS = 5 * 60_000;
 
 /**
+ * The only clock-drift tolerance `verifyAcknowledgement` extends to a
+ * caller-claimed `issuedAt`: bounded, and small relative to
+ * `ACKNOWLEDGEMENT_TTL_MS`, so it absorbs genuine wall-clock disagreement
+ * between whichever process minted the acknowledgement and whichever
+ * process later verifies it, without ever opening a window wide enough to
+ * matter for replay purposes.
+ */
+export const ACKNOWLEDGEMENT_CLOCK_SKEW_MS = 60_000;
+
+/**
  * Normalise a target — one origin, or every origin a rebuilt plan will
  * actually contact — into a sorted, deduped array, independent of input
  * order or of whether the caller passed a bare string, an array or a `Set`.
@@ -147,6 +157,20 @@ export function mintAcknowledgement({
  * structural check here has already passed, so a malformed or mismatched
  * request never spends a nonce it was not entitled to use.
  *
+ * Timing checks (`issuedAt`, `expiresAt`) are validated against THIS
+ * function's own `now`, never merely against each other in isolation: an
+ * `issuedAt` claimed more than `ACKNOWLEDGEMENT_CLOCK_SKEW_MS` ahead of `now`
+ * is refused with `acknowledgement-not-yet-valid` (a bounded tolerance for
+ * genuine wall-clock disagreement between the minting and verifying
+ * process, not a window for a caller to pre-date an acknowledgement for
+ * later use); and the accepted `expiresAt` can never exceed
+ * `ACKNOWLEDGEMENT_TTL_MS + ACKNOWLEDGEMENT_CLOCK_SKEW_MS` from `now`,
+ * independent of what `issuedAt` claims — this is what guarantees a
+ * downstream consumer keying a fixed retention window off this
+ * acknowledgement's `expiresAt` (the managed-run store's nonce retention —
+ * see `MAX_NONCE_RETENTION_MS` in managedRun.mjs) can always safely cover
+ * the full window this function will still call "valid".
+ *
  * @param {unknown} acknowledgement
  * @param {object} expected
  * @param {string} expected.sampleId
@@ -171,8 +195,68 @@ export function verifyAcknowledgement(acknowledgement, expected, { now = () => D
   if (typeof acknowledgement.expiresAt !== 'number' || !Number.isFinite(acknowledgement.expiresAt)) {
     return { ok: false, code: 'acknowledgement-malformed', message: 'The acknowledgement carries no expiry.' };
   }
-  if (acknowledgement.expiresAt <= now()) {
+  // The acknowledgement's own claimed lifetime (expiresAt - issuedAt) must be
+  // bounded by ACKNOWLEDGEMENT_TTL_MS, AND (independently, below) the
+  // absolute expiry measured from THIS verifier's own clock must never
+  // exceed that same bound plus a small clock-skew tolerance. Without both
+  // checks a forged, or merely future-dated, acknowledgement could still
+  // pass every other structural check here, and callers downstream (the
+  // managed-run store's nonce retention, in particular — see
+  // MAX_NONCE_RETENTION_MS in managedRun.mjs) that key a replay-prevention
+  // window off this exact field would then retain that window far longer
+  // than this function's own notion of "still valid" actually holds, which
+  // is exactly the gap a same-nonce, different-Idempotency-Key replay could
+  // otherwise slip through once the store had reaped it "too early" for a
+  // still-valid-looking acknowledgement.
+  if (typeof acknowledgement.issuedAt !== 'number' || !Number.isFinite(acknowledgement.issuedAt)) {
+    return { ok: false, code: 'acknowledgement-malformed', message: 'The acknowledgement carries no issue time.' };
+  }
+  const nowMs = now();
+  // A caller-claimed issuedAt in the future — beyond a small, bounded
+  // clock-skew tolerance — is refused outright. Left unchecked, a
+  // future-dated issuedAt would let an otherwise self-consistent
+  // acknowledgement (its claimed lifetime and expiry both check out against
+  // ITS OWN issuedAt) describe a validity window that, measured from real
+  // wall-clock time, extends further into the future than this relay ever
+  // intended to accept.
+  if (acknowledgement.issuedAt > nowMs + ACKNOWLEDGEMENT_CLOCK_SKEW_MS) {
+    return { ok: false, code: 'acknowledgement-not-yet-valid', message: 'The acknowledgement was issued in the future.' };
+  }
+  // An issuedAt that is merely OLD, rather than future-dated, needs no
+  // separate bound here: paired with the claimed-lifetime check immediately
+  // below and the expiry check that follows it, an unreasonably old
+  // issuedAt can only ever produce an expiresAt that is either already
+  // expired (caught below) or that claims a lifetime exceeding
+  // ACKNOWLEDGEMENT_TTL_MS (also caught below) — there is no old issuedAt
+  // value that satisfies both those checks while still saying anything
+  // meaningfully different from "this acknowledgement is stale".
+  const claimedLifetimeMs = acknowledgement.expiresAt - acknowledgement.issuedAt;
+  if (!(claimedLifetimeMs > 0) || claimedLifetimeMs > ACKNOWLEDGEMENT_TTL_MS) {
+    return {
+      ok: false,
+      code: 'acknowledgement-malformed',
+      message: 'The acknowledgement claims a lifetime outside the relay\'s accepted acknowledgement TTL.',
+    };
+  }
+  if (acknowledgement.expiresAt <= nowMs) {
     return { ok: false, code: 'acknowledgement-expired', message: 'The acknowledgement has expired.' };
+  }
+  // Critical, and independent of the (bounded, but still caller-influenced)
+  // issuedAt above: measured from THIS verifier's own clock, the accepted
+  // expiry can never exceed TTL + skew from right now. This guarantees the
+  // durable managed-run store's fixed nonce-retention cap
+  // (MAX_NONCE_RETENTION_MS, currently 30 minutes — comfortably larger than
+  // ACKNOWLEDGEMENT_TTL_MS + ACKNOWLEDGEMENT_CLOCK_SKEW_MS — see
+  // managedRun.mjs) always outlasts the full accepted validity window of
+  // any acknowledgement this function lets through, so a nonce this
+  // acknowledgement authorises can never be forgotten by the store while
+  // this function would still consider the acknowledgement valid.
+  if (acknowledgement.expiresAt > nowMs + ACKNOWLEDGEMENT_TTL_MS + ACKNOWLEDGEMENT_CLOCK_SKEW_MS) {
+    return {
+      ok: false,
+      code: 'acknowledgement-malformed',
+      message: 'The acknowledgement expiry exceeds the relay\'s accepted validity window.',
+    };
   }
   if (acknowledgement.sampleId !== expected.sampleId) {
     return {
