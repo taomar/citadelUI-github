@@ -188,6 +188,14 @@ test('offline validation accepts only a compile-only response with no live evide
     workspaceRemoved: true,
     checks: [{ id: 'compile', label: 'Python syntax', passed: true, detail: 'Both cells compiled.' }],
     steps: [{ id: 'compile-1', title: 'Compile cell 1', state: 'completed', detail: 'Syntax accepted.' }],
+    artifact: {
+      fileName: 'source-validation.json',
+      mediaType: 'application/json',
+      text: '{"state":"passed"}',
+      bytes: 18,
+      sha256: 'abc123',
+      retainedInWorkspace: false,
+    },
   };
   const model = buildSourceValidationModel({ status: 'ready', result });
   assert.equal(model.state, 'passed');
@@ -195,6 +203,7 @@ test('offline validation accepts only a compile-only response with no live evide
   assert.equal(model.validationMode, 'python-compile-only');
   assert.equal(model.liveEvidence, false);
   assert.equal(model.workspaceRemoved, true);
+  assert.deepEqual(model.artifact, result.artifact);
 
   const unsafe = buildSourceValidationModel({
     status: 'ready',

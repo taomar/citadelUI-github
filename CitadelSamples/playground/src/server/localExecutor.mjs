@@ -275,7 +275,7 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
     validateResolvedAzArguments(sampleId, step.id, args);
     // A path argument is executed against the run workspace, not against
     // whatever the plan text says.
-    const mapped = await mapPathArguments(args);
+    const mapped = await mapPathArguments(args, entry);
     const result = await runProcess(command.executable, mapped, { signal, deadlineAt });
     const stdout = clip(result.stdout, bounds.maxOutputBytes);
     const stderr = clip(result.stderr, bounds.maxOutputBytes);
@@ -552,10 +552,10 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
   /* --------------------------------------------------------------- plumbing */
 
   /** A path argument is rewritten to its run-workspace location. */
-  async function mapPathArguments(args) {
+  async function mapPathArguments(args, entry) {
     const out = [];
-    for (const arg of args) {
-      if (looksLikeWorkspacePath(arg)) {
+    for (const [index, arg] of args.entries()) {
+      if (entry.shape?.[index]?.workspacePath === true) {
         const target = workspace.resolve(arg);
         if (target.staged) await workspace.stageAccelerator();
         out.push(target.absolute);
@@ -657,12 +657,6 @@ function remainingTimeout(deadlineAt, requested = Number.POSITIVE_INFINITY) {
   const remaining = deadlineAt - Date.now();
   if (remaining <= 0) throw new Error('The step exhausted its execution-time budget.');
   return Math.max(1, Math.min(remaining, requested));
-}
-
-function looksLikeWorkspacePath(arg) {
-  const value = String(arg);
-  if (value.startsWith('-')) return false;
-  return /^runtime\/accelerator\//.test(value) || /\.(bicep|bicepparam|xml|json)$/i.test(value);
 }
 
 async function readBounded(response, limitBytes) {

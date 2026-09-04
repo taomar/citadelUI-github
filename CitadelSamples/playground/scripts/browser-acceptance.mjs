@@ -52,6 +52,25 @@ async function browserJson(harness, path, options = {}) {
   })()`);
 }
 
+async function serverJson(harness, path, options = {}) {
+  const response = await fetch(new URL(path, harness.baseUrl), {
+    ...options,
+    headers: {
+      Origin: harness.baseUrl,
+      'Sec-Fetch-Site': 'same-origin',
+      ...(options.headers ?? {}),
+    },
+  });
+  const text = await response.text();
+  let body = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = { parseError: text };
+  }
+  return { status: response.status, ok: response.ok, body };
+}
+
 async function selectSample(harness, sampleId) {
   await harness.evaluate(`(() => {
     const target = document.querySelector('[data-sample=${JSON.stringify(sampleId)}]');
@@ -164,7 +183,7 @@ async function checkOfflineValidation(harness, sourceBySample) {
     ['a mistyped protocol version', { protocolVersion: String(EXECUTION_PROTOCOL_VERSION) }],
     ['an unsupported protocol version', { protocolVersion: EXECUTION_PROTOCOL_VERSION + 1 }],
   ]) {
-    const response = await browserJson(harness, `/api/source/${sampleId}/validate`, {
+    const response = await serverJson(harness, `/api/source/${sampleId}/validate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -178,14 +197,12 @@ async function checkOfflineValidation(harness, sourceBySample) {
 
   await selectSample(harness, sampleId);
   const validationUi = await harness.evaluate(`(async () => {
-    const button = document.querySelector('[data-source-validate]') ??
-      [...document.querySelectorAll('button')].find((candidate) =>
-        /validate|review/i.test(candidate.textContent) && candidate.closest('[data-source-surface], #panel-guide')
-      );
+    document.getElementById('tab-code')?.click();
+    const button = document.getElementById('validate-source-button');
     if (!button) return { button: false, executionModes: [], validationModes: [] };
     button.click();
     const deadline = Date.now() + 10000;
-    while (!document.querySelector('[data-validation-mode="python-compile-only"]') && Date.now() < deadline) {
+    while (!document.querySelector('[data-validation-artifact-download]') && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     return {
@@ -195,7 +212,8 @@ async function checkOfflineValidation(harness, sourceBySample) {
         text: node.textContent.trim(),
       })),
       validationModes: [...document.querySelectorAll('[data-validation-mode]')].map((node) => node.dataset.validationMode),
-      text: document.getElementById('panel-guide')?.textContent ?? '',
+      artifactDownload: document.querySelector('[data-validation-artifact-download]')?.textContent.trim() ?? '',
+      text: document.getElementById('panel-code')?.textContent ?? '',
     };
   })()`);
   reporter.check('protected source exposes a keyboard-operable validation action', validationUi.button === true);
@@ -208,6 +226,11 @@ async function checkOfflineValidation(harness, sourceBySample) {
     'offline validation is labelled python-compile-only',
     validationUi.validationModes.includes('python-compile-only'),
     validationUi.validationModes.join(', '),
+  );
+  reporter.check(
+    'offline validation exposes its inline report as a download',
+    /^Download .+/.test(validationUi.artifactDownload),
+    validationUi.artifactDownload,
   );
   reporter.check('offline validation never claims live evidence', !/\blive evidence:\s*(yes|true)\b/i.test(validationUi.text ?? ''));
 }
@@ -283,6 +306,23 @@ async function checkApprovalGate(harness) {
   reporter.check('one explicit approval enables the reviewed run', gate.approved.disabled === false && gate.approved.checked === true);
   reporter.check('editing configuration invalidates approval', gate.invalidated.disabled === true && gate.invalidated.checked === false);
   reporter.check('approval is spent by one run', gate.afterRun.disabled === true && gate.afterRun.checked === false);
+}
+
+async function checkRunIdIsolation(harness) {
+  await selectSample(harness, 'azure-context-check');
+  const output = await harness.evaluate(`(() => {
+    document.getElementById('tab-response')?.click();
+    const panel = document.getElementById('panel-response');
+    return {
+      state: panel?.querySelector('.result')?.dataset.state ?? '',
+      text: panel?.textContent ?? '',
+    };
+  })()`);
+  reporter.check(
+    'an unexecuted sample never displays another sample run id',
+    output.state === 'not-run' && !output.text.includes('approval-0001'),
+    JSON.stringify(output),
+  );
 }
 
 async function prepareWeatherRecipe(harness) {
@@ -419,7 +459,7 @@ async function checkTimeoutAndArtifacts(harness) {
   );
   reporter.check(
     'local execution carries an explicit local label',
-    result.executionModes.some((entry) => entry.mode === 'local' && /local/i.test(entry.text)),
+    result.executionModes.some((entry) => entry.mode === 'local-machine' && /local/i.test(entry.text)),
     JSON.stringify(result.executionModes),
   );
   reporter.check('returned secret updates are presence-only in rendered output', !result.text.includes(SECRET) && !result.html.includes(SECRET));
@@ -454,7 +494,7 @@ async function checkLiveLabel(harness) {
   })()`);
   reporter.check(
     'live evidence carries an explicit live label',
-    modes.some((entry) => entry.mode === 'live' && /live/i.test(entry.text)),
+    modes.some((entry) => entry.mode === 'hosted-relay' && /live/i.test(entry.text)),
     JSON.stringify(modes),
   );
 }
@@ -568,7 +608,7 @@ async function main() {
 
   const harness = await launchBrowserHarness({
     browserPath: argumentValue('--chrome'),
-    createServer: ({ port }) => createPlaygroundServer({ port }),
+    createServer: ({ port }) => createPlaygroundServer({ port, mode: 'execute' }),
   });
   try {
     await harness.waitFor('document.querySelectorAll(".dir-item").length === 19', {
@@ -579,6 +619,7 @@ async function main() {
     const sourceBySample = await checkSourceContracts(harness, notebook, notebookMeta);
     await checkOfflineValidation(harness, sourceBySample);
     await checkApprovalGate(harness);
+    await checkRunIdIsolation(harness);
     await checkStreamingAndCancellation(harness);
     await checkTimeoutAndArtifacts(harness);
     await checkLiveLabel(harness);

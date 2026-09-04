@@ -1,7 +1,16 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 
-const SOURCE_PAYLOAD_KEYS = Object.freeze(['cells', 'notebook', 'parameterZones', 'protection']);
+import { EXECUTION_PROTOCOL_VERSION } from '../src/core/types.mjs';
+
+const SOURCE_PAYLOAD_KEYS = Object.freeze([
+  'cells',
+  'notebook',
+  'parameterZones',
+  'protection',
+  'protocolVersion',
+  'sampleId',
+]);
 const SOURCE_NOTEBOOK_KEYS = Object.freeze(['bytes', 'fileName', 'sha256']);
 const SOURCE_CELL_KEYS = Object.freeze([
   'bytes',
@@ -71,6 +80,8 @@ export function expectedSourceContract({ sample, notebook, notebookMeta }) {
   }
 
   return {
+    protocolVersion: EXECUTION_PROTOCOL_VERSION,
+    sampleId: sample.id,
     notebook: {
       fileName: notebookMeta.fileName,
       sha256: notebookMeta.sha256,
@@ -119,6 +130,8 @@ export function validateSourcePayload(payload, expected, declaredFields) {
   const expectedFields = new Map(declaredFields.map((field) => [field.path, field]));
   const declaredPaths = [...expectedFields.keys()];
   exactKeys(issues, payload, SOURCE_PAYLOAD_KEYS, 'source response');
+  issue(issues, payload?.protocolVersion === expected.protocolVersion, 'source response has the wrong protocol version');
+  issue(issues, payload?.sampleId === expected.sampleId, 'source response names the wrong sample');
   exactKeys(issues, payload?.notebook, SOURCE_NOTEBOOK_KEYS, 'source response notebook');
   issue(issues, payload?.protection?.editable === false, 'source response protection.editable must be false');
   issue(issues, Array.isArray(payload?.parameterZones), 'source response parameterZones must be an array');

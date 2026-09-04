@@ -88,6 +88,8 @@ test('the expected source contract preserves exact notebook text and derives imm
 
 test('the source response validator enforces exact fields, source bytes, and parameter zones', () => {
   const payload = {
+    protocolVersion: expected.protocolVersion,
+    sampleId: expected.sampleId,
     notebook: { ...expected.notebook },
     protection: { editable: false },
     parameterZones: structuredClone(parameterZones),

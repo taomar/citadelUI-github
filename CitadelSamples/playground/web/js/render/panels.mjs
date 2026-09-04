@@ -87,7 +87,7 @@ function fieldControlId(path) {
   return `f-${path.replace(/[^a-zA-Z0-9-]/g, '-')}`;
 }
 
-function renderValidation(validation, { onValidate }) {
+function renderValidation(validation, { onValidate, onDownload }) {
   const details = [
     el('div', { class: 'strip-meta' }, [
       chip(validation.badge.label, validation.badge.tone),
@@ -135,6 +135,31 @@ function renderValidation(validation, { onValidate }) {
       ),
     );
   }
+  if (validation.artifact) {
+    details.push(
+      el('div', { class: 'validation-artifact' }, [
+        el('h3', { class: 'step-title', text: 'Validation report' }),
+        facts([
+          ['File', validation.artifact.fileName, { mono: true }],
+          ['SHA-256', validation.artifact.sha256, { mono: true }],
+          ['Bytes', validation.artifact.bytes, { mono: true }],
+          ['Retained in workspace', validation.artifact.retainedInWorkspace ? 'Yes' : 'No'],
+        ]),
+        el('button', {
+          type: 'button',
+          class: 'btn btn-sm',
+          'data-validation-artifact-download': true,
+          text: `Download ${validation.artifact.fileName}`,
+          onclick: () =>
+            onDownload?.(
+              validation.artifact.fileName,
+              validation.artifact.text,
+              validation.artifact.mediaType,
+            ),
+        }),
+      ]),
+    );
+  }
   details.push(
     el('div', { class: 'runbar' }, [
       el('button', {
@@ -171,7 +196,7 @@ function stateBadgeTone(state) {
   return 'neutral';
 }
 
-export function renderSource(panel, source, validation, { onRetry, onConfigure, onValidate } = {}) {
+export function renderSource(panel, source, validation, { onRetry, onConfigure, onValidate, onDownload } = {}) {
   if (source.state !== 'ready') {
     replace(panel, [
       section(
@@ -299,7 +324,13 @@ export function renderSource(panel, source, validation, { onRetry, onConfigure, 
     );
   }
 
-  nodes.push(section('Offline source validation', [renderValidation(validation, { onValidate })], { note: 'not live evidence' }));
+  nodes.push(
+    section(
+      'Offline source validation',
+      [renderValidation(validation, { onValidate, onDownload })],
+      { note: 'not live evidence' },
+    ),
+  );
   replace(panel, nodes);
 }
 

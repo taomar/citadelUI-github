@@ -28,7 +28,7 @@ export function registryKey(sampleId, stepId) {
 }
 
 const STEP_BINDING = /^\{\{steps\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+\}\}$/;
-const argument = (name, test) => Object.freeze({ name, test });
+const argument = (name, test, options = {}) => Object.freeze({ name, test, ...options });
 const shape = (...tokens) => Object.freeze(tokens);
 const resourceGroup = argument(
   'resource group',
@@ -36,6 +36,38 @@ const resourceGroup = argument(
 );
 const azureName = argument('Azure resource name', (value) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(value));
 const location = argument('Azure location', (value) => /^[a-z][a-z0-9-]{1,62}$/.test(value));
+const isAcceleratorFile = (value, fileName) => {
+  if (typeof value !== 'string' || value.length > 512) return false;
+  const segments = value.split('/');
+  return (
+    segments.length >= 4 &&
+    segments[0] === 'runtime' &&
+    segments[1] === 'accelerator' &&
+    segments.at(-1) === fileName &&
+    segments.slice(2, -1).every((segment) => /^[A-Za-z0-9_.-]+$/.test(segment) && segment !== '.' && segment !== '..')
+  );
+};
+const acceleratorTemplatePath = argument(
+  'staged accelerator Bicep template path',
+  (value) => isAcceleratorFile(value, 'main.bicep'),
+  { workspacePath: true },
+);
+const acceleratorParameterPath = argument(
+  'staged accelerator Bicep parameter path',
+  (value) => isAcceleratorFile(value, 'main.bicepparam'),
+  { workspacePath: true },
+);
+const usageMetricsQuery = argument('bounded usage-metrics KQL query', (value) => {
+  if (typeof value !== 'string' || value.length > 4096) return false;
+  const match =
+    /^customMetrics \| where timestamp > ago\((\d+)m\) \| where name in \((.*)\) \| summarize count=sum\(valueSum\) by name, tostring\(customDimensions\['deploymentName'\]\) \| order by name asc$/.exec(
+      value,
+    );
+  if (!match) return false;
+  const lookbackMinutes = Number(match[1]);
+  if (!Number.isInteger(lookbackMinutes) || lookbackMinutes < 1 || lookbackMinutes > 10080) return false;
+  return /^'[A-Za-z][A-Za-z0-9_. -]{0,127}'(?:,'[A-Za-z][A-Za-z0-9_. -]{0,127}')*$/.test(match[2]);
+});
 const principalId = argument(
   'principal id',
   (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value),
@@ -58,20 +90,18 @@ const backendReadUri = argument(
 const subscriptionDeleteUri = argument(
   'APIM subscription ARM URI',
   (value) =>
-    /^\/subscriptions\/[0-9a-f-]{36}\/resourceGroups\/[^/?#\s]+\/providers\/Microsoft\.ApiManagement\/service\/[^/?#\s]+\/subscriptions\/MULTI-Governance-PublishedAssets-DEV-SUB-01\?api-version=2022-08-01$/i.test(
+    /^\/subscriptions\/[0-9a-f-]{36}\/resourceGroups\/[^/?#\s]+\/providers\/Microsoft\.ApiManagement\/service\/[^/?#\s]+\/subscriptions\/[A-Za-z0-9][A-Za-z0-9._-]{0,255}\?api-version=2022-08-01$/i.test(
       value,
     ),
 );
 const backendDeleteUri = argument(
   'APIM backend ARM URI',
   (value) =>
-    /^\/subscriptions\/[0-9a-f-]{36}\/resourceGroups\/[^/?#\s]+\/providers\/Microsoft\.ApiManagement\/service\/[^/?#\s]+\/backends\/(?:ms-learn-tool|hr-chat-agent)-backend\?api-version=2022-08-01$/i.test(
+    /^\/subscriptions\/[0-9a-f-]{36}\/resourceGroups\/[^/?#\s]+\/providers\/Microsoft\.ApiManagement\/service\/[^/?#\s]+\/backends\/[A-Za-z0-9][A-Za-z0-9._-]{0,247}-backend\?api-version=2022-08-01$/i.test(
       value,
     ),
 );
-const publishedApiId = argument('published API id', (value) =>
-  ['weather-tool', 'ms-learn-tool', 'hr-chat-agent'].includes(value),
-);
+const publishedApiId = argument('published API id', (value) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(value));
 
 const json = (text) => {
   const trimmed = String(text ?? '').trim();
@@ -261,13 +291,13 @@ export const AZ_OPERATIONS = Object.freeze({
       'sub',
       'create',
       '--name',
-      'citadel-publish-contracts-validation',
+      azureName,
       '--location',
       location,
       '--template-file',
-      'runtime/accelerator/citadel-publish-contracts/main.bicep',
+      acceleratorTemplatePath,
       '--parameters',
-      'runtime/accelerator/citadel-publish-contracts/contracts/sample-assets/dev/main.bicepparam',
+      acceleratorParameterPath,
       '-o',
       'json',
     ),
@@ -278,15 +308,15 @@ export const AZ_OPERATIONS = Object.freeze({
       const published = outputs?.publishedAssets?.value ?? [];
       const updates = {};
       for (const asset of Array.isArray(published) ? published : []) {
-        if (asset?.name === 'weather-tool' && asset?.endpoint) {
+        if (asset?.assetType === 'mcp-from-api' && asset?.endpoint) {
           updates['samples.weather-mcp-discovery.deployedEndpoint'] = asset.endpoint;
           updates['samples.weather-tools-call.deployedEndpoint'] = asset.endpoint;
           updates['samples.tool-rate-limit-burst.deployedEndpoint'] = asset.endpoint;
         }
-        if (asset?.name === 'ms-learn-tool' && asset?.endpoint) {
+        if (asset?.assetType === 'mcp-existing' && asset?.endpoint) {
           updates['samples.learn-mcp-discovery.deployedEndpoint'] = asset.endpoint;
         }
-        if (asset?.name === 'hr-chat-agent' && asset?.path) {
+        if (asset?.assetType === 'a2a' && asset?.path) {
           updates['samples.a2a-agent-card.deployedPath'] = asset.path;
           updates['samples.a2a-message-send.deployedPath'] = asset.path;
           updates['samples.agent-framework-hr-question.deployedPath'] = asset.path;
@@ -337,13 +367,13 @@ export const AZ_OPERATIONS = Object.freeze({
       'sub',
       'create',
       '--name',
-      'publish-access-contract-01',
+      azureName,
       '--location',
       location,
       '--template-file',
-      'runtime/accelerator/citadel-access-contracts/main.bicep',
+      acceleratorTemplatePath,
       '--parameters',
-      'runtime/accelerator/citadel-access-contracts/contracts/governance-publishedassets/dev/main.bicepparam',
+      acceleratorParameterPath,
       '-o',
       'json',
     ),
@@ -455,7 +485,7 @@ export const AZ_OPERATIONS = Object.freeze({
       '-g',
       resourceGroup,
       '--analytics-query',
-      "customMetrics | where timestamp > ago(30m) | where name in ('McpRequests','A2ARequests') | summarize count=sum(valueSum) by name, tostring(customDimensions['deploymentName']) | order by name asc",
+      usageMetricsQuery,
       '-o',
       'json',
     ),
@@ -498,7 +528,7 @@ export const AZ_OPERATIONS = Object.freeze({
       '-n',
       azureName,
       '--product-id',
-      'MULTI-Governance-PublishedAssets-DEV',
+      azureName,
       '--delete-subscriptions',
       'true',
       '--yes',

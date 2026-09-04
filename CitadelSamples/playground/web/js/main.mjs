@@ -65,7 +65,6 @@ const sourceStates = new Map();
 const sourceValidationStates = new Map();
 let running = false;
 let runningSampleId = null;
-let runId = null;
 let sourceRequest = null;
 let sourceRequestVersion = 0;
 let validationRequest = null;
@@ -399,7 +398,6 @@ async function runSelected() {
   }
   running = true;
   runningSampleId = sample.id;
-  runId = null;
   results.set(
     sample.id,
     createRunProgress({
@@ -435,7 +433,6 @@ async function runSelected() {
   results.set(sample.id, displayedResult);
   running = false;
   runningSampleId = null;
-  runId = displayedResult.meta.runId ?? null;
   render();
   announce(`${sample.title}: ${result.summary}`);
 }
@@ -456,7 +453,6 @@ function applyRunProgress(sample, event) {
       executorKind: capability.kind,
     });
   const next = reduceRunProgress(current, event);
-  runId = next.meta.runId ?? runId;
   results.set(sample.id, next);
   render();
 }
@@ -514,7 +510,7 @@ function render() {
     acknowledged: state.isAcknowledged(sample.id),
     result: results.get(sample.id) ?? null,
     running: running && runningSampleId === sample.id,
-    runId,
+    runId: results.get(sample.id)?.meta?.runId ?? null,
     capability,
     runtimeProbe,
     sourceState: sourceStates.get(sample.id) ?? { status: 'loading' },
@@ -538,6 +534,7 @@ function render() {
     onRetry: () => loadProtectedSource(sample.id),
     onConfigure: openConfigurationField,
     onValidate: validateProtectedSource,
+    onDownload: downloadText,
   });
   renderConfigure(nodes.panels.configure, model.configure, {
     onChange: (path, value) => state.set(path, value, fieldByPath(path)),

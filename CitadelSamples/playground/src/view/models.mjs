@@ -247,6 +247,7 @@ export function buildSourceValidationModel(validationState = {}) {
     liveEvidence: false,
     checks: [],
     steps: [],
+    artifact: null,
   };
   if (!base.available) {
     return {
@@ -295,6 +296,19 @@ export function buildSourceValidationModel(validationState = {}) {
 
   const checkPassed = (check) => check?.passed === true || check?.status === 'passed';
   const state = result.state ?? (result.checks?.every(checkPassed) ? 'passed' : 'failed');
+  const artifact =
+    typeof result.artifact?.fileName === 'string' &&
+    typeof result.artifact?.mediaType === 'string' &&
+    typeof result.artifact?.text === 'string'
+      ? {
+          fileName: result.artifact.fileName,
+          mediaType: result.artifact.mediaType,
+          text: result.artifact.text,
+          bytes: Number(result.artifact.bytes ?? 0),
+          sha256: String(result.artifact.sha256 ?? ''),
+          retainedInWorkspace: result.artifact.retainedInWorkspace === true,
+        }
+      : null;
   return {
     ...base,
     state,
@@ -313,6 +327,7 @@ export function buildSourceValidationModel(validationState = {}) {
       detail: String(step.detail ?? ''),
     })),
     workspaceRemoved: result.workspaceRemoved === true,
+    artifact,
   };
 }
 

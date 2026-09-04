@@ -102,6 +102,35 @@ test('the manager reports step progress while a run is in flight', async () => {
   assert.ok(progress.some((event) => event.type === 'step' && event.step.kind === 'assertion'));
 });
 
+test('onStart runs before the executor can emit its first progress event', async () => {
+  const spawn = fakeSpawn([
+    {
+      match: (options) => options.args.slice(0, 2).join(' ') === 'account show',
+      result: {
+        code: 0,
+        stdout: JSON.stringify({
+          id: FIXTURE_VALUES['hub.subscriptionId'],
+          name: 'Fake Subscription',
+          user: { name: 'operator@example.test' },
+          tenantId: 'tenant',
+        }),
+      },
+    },
+  ]);
+  const { instance } = manager({ spawn });
+  const events = [];
+  await instance.start(
+    request('azure-context-check', { 'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'] }),
+    {
+      onStart: ({ runId }) => events.push(`start:${runId}`),
+      onProgress: (event) => events.push(event.type),
+    },
+  );
+
+  assert.match(events[0], /^start:azure-context-check-0001$/);
+  assert.equal(events[1], 'step-start');
+});
+
 test('a run id is unique per run and safe as a directory name', async () => {
   const spawn = fakeSpawn([{ match: () => true, result: { code: 0, stdout: JSON.stringify({ id: FIXTURE_VALUES['hub.subscriptionId'] }) } }]);
   const { instance } = manager({ spawn });
