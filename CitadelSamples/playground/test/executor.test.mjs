@@ -313,6 +313,59 @@ test('the local client learns the run id before completion so it can cancel the 
   assert.equal(client.activeRunId, null);
 });
 
+test('the local client consumes streamed progress before returning the final result', async () => {
+  const encoder = new TextEncoder();
+  const events = [
+    { type: 'run-start', runId: 'stream-0001', sampleId: 'azure-context-check', workspace: '.' },
+    { type: 'step-start', step: { id: 'account-show', title: 'Read account', kind: 'azure-cli' } },
+    {
+      type: 'result',
+      result: {
+        runId: 'stream-0001',
+        state: 'completed',
+        summary: 'Completed.',
+        steps: [],
+        assertions: [],
+      },
+    },
+  ];
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(`${JSON.stringify(events[0])}\n${JSON.stringify(events[1]).slice(0, 20)}`));
+      controller.enqueue(encoder.encode(`${JSON.stringify(events[1]).slice(20)}\n${JSON.stringify(events[2])}\n`));
+      controller.close();
+    },
+  });
+  const client = createLocalExecutorClient({
+    allowedSampleIds: ALL_IDS,
+    supportedStepTypes: ['azure-cli', 'assertion'],
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      headers: {
+        get: (name) => {
+          if (name.toLowerCase() === 'x-citadel-run-id') return 'stream-0001';
+          if (name.toLowerCase() === 'content-type') return 'application/x-ndjson; charset=utf-8';
+          return null;
+        },
+      },
+      body,
+    }),
+  });
+  const progress = [];
+  const plan = planFor('azure-context-check');
+  const result = await client.execute(plan, {
+    sampleId: plan.sampleId,
+    inputs: {},
+    secrets: {},
+    onProgress: (event) => progress.push(event),
+  });
+
+  assert.equal(result.state, 'completed');
+  assert.equal(result.meta.runId, 'stream-0001');
+  assert.deepEqual(progress.map((event) => event.type), ['run-start', 'step-start']);
+});
+
 /* ------------------------------------------------------------ the server */
 
 test('the server reports capability without disclosing its relay configuration', async () => {

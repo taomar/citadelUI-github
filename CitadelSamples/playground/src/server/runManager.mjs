@@ -36,7 +36,7 @@ export function createRunManager({
   const active = new Map();
   let sequence = 0;
 
-  async function start(payload, { onStart } = {}) {
+  async function start(payload, { onStart, onProgress } = {}) {
     if (active.size >= maxConcurrentRuns) {
       throw new RequestRefused(
         `${active.size} run(s) are already in flight and the limit is ${maxConcurrentRuns}. Wait for one to finish or cancel it.`,
@@ -72,6 +72,7 @@ export function createRunManager({
         acknowledgement: request.acknowledgement,
         contract,
         signal: controller.signal,
+        onProgress,
       })
       .catch((error) => ({
         state: 'failed',

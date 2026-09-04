@@ -74,6 +74,34 @@ test('a valid request runs and comes back with a run id and per-step results', a
   assert.equal(instance.activeCount, 0, 'the run is removed from the active set when it finishes');
 });
 
+test('the manager reports step progress while a run is in flight', async () => {
+  const spawn = fakeSpawn([
+    {
+      match: (options) => options.args.slice(0, 2).join(' ') === 'account show',
+      result: {
+        code: 0,
+        stdout: JSON.stringify({
+          id: FIXTURE_VALUES['hub.subscriptionId'],
+          name: 'Fake Subscription',
+          user: { name: 'operator@example.test' },
+          tenantId: 'tenant',
+        }),
+      },
+    },
+  ]);
+  const { instance } = manager({ spawn });
+  const progress = [];
+  const result = await instance.start(
+    request('azure-context-check', { 'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'] }),
+    { onProgress: (event) => progress.push(event) },
+  );
+
+  assert.equal(result.state, 'completed');
+  assert.ok(progress.some((event) => event.type === 'step-start' && event.step.id === 'account-show'));
+  assert.ok(progress.some((event) => event.type === 'step' && event.step.id === 'account-show'));
+  assert.ok(progress.some((event) => event.type === 'step' && event.step.kind === 'assertion'));
+});
+
 test('a run id is unique per run and safe as a directory name', async () => {
   const spawn = fakeSpawn([{ match: () => true, result: { code: 0, stdout: JSON.stringify({ id: FIXTURE_VALUES['hub.subscriptionId'] }) } }]);
   const { instance } = manager({ spawn });

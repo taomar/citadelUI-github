@@ -109,6 +109,42 @@ test('operator mode reaches the run manager, and the manager decides', async () 
   });
 });
 
+test('operator mode streams run lifecycle events as bounded NDJSON', async () => {
+  const manager = {
+    start: async (_payload, { onStart, onProgress }) => {
+      onStart({ runId: 'stream-0001', sampleId: 'azure-context-check', workspace: '.' });
+      onProgress({ type: 'step-start', step: { id: 'account-show', title: 'Read account', kind: 'azure-cli' } });
+      onProgress({
+        type: 'step',
+        step: { id: 'account-show', title: 'Read account', kind: 'azure-cli', state: 'completed', evidence: {} },
+      });
+      return { runId: 'stream-0001', state: 'completed', summary: 'ok', steps: [], assertions: [] };
+    },
+    cancel: (runId) => ({ cancelled: true, runId }),
+    cancelAll: () => {},
+    activeCount: 0,
+    listActive: () => [],
+  };
+
+  await withServer({ mode: 'execute', runManager: manager }, async ({ call }) => {
+    const response = await call('/api/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
+      body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION, sampleId: 'azure-context-check', inputs: {} }),
+    });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /application\/x-ndjson/);
+    assert.equal(response.headers.get('x-citadel-run-id'), 'stream-0001');
+
+    const events = (await response.text())
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(events.map((event) => event.type), ['run-start', 'step-start', 'step', 'result']);
+    assert.equal(events.at(-1).result.state, 'completed');
+  });
+});
+
 test('the relay endpoint applies the same-origin JSON guard before forwarding', async () => {
   await withServer({ mode: 'preview' }, async ({ call }) => {
     const crossSite = await call('/api/execute', {

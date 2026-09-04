@@ -613,26 +613,40 @@ async function handleRun(request, response, { mode, manager, port, host }) {
   }
   try {
     let started = false;
+    const wantsStream = String(request.headers.accept ?? '').includes('application/x-ndjson');
+    const writeEvent = (event) => {
+      if (started && !response.destroyed && !response.writableEnded) {
+        response.write(`${JSON.stringify(event)}\n`);
+      }
+    };
     const result = await manager.start(payload, {
-      onStart: ({ runId }) => {
+      onStart: ({ runId, sampleId, workspace }) => {
         response.writeHead(200, {
-          ...securityHeaders('application/json; charset=utf-8'),
+          ...securityHeaders(wantsStream ? 'application/x-ndjson; charset=utf-8' : 'application/json; charset=utf-8'),
           'X-Citadel-Run-Id': runId,
         });
         response.flushHeaders();
         started = true;
+        if (wantsStream) writeEvent({ type: 'run-start', runId, sampleId, workspace });
       },
+      onProgress: wantsStream ? writeEvent : undefined,
     });
-    if (started) response.end(JSON.stringify(result));
+    if (started && wantsStream) {
+      writeEvent({ type: 'result', result });
+      response.end();
+    } else if (started) response.end(JSON.stringify(result));
     else sendJson(response, 200, result);
   } catch (error) {
     if (response.headersSent) {
-      response.end(
-        JSON.stringify({
-          state: 'failed',
-          summary: 'The run stopped after it started but before it could report a result.',
-        }),
-      );
+      const failed = {
+        state: 'failed',
+        summary: 'The run stopped after it started but before it could report a result.',
+      };
+      if (String(request.headers.accept ?? '').includes('application/x-ndjson')) {
+        response.end(`${JSON.stringify({ type: 'result', result: failed })}\n`);
+      } else {
+        response.end(JSON.stringify(failed));
+      }
       return;
     }
     if (error instanceof RequestRefused) {
