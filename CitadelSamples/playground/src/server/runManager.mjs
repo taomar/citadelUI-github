@@ -11,7 +11,9 @@ import { resolve } from 'node:path';
 
 import { CATALOGUE, buildSamplePlan, requirementsFor } from '../catalogue/index.mjs';
 import { classifyContract } from '../catalogue/samples/publish.mjs';
+import { configuredSubscriptionForSample } from '../core/executionContext.mjs';
 import { createLocalExecutor } from './localExecutor.mjs';
+import { createExecutionContextManager } from './executionContextManager.mjs';
 import { RequestRefused, rebuildPlan, validateRunRequest } from './runRequest.mjs';
 import { createRunWorkspace, makeRunId } from './workspace.mjs';
 import { realTransports } from './transports.mjs';
@@ -31,11 +33,20 @@ export function createRunManager({
   maxConcurrentRuns = DEFAULT_MAX_CONCURRENT_RUNS,
   limits = {},
   catalogue = CATALOGUE,
+  executionContextManager = null,
   fs,
 } = {}) {
   const active = new Map();
   let reservations = 0;
   let sequence = 0;
+  const identity =
+    executionContextManager ??
+    createExecutionContextManager({
+      playgroundRoot,
+      mode: 'execute',
+      relay: Object.freeze({ enabled: false }),
+      transports,
+    });
 
   async function start(payload, { onStart, onProgress } = {}) {
     const inFlight = active.size + reservations;
@@ -49,6 +60,7 @@ export function createRunManager({
     let request;
     let plan;
     let resolvedInputs;
+    let executionContext;
     let runId;
     let workspace;
     let controller;
@@ -58,6 +70,17 @@ export function createRunManager({
     try {
       request = validateRunRequest(payload, catalogue);
       ({ plan, resolvedInputs } = rebuildPlan(request, catalogue, { buildSamplePlan, requirementsFor }));
+      executionContext = await identity.forRun({
+        sampleId: request.sample.id,
+        configuredSubscriptionId: configuredSubscriptionForSample(request.sample.id, resolvedInputs),
+        gateway:
+          sampleUsesGatewayKey(request.sample) && resolvedInputs['gatewayAccess.subscriptionKeyHeader']
+            ? {
+                keyPresent: typeof request.secrets['gatewayAccess.apiKey'] === 'string',
+                headerName: resolvedInputs['gatewayAccess.subscriptionKeyHeader'],
+              }
+            : null,
+      });
 
       sequence += 1;
       runId = makeRunId(request.sample.id, sequence);
@@ -87,6 +110,7 @@ export function createRunManager({
         runId,
         sampleId: request.sample.id,
         workspace: workspace.describe(workspace.root) || '.',
+        executionContext,
       });
     } catch (error) {
       active.delete(runId);
@@ -119,7 +143,11 @@ export function createRunManager({
       });
     activeRun.promise = promise;
     const result = await promise;
-    return { runId, workspace: workspace.describe(workspace.root) || '.', ...result };
+    return { runId, workspace: workspace.describe(workspace.root) || '.', executionContext, ...result };
+  }
+
+  function sampleUsesGatewayKey(sample) {
+    return sample.configurationEntries.some((entry) => entry.path === 'gatewayAccess.apiKey');
   }
 
   function cancel(runId) {

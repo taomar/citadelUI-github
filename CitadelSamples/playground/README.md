@@ -42,6 +42,61 @@ Execution-capable startup is loopback-only. It uses the operator's local Azure
 CLI and optional registered Python dependencies; it is not a hostile-code
 sandbox.
 
+## Execution identity contract
+
+Every catalogue sample has one server-owned execution-context classification.
+The browser may report only safe configuration facts; it cannot choose an
+identity, command, executable, argument, token, or credential value.
+
+| Context | Authority |
+| --- | --- |
+| Azure CLI management | The locally signed-in `az` user or service principal |
+| Python management | `AzureCliCredential`, inheriting that same local Azure CLI session |
+| Foundry REST | A `https://ai.azure.com` audience token minted for that same Azure CLI principal; the token is never returned |
+| Gateway REST, MCP, and A2A | The memory-only APIM subscription key under the configured header; only presence and header name are reported |
+| Offline source validation | The local Python parser, with no Azure identity or network |
+| Hosted HTTP relay | The authenticated Entra caller authorizes the request; the relay uses tenant-scoped managed identity and a Key Vault key mapping |
+| Future hosted process run | Deferred and unproven: one no-ingress job and one managed identity per run |
+
+`POST /api/execution-context` accepts exactly:
+
+```json
+{
+  "protocolVersion": 2,
+  "sampleId": "weather-mcp-discovery",
+  "configuredSubscriptionId": null,
+  "gateway": {
+    "keyPresent": true,
+    "headerName": "Ocp-Apim-Subscription-Key"
+  }
+}
+```
+
+`gateway` is `null` for non-gateway samples. `configuredSubscriptionId` is the
+current sample subscription or `null`. The response contains the sample's
+`kind`, `state`, safe principal name/type, tenant, active and configured
+subscription IDs/names, match status, key presence/header name, and the fixed
+`tokensExposed: false` and `credentialsPersisted: false` guarantees. Preview
+returns `state: "unavailable"` without probing Azure CLI or contacting a
+network.
+
+Local Azure CLI sign-in is explicit. The server never starts it because a
+sample failed:
+
+| Endpoint | Exact JSON request |
+| --- | --- |
+| `POST /api/azure-login/start` | `{ "protocolVersion": 2 }` |
+| `POST /api/azure-login/status` | `{ "protocolVersion": 2, "loginId": "azure-login-0001" }` |
+| `POST /api/azure-login/cancel` | `{ "protocolVersion": 2, "loginId": "azure-login-0001" }` |
+
+These endpoints are same-origin, JSON-only, and available only from the
+loopback execute server. Start invokes exactly `az login --use-device-code`
+with no shell and no browser-supplied arguments. One login may be in flight.
+Status reports `starting`, `waiting-for-user`, `succeeded`, `failed`,
+`cancelled`, or `timed-out`, plus a safely parsed verification URL and user
+code. Success refreshes the safe Azure CLI account projection. Raw process
+output and tokens are never returned or persisted.
+
 ## What the interface shows
 
 One of the 19 catalogue samples is selected at a time. The notebook-like

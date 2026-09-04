@@ -27,10 +27,16 @@ import { fileURLToPath } from 'node:url';
 
 import { buildSamplePlan, CATALOGUE, requirementsFor } from './src/catalogue/index.mjs';
 import { summariseCapability } from './src/core/capability.mjs';
+import { offlinePythonContext } from './src/core/executionContext.mjs';
 import { EXECUTION_PROTOCOL_VERSION } from './src/core/types.mjs';
 import { createRunManager } from './src/server/runManager.mjs';
 import { RequestRefused } from './src/server/runRequest.mjs';
 import { spawnProcess } from './src/server/transports.mjs';
+import {
+  createExecutionContextManager,
+  validateLoginStartRequest,
+  validateLoginTargetRequest,
+} from './src/server/executionContextManager.mjs';
 import { createCodeValidationManager, CODE_VALIDATION_SCENARIO } from './src/server/codeValidation.mjs';
 import { validateSourceSampleId } from './src/server/recipeRequest.mjs';
 import { readSampleSource, SourceViewError } from './src/server/sourceView.mjs';
@@ -281,7 +287,12 @@ function cliReason(result) {
 }
 
 /** What the browser is told about execution capability. No secrets, ever. */
-export function capabilitiesPayload({ mode = 'preview', probe = {}, relay = DEFAULT_RELAY_CONFIG } = {}) {
+export function capabilitiesPayload({
+  mode = 'preview',
+  probe = {},
+  relay = DEFAULT_RELAY_CONFIG,
+  loginAvailable = mode === 'execute',
+} = {}) {
   const capability = summariseCapability(CATALOGUE.samples, { ...probe, mode });
   return {
     status: 'ok',
@@ -342,6 +353,16 @@ export function capabilitiesPayload({ mode = 'preview', probe = {}, relay = DEFA
       azureContacted: false,
       networkContacted: false,
       liveEvidence: false,
+      executionIdentity: 'local-python-parser',
+    }),
+    executionContext: Object.freeze({
+      endpoint: '/api/execution-context',
+      login: Object.freeze({
+        startEndpoint: '/api/azure-login/start',
+        statusEndpoint: '/api/azure-login/status',
+        cancelEndpoint: '/api/azure-login/cancel',
+        available: loginAvailable,
+      }),
     }),
   };
 }
@@ -654,14 +675,14 @@ async function handleRun(request, response, { mode, manager, port, host }) {
       }
     };
     const result = await manager.start(payload, {
-      onStart: ({ runId, sampleId, workspace }) => {
+      onStart: ({ runId, sampleId, workspace, executionContext }) => {
         response.writeHead(200, {
           ...securityHeaders(wantsStream ? 'application/x-ndjson; charset=utf-8' : 'application/json; charset=utf-8'),
           'X-Citadel-Run-Id': runId,
         });
         response.flushHeaders();
         started = true;
-        if (wantsStream) writeEvent({ type: 'run-start', runId, sampleId, workspace });
+        if (wantsStream) writeEvent({ type: 'run-start', runId, sampleId, workspace, executionContext });
       },
       onProgress: wantsStream ? writeEvent : undefined,
     });
@@ -681,6 +702,7 @@ async function handleRun(request, response, { mode, manager, port, host }) {
       } else {
         response.end(JSON.stringify(failed));
       }
+
       return;
     }
     if (error instanceof RequestRefused) {
@@ -689,6 +711,50 @@ async function handleRun(request, response, { mode, manager, port, host }) {
     }
     // Deliberately terse: a stack trace could carry a path or a value.
     sendJson(response, 500, { state: 'failed', summary: 'The run could not be started.' });
+  }
+}
+
+async function handleExecutionContext(request, response, { manager, port, host }) {
+  const guard = checkStateChangingRequest(request, { port, host });
+  if (!guard.ok) {
+    sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
+    return;
+  }
+  try {
+    const payload = JSON.parse(await readBody(request, 16 * 1024));
+    sendJson(response, 200, await manager.describe(payload, CATALOGUE));
+  } catch (error) {
+    if (error instanceof RequestRefused) {
+      sendJson(response, error.status, { state: 'blocked', summary: error.message, code: error.code });
+      return;
+    }
+    sendJson(response, 500, { state: 'failed', summary: 'The execution context could not be read.' });
+  }
+}
+
+async function handleAzureLogin(request, response, { action, manager, port, host }) {
+  const guard = checkStateChangingRequest(request, { port, host });
+  if (!guard.ok) {
+    sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
+    return;
+  }
+  try {
+    const payload = JSON.parse(await readBody(request, 4096));
+    let result;
+    if (action === 'start') {
+      validateLoginStartRequest(payload);
+      result = manager.startLogin();
+    } else {
+      const loginId = validateLoginTargetRequest(payload);
+      result = action === 'status' ? manager.statusLogin(loginId) : manager.cancelLogin(loginId);
+    }
+    sendJson(response, action === 'start' ? 202 : 200, result);
+  } catch (error) {
+    if (error instanceof RequestRefused) {
+      sendJson(response, error.status, { state: 'blocked', summary: error.message, code: error.code });
+      return;
+    }
+    sendJson(response, 500, { state: 'failed', summary: 'The Azure CLI login request could not be completed.' });
   }
 }
 
@@ -844,7 +910,11 @@ async function handleSourceValidation(request, response, { mode, manager, sample
     return;
   }
   try {
-    sendJson(response, 200, await manager.start(sampleId, payload));
+    const result = await manager.start(sampleId, payload);
+    sendJson(response, 200, {
+      ...result,
+      executionContext: offlinePythonContext({ available: result.state !== 'blocked' }),
+    });
   } catch (error) {
     if (error instanceof RequestRefused) {
       sendJson(response, error.status, {
@@ -890,13 +960,28 @@ export function createPlaygroundServer({
   mode = 'preview',
   runManager = null,
   codeValidationManager = null,
+  executionContextManager = null,
   probe = {},
   port = PORT,
   host = HOST,
   relay = DEFAULT_RELAY_CONFIG,
 } = {}) {
+  const identityManager =
+    executionContextManager ??
+    createExecutionContextManager({
+      playgroundRoot: ROOT,
+      mode: mode === 'execute' && isLoopbackHost(host) ? 'execute' : 'preview',
+      relay,
+    });
   const manager =
-    mode === 'execute' ? (runManager ?? createRunManager({ playgroundRoot: ROOT, pythonExecutable: PYTHON })) : runManager;
+    mode === 'execute'
+      ? (runManager ??
+        createRunManager({
+          playgroundRoot: ROOT,
+          pythonExecutable: PYTHON,
+          executionContextManager: identityManager,
+        }))
+      : runManager;
   const validationManager =
     mode === 'execute'
       ? (codeValidationManager ?? createCodeValidationManager({ playgroundRoot: ROOT, pythonExecutable: PYTHON }))
@@ -912,7 +997,16 @@ export function createPlaygroundServer({
           sendJson(response, 405, { status: 'error', detail: 'Use GET.' });
           return;
         }
-        sendJson(response, 200, capabilitiesPayload({ mode, probe: runtimeProbe, relay }));
+        sendJson(
+          response,
+          200,
+          capabilitiesPayload({
+            mode,
+            probe: runtimeProbe,
+            relay,
+            loginAvailable: mode === 'execute' && isLoopbackHost(host),
+          }),
+        );
         return;
       }
 
@@ -931,6 +1025,30 @@ export function createPlaygroundServer({
           return;
         }
         await handleCancel(request, response, { manager, port, host });
+        return;
+      }
+
+      if (path === '/api/execution-context') {
+        if (request.method !== 'POST') {
+          sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
+          return;
+        }
+        await handleExecutionContext(request, response, { manager: identityManager, port, host });
+        return;
+      }
+
+      const loginRoute = /^\/api\/azure-login\/(start|status|cancel)$/.exec(path);
+      if (loginRoute) {
+        if (request.method !== 'POST') {
+          sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
+          return;
+        }
+        await handleAzureLogin(request, response, {
+          action: loginRoute[1],
+          manager: identityManager,
+          port,
+          host,
+        });
         return;
       }
 
@@ -1009,6 +1127,7 @@ export function createPlaygroundServer({
   };
   server.runManager = manager;
   server.codeValidationManager = validationManager;
+  server.executionContextManager = identityManager;
   return server;
 }
 
@@ -1049,6 +1168,7 @@ if (invokedDirectly) {
     process.on(signal, () => {
       server.runManager?.cancelAll();
       server.codeValidationManager?.cancelAll();
+      server.executionContextManager?.cancelAll();
       server.close(() => process.exit(0));
     });
   }

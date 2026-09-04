@@ -23,6 +23,17 @@ const ACCELERATOR_ROOT = resolve(PLAYGROUND_ROOT, 'runtime', 'accelerator');
 
 function manager({ spawn, fetch, maxConcurrentRuns = 2, fs } = {}) {
   const filesystem = fakeFileSystem({ realReadRoots: [ACCELERATOR_ROOT] });
+  const executionContextManager = {
+    forRun: async ({ sampleId }) => ({
+      kind: 'test-context',
+      label: 'Fake execution context',
+      summary: 'Approved by the fake execution-context manager.',
+      state: 'ready',
+      code: null,
+      canExecute: true,
+      sampleId,
+    }),
+  };
   return {
     filesystem,
     instance: createRunManager({
@@ -36,6 +47,7 @@ function manager({ spawn, fetch, maxConcurrentRuns = 2, fs } = {}) {
       fs: fs ?? filesystem.fs,
       pythonExecutable: 'python',
       maxConcurrentRuns,
+      executionContextManager,
     }),
   };
 }

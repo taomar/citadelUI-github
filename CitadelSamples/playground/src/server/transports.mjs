@@ -159,6 +159,7 @@ function resolveWindowsCommand(executable, { pathValue, pathExt, exists }) {
  * @param {object} options
  * @param {string} options.executable  must be on the allow-list
  * @param {string[]} options.args      passed as an array; never joined
+ * @param {(chunk:{stream:'stdout'|'stderr',text:string}) => void} [options.onOutput]
  * @returns {Promise<{code:number, stdout:string, stderr:string, timedOut:boolean, aborted:boolean, spawnFailed?:boolean}>}
  */
 export function spawnProcess({
@@ -171,6 +172,7 @@ export function spawnProcess({
   timeoutMs = 180_000,
   maxOutputBytes = 256 * 1024,
   allowedExecutables = ALLOWED_EXECUTABLES,
+  onOutput,
 }) {
   if (!Array.isArray(allowedExecutables) || !allowedExecutables.includes(executable)) {
     return Promise.reject(new Error(`Refused to spawn "${executable}": it is not on the executable allow-list.`));
@@ -194,6 +196,9 @@ export function spawnProcess({
     return Promise.reject(
       new Error(`Process output limit must be between 1 and ${MAX_PROCESS_OUTPUT_BYTES} bytes per stream.`),
     );
+  }
+  if (onOutput !== undefined && typeof onOutput !== 'function') {
+    return Promise.reject(new Error('Process output observer must be a function when supplied.'));
   }
   let childEnv;
   try {
@@ -255,12 +260,14 @@ export function spawnProcess({
         const accepted = bytes.subarray(0, remaining);
         stdout.push(accepted);
         stdoutBytes += accepted.byteLength;
+        onOutput?.({ stream: 'stdout', text: accepted.toString('utf-8') });
       } else {
         const remaining = maxOutputBytes - stderrBytes;
         if (remaining <= 0) return;
         const accepted = bytes.subarray(0, remaining);
         stderr.push(accepted);
         stderrBytes += accepted.byteLength;
+        onOutput?.({ stream: 'stderr', text: accepted.toString('utf-8') });
       }
     };
 
