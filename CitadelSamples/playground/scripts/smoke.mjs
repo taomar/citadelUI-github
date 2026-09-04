@@ -495,7 +495,14 @@ async function main() {
             steps: [{ id: 'mcp-initialize', kind: 'http', title: 'MCP initialize', state: 'cancelled', durationMs: 12, detail: 'Cancelled.', evidence: {} }],
             assertions: [], meta: { executor: 'local', runId: 'smoke-0001' }, configurationUpdates: {}, secretUpdates: {},
           }); return { cancelled: true }; },
-          execute: async () => pending,
+          execute: async (_plan, context = {}) => {
+            context.onProgress?.({ type: 'run-start', runId: 'smoke-0001', sampleId: 'weather-mcp-discovery', workspace: '.' });
+            context.onProgress?.({
+              type: 'step-start',
+              step: { id: 'mcp-initialize', kind: 'http', title: 'MCP initialize' },
+            });
+            return pending;
+          },
         });
         document.getElementById('tab-request').click();
         const runButton = document.getElementById('run-button');
@@ -508,6 +515,7 @@ async function main() {
           runDisabled: document.getElementById('run-button').disabled,
           cancelDisabled: document.getElementById('cancel-button').disabled,
           busy: document.getElementById('run-button').getAttribute('aria-busy'),
+          streamingStep: document.querySelector('#panel-response .step[data-state="running"]')?.textContent ?? '',
         };
         document.getElementById('cancel-button').click();
         await new Promise((r) => setTimeout(r, 120));
@@ -529,6 +537,7 @@ async function main() {
     check('cancel is disabled until a run is in flight', run.before.cancelDisabled === true);
     check('the run reports itself as busy while it is in flight', run.during.busy === 'true' && run.during.runDisabled === true);
     check('cancel becomes available during a run', run.during.cancelDisabled === false);
+    check('the output view streams the active step before completion', /MCP initialize/.test(run.during.streamingStep), run.during.streamingStep);
     check('cancelling reaches the executor', run.cancelled === true);
     check('a cancelled run is reported as cancelled, never completed', run.state === 'cancelled', String(run.state));
     check('per-step state is shown for the steps that ran', run.stepStates.includes('cancelled'), run.stepStates.join(','));

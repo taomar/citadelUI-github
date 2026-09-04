@@ -295,6 +295,17 @@ async function runSelected() {
   }
   running = true;
   runId = null;
+  results.set(sample.id, {
+    state: 'running',
+    sampleId: sample.id,
+    summary: 'Starting the approved run…',
+    detail: '',
+    steps: [],
+    assertions: [],
+    configurationUpdates: {},
+    secretUpdates: {},
+    meta: { executor: capability.kind ?? 'local' },
+  });
   render();
   announce(`Running ${sample.title}…`);
   const result = await runPlan(executor, plan, {
@@ -304,6 +315,7 @@ async function runSelected() {
     acknowledgement: acknowledgementFor(sample, acknowledged),
     acknowledgementPayload: acknowledged ? { accepted: true, sampleId: sample.id } : null,
     validation,
+    onProgress: (event) => applyRunProgress(sample, event),
   });
   // Consent is per run, so it is spent whether or not the run got anywhere.
   state.consumeAcknowledgement(sample.id);
@@ -313,6 +325,52 @@ async function runSelected() {
   runId = result.meta?.runId ?? null;
   render();
   announce(`${sample.title}: ${result.summary}`);
+}
+
+function applyRunProgress(sample, event) {
+  if (!event || typeof event !== 'object') return;
+  const current = results.get(sample.id) ?? {
+    state: 'running',
+    sampleId: sample.id,
+    summary: 'Running. Each step reports as it finishes.',
+    detail: '',
+    steps: [],
+    assertions: [],
+    configurationUpdates: {},
+    secretUpdates: {},
+    meta: { executor: capability.kind ?? 'local' },
+  };
+
+  if (event.type === 'run-start') {
+    runId = event.runId ?? runId;
+    results.set(sample.id, {
+      ...current,
+      meta: { ...(current.meta ?? {}), runId, workspace: event.workspace ?? '' },
+    });
+  } else if (event.type === 'step-start' && event.step?.id) {
+    results.set(sample.id, {
+      ...current,
+      summary: `Running ${event.step.title ?? event.step.id}…`,
+      steps: upsertProgressStep(current.steps, { ...event.step, state: 'running', evidence: {} }),
+    });
+  } else if (event.type === 'step' && event.step?.id) {
+    results.set(sample.id, {
+      ...current,
+      summary: `${event.step.title ?? event.step.id}: ${event.step.state ?? 'reported'}.`,
+      steps: upsertProgressStep(current.steps, event.step),
+    });
+  } else {
+    return;
+  }
+  render();
+}
+
+function upsertProgressStep(steps = [], step) {
+  const next = [...steps];
+  const index = next.findIndex((candidate) => candidate.id === step.id);
+  if (index >= 0) next[index] = step;
+  else next.push(step);
+  return next;
 }
 
 /**
