@@ -8,6 +8,13 @@ an honest result.
 Nothing here fabricates a response, and nothing here runs against Azure unless
 an approved execution adapter is deliberately attached.
 
+The redesign makes this a maintained product with a notebook-like surface, not a
+general-purpose editable notebook. Repository-owned source is visible,
+attributable, and protected. Users can change only the declared, typed inputs for
+the selected catalogue sample. The server remains authoritative for source
+selection, validation, plan construction, operation registration, and
+execution.
+
 ---
 
 ## Provenance
@@ -61,6 +68,58 @@ does so. Inventing those samples would put a passing result behind an assertion
 the source never makes. The exclusions are listed in the catalogue, shown in the
 UI, and asserted by a test.
 
+### Exact 19-scenario provenance
+
+The 19 catalogue IDs are the stable join keys between navigation,
+configuration, source, plans, execution, results, and tests. Each ID maps to
+exact zero-based notebook cell indexes in `playground/provenance.json`. The
+protected source surface joins each cited cell's `source` array without
+normalising it and identifies the cell by index, type, UTF-8 byte length, and
+SHA-256.
+
+Cells 2 and 33 are the only notebook code cells that are not standalone
+scenarios. Cell 2 defines shared profile values; cell 33 is the notebook's
+incomplete results roll-up. Catalogue and provenance tests require every other
+code cell to be cited by at least one of the 19 scenarios.
+
+| # | Stable catalogue ID | Group | Exact source cells |
+| ---: | --- | --- | --- |
+| 1 | `azure-context-check` | Discover | 3, 4 |
+| 2 | `apim-discovery` | Discover | 5, 6 |
+| 3 | `foundry-enable-a2a` | Prepare | 7, 8 |
+| 4 | `apim-foundry-grant` | Prepare | 9, 10 |
+| 5 | `weather-api-ensure` | Prepare | 11, 12 |
+| 6 | `publish-assets` | Publish and grant | 13, 14, 15 |
+| 7 | `access-contract-deploy` | Publish and grant | 16, 17 |
+| 8 | `access-contract-kv-verify` | Publish and grant | 18 |
+| 9 | `weather-mcp-discovery` | Exercise | 19, 20 |
+| 10 | `learn-mcp-discovery` | Exercise | 19, 20 |
+| 11 | `a2a-agent-card` | Exercise | 21, 22 |
+| 12 | `a2a-message-send` | Exercise | 21, 22 |
+| 13 | `agent-framework-hr-question` | Exercise | 27, 28 |
+| 14 | `weather-tools-call` | Exercise | 29 |
+| 15 | `usage-metrics` | Observe | 23, 24 |
+| 16 | `circuit-breaker-check` | Observe | 25, 26 |
+| 17 | `tool-rate-limit-burst` | Policy | 30, 31 |
+| 18 | `agent-rate-limit-burst` | Policy | 30, 31 |
+| 19 | `cleanup` | Lifecycle | 34, 35 |
+
+These are zero-based notebook indexes. They are not renumbered for display,
+review, execution, evidence, or exports.
+
+### Why the code is protected
+
+The notebook-like surface is for reading, provenance, declared configuration,
+and controlled execution. It has no code-editing mode and no arbitrary Python,
+shell, Azure CLI, dependency, URL, or filesystem input.
+
+That boundary creates a real maintenance obligation. When the upstream notebook
+changes, maintainers must deliberately reconcile its source and provenance with
+catalogue metadata, typed builders, runtime registrations, allowlists,
+assertions, and tests. This is more work than embedding an editable notebook
+kernel, but it preserves deterministic plans, reviewable authority, meaningful
+risk acknowledgement, and evidence that can be attributed to a fixed operation.
+
 ---
 
 ## Quick start
@@ -76,7 +135,7 @@ npm start
 
 Open `http://127.0.0.1:4173/`. Preview mode lets you select all 19 samples,
 complete their configuration, export JSON or `.env.example`, and inspect the
-exact generated plan. It executes nothing.
+exact protected source and generated plan. It executes nothing.
 
 The masthead also carries an **Offline self-test** — a fixed, local
 demonstration that needs no Azure subscription, no credential, and no network.
@@ -109,9 +168,9 @@ Available commands:
 | --- | --- |
 | `npm start` | Safe preview-only server |
 | `npm run start:execute` | Loopback-only local execution |
-| `npm test` | 563 assertions across 15 test files |
+| `npm test` | 670 recursive Node tests |
 | `npm run check` | Static imports, zero dependencies, and isolation checks |
-| `npm run smoke` | 88 browser interaction and responsive checks |
+| `npm run smoke` | 89 browser interaction and responsive checks |
 | `npm run verify` | Check, unit/integration tests, then browser smoke |
 
 Environment variables:
@@ -163,7 +222,7 @@ CitadelSamples/
     server.mjs            preview/operator server and guarded API routes
     runtime/
       accelerator/        pinned closed Bicep/policy/weather dependency bundle
-      python/             registered Python wrappers
+      python/             registered Python wrappers + compile-only validator
       requirements.txt    optional Python modules; never auto-installed
     src/
       core/               types, endpoints, validation, secrets, parsing,
@@ -174,20 +233,27 @@ CitadelSamples/
         index.mjs         the single source of truth
         samples/          discover, prepare, publish, exercise, observe,
                           policy, lifecycle
-      server/             reconstruction, operation registry, transports,
-                          assertions, workspaces and run manager
-      view/models.mjs     pure view models — no DOM, fully testable in Node
+      server/             source extraction, validation requests, compile-only
+                          validation, reconstruction, operation registry,
+                          transports, assertions, workspaces and run manager
+      view/               pure view models and streamed-run reducer — no DOM
     web/
-      index.html          the direction contract and the four landmarks
+      index.html          direction contract and semantic landmarks
       css/                world.css (foundation), workbench.css (components)
       js/                 main.mjs + render/{dom,directory,panels,context}
-    test/                 14 test files, run with node --test
+    test/                 Node unit/integration suites, including relay tests
     scripts/              check.mjs (static), smoke.mjs (headless browser)
 ```
 
 **The catalogue is the single source of truth.** Navigation, forms, validation,
 guides, risk, provenance and builder dispatch all read it; nothing else owns
 sample identity.
+
+**Protected source is selected by the server.** The browser requests a catalogue
+sample ID and expected provenance, never source text or a path. The server loads
+the unchanged notebook, verifies its recorded digest, and resolves only the
+cells cited by that sample. Parameters are a separate declared data contract;
+editing them never rewrites source.
 
 **Builders are pure and deterministic.** Each recipe compiles validated inputs
 into an `ExecutionPlan` of typed steps — `artifact`, `azure-cli`, `http`,
@@ -212,6 +278,52 @@ any input clears every acknowledgement, so consent can never be inherited by a
 different configuration. The two burst recipes and cleanup additionally require
 a typed non-production confirmation before a plan is generated at all.
 
+### Runner and evidence labels
+
+Runner locality and evidence source are reported separately:
+
+| Runner badge | What it means |
+| --- | --- |
+| **PREVIEW ONLY** | Generate and inspect without execution |
+| **OFFLINE SELF-TEST** | Run the fixed local checkout checks |
+| **LOCAL OPERATOR** | Run registered operations on this machine |
+| **HOSTED RELAY** | Run eligible HTTP/assertion work through the narrow relay |
+
+| Evidence badge | What it means |
+| --- | --- |
+| **NOT RUN** | No execution evidence exists |
+| **LOCAL CHECKOUT EVIDENCE** | Protected source, parser, or fixed self-test evidence; Azure was not contacted |
+| **LIVE TARGET EVIDENCE** | The approved target was contacted and the result derives from that run |
+
+Local checkout evidence always reports `azureContacted: false` and
+`liveEvidence: false`. A **LOCAL OPERATOR** run may produce
+**LIVE TARGET EVIDENCE**, so local is not a synonym for offline or simulated.
+Executor availability, process exit 0, HTTP 2xx, and parser success never become
+live target evidence by themselves.
+
+### Python validation is not Python execution
+
+Offline Python validation loads the server-selected protected cells, verifies
+their digest, and invokes a bounded parser-only standard-library operation. It
+does not import the sample, run top-level code, resolve dependencies, install
+packages, contact the network, use credentials, or write bytecode into the
+protected tree.
+
+The validation body contains only the execution protocol version. It accepts no
+configuration value, secret, source, path, command, executable, parser flag, URL,
+or environment. Declared parameter zones are server-owned catalogue metadata
+shown beside the source; they are not substitutions into the parser input.
+
+Exact source retrieval is process-free and available in preview and operator
+modes. Parser-only validation is available only after explicit loopback
+`start:execute` startup; public preview and the hosted relay remain unable to
+spawn a process.
+
+Real Python behavior is available only through a registered catalogue operation
+in local operator mode. The server rebuilds the plan, checks declared inputs and
+risk, and invokes an allowlisted shipped wrapper. The two operations have
+different controls and evidence labels.
+
 ---
 
 ## The live-execution boundary
@@ -233,11 +345,22 @@ The local executor supports all five catalogue step types:
 | `library` | Runs a registered shipped Python wrapper after import preflight |
 | `assertion` | Evaluates the sample's expected behavior from captured evidence |
 
-Each run reports every step, duration, safe evidence, assertions, generated
-artifacts, and discovered configuration updates. Public discoveries can update
-later forms. A newly minted gateway key can update only the current browser's
-in-memory secret store; it never enters rendered evidence, logs, exported
-configuration, or persistent storage.
+Each local run streams bounded NDJSON lifecycle events and then a final typed
+result. The UI can show the run ID, workspace, active step, completed step state,
+and whether bounded evidence is available before the full run finishes. The
+partial-event reducer does not retain raw evidence, commands, source, secret
+updates, or artifact paths. The final typed result carries redacted evidence,
+assertions, generated artifacts, and discovered configuration updates. JSON-only
+clients retain that final-result contract.
+
+Cancellation targets the exact active run ID. It requests termination; it does
+not claim that an external effect already completed has been rolled back.
+Generated artifacts must be declared by catalogue steps, bounded, and contained
+under `.runs/<run-id>/`.
+
+Public discoveries can update later forms. A newly minted gateway key can update
+only the current browser's in-memory secret store; it never enters rendered
+evidence, logs, exported configuration, or persistent storage.
 
 Protection is enforced at the execution boundary:
 
@@ -252,9 +375,23 @@ Protection is enforced at the execution boundary:
 - state-changing, load-generating, and destructive recipes require fresh
   acknowledgement, and burst/cleanup samples require non-production confirmation.
 
-The external relay remains available for a future remote or container-hosted
-playground. It uses a fixed same-origin browser endpoint and never discloses the
-relay address or bearer token.
+The external relay is a separate, narrow hosted boundary. It rebuilds only
+eligible allowlisted plans and executes HTTP and assertion steps. Its image and
+import graph deliberately omit Python, Azure CLI, process transports, arbitrary
+files, workspaces, and artifact writers. It must remain HTTP/assertion-only.
+Its managed admission and run state use owner-bound nonce/idempotency,
+distributed concurrency and active-job capacity, dispatcher lease recovery,
+polling, cancellation, and timeouts so multiple replicas do not admit the same
+work independently. These controls are proved offline, not by a live deployment.
+
+Future hosted process execution is a different capability, not a relay feature.
+One run must create one fresh immutable, no-ingress isolated job with no compute
+or writable-volume reuse. Identity must be capability-scoped and distinct from
+the relay, egress enforced outside the workload, state durable and owner-bound,
+limits platform-enforced, cancellation verified against the actual job, and
+outputs quarantined as owner-only bounded artifacts. Until those controls pass
+live integration tests and independent security review, hosted Python and Azure
+CLI execution remain disabled and unproven.
 
 ---
 
@@ -294,10 +431,16 @@ weaknesses in the source, all disclosed rather than silently applied:
 The Control Plane visual world is **reproduced locally, not imported**. Nothing
 under `playground/` reads, links or modifies `CitadelUI`; a test asserts it.
 
-The surface is an operations workbench: a grouped, searchable recipe directory
-on the left, one selected sample in the centre under Guide / Configure / Request
-/ Response tabs, and a compact readiness and provenance rail on the right. Only
-one sample is rendered at a time.
+The surface is a notebook-like operations workbench: a grouped, searchable
+recipe directory on the left, one selected sample in the centre under Guide /
+Code / Configure / Review & approve / Output views, and a compact readiness and
+provenance rail on the right. The Code view renders protected source rather than
+an editor. Only one sample is rendered at a time.
+
+The longer-term product direction is a linear runbook rather than mutually
+exclusive tabs: protected source, declared playground inputs, generated
+operation, review and approval, then runner transcript and evidence. The
+protected-source release is an incremental step toward that shape.
 
 Below ~66rem both rails are replaced rather than squeezed — a native `<select>`
 for the directory and a disclosure for the context — so the layout changes shape
@@ -323,11 +466,15 @@ as an *error* in red — the user has not made a mistake, they have not arrived.
 ## Tests
 
 ```
-npm test                 563 assertions, node --test, no dependencies
-npm run check            89 modules, 0 dependencies, nothing outside scope
-npm run smoke            88 headless-browser interaction checks
+npm test                 670/670 pass, node --test, no dependencies
+npm run check            106 modules, 0 dependencies, nothing outside scope
+npm run smoke            89/89 headless-browser interaction checks
 npm run verify           all three, in order
 ```
+
+These totals were verified at integration reference
+`47fd336`; `npm run verify` exited 0. The separate protected-source browser
+acceptance passed 114/114 checks at the same reference.
 
 | File | Covers |
 | --- | --- |
@@ -338,22 +485,28 @@ npm run verify           all three, in order
 | `endpoints.test.mjs` | Asset-type prefix, `/mcp` suffix, deployed-endpoint precedence, Foundry and ARM URL shapes |
 | `protocol.test.mjs` | MCP session binding, numeric JSON-RPC ids, JSON and SSE parsing (including data folding), JSON-RPC error under HTTP 200 |
 | `secrets.test.mjs` | No secret in any plan, preview or view model; memory-only state; no storage/cookie/URL/log paths; no credential-shaped literals |
-| `executor.test.mjs` | Unavailable executor never returns success; relay wire shape, allow-list and same-origin constraint; server headers, path traversal, capability disclosure |
-| `viewmodels.test.mjs` | Directory, search, guide, configure, request, response and workbench models; not-run is never a pass |
-| `markup.test.mjs` | Direction contract ≤150 words in five blocks, landmarks, tab wiring, component states, no gradients/nested cards/pixel tracks, responsive shape change |
+| `executor.test.mjs` | Executor dispatch, progress forwarding, relay wire shape, allow-list and same-origin constraints |
+| `sourceview.test.mjs` | Exact server-selected cited cells, full-notebook digest, per-cell bytes and hashes, and immutable parameter zones |
+| `recipeRequest.test.mjs` | Exact source-validation schema: protocol version only; value/code/path/command members refused |
+| `codevalidation.test.mjs` | Real compile-only Python across protected cells, limits, cancellation, cleanup, artifact report, and offline-only evidence |
+| `execution-guardrails.test.mjs` | Fixed Azure CLI/Python operation shapes, child environment allowlist, output bounds, and process-tree timeout handling |
+| `runProgress.test.mjs` | Ordered bounded partial state, terminal-state monotonicity, identifier/path refusal, and no raw evidence retention |
+| `viewmodels.test.mjs` | Directory, protected Code, declared zones, configure, review, output, environment, and evidence models |
+| `browser-acceptance.test.mjs` | Protected-source contracts and real Chromium flows for all 19 scenarios, validation gating, execution state, keyboard order, responsive layout, and redaction |
+| `markup.test.mjs` | Direction contract, landmarks, five-view tab wiring, component states, no gradients/nested cards/pixel tracks, responsive shape change |
 | `requirements.test.mjs` | Exact relevant fields and mandatory/conditional/optional/generated/secret manifests for all 19 samples |
 | `execution.test.mjs` | Allowlisted CLI/HTTP/Python/artifact/assertion execution with fake transports, bindings, redaction, limits, and cancellation |
 | `runmanager.test.mjs` | Server reconstruction, risk gates, concurrency, run IDs, workspaces, updates, and secret handling |
 | `server.test.mjs` | Preview/operator modes, loopback restriction, same-origin JSON guard, body limits, capability, and vendored runtime closure |
 | `selftest.test.mjs` | `/api/self-test` exact-schema validation and the five offline checks it runs, including that it never contacts Azure or the network |
 
-`scripts/smoke.mjs` drives headless Chromium over the DevTools Protocol using
-Node's built-in `WebSocket` — no Playwright, Puppeteer, or dependency. It covers
-selection, tabs, exact requirement groups, configuration copy/download,
-validation, risk acknowledgement, secret redaction, run/cancel and step evidence
-through a test-only executor seam, search, 320px layout, 200% zoom, and the
-offline self-test card run end-to-end through the real server at both a normal
-viewport and 320px.
+`scripts/smoke.mjs` and the protected-source browser acceptance harness drive
+headless Chromium over the DevTools Protocol using Node built-ins—no Playwright,
+Puppeteer, or dependency. They cover selection, all five views, exact protected
+source for all 19 scenarios, editable zones, configuration copy/download,
+compile-validation gating, risk acknowledgement, secret redaction, run/cancel
+state, search, keyboard order, 320px layout, 200% zoom, and the offline self-test
+through the real server.
 
 ---
 
@@ -366,9 +519,18 @@ viewport and 320px.
 - **No live Azure result is proven yet.** Local execution and its failure modes
   are tested with injected transports, but no real subscription, gateway,
   Foundry project, Key Vault, burst, or cleanup was used during development.
+- **Offline source validation is not sample execution.** Parser and contract
+  success proves protected-source integrity and syntax only.
 - **Operator prerequisites remain the operator's responsibility.** The server
   probes local `az`, Python imports, and the vendored bundle. It does not sign
   in, install packages, grant roles, or contact customer endpoints at startup.
+- **Hosted process execution is not available.** The relay remains
+  HTTP/assertion-only; per-run no-ingress jobs are a future, separately gated
+  architecture.
+- **Run history and artifact retrieval are not durable services.** Local
+  workspaces are not an owner-authorized evidence store and do not yet provide a
+  redacted immutable run manifest, authorized download endpoint, retention
+  deletion, or hosted artifact quarantine.
 - **Runtime discoveries last only for the current browser session.** Secrets
   remain memory-only and generated run workspaces remain local.
 - **Browser evidence is Chromium-only.** Firefox, Safari, and a real

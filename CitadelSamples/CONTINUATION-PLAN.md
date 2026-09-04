@@ -1,8 +1,10 @@
 # Citadel Publish Playground Continuation Plan
 
-This document is the complete plan and operator runbook for finishing validation
-of the Citadel Publish Playground and evolving its execution boundary for Azure
-Container Apps.
+This document is the product release gate and operator runbook for the Citadel
+Publish Playground. The fixed architecture decision is a maintained,
+server-authoritative catalogue with protected repository-owned source and
+declared inputs only. The notebook-like surface must not become a
+general-purpose editable notebook.
 
 Do not execute live scenarios until an isolated non-production Azure environment
 has been selected and its owner has approved the intended operations.
@@ -15,12 +17,27 @@ specific Windows username, drive, or local checkout path.
 
 | Item | Value |
 | --- | --- |
-| Branch | `citadel-samples-playground` |
-| Pushed commit | `1fd4326341329db0e2a6b6c39252bcf164ef4b5b` |
 | Repository | `taomar/citadelUI-github` |
 | Main handover | `CitadelSamples/AGENT_PROGRESS.md` |
-| Automated baseline | 563/563 tests and 88/88 browser checks |
+| Product decision | Protected fixed code; declared typed inputs only |
+| Runner labels | `PREVIEW ONLY`, `OFFLINE SELF-TEST`, `LOCAL OPERATOR`, `HOSTED RELAY` |
+| Evidence labels | `NOT RUN`, `LOCAL CHECKOUT EVIDENCE`, `LIVE TARGET EVIDENCE` |
+| Local execution | Server-authoritative registered operations with streamed progress, exact-run cancellation, and contained artifacts |
+| Hosted relay | HTTP/assertion-only; no process, Python, Azure CLI, or artifact execution |
+| Future hosted process execution | Fresh per-run no-ingress isolated jobs only |
+| Verified integration reference | `47fd336` |
+| Automated baseline | 106 modules, 0 dependencies/out-of-scope; 670/670 Node tests; 89/89 browser smoke; 114/114 protected browser acceptance |
 | Live Azure validation | Not performed |
+
+### Decision inputs
+
+| Research record | Integrated commit | Source commit |
+| --- | --- | --- |
+| Security and isolation | `79bbf79` | `3f98edce0697610715910cef92a74433e98cdf3d` |
+| Repository migration | `311b4f3` | `d4f6218c1979225060aba7db192289d534aa9807` |
+| Product and UX | `072e8ec` | `43d8cd9666168b7a777dcd3966a770e60cbdbfba` |
+| Comparable products | `60541ca` | `0949512c6a85c0059d03f1c28620e82795ab2d25` |
+| Runtime architecture | `87f62af` | `2cb5227ce5f8ff881ad58b79faa71977d7fc0cf3` |
 
 ### Authoritative execution queue
 
@@ -36,17 +53,20 @@ intended operations.
 | 3 | Trace and threat-model the external relay | Complete | Protocol, trust boundaries, deployment shape, and required controls are documented |
 | 4 | Harden the relay protocol and proxy; implement an HTTP/assertion-only relay | Complete | Server-authoritative validation, authentication, target allowlists, acknowledgement binding, limits, cancellation, and redaction pass offline tests |
 | 5 | Add a zero-setup offline self-test | Complete | A user can run a clearly labelled local demonstration through the real UI/server path without Azure; its result cannot be mistaken for live evidence |
-| 6 | Add managed run state and hosted job orchestration | Complete | Run ownership, polling, cancellation, idempotency, concurrency, timeout, and partial-failure behavior are deterministic |
-| 7 | Add Container Apps, managed identity, Key Vault, and least-privilege deployment assets | Complete | Bicep, container, and static checks prove the intended topology without provisioning Azure |
-| 8 | Run relay security, protocol, deployment-static, and local end-to-end tests | Pending | Required abuse cases fail closed and no process executor is reachable remotely |
-| 9 | Update operator documentation and handover | Pending | Local, hosted, security, deployment, and remaining-unproven behavior agree |
-| 10 | Firefox, Safari, and real screen-reader validation | Pending | Release evidence covers the outstanding browser and assistive-technology matrix |
-| 11 | Select and approve an isolated non-production environment | Blocked | Environment owner records approval, rollback, target IDs, permissions, and cost boundary |
-| 12 | Run live scenarios 1-16 and verify `a2aProperties` | Blocked by item 11 | Every baseline scenario has redacted evidence and the BCP089/API-version behavior is resolved |
-| 13 | Record redacted golden live fixtures | Blocked by item 12 | Fixtures contain evidence but no secret or credential material |
-| 14 | Run Policy bursts, then Lifecycle cleanup | Blocked by items 12-13 | Load and cleanup outcomes, cost, rollback, and residue are independently verified |
-| 15 | Deploy and integration-test the hosted relay | Blocked by items 6-8 and 11 | Identity, authorization, rotation, cancellation, timeout, retry, and partial failure pass live |
-| 16 | Push, review, and merge | Pending | All applicable release gates pass and unproven gates remain explicitly labelled |
+| 6 | Add protected notebook-like source and offline validation | Complete | All 19 scenarios show exact read-only cited cells; parser-only validation accepts only the protocol version and reports local-checkout evidence only |
+| 7 | Stream local execution and preserve run controls | Complete | Bounded progress reaches the response UI; final results, exact-run cancellation, redaction, and contained artifacts remain intact |
+| 8 | Add replica-safe managed state for the hosted HTTP relay | Complete | Run ownership, nonce/idempotency, distributed concurrency, dispatcher leases, polling, cancellation, timeout, and partial-failure behavior are deterministic |
+| 9 | Preserve the existing Container Apps relay assets | Complete | Static checks prove the narrow HTTP/assertion topology without provisioning Azure |
+| 10 | Run security, protocol, static, and local end-to-end tests | Complete at verified integration reference | Required abuse cases fail closed, source is immutable, evidence labels are honest, and no process executor is reachable remotely |
+| 11 | Update operator documentation and handover | Complete | Product, local, hosted, security, evidence, and remaining-unproven behavior agree |
+| 12 | Firefox, Safari, and real screen-reader validation | Pending | Release evidence covers the outstanding browser and assistive-technology matrix |
+| 13 | Select and approve an isolated non-production environment | Blocked | Environment owner records approval, rollback, target IDs, permissions, and cost boundary |
+| 14 | Run live scenarios 1-16 and verify `a2aProperties` | Blocked by item 13 | Every baseline scenario has redacted live evidence and the BCP089/API-version behavior is resolved |
+| 15 | Record redacted golden live fixtures | Blocked by item 14 | Fixtures contain evidence but no secret or credential material |
+| 16 | Run Policy bursts, then Lifecycle cleanup | Blocked by items 14-15 | Load and cleanup outcomes, cost, rollback, and residue are independently verified |
+| 17 | Deploy and integration-test the HTTP/assertion relay | Blocked by item 13 | Identity, authorization, destination policy, rotation, cancellation, timeout, retry, and partial failure pass live without process capability |
+| 18 | Independently approve hosted process isolation | Deferred | A fresh immutable no-ingress sandbox per run satisfies identity, egress, quota, cancellation, quarantine, cleanup, and supply-chain gates in a real platform test |
+| 19 | Push, review, and merge | Pending | All applicable release gates pass and unproven gates remain explicitly labelled |
 
 The imported source remains:
 
@@ -77,6 +97,16 @@ EE706B4DAC2978D4F35885EA5F77A7D6A12ADD337E7F959690550BE28D4523BB
    state-changing, load-generating, or destructive operation.
 10. Treat blocked, failed, inconclusive, cancelled, and completed as different
     states. Never convert missing evidence into success.
+11. Keep sample code repository-owned, digest-verified, visible, and read-only.
+    Only declared typed inputs may be edited.
+12. Keep parser-only Python validation separate from registered Python sample
+    execution. Syntax success is offline evidence, not runtime evidence.
+13. Keep runner locality separate from evidence source. A local operator run may
+    produce live target evidence.
+14. Keep the hosted relay HTTP/assertion-only.
+15. Any future hosted process execution must create one fresh no-ingress isolated
+    job per run. Never add process execution to the public playground or
+    long-lived relay.
 
 ## Execution models
 
@@ -99,12 +129,45 @@ Preview mode supports:
 
 - selecting all 19 samples;
 - reading sample guides and prerequisites;
+- reading the exact protected notebook cells cited by the selected sample;
 - entering mandatory, conditional, optional, generated, and secret values;
 - generating and downloading JSON configuration;
 - generating and downloading `.env.example`;
 - inspecting the exact redacted execution plan.
 
 Preview mode executes nothing.
+
+### Offline source validation
+
+Use this only to validate protected source provenance and Python syntax. The URL
+identifies a catalogue sample and the request body carries only the protocol
+version. It never carries a configuration value, source text, file path, parser
+flag, command, executable, URL, secret, or environment.
+
+The source response shows the selected sample's server-owned declared parameter
+zones. The compile validator does not validate user configuration and does not
+substitute values into source.
+
+Exact source retrieval is available in all modes. Parser-only validation is
+available only after explicit loopback local operator startup; it must remain
+unavailable in public preview and in the hosted relay.
+
+The server loads and verifies the protected source, then invokes a bounded,
+parser-only standard-library check. It does not import the sample, execute
+top-level code, resolve dependencies, install packages, contact Azure, or write
+bytecode into the protected tree.
+
+The result must say:
+
+- runner `LOCAL OPERATOR`;
+- evidence `LOCAL CHECKOUT EVIDENCE`;
+- `azureContacted: false`;
+- `liveEvidence: false`;
+- source and report digests;
+- syntax and contract status separately; and
+- that the sample was not executed.
+
+Parser success is not a recipe pass.
 
 ### Local operator mode
 
@@ -125,15 +188,31 @@ The server:
 - executes only registered operations;
 - writes generated files under ignored `.runs/<run-id>/` workspaces;
 - redacts credentials before returning results;
+- streams bounded run and step state before returning redacted evidence,
+  assertions, configuration updates, and artifact paths in the final typed
+  result;
 - supports cancellation of an identified active run.
 
-### Container Apps relay
+Partial events must not retain raw evidence, commands, source, secret updates,
+or artifact paths.
 
-Use for hosted execution. This is the recommended production architecture.
+**LOCAL OPERATOR** describes where the runner lives, not the target evidence. A
+local registered run that contacts the approved Azure target may produce
+**LIVE TARGET EVIDENCE**. A parser-only validation may produce only
+**LOCAL CHECKOUT EVIDENCE**.
 
-Do not expose the local operator process executor remotely. Implement the
-existing relay contract with managed identity, Key Vault, destination
-allowlists, and asynchronous run state.
+### Container Apps HTTP/assertion relay
+
+Use only for hosted samples whose complete plan is allowlisted HTTP and
+assertion work.
+
+The existing relay contract uses managed identity, Key Vault, destination
+allowlists, acknowledgement binding, and asynchronous owned run state. Keep its
+image and import graph free of process creation, Python, Azure CLI, arbitrary
+files, workspaces, and artifact writers.
+
+Do not expose the local operator process executor remotely and do not broaden the
+relay to execute process-backed samples.
 
 ### Browser-direct execution
 
@@ -167,17 +246,14 @@ terminal.
 ```powershell
 git clone https://github.com/taomar/citadelUI-github.git
 Set-Location .\citadelUI-github
-git switch citadel-samples-playground
-git pull --ff-only origin citadel-samples-playground
+git switch <BRANCH_UNDER_REVIEW>
+git pull --ff-only origin <BRANCH_UNDER_REVIEW>
 git rev-parse HEAD
 git status --short
 ```
 
-The expected pushed commit is:
-
-```text
-2a88d4bc646e296b2195f9fb00155c5f5b00f0e8
-```
+Record the reviewed commit SHA with the evidence. Do not rely on an older
+handover branch name or baseline.
 
 ### Run the existing validation
 
@@ -792,12 +868,13 @@ Record only redacted evidence:
 
 Store no gateway key, Foundry token, or PAT in the evidence.
 
-## Phase 4: Container Apps architecture
+## Phase 4: hosted boundaries
 
 ### Security gates discovered during continuation
 
-The original relay seam is not itself a safe hosted execution boundary. Before
-deployment, the implementation must satisfy these additional gates:
+The HTTP/assertion relay is a safe boundary only while process creation and
+arbitrary destinations remain structurally absent. It is not a safe hosted
+process boundary. Before deploying either capability, preserve these gates:
 
 1. Same-origin and fetch-metadata checks remain CSRF controls, not caller
    authentication. Authenticate the browser-facing API with Entra/OIDC and the
@@ -818,7 +895,7 @@ deployment, the implementation must satisfy these additional gates:
    value. Validate final generated policies structurally so an identifier cannot
    introduce an APIM policy element.
 
-### Recommended topology
+### Required topology
 
 1. **Playground UI/API Container App**
    - Entra-authenticated ingress;
@@ -826,31 +903,44 @@ deployment, the implementation must satisfy these additional gates:
    - submits sample ID, declared values, secret references, and acknowledgement;
    - never accepts an arbitrary plan or command.
 
-2. **Execution relay or Container Apps Job**
+2. **HTTP/assertion relay Container App**
    - independently validates inputs;
-   - rebuilds the plan from the server catalogue;
-   - performs only registered operations;
-   - returns redacted step state and evidence.
+   - rebuilds only eligible HTTP/assertion plans from the server catalogue;
+   - resolves exact destinations and logical secret refs from tenant policy;
+   - has no process, Python, Azure CLI, workspace, or artifact capability.
 
-3. **User-assigned managed identity**
-   - attached to relay/job;
-   - used through `DefaultAzureCredential`;
-   - receives only the roles required by enabled scenarios.
+3. **Future job dispatcher and one-run worker**
+   - absent or disabled until the hosted process gates pass;
+   - launches only immutable reviewed job templates by digest;
+   - creates one fresh no-ingress sandbox for one run;
+   - never reuses compute, writable files, identity cache, or secrets.
 
-4. **Key Vault**
+4. **Separate user-assigned identities**
+   - UI, relay, dispatcher, and worker identities are distinct;
+   - the relay identity is never attached to a process-running job;
+   - a worker has no identity by default and receives only capability-scoped,
+     least-privilege authority when required.
+
+5. **Key Vault and secret broker**
    - stores APIM contract keys;
-   - stores a future GitHub PAT only if source synchronization is later added;
-   - grants the relay identity Key Vault Secrets User;
-   - never sends secret values to the browser.
+   - maps logical refs through server-owned tenant configuration;
+   - resolves values only after admission, approval, quota, destination policy,
+     and digest checks;
+   - never sends secret values to the browser, durable state, queue, job
+     arguments, logs, or public evidence.
 
-5. **Managed non-secret run state**
-   - stores user, sample, timestamps, state, step status, and redacted evidence;
+6. **Managed non-secret run state and artifact quarantine**
+   - stores owner, tenant, sample, digests, timestamps, state, safe step status,
+     policy decision, and redacted evidence;
    - does not store secret values, access tokens, request authorization headers,
-     or secret-bearing job arguments.
+     or secret-bearing job arguments;
+   - keeps raw process output and artifacts owner-only, bounded, scanned,
+     retention-limited, and separate from public status.
 
 ### Hosted authentication
 
-Replace local Azure CLI user authentication with managed identity:
+For hosted work, replace local Azure CLI user authentication with managed
+identity or a brokered run-scoped token:
 
 - use `DefaultAzureCredential`;
 - use Azure SDK clients or ARM REST for management operations;
@@ -858,6 +948,9 @@ Replace local Azure CLI user authentication with managed identity:
 - retrieve APIM keys from Key Vault only when a sample requires one;
 - keep secrets in executor memory for the duration of a run;
 - do not return minted or retrieved keys to a hosted browser.
+
+These instructions do not authorize attaching the relay identity to a process
+job. Worker authority must be separate and capability-scoped.
 
 These 19 notebook scenarios do not require a GitHub PAT. If GitHub source sync is
 added later:
@@ -883,16 +976,21 @@ Define an explicit operation-to-role matrix. Examples:
 
 ### Hosted networking
 
-- prefer private ingress or Entra-authenticated restricted ingress;
+- give workers no ingress;
+- prefer private or Entra-authenticated restricted ingress for the public UI and
+  keep the relay internal;
 - allow only trusted UI origins;
-- allowlist ARM, APIM, Key Vault, Monitor, and Foundry destinations;
-- reject arbitrary URLs and redirects;
+- enforce worker egress deny-by-default outside the workload;
+- allow only the exact approved service classes, tenant/resource targets, ports,
+  and protocols needed by the capability;
+- reject loopback, private/link-local ranges, metadata, direct-IP bypasses,
+  alternate ports, uncontrolled DNS, arbitrary URLs, and redirects;
 - use private endpoints where the target environment requires them;
 - apply egress controls compatible with the selected APIM/Foundry topology.
 
-### Hosted execution
+### Future hosted process execution
 
-Use Container Apps Jobs for:
+Hosted process execution is disabled. Container Apps Jobs is a candidate for:
 
 - Bicep deployments;
 - Python-backed management operations;
@@ -900,17 +998,27 @@ Use Container Apps Jobs for:
 - cleanup;
 - other operations that may outlive an HTTP request.
 
-The relay should:
+The platform is not approved merely because it can start a job. A real isolated
+non-production test must prove one immutable sandbox per run, no ingress, no
+reuse, read-only code/runtime/root filesystem, empty bounded writable mounts,
+external egress control, separate identity, platform quotas, verified process
+tree termination, orphan reaping, and artifact quarantine.
+
+The dispatcher/controller, not the HTTP relay, must:
 
 1. allocate a server-side run ID;
-2. store non-secret pending state;
-3. start the job;
-4. expose polling or server-sent status;
-5. support cancellation by the exact job/run ID;
-6. enforce per-user and global concurrency;
-7. enforce step and run timeouts;
-8. redact telemetry and results;
-9. report partial success explicitly.
+2. bind owner, tenant, sample, immutable image/source/dependency digests, exact
+   inputs, identity, targets, policy, limits, approval, and idempotency;
+3. store a classified, expiring non-secret run descriptor;
+4. reserve distributed quota atomically;
+5. start exactly one approved job template;
+6. expose owner-authorized polling or server-sent status;
+7. support cancellation by the exact job/run ID;
+8. verify the actual platform job and descendants are terminated before
+   releasing quota;
+9. quarantine and bound output and artifacts;
+10. report partial success explicitly;
+11. reap orphaned jobs and delete ephemeral state.
 
 ### Hosted retries and idempotency
 
@@ -927,7 +1035,34 @@ Do not apply generic automatic retries.
 
 ## Phase 5: release gates
 
-Do not call the playground fully live-ready until:
+Release claims are tiered. Passing one tier must not imply another.
+
+### Gate A: protected-source local product
+
+Required before merging the redesign:
+
+1. all 19 catalogue scenarios show their exact cited, read-only notebook cells
+   and provenance;
+2. modified source cannot enter any validation or run request;
+3. parser-only validation accepts only the protocol version, verifies
+   server-selected source without importing or executing it, and emits
+   local-checkout-only labels;
+4. registered local execution remains server-authoritative and allowlisted;
+5. streamed progress, exact-run cancellation, redaction, and artifact
+   containment pass automated and browser checks;
+6. the relay remains structurally HTTP/assertion-only;
+7. documentation states the maintained-product tradeoff and separates runner
+   locality from local-checkout and live-target evidence;
+8. the notebook hash remains unchanged and no file outside `CitadelSamples`
+   changes;
+9. the final static, test, and browser baselines pass and are recorded from the
+   reviewed commit.
+
+Passing Gate A permits a local/offline product claim only.
+
+### Gate B: live non-production scenario evidence
+
+Required before claiming the 19-scenario catalogue is live-validated:
 
 1. independent offline QA passes;
 2. scenarios 1-16 pass on one isolated non-production hub;
@@ -936,13 +1071,39 @@ Do not call the playground fully live-ready until:
 4. redacted golden live fixtures are recorded;
 5. Policy bursts pass only after baseline validation;
 6. cleanup and residue are verified;
-7. Firefox and Safari are tested;
-8. NVDA, JAWS, or VoiceOver is tested;
-9. the Container Apps relay is deployed with managed identity and Key Vault;
-10. hosted cancellation, timeout, retry, partial failure, secret rotation, and
-    authorization boundaries are integration-tested;
-11. documentation and `AGENT_PROGRESS.md` are updated;
-12. changes are committed, pushed, reviewed, and merged.
+7. every result records sample ID, source cells, code/source digest, execution
+   location, `azureContacted`, `liveEvidence`, target, identity class, safe step
+   evidence, assertions, artifacts, and residue without credentials;
+8. Firefox and Safari are tested;
+9. NVDA, JAWS, or VoiceOver is tested.
+
+### Gate C: hosted HTTP/assertion relay
+
+Required before claiming eligible read-only samples are hosted:
+
+1. the relay is deployed with Entra authentication, managed identity, Key Vault,
+   server-owned tenant policy, and internal or otherwise restricted ingress;
+2. exact target, redirect, logical secret-ref, acknowledgement, nonce,
+   idempotency, ownership, quota, timeout, cancellation, retry, and partial
+   failure controls pass live integration tests;
+3. image and import inspection proves process, Python, Azure CLI, workspace, and
+   artifact execution remain absent;
+4. public status and evidence disclose no upstream body, secret, internal
+   platform ID, path, or another user's run.
+
+Passing Gate C does not authorize hosted process execution.
+
+### Gate D: future hosted process jobs
+
+Hosted Python, Azure CLI, Bicep, burst, cleanup, or artifact execution remains
+disabled until all hosted acceptance criteria in
+`docs/research/security-isolation.md` pass in a real isolated environment and an
+independent security review approves the implementation. Container Apps Jobs is
+a candidate, not an approval.
+
+Before any release claim, documentation and `AGENT_PROGRESS.md` must be updated
+from final evidence, and changes must be committed, pushed, reviewed, and
+merged.
 
 ## Exact continuation instruction
 
@@ -951,9 +1112,11 @@ Use this prompt in the continuation session:
 ```text
 Read CitadelSamples/PRODUCT.md, PROJECT_BRIEF.md, README.md,
 CONTINUATION-PLAN.md, and AGENT_PROGRESS.md. Work only inside CitadelSamples.
-Continue from the pending independent-QA and isolated non-production
-live-validation plan. Do not target production. Do not run Policy bursts or
-Cleanup before scenarios 1-16 pass. Never persist secrets. Preserve the
-server-authoritative local execution boundary and implement Container Apps
-hosting through the external relay contract with managed identity and Key Vault.
+Preserve protected repository-owned source and declared inputs only; do not add
+an editable notebook or arbitrary code/CLI contract. Keep offline parser
+validation distinct from registered local execution and live Azure evidence. Do
+not target production or run Policy bursts or Cleanup before scenarios 1-16
+pass. Never persist secrets. Keep the hosted relay HTTP/assertion-only. Treat any
+future hosted process execution as one fresh no-ingress isolated job per run and
+do not enable it until its dedicated security gates pass.
 ```
