@@ -9,6 +9,38 @@ gateway it edits.
 
 ---
 
+## Deployment types
+
+Pick one of these before anything else. It is the only decision that is awkward to
+change later, because it determines the address the application answers on.
+
+| # | Type | Reachable from | Set |
+| --- | --- | --- | --- |
+| 1 | **Private — inside the gateway VNet** | The VNet only, plus whatever is peered, VPN- or ExpressRoute-connected to it. No public endpoint exists. | `AZURE_INFRASTRUCTURE_SUBNET_ID` |
+| 2 | **Public — behind Entra** | Members of your tenant. Entra authenticates before the request reaches the app. | `entraAuthClientId` |
+| 3 | **Public — behind owner sign-in** | Anyone can load the sign-in page; only the owner can use it. | `ALLOW_PUBLIC_INGRESS_WITHOUT_AUTH=true` |
+| 4 | **Environment only** | Nothing outside the Container Apps environment. The app runs, but nobody is on that network. | Nothing |
+| 5 | **Local** | `127.0.0.1` on your own machine. No Azure at all. | `scripts\start.ps1` |
+
+Nothing is public by default. Ingress is external only because someone decided it
+should be, never as a side effect of another setting.
+
+**Which to use.** Type 1 when the gateway itself is private, which is the usual
+case for a governed deployment — the Control Plane sits in the same network as the
+thing it configures. Type 2 when it must be reachable from outside and your tenant
+is the right boundary. Type 3 for a demo or a short-lived environment, understanding
+that the container belongs to whoever claims it first. Type 5 for day-to-day
+editing on one machine, where no shared deployment is wanted at all.
+
+Types 1 to 4 are the same `azd up`; they differ only in what you set beforehand.
+Type 1 overrides types 2 and 3 — a VNet-injected environment has no public load
+balancer for a public ingress to be published on.
+
+Whichever you get, the deployment reports it in `SERVICE_CITADELUI_NETWORK` as
+`vnet`, `internet` or `environment`.
+
+---
+
 ## What gets deployed on Azure
 
 `azd up` provisions seven resources into one resource group:
@@ -63,22 +95,9 @@ parallel deployment.
 
 ---
 
-## Choosing where it is reachable from
+## Deployment types in detail
 
-This is the most consequential deployment decision. There are four positions, and
-the first is the one to use when the gateway itself is private.
-
-| Position | How | Who can reach it |
-| --- | --- | --- |
-| Inside the gateway VNet | `AZURE_INFRASTRUCTURE_SUBNET_ID=<subnet resource id>` | Only the VNet, and whatever is peered, VPN- or ExpressRoute-connected to it. No public endpoint exists. |
-| Public, owner sign-in | `ALLOW_PUBLIC_INGRESS_WITHOUT_AUTH=true` | Anyone can load the sign-in page; only the owner can use it. |
-| Public, Entra in front | `entraAuthClientId` | Only members of your tenant reach the application at all. |
-| Environment only | Set none of the above | Nothing outside the Container Apps environment. The application still runs. |
-
-Nothing here is public by default. Ingress is external only because someone decided
-it should be, never as a side effect of another setting.
-
-### Deploying inside the Citadel AI Hub Gateway VNet
+### Type 1 — Private, inside the Citadel AI Hub Gateway VNet
 
 This is the private topology. The Container Apps environment is placed in a subnet
 of a VNet you already have — typically the one the gateway itself is deployed into
@@ -119,19 +138,28 @@ and the application does not drop one because it has the other.
 The deployment reports which of the three it ended up on in
 `SERVICE_CITADELUI_NETWORK`: `vnet`, `internet`, or `environment`.
 
-### Putting Entra in front of a public deployment
+### Type 2 — Public, behind Entra
 
 Provision once without a client id, take the `AZURE_AUTH_REDIRECT_URI` value from
 the outputs, register it as the reply URL on an Entra application, then set the
 client id and provision again. That reply URL is deliberately the address the
 application will have once published, which is not the address it has before then.
 
-### Claiming a public deployment
+### Type 3 — Public, behind owner sign-in
 
-The owner sign-in position is a real control — an anonymous visitor is issued no
-session token and every data route refuses one — but it is weaker than Entra or a
-private network, because the claim window stays open until someone claims the
-container. Claim it as soon as it is deployed.
+The owner sign-in is a real control — an anonymous visitor is issued no session
+token and every data route refuses one — but it is weaker than Entra or a private
+network, because the claim window stays open until someone claims the container.
+
+A container with no owner belongs to whoever reaches it first. On a public address
+that is whoever finds the URL. Claim it as soon as it is deployed.
+
+### Type 4 — Environment only
+
+Set none of the three. The application deploys and runs, reachable inside the
+Container Apps environment and nowhere else. Useful as a first pass before an
+Entra registration exists — provision, take the reply URL from the outputs, then
+provision again as type 2.
 
 ---
 
@@ -170,7 +198,7 @@ only for the current session. The interface says so rather than failing later.
 
 ---
 
-## Run it locally
+## Type 5 — Run it locally
 
 ```
 cd CitadelUI
