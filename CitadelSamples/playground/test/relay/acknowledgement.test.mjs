@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 
 import {
   ACKNOWLEDGEMENT_TTL_MS,
+  ACKNOWLEDGEMENT_CLOCK_SKEW_MS,
   canonicalInputDigest,
   mintAcknowledgement,
   planDestinationOrigins,
@@ -225,6 +226,92 @@ test('verifyAcknowledgement rejects a non-numeric or missing expiresAt with ackn
   void expiresAt;
   assert.equal(verifyAcknowledgement(withoutExpiry, expectedFor()).code, 'acknowledgement-malformed');
   assert.equal(verifyAcknowledgement({ ...mint(), expiresAt: 'not-a-number' }, expectedFor()).code, 'acknowledgement-malformed');
+});
+
+test('verifyAcknowledgement rejects a missing or non-numeric issuedAt with acknowledgement-malformed', () => {
+  const { issuedAt, ...withoutIssuedAt } = mint();
+  void issuedAt;
+  assert.equal(verifyAcknowledgement(withoutIssuedAt, expectedFor()).code, 'acknowledgement-malformed');
+  assert.equal(verifyAcknowledgement({ ...mint(), issuedAt: 'not-a-number' }, expectedFor()).code, 'acknowledgement-malformed');
+});
+
+test('verifyAcknowledgement rejects a claimed lifetime (expiresAt - issuedAt) beyond ACKNOWLEDGEMENT_TTL_MS with acknowledgement-malformed, even when the acknowledgement is not itself expired yet', () => {
+  // A forged, or otherwise abusive, far-future expiresAt paired with its own
+  // issuedAt must be rejected on its claimed LIFETIME alone: without this
+  // check it would still pass every other structural and freshness check
+  // here, and a caller keying a replay-prevention window off this exact
+  // field (the managed-run store's nonce retention — see managedRun.mjs)
+  // would then retain that window for an unbounded length of time.
+  const ack = { ...mint({ now: () => 1_000 }), issuedAt: 1_000, expiresAt: 1_000 + ACKNOWLEDGEMENT_TTL_MS + 1 };
+  const result = verifyAcknowledgement(ack, expectedFor(), { now: () => 2_000 });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'acknowledgement-malformed');
+});
+
+test('verifyAcknowledgement accepts a claimed lifetime exactly at ACKNOWLEDGEMENT_TTL_MS', () => {
+  const ack = { ...mint({ now: () => 1_000 }), issuedAt: 1_000, expiresAt: 1_000 + ACKNOWLEDGEMENT_TTL_MS };
+  const result = verifyAcknowledgement(ack, expectedFor(), { now: () => 2_000 });
+  assert.equal(result.ok, true);
+});
+
+test('verifyAcknowledgement accepts an issuedAt that is technically ahead of the verifier\'s own clock, as long as it is within the bounded clock-skew tolerance', () => {
+  // Genuine wall-clock disagreement between the process that minted the
+  // acknowledgement and the process now verifying it — a few tens of
+  // seconds, well inside ACKNOWLEDGEMENT_CLOCK_SKEW_MS — must not be
+  // refused outright.
+  const ack = mint({ now: () => 1_000 + ACKNOWLEDGEMENT_CLOCK_SKEW_MS / 2 });
+  const result = verifyAcknowledgement(ack, expectedFor(), { now: () => 1_000 });
+  assert.equal(result.ok, true);
+});
+
+test('verifyAcknowledgement rejects an issuedAt beyond the bounded clock-skew tolerance with acknowledgement-not-yet-valid', () => {
+  const ack = mint({ now: () => 1_000 + ACKNOWLEDGEMENT_CLOCK_SKEW_MS + 1 });
+  const result = verifyAcknowledgement(ack, expectedFor(), { now: () => 1_000 });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'acknowledgement-not-yet-valid');
+});
+
+test('verifyAcknowledgement rejects the reviewer-reported reproduction: an issuedAt far enough in the future that its otherwise-ordinary, TTL-bounded expiresAt would still outlive the managed-run store\'s fixed nonce-retention cap, even though every OTHER check here would have accepted it', () => {
+  // Before ACKNOWLEDGEMENT_CLOCK_SKEW_MS existed, this exact acknowledgement
+  // passed every check in this function: its claimed lifetime
+  // (expiresAt - issuedAt) is EXACTLY ACKNOWLEDGEMENT_TTL_MS, so the
+  // claimed-lifetime bound above is satisfied; and its expiresAt, roughly 30
+  // minutes ahead of real verification time, is comfortably still in the
+  // future, so the plain expiry check is satisfied too. Its ABSOLUTE
+  // expiresAt, however, lands past the durable managed-run store's fixed
+  // MAX_NONCE_RETENTION_MS cap (30 minutes from admission — see
+  // managedRun.mjs), which is exactly capped, not extended, for a
+  // nonceExpiresAt that large. That combination used to open a real replay
+  // window: once the store's capped retention lapsed, this acknowledgement
+  // would still verify as "not yet expired", so a different Idempotency-Key
+  // replaying the same nonce past that point would wrongly be treated as
+  // fresh and admitted as a new run.
+  const nowAtVerification = 1_000;
+  const abusiveIssuedAt = nowAtVerification + 26 * 60_000; // ~26 minutes ahead: (issuedAt + TTL) lands past the 30-minute cap
+  const ack = mint({ now: () => abusiveIssuedAt });
+  assert.equal(ack.expiresAt - nowAtVerification > 30 * 60_000, true, 'test setup must actually exceed the store\'s 30-minute retention cap');
+  const result = verifyAcknowledgement(ack, expectedFor(), { now: () => nowAtVerification });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'acknowledgement-not-yet-valid');
+});
+
+test('the explicit backstop check binding expiresAt to now + ACKNOWLEDGEMENT_TTL_MS + the clock-skew tolerance accepts exactly at that boundary, documenting -- independently of the issuedAt and claimed-lifetime checks above -- the exact property the managed-run store\'s nonce retention depends on', () => {
+  // Given the checks above (issuedAt bounded to now + skew, and claimed
+  // lifetime bounded to ACKNOWLEDGEMENT_TTL_MS), this bound is implied for
+  // every input and therefore cannot independently reject anything those
+  // two checks did not already reject — but it is kept explicit so the
+  // property the managed-run store's nonce retention depends on (see the
+  // reproduction test above) is asserted directly here, not merely as an
+  // emergent consequence of two checks that were designed for different
+  // reasons and could, in isolation, later be loosened without anyone
+  // noticing this consequence.
+  const nowMs = 1_000;
+  const atBound = {
+    ...mint({ now: () => nowMs }),
+    issuedAt: nowMs + ACKNOWLEDGEMENT_CLOCK_SKEW_MS,
+    expiresAt: nowMs + ACKNOWLEDGEMENT_TTL_MS + ACKNOWLEDGEMENT_CLOCK_SKEW_MS,
+  };
+  assert.equal(verifyAcknowledgement(atBound, expectedFor(), { now: () => nowMs }).ok, true, 'exactly at the bound must still be accepted');
 });
 
 test('verifyAcknowledgement rejects an expired acknowledgement with acknowledgement-expired', () => {

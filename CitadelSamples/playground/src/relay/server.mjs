@@ -95,7 +95,7 @@ import { canonicalInputDigest, planDestinationOrigins, planRequestUrls, verifyAc
 import { raceDeadline, DEADLINE_EXCEEDED } from './deadline.mjs';
 
 /** Acknowledgement-binding failure codes that are a client-fixable request problem, not a policy refusal. */
-const ACKNOWLEDGEMENT_BAD_REQUEST_CODES = new Set(['acknowledgement-required', 'nonce-required', 'acknowledgement-malformed']);
+const ACKNOWLEDGEMENT_BAD_REQUEST_CODES = new Set(['acknowledgement-required', 'nonce-required', 'acknowledgement-malformed', 'acknowledgement-not-yet-valid']);
 
 const DEFAULT_BODY_LIMIT_BYTES = 256 * 1024;
 const DEFAULT_RUN_TIMEOUT_MS = 60_000;
@@ -424,8 +424,14 @@ async function handleAuthenticatedExecuteRequest(payload, deps) {
 
     // Only once every structural/binding check above has passed do we spend
     // the nonce: a second delivery of the same nonce — even of an otherwise
-    // valid request — is either a retry or a captured replay.
-    if (!nonceStore.consume(acknowledgement.nonce)) {
+    // valid request — is either a retry or a captured replay. The nonce is
+    // retained through at least this acknowledgement's OWN verified expiry
+    // (not merely the store's fixed default TTL) — a bounded clock-skew
+    // tolerance in `verifyAcknowledgement` can make an accepted
+    // acknowledgement's real validity window longer than that default, and
+    // this store must never forget the nonce before the acknowledgement it
+    // protects is itself considered expired.
+    if (!nonceStore.consume(acknowledgement.nonce, acknowledgement.expiresAt)) {
       return { status: 409, body: { state: 'blocked', summary: 'This request has already been served, or its nonce has expired.', code: 'nonce-replayed' } };
     }
   }
@@ -484,7 +490,7 @@ async function handleAuthenticatedExecuteRequest(payload, deps) {
   }
 }
 
-function admitManagedRun(canonical, { catalogue, nonceStore, now }) {
+function admitManagedRun(canonical, { catalogue, now }) {
   const { bundle, sample, inputs, secretRefs, payload } = canonical;
   let plan;
   try {
@@ -525,15 +531,142 @@ function admitManagedRun(canonical, { catalogue, nonceStore, now }) {
         : 403;
     throw new RequestRefused(verification.message, { status, code: verification.code });
   }
-  if (!nonceStore.consume(payload.acknowledgement.nonce)) {
-    throw new RequestRefused('This request has already been served, or its nonce has expired.', { status: 409, code: 'nonce-replayed' });
-  }
+  // Deliberately does NOT consume the acknowledgement's nonce: nonce
+  // single-use tracking for managed-run creation lives in the durable run
+  // store's atomic `claim` operation (see `managedRun.mjs`), invoked below
+  // by `runOrchestrator.create`, so consumption is part of the SAME atomic
+  // step as the idempotency check and the concurrency reservation — never a
+  // separate call a concurrent equivalent request could race between.
 }
 
 async function authenticateRunRequest(request, { authenticator, isLoopbackHost, host }) {
   const auth = await authenticatePrincipal(request, { isLoopbackHost, host, authenticator });
   if (!auth.ok) return null;
   return { principal: auth.principal, tenant: auth.tenant, roles: auth.roles ?? [] };
+}
+
+// Validates and admits a managed-run request, then performs the ONE atomic
+// admission operation — idempotency lookup/digest-conflict, single-use nonce
+// consumption, concurrency reservation, and run creation — as a single call
+// into the durable store via `runOrchestrator.create`. Returns a plain
+// result descriptor instead of writing to the response directly.
+//
+// The `idempotency()` lookup below runs first as a cheap, side-effect-free
+// shortcut: it lets an already-created run be returned WITHOUT ever
+// re-validating this request's acknowledgement (which may not even match the
+// original request that created that run, if the caller retried with a
+// stale or divergent body under the same key). It is a read-only
+// optimization only — correctness never depends on what it observes. Every
+// path, including this one, is re-verified atomically inside
+// `runOrchestrator.create` -> `store.claim`, which is what actually
+// guarantees that two concurrent equivalent requests — whether handled by
+// this process or another one sharing the same durable store — can never
+// both create a run, never both consume the same nonce, and never leave a
+// losing request's nonce consumed merely because it lost a race to an
+// equivalent winner.
+async function resolveManagedRunRequest(canonical, key, auth, deps) {
+  try {
+    const prior = await deps.runOrchestrator.idempotency({
+      owner: auth.principal,
+      tenant: auth.tenant,
+      idempotencyKey: key,
+      requestDigest: canonical.requestDigest,
+    });
+    if (prior.outcome === 'existing') {
+      if (!prior.run || typeof prior.run !== 'object') return { kind: 'lookup-failed' };
+      return { kind: 'existing', run: prior.run };
+    }
+    if (prior.outcome === 'conflict') return { kind: 'conflict' };
+    admitManagedRun(canonical, { ...deps, now: deps.now });
+  } catch (error) {
+    const status = error instanceof RequestRefused ? error.status : 500;
+    return { kind: 'refused', status, code: error?.code, message: error?.message ?? 'The managed run could not be admitted.' };
+  }
+
+  try {
+    const created = await deps.runOrchestrator.create({
+      owner: auth.principal,
+      tenant: auth.tenant,
+      sampleId: canonical.payload.sampleId,
+      requestDigest: canonical.requestDigest,
+      idempotencyKey: key,
+      // The single-use nonce this exact acknowledgement carries. Consumed
+      // atomically, inside the store's `claim`, together with the
+      // idempotency check and the concurrency reservation — never as a
+      // separate step a concurrent equivalent request could race between.
+      nonce: canonical.payload.acknowledgement.nonce,
+      // This exact acknowledgement's own validated expiry — already checked
+      // finite, bounded, and still-future by `verifyAcknowledgement` inside
+      // `admitManagedRun` above. The store retains this nonce until at
+      // least this real expiry (bounded by its own absolute ceiling), not
+      // merely a fixed default window, so a longer-lived acknowledgement's
+      // nonce cannot be replayed once a shorter default alone would have
+      // lapsed — see `claim`'s `nonceExpiresAt` in managedRun.mjs.
+      acknowledgementExpiresAt: canonical.payload.acknowledgement.expiresAt,
+      // The descriptor has already passed the exact-schema gate, contains no
+      // secret values, and is omitted from every public run projection. A
+      // hosted worker reloads it by run ID and calls executeManagedRunWork.
+      work: {
+        payload: canonical.payload,
+        auth,
+        admitted: true,
+      },
+    });
+    if (created.outcome === 'conflict') return { kind: 'conflict' };
+    if (created.outcome === 'limit') return { kind: 'limit', scope: created.scope };
+    if (created.outcome === 'nonce-replayed') {
+      return {
+        kind: 'refused',
+        status: 409,
+        code: 'nonce-replayed',
+        message: 'This request has already been served, or its nonce has expired.',
+      };
+    }
+    return { kind: created.outcome === 'created' ? 'created' : 'existing', run: created.run };
+  } catch {
+    return { kind: 'create-error' };
+  }
+}
+
+
+function writeManagedRunOutcome(response, outcome) {
+  switch (outcome.kind) {
+    case 'lookup-failed':
+      response.writeHead(500, securityHeaders());
+      response.end(JSON.stringify({ state: 'failed', summary: 'The managed run could not be retrieved.', code: 'run-lookup-failed' }));
+      return;
+    case 'existing':
+      response.writeHead(200, securityHeaders());
+      response.end(JSON.stringify(outcome.run));
+      return;
+    case 'conflict':
+      response.writeHead(409, securityHeaders());
+      response.end(JSON.stringify({ state: 'blocked', summary: 'This Idempotency-Key was already used for a different request.', code: 'idempotency-conflict' }));
+      return;
+    case 'refused':
+      response.writeHead(outcome.status, securityHeaders());
+      response.end(JSON.stringify({ state: 'blocked', summary: outcome.message, code: outcome.code }));
+      return;
+    case 'limit':
+      response.writeHead(429, securityHeaders());
+      response.end(
+        JSON.stringify({
+          state: 'blocked',
+          summary: outcome.scope === 'principal' ? 'This principal already has the maximum number of active runs.' : 'The relay already has the maximum number of active runs.',
+          code: 'run-concurrency-limit',
+        }),
+      );
+      return;
+    case 'created':
+      response.writeHead(202, securityHeaders());
+      response.end(JSON.stringify(outcome.run));
+      return;
+    case 'create-error':
+    default:
+      response.writeHead(500, securityHeaders());
+      response.end(JSON.stringify({ state: 'failed', summary: 'The managed run could not be created.', code: 'run-create-failed' }));
+      return;
+  }
 }
 
 async function handleManagedRunCreate(request, response, deps) {
@@ -566,73 +699,8 @@ async function handleManagedRunCreate(request, response, deps) {
 
   const idempotencyKey = request.headers['idempotency-key'];
   const key = Array.isArray(idempotencyKey) ? '' : idempotencyKey;
-  try {
-    const prior = await deps.runOrchestrator.idempotency({
-      owner: auth.principal,
-      tenant: auth.tenant,
-      idempotencyKey: key,
-      requestDigest: canonical.requestDigest,
-    });
-    if (prior.outcome === 'existing') {
-      if (!prior.run || typeof prior.run !== 'object') {
-        response.writeHead(500, securityHeaders());
-        response.end(JSON.stringify({ state: 'failed', summary: 'The managed run could not be retrieved.', code: 'run-lookup-failed' }));
-        return;
-      }
-      response.writeHead(200, securityHeaders());
-      response.end(JSON.stringify(prior.run));
-      return;
-    }
-    if (prior.outcome === 'conflict') {
-      response.writeHead(409, securityHeaders());
-      response.end(JSON.stringify({ state: 'blocked', summary: 'This Idempotency-Key was already used for a different request.', code: 'idempotency-conflict' }));
-      return;
-    }
-    admitManagedRun(canonical, { ...deps, now: deps.now });
-  } catch (error) {
-    const status = error instanceof RequestRefused ? error.status : 500;
-    response.writeHead(status, securityHeaders());
-    response.end(JSON.stringify({ state: 'blocked', summary: error?.message ?? 'The managed run could not be admitted.', code: error?.code }));
-    return;
-  }
-  try {
-    const created = await deps.runOrchestrator.create({
-      owner: auth.principal,
-      tenant: auth.tenant,
-      sampleId: canonical.payload.sampleId,
-      requestDigest: canonical.requestDigest,
-      idempotencyKey: key,
-      // The descriptor has already passed the exact-schema gate, contains no
-      // secret values, and is omitted from every public run projection. A
-      // hosted worker reloads it by run ID and calls executeManagedRunWork.
-      work: {
-        payload: canonical.payload,
-        auth,
-        admitted: true,
-      },
-    });
-    if (created.outcome === 'conflict') {
-      response.writeHead(409, securityHeaders());
-      response.end(JSON.stringify({ state: 'blocked', summary: 'This Idempotency-Key was already used for a different request.', code: 'idempotency-conflict' }));
-      return;
-    }
-    if (created.outcome === 'limit') {
-      response.writeHead(429, securityHeaders());
-      response.end(
-        JSON.stringify({
-          state: 'blocked',
-          summary: created.scope === 'principal' ? 'This principal already has the maximum number of active runs.' : 'The relay already has the maximum number of active runs.',
-          code: 'run-concurrency-limit',
-        }),
-      );
-      return;
-    }
-    response.writeHead(created.outcome === 'created' ? 202 : 200, securityHeaders());
-    response.end(JSON.stringify(created.run));
-  } catch {
-    response.writeHead(500, securityHeaders());
-    response.end(JSON.stringify({ state: 'failed', summary: 'The managed run could not be created.', code: 'run-create-failed' }));
-  }
+  const outcome = await resolveManagedRunRequest(canonical, key, auth, deps);
+  writeManagedRunOutcome(response, outcome);
 }
 
 async function handleManagedRunStatus(request, response, deps, runId) {
@@ -783,7 +851,6 @@ export function createRelayServer({
           catalogue,
           tenantPolicy,
           authenticator,
-          nonceStore: nonces,
           runOrchestrator: managedRuns,
           bodyLimitBytes,
           runTimeoutMs,
