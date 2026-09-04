@@ -78,6 +78,15 @@ Open `http://127.0.0.1:4173/`. Preview mode lets you select all 19 samples,
 complete their configuration, export JSON or `.env.example`, and inspect the
 exact generated plan. It executes nothing.
 
+The masthead also carries an **Offline self-test** — a fixed, local
+demonstration that needs no Azure subscription, no credential, and no network.
+It runs a handful of deterministic checks against this exact checkout (imported
+notebook provenance, the catalogue's fixed size, the vendored offline bundle,
+workspace isolation, and the same-origin guard itself) through the real
+`/api/self-test` route, in both preview and operator mode. Its result always
+reports `azureContacted: false` and `liveEvidence: false` and can never be
+mistaken for a live scenario outcome.
+
 To execute samples from this machine:
 
 ```bash
@@ -100,9 +109,9 @@ Available commands:
 | --- | --- |
 | `npm start` | Safe preview-only server |
 | `npm run start:execute` | Loopback-only local execution |
-| `npm test` | 279 assertions across 14 test files |
+| `npm test` | 563 assertions across 15 test files |
 | `npm run check` | Static imports, zero dependencies, and isolation checks |
-| `npm run smoke` | 81 browser interaction and responsive checks |
+| `npm run smoke` | 88 browser interaction and responsive checks |
 | `npm run verify` | Check, unit/integration tests, then browser smoke |
 
 Environment variables:
@@ -314,9 +323,9 @@ as an *error* in red — the user has not made a mistake, they have not arrived.
 ## Tests
 
 ```
-npm test                 279 assertions, node --test, no dependencies
-npm run check            57 modules, 0 dependencies, nothing outside scope
-npm run smoke            81 headless-browser interaction checks
+npm test                 563 assertions, node --test, no dependencies
+npm run check            89 modules, 0 dependencies, nothing outside scope
+npm run smoke            88 headless-browser interaction checks
 npm run verify           all three, in order
 ```
 
@@ -336,12 +345,15 @@ npm run verify           all three, in order
 | `execution.test.mjs` | Allowlisted CLI/HTTP/Python/artifact/assertion execution with fake transports, bindings, redaction, limits, and cancellation |
 | `runmanager.test.mjs` | Server reconstruction, risk gates, concurrency, run IDs, workspaces, updates, and secret handling |
 | `server.test.mjs` | Preview/operator modes, loopback restriction, same-origin JSON guard, body limits, capability, and vendored runtime closure |
+| `selftest.test.mjs` | `/api/self-test` exact-schema validation and the five offline checks it runs, including that it never contacts Azure or the network |
 
 `scripts/smoke.mjs` drives headless Chromium over the DevTools Protocol using
 Node's built-in `WebSocket` — no Playwright, Puppeteer, or dependency. It covers
 selection, tabs, exact requirement groups, configuration copy/download,
 validation, risk acknowledgement, secret redaction, run/cancel and step evidence
-through a test-only executor seam, search, 320px layout, and 200% zoom.
+through a test-only executor seam, search, 320px layout, 200% zoom, and the
+offline self-test card run end-to-end through the real server at both a normal
+viewport and 320px.
 
 ---
 

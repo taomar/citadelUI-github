@@ -19,7 +19,7 @@ specific Windows username, drive, or local checkout path.
 | Pushed commit | `1fd4326341329db0e2a6b6c39252bcf164ef4b5b` |
 | Repository | `taomar/citadelUI-github` |
 | Main handover | `CitadelSamples/AGENT_PROGRESS.md` |
-| Automated baseline | 279/279 tests and 81/81 browser checks |
+| Automated baseline | 563/563 tests and 88/88 browser checks |
 | Live Azure validation | Not performed |
 
 ### Authoritative execution queue
@@ -35,7 +35,7 @@ intended operations.
 | 2 | Independent offline QA | Complete | Catalogue, security, accessibility, responsive, and automated baselines pass without Azure |
 | 3 | Trace and threat-model the external relay | Complete | Protocol, trust boundaries, deployment shape, and required controls are documented |
 | 4 | Harden the relay protocol and proxy; implement an HTTP/assertion-only relay | Complete | Server-authoritative validation, authentication, target allowlists, acknowledgement binding, limits, cancellation, and redaction pass offline tests |
-| 5 | Add a zero-setup offline self-test | In progress | A user can run a clearly labelled local demonstration through the real UI/server path without Azure; its result cannot be mistaken for live evidence |
+| 5 | Add a zero-setup offline self-test | Complete | A user can run a clearly labelled local demonstration through the real UI/server path without Azure; its result cannot be mistaken for live evidence |
 | 6 | Add managed run state and hosted job orchestration | Pending | Run ownership, polling, cancellation, idempotency, concurrency, timeout, and partial-failure behavior are deterministic |
 | 7 | Add Container Apps, managed identity, Key Vault, and least-privilege deployment assets | Complete | Bicep, container, and static checks prove the intended topology without provisioning Azure |
 | 8 | Run relay security, protocol, deployment-static, and local end-to-end tests | Pending | Required abuse cases fail closed and no process executor is reachable remotely |

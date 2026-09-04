@@ -151,10 +151,10 @@ async function main() {
     process.exit(2);
   }
 
-  const server = createPlaygroundServer();
-  server.listen(0, '127.0.0.1');
+  const port = await reserveLoopbackPort();
+  const server = createPlaygroundServer({ port });
+  server.listen(port, '127.0.0.1');
   await once(server, 'listening');
-  const { port } = server.address();
   const base = `http://127.0.0.1:${port}`;
 
   const profile = await mkdtemp(join(tmpdir(), 'citadel-smoke-'));
@@ -639,6 +639,40 @@ async function main() {
     check('a context disclosure appears', narrow.contextDisclosure === true);
     check('tabs remain horizontal and present', narrow.tabsVisible === 4, String(narrow.tabsVisible));
 
+    /* ------------------------------------------------ offline self-test (320px) */
+    // The disclosure's body used to be positioned absolutely off the toggle,
+    // which overflowed the viewport once the masthead wrapped to a narrow
+    // layout and hid the run button behind the compact recipe strip. Drive a
+    // real click through the real server here, at the width that broke it.
+    const selfTestNarrow = await evaluate(
+      page,
+      `(async () => {
+        document.querySelector('#self-test summary').click();
+        document.getElementById('self-test-run').click();
+        const pending = () => ['Not run', 'Running…'].includes(document.getElementById('self-test-status').textContent);
+        const deadline = Date.now() + 5000;
+        while (pending()) {
+          if (Date.now() > deadline) break;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        return {
+          status: document.getElementById('self-test-status').textContent,
+          docWidth: document.documentElement.scrollWidth,
+          winWidth: window.innerWidth,
+        };
+      })()`,
+    );
+    check(
+      'the offline self-test runs to completion at 320px',
+      /Passed — offline only/.test(selfTestNarrow.status),
+      selfTestNarrow.status,
+    );
+    check(
+      'no horizontal overflow after running the self-test at 320px',
+      selfTestNarrow.docWidth <= selfTestNarrow.winWidth,
+      `${selfTestNarrow.docWidth} > ${selfTestNarrow.winWidth}`,
+    );
+
     // 200% zoom is equivalent to halving the CSS viewport at the same pixels.
     await page.send('Emulation.setDeviceMetricsOverride', {
       width: 640,
@@ -683,6 +717,43 @@ async function main() {
     );
     check('every recipe renders all four tabs with content', sweep.problems.length === 0, sweep.problems.join('; '));
     check('the sweep visited all 19 recipes', sweep.count === 19, String(sweep.count));
+
+    /* ------------------------------------------------- offline self-test */
+    // This is the same card already exercised at 320px above, but here it is
+    // run once more at a normal viewport through the real /api/self-test
+    // route (no fake executor) to assert the full evidence shape a user sees:
+    // exactly five checks, all passed, and the fixed offline claims.
+    const selfTest = await evaluate(
+      page,
+      `(async () => {
+        const details = document.getElementById('self-test');
+        if (!details.open) details.querySelector('summary').click();
+        document.getElementById('self-test-run').click();
+        const pending = () => ['Not run', 'Running…'].includes(document.getElementById('self-test-status').textContent);
+        const deadline = Date.now() + 5000;
+        while (pending()) {
+          if (Date.now() > deadline) break;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        const checks = [...document.querySelectorAll('.mh-selftest-check')];
+        return {
+          status: document.getElementById('self-test-status').textContent,
+          summary: document.getElementById('self-test-summary').textContent,
+          checkCount: checks.length,
+          allPassed: checks.every((row) => /Pass/.test(row.querySelector('.chip')?.textContent ?? '')),
+          live: document.getElementById('live').textContent,
+        };
+      })()`,
+    );
+    check('the offline self-test reports Passed', /Passed — offline only/.test(selfTest.status), selfTest.status);
+    check(
+      'the summary states no Azure contact and no live evidence',
+      /contacted no Azure service/.test(selfTest.summary) && /no live evidence/.test(selfTest.summary),
+      selfTest.summary,
+    );
+    check('exactly five checks are rendered', selfTest.checkCount === 5, String(selfTest.checkCount));
+    check('every rendered check passed', selfTest.allPassed === true);
+    check('the live region announces the self-test result', /offline self-test/i.test(selfTest.live), selfTest.live);
 
     const consoleCheck = await evaluate(page, 'window.__smokeErrors ?? []');
     check('no uncaught page errors were recorded', (consoleCheck ?? []).length === 0, JSON.stringify(consoleCheck));

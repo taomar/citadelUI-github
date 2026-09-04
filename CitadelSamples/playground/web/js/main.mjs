@@ -12,6 +12,7 @@ import { probeFromCapabilityPayload } from '../../src/core/capability.mjs';
 import { createPlaygroundState } from '../../src/core/state.mjs';
 import { createRelayExecutor, createUnavailableExecutor, runPlan } from '../../src/core/executor.mjs';
 import { assertNoSecretValues } from '../../src/core/secrets.mjs';
+import { EXECUTION_PROTOCOL_VERSION } from '../../src/core/types.mjs';
 import { buildDirectoryModel, buildWorkbenchModel } from '../../src/view/models.mjs';
 import { createLocalExecutorClient } from './localClient.mjs';
 import { chip, el, replace } from './render/dom.mjs';
@@ -43,6 +44,10 @@ const nodes = {
   context: document.getElementById('context'),
   contextCompact: document.getElementById('context-compact-body'),
   live: document.getElementById('live'),
+  selfTestRun: document.getElementById('self-test-run'),
+  selfTestStatus: document.getElementById('self-test-status'),
+  selfTestSummary: document.getElementById('self-test-summary'),
+  selfTestChecks: document.getElementById('self-test-checks'),
 };
 
 const state = createPlaygroundState({ catalogue: CATALOGUE });
@@ -103,6 +108,73 @@ function renderCapability() {
   nodes.capability.dataset.canExecute = capability.canExecute ? 'true' : 'false';
   nodes.capabilityLabel.textContent = capabilitySummary?.label ?? (capability.canExecute ? 'Local execution ready' : 'Preview only');
   nodes.capability.title = capabilitySummary?.detail ?? capability.reason ?? '';
+}
+
+/* ------------------------------------------------------------ self-test */
+
+/**
+ * A fixed, local demonstration of this checkout: no Azure credential, no
+ * network call, and — because `azureContacted`/`liveEvidence` are always
+ * `false` — a result that can never be read as live evidence. This state is
+ * intentionally separate from `results` (which holds real recipe runs) so
+ * the two can never be confused in the UI.
+ */
+let selfTest = { state: 'idle' };
+
+const SELF_TEST_CHIP = {
+  idle: ['Not run', 'neutral'],
+  running: ['Running…', 'neutral'],
+  passed: ['Passed — offline only', 'success'],
+  failed: ['Failed — offline only', 'danger'],
+  blocked: ['Blocked', 'warning'],
+  error: ['Error', 'danger'],
+};
+
+function renderSelfTest() {
+  const [label, tone] = SELF_TEST_CHIP[selfTest.state] ?? SELF_TEST_CHIP.idle;
+  replace(nodes.selfTestStatus, [chip(label, tone)]);
+  nodes.selfTestRun.disabled = selfTest.state === 'running';
+  nodes.selfTestSummary.textContent = selfTest.summary ?? '';
+  replace(
+    nodes.selfTestChecks,
+    (selfTest.checks ?? []).map((check) =>
+      el('li', { class: 'mh-selftest-check' }, [
+        el('div', { class: 'mh-selftest-check-head' }, [
+          chip(check.passed ? 'Pass' : 'Fail', check.passed ? 'success' : 'danger'),
+          el('span', { class: 'mh-selftest-check-label', text: check.label }),
+        ]),
+        el('div', { class: 'mh-selftest-check-detail', text: check.detail }),
+      ]),
+    ),
+  );
+}
+
+/**
+ * Run the offline self-test through the real `/api/self-test` route. This is
+ * never faked and never uses the browser smoke driver's test-hook seam: the
+ * whole point is that it is safe to run for real, always, with zero setup.
+ */
+async function runSelfTestCheck() {
+  if (selfTest.state === 'running') return;
+  selfTest = { state: 'running' };
+  renderSelfTest();
+  try {
+    const response = await fetch('/api/self-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
+    });
+    const payload = await response.json();
+    selfTest = {
+      state: response.ok ? payload.state : (payload.state ?? 'error'),
+      summary: payload.summary ?? '',
+      checks: payload.checks ?? [],
+    };
+  } catch (error) {
+    selfTest = { state: 'error', summary: `The self-test request failed: ${error.message}`, checks: [] };
+  }
+  renderSelfTest();
+  announce(`Offline self-test ${selfTest.state}. ${selfTest.summary ?? ''}`);
 }
 
 /* ---------------------------------------------------------------- tabs */
@@ -336,6 +408,7 @@ function render() {
 nodes.sourceFile.textContent = CATALOGUE.sourceNotebook.fileName;
 nodes.sourceHash.textContent = `sha256 ${CATALOGUE.sourceNotebook.sha256}`;
 nodes.directorySearch.addEventListener('input', (event) => state.setDirectoryQuery(event.target.value));
+nodes.selfTestRun.addEventListener('click', runSelfTestCheck);
 
 state.subscribe((reason) => {
   render();
@@ -345,6 +418,7 @@ state.subscribe((reason) => {
 });
 
 renderCapability();
+renderSelfTest();
 render();
 probeCapability();
 

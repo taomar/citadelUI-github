@@ -387,6 +387,118 @@ textarea {
   background: var(--success-line);
 }
 
+.mh-right {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex: none;
+}
+
+.mh-selftest {
+  position: relative;
+  flex: none;
+}
+
+.mh-selftest-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: var(--ctl-h);
+  padding: 0 var(--sp-5);
+  border: 1px solid var(--nav-rule);
+  border-radius: var(--r-2);
+  background: var(--nav-hover);
+  color: var(--nav-ink);
+  font-family: var(--sans-small);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.mh-selftest-summary::-webkit-details-marker {
+  display: none;
+}
+
+.mh-selftest-summary:hover {
+  background: var(--nav-active);
+}
+
+.mh-selftest-label {
+  white-space: nowrap;
+}
+
+.mh-selftest-body {
+  position: absolute;
+  top: calc(100% + var(--sp-3));
+  right: 0;
+  z-index: 20;
+  display: grid;
+  gap: var(--sp-4);
+  width: min(24rem, 90vw);
+  max-height: min(28rem, 80vh);
+  overflow-y: auto;
+  padding: var(--sp-5);
+  background: var(--sheet);
+  color: var(--ink-1);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-3);
+  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 0.25);
+  box-sizing: border-box;
+}
+
+.mh-selftest-note {
+  margin: 0;
+  font-size: var(--t-small);
+  color: var(--ink-3);
+  overflow-wrap: break-word;
+}
+
+.mh-selftest-summary-text {
+  margin: 0;
+  font-size: var(--t-small);
+  font-weight: 600;
+  overflow-wrap: break-word;
+}
+
+.mh-selftest-checks {
+  display: grid;
+  gap: var(--sp-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+
+.mh-selftest-check {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+  font-size: var(--t-micro);
+}
+
+.mh-selftest-check-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.mh-selftest-check-label {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.mh-selftest-check-detail {
+  min-width: 0;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  overflow-wrap: anywhere;
+}
+
 /* ------------------------------------------------------------------ rails */
 
 .rail {
@@ -472,9 +584,27 @@ textarea {
     row-gap: var(--sp-3);
   }
 
-  .mh-capability {
+  .mh-right {
     grid-column: 1 / -1;
     justify-self: start;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .mh-selftest {
+    width: 100%;
+  }
+
+  /* An absolutely positioned popover can only be anchored reliably to a
+     fixed-width masthead. Once the masthead itself wraps, the disclosure
+     body is rendered in normal flow instead — full width, own row — so it
+     can never overflow the viewport regardless of where the toggle sits. */
+  .mh-selftest-body {
+    position: static;
+    width: 100%;
+    max-height: none;
+    margin-top: var(--sp-3);
+    box-shadow: none;
   }
 }
 

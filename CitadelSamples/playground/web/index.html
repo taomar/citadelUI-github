@@ -42,9 +42,27 @@
           <code class="mh-source-hash" id="source-hash">sha256 …</code>
         </div>
 
-        <span class="mh-capability" id="capability" data-can-execute="false">
-          <span id="capability-label">Checking execution capability…</span>
-        </span>
+        <div class="mh-right">
+          <span class="mh-capability" id="capability" data-can-execute="false">
+            <span id="capability-label">Checking execution capability…</span>
+          </span>
+
+          <details class="mh-selftest" id="self-test">
+            <summary class="mh-selftest-summary">
+              <span class="mh-selftest-label">Offline self-test</span>
+              <span class="chip chip-neutral" id="self-test-status">Not run</span>
+            </summary>
+            <div class="mh-selftest-body">
+              <p class="mh-selftest-note">
+                A fixed, local demonstration of this checkout. It runs through this real server, needs no Azure
+                subscription, no credential and no network, and never contacts Azure or produces live evidence.
+              </p>
+              <button class="btn btn-sm" type="button" id="self-test-run">Run offline self-test</button>
+              <p class="mh-selftest-summary-text" id="self-test-summary"></p>
+              <ul class="mh-selftest-checks" id="self-test-checks"></ul>
+            </div>
+          </details>
+        </div>
       </header>
 
       <nav class="rail rail-directory" id="directory" aria-label="Recipe directory">

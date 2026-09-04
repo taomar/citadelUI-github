@@ -130,6 +130,108 @@ test('the relay endpoint applies the same-origin JSON guard before forwarding', 
   });
 });
 
+/* ------------------------------------------------------------ self-test */
+
+test('the self-test endpoint is available in preview mode, contacts no Azure service, and cannot be mistaken for a live scenario', async () => {
+  await withServer({ mode: 'preview' }, async ({ call }) => {
+    const capabilities = await (await call('/api/capabilities')).json();
+    assert.deepEqual(capabilities.selfTest, {
+      endpoint: '/api/self-test',
+      available: true,
+      scenario: 'offline-self-test',
+    });
+
+    const response = await call('/api/self-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
+    });
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.scenario, 'offline-self-test');
+    assert.equal(payload.mode, 'preview');
+    assert.equal(payload.azureContacted, false);
+    assert.equal(payload.liveEvidence, false);
+    assert.equal(payload.state, 'passed');
+    assert.equal(CATALOGUE.byId.has(payload.scenario), false, 'the self-test scenario id must never collide with a catalogue sample id');
+    assert.equal(payload.checks.length, 5);
+    assert.ok(payload.checks.every((check) => check.passed === true));
+  });
+});
+
+test('the self-test endpoint is available in operator (execute) mode too, and still reports no Azure contact', async () => {
+  await withServer({ mode: 'execute', probe: { azureCli: { available: true } } }, async ({ call }) => {
+    const capabilities = await (await call('/api/capabilities')).json();
+    assert.equal(capabilities.selfTest.available, true);
+
+    const response = await call('/api/self-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
+    });
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.mode, 'execute');
+    assert.equal(payload.azureContacted, false);
+    assert.equal(payload.liveEvidence, false);
+  });
+});
+
+test('the self-test endpoint applies the same guard as every other state-changing route', async () => {
+  await withServer({ mode: 'preview' }, async ({ call }) => {
+    const crossSite = await call('/api/self-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'cross-site' },
+      body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
+    });
+    assert.equal(crossSite.status, 403);
+    const crossSitePayload = await crossSite.json();
+    assert.equal(crossSitePayload.azureContacted, false);
+    assert.equal(crossSitePayload.liveEvidence, false);
+
+    const wrongType = await call('/api/self-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: '{}',
+    });
+    assert.equal(wrongType.status, 415);
+
+    const wrongMethod = await call('/api/self-test');
+    assert.equal(wrongMethod.status, 405);
+  });
+});
+
+test('the self-test endpoint accepts exactly { protocolVersion } and refuses everything else, by name', async () => {
+  await withServer({ mode: 'preview' }, async ({ call }) => {
+    const badVersion = await call('/api/self-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: 999 }),
+    });
+    assert.equal(badVersion.status, 400);
+    const badVersionPayload = await badVersion.json();
+    assert.equal(badVersionPayload.state, 'blocked');
+    assert.equal(badVersionPayload.code, 'protocol-version');
+
+    const extraMember = await call('/api/self-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION, sampleId: 'cleanup' }),
+    });
+    assert.equal(extraMember.status, 400);
+    const extraMemberPayload = await extraMember.json();
+    assert.equal(extraMemberPayload.state, 'blocked');
+    assert.equal(extraMemberPayload.code, 'forbidden-member');
+
+    const emptyBody = await call('/api/self-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(emptyBody.status, 400);
+  });
+});
+
 /* --------------------------------------------------------- relay wiring */
 
 /** A relay config for tests: no network, no env vars, a fully injectable seam. */

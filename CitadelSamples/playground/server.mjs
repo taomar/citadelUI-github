@@ -43,6 +43,7 @@ import {
 } from './src/relay/principalAuth.mjs';
 import { computeRelayAllowedSampleIds, rebuildRelayPlan, validateExecuteRequest } from './src/relay/requestSchema.mjs';
 import { mintAcknowledgement, planRequestUrls } from './src/relay/acknowledgement.mjs';
+import { runSelfTest, SELF_TEST_SCENARIO, validateSelfTestRequest } from './src/server/selfTest.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const SERVED_ROOTS = ['web', 'src'].map((dir) => resolve(ROOT, dir));
@@ -309,6 +310,13 @@ export function capabilitiesPayload({ mode = 'preview', probe = {}, relay = DEFA
           },
     // Presence only. The URL and every credential are never disclosed.
     relayConfigured: relay.enabled,
+    // Always available, in every mode: it never depends on Azure CLI, Python,
+    // a relay, or an operator credential — see `src/server/selfTest.mjs`.
+    selfTest: Object.freeze({
+      endpoint: '/api/self-test',
+      available: true,
+      scenario: SELF_TEST_SCENARIO,
+    }),
   };
 }
 
@@ -661,6 +669,72 @@ async function handleCancel(request, response, { manager, port, host }) {
 }
 
 /**
+ * Offline self-test: server-authoritative, zero-setup, no Azure and no
+ * network side effect. Available in both preview and operator mode, and
+ * guarded exactly like every other state-changing endpoint even though it
+ * changes nothing, so it cannot be triggered from a cross-site page.
+ */
+async function handleSelfTest(request, response, { mode, port, host }) {
+  const guard = checkStateChangingRequest(request, { port, host });
+  if (!guard.ok) {
+    sendJson(response, guard.status, {
+      scenario: SELF_TEST_SCENARIO,
+      state: 'blocked',
+      summary: guard.message,
+      azureContacted: false,
+      liveEvidence: false,
+    });
+    return;
+  }
+  let payload;
+  try {
+    payload = JSON.parse(await readBody(request, 4096));
+  } catch (error) {
+    const status = error instanceof RequestRefused ? error.status : 400;
+    sendJson(response, status, {
+      scenario: SELF_TEST_SCENARIO,
+      state: 'failed',
+      summary: error?.message ?? 'Malformed request body.',
+      azureContacted: false,
+      liveEvidence: false,
+    });
+    return;
+  }
+  try {
+    validateSelfTestRequest(payload);
+  } catch (error) {
+    if (error instanceof RequestRefused) {
+      sendJson(response, error.status, {
+        scenario: SELF_TEST_SCENARIO,
+        state: 'blocked',
+        summary: error.message,
+        code: error.code,
+        azureContacted: false,
+        liveEvidence: false,
+      });
+      return;
+    }
+    sendJson(response, 400, {
+      scenario: SELF_TEST_SCENARIO,
+      state: 'failed',
+      summary: 'Malformed request body.',
+      azureContacted: false,
+      liveEvidence: false,
+    });
+    return;
+  }
+  const result = await runSelfTest({
+    playgroundRoot: ROOT,
+    catalogue: CATALOGUE,
+    mode,
+    checkStateChangingRequest,
+    port,
+    host,
+  });
+  sendJson(response, 200, result);
+}
+
+/**
  * @param {object} options
  * @param {'preview'|'execute'} [options.mode]
  * @param {object} [options.runManager]   injected for tests
@@ -716,6 +790,15 @@ export function createPlaygroundServer({
           return;
         }
         await handleExecute(request, response, { port, host, relay });
+        return;
+      }
+
+      if (path === '/api/self-test') {
+        if (request.method !== 'POST') {
+          sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
+          return;
+        }
+        await handleSelfTest(request, response, { mode, port, host });
         return;
       }
 
