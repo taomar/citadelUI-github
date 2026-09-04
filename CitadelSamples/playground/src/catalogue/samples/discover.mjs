@@ -17,10 +17,10 @@ export const DISCOVER_SAMPLES = [
     shortTitle: 'Azure context',
     summary: 'Confirm the Azure CLI is signed in and pointed at the subscription this run expects.',
     purpose:
-      'Every other recipe in this catalogue either deploys at subscription scope or reads management-plane resources. If the CLI is signed in to the wrong tenant or the wrong subscription, those operations still succeed — against the wrong environment. This recipe reads the active context and compares it with the hub profile before anything else runs.',
+      'Every other recipe in this catalogue either deploys at subscription scope or reads management-plane resources. Those commands are bound explicitly to the Hub profile subscription, while this recipe separately confirms that the signed-in principal and active context are the ones the operator expects.',
     explanation: [
       'The notebook calls `az account show` and prints the signed-in user and the active subscription id. When `subscription_id` was left as `REPLACE`, it adopts whatever the CLI is using; when the two differ, it prints a warning telling you to run `az account set`.',
-      'That warning is the only guard the notebook has. Nothing stops a later cell from deploying into the active subscription while the parameter files say something else, because `az deployment sub create` uses the CLI context, not the `subscriptionId` written into the `.bicepparam`. Treat a mismatch as a stop, not a note.',
+      'That warning is the only guard the notebook has. The playground additionally passes the validated Hub profile subscription to every later management command, so an active-context mismatch cannot silently retarget those operations. Treat the mismatch as a stop anyway: it can still reveal an unintended principal or tenant.',
       'This recipe stays read-only. It reports the mismatch and shows you the exact `az account set` command, but it does not change your CLI context for you, because doing so silently would defeat the purpose of the check.',
     ],
     flow: [
@@ -85,7 +85,7 @@ export const DISCOVER_SAMPLES = [
       'The notebook adopts the active subscription when the configured one is blank. This recipe requires the Hub profile to be filled in first, so a mismatch is always reported rather than quietly absorbed.',
     ],
     notes: [
-      'The subscription used by `az deployment sub create` is the CLI context, not the `subscriptionId` written into a `.bicepparam`. A mismatch here means later recipes will deploy somewhere you did not intend.',
+      'Later management commands pass `--subscription` explicitly. This check still proves which principal and tenant the CLI will use before those commands run.',
     ],
     build(ctx) {
       const subscriptionId = ctx.get('hub.subscriptionId');
@@ -182,6 +182,7 @@ export const DISCOVER_SAMPLES = [
       },
     ],
     configuration: [
+      mandatory('hub.subscriptionId', 'Binds both API Management reads to the validated Hub profile subscription.'),
       mandatory('hub.resourceGroupName', 'The resource group whose API Management services are listed and chosen from.'),
       optional(
         'self:apimNameOverride',
@@ -225,6 +226,7 @@ export const DISCOVER_SAMPLES = [
       'If the hub uses a custom domain, the gateway URL reported here is the one the publish contract will echo back in `publishedAssets[].endpoint`. Prefer the deployment-reported endpoint over anything you compose by hand.',
     ],
     build(ctx) {
+      const subscriptionId = ctx.get('hub.subscriptionId');
       const resourceGroup = ctx.get('hub.resourceGroupName');
       const explicitName = ctx.self('apimNameOverride');
       return createExecutionPlan({
@@ -247,6 +249,8 @@ export const DISCOVER_SAMPLES = [
                 resourceGroup,
                 '--query',
                 '[].{name:name, gatewayUrl:gatewayUrl, sku:sku.name, location:location}',
+                '--subscription',
+                subscriptionId,
                 '-o',
                 'json',
               ],
@@ -287,6 +291,8 @@ export const DISCOVER_SAMPLES = [
                 explicitName || '{{steps.select-service.apimName}}',
                 '--query',
                 '{name:name, gatewayUrl:gatewayUrl, sku:sku.name, location:location, publicIPs:publicIpAddresses}',
+                '--subscription',
+                subscriptionId,
                 '-o',
                 'json',
               ],

@@ -111,6 +111,7 @@ export const OBSERVE_SAMPLES = [
       },
     ],
     configuration: [
+      mandatory('hub.subscriptionId', 'Binds both Application Insights management reads to the Hub profile subscription.'),
       mandatory('hub.resourceGroupName', 'Scopes both the component listing and the Application Insights query.'),
       generated(
         'self:appInsightsName',
@@ -176,6 +177,7 @@ export const OBSERVE_SAMPLES = [
     ],
     build(ctx) {
       const resourceGroup = ctx.get('hub.resourceGroupName');
+      const subscriptionId = ctx.get('hub.subscriptionId');
       const lookback = ctx.self('lookbackMinutes');
       const names = (ctx.self('metricNames') ?? []).map((name) => `'${name}'`).join(',');
       const pinned = ctx.self('appInsightsName');
@@ -208,6 +210,8 @@ export const OBSERVE_SAMPLES = [
                 'Microsoft.Insights/components',
                 '--query',
                 '[].name',
+                '--subscription',
+                subscriptionId,
                 '-o',
                 'json',
               ],
@@ -247,6 +251,8 @@ export const OBSERVE_SAMPLES = [
                 resourceGroup,
                 '--analytics-query',
                 kql,
+                '--subscription',
+                subscriptionId,
                 '-o',
                 'json',
               ],
@@ -503,7 +509,17 @@ export const OBSERVE_SAMPLES = [
           detail: 'Circuit breaker configuration lives on the backend object, not in a policy.',
           command: {
             executable: 'az',
-            args: ['rest', '--method', 'get', '--uri', apimBackendResourceUri(coordinates, `${name}-backend`, apiVersion), '-o', 'json'],
+            args: [
+              'rest',
+              '--method',
+              'get',
+              '--uri',
+              apimBackendResourceUri(coordinates, `${name}-backend`, apiVersion),
+              '--subscription',
+              coordinates.subscriptionId,
+              '-o',
+              'json',
+            ],
           },
           produces: ['backend', 'circuitBreaker'],
         }),

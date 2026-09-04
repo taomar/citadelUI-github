@@ -260,7 +260,8 @@ test('the configure model renders only the fields the sample declares', () => {
   const model = buildConfigureModel({ sample: getSample('access-contract-kv-verify'), read, hasSecret: () => false });
   const paths = model.groups.flatMap((group) => group.fields.map((field) => field.path));
   assert.ok(paths.includes('keyVault.name'));
-  assert.ok(!paths.some((path) => path.startsWith('hub.')), 'no hub field is read by this recipe, so none is shown');
+  assert.ok(paths.includes('keyVault.subscriptionId'));
+  assert.ok(paths.includes('hub.subscriptionId'), 'the hub subscription is the external-vault fallback');
   assert.ok(!paths.some((path) => path.startsWith('gatewayAccess.')));
 });
 
@@ -290,9 +291,12 @@ test('the configure model surfaces per-field errors on the right field', () => {
     isTouched: () => true,
   });
   const resourceGroup = fieldOf(model, 'hub.resourceGroupName');
+  const subscription = fieldOf(model, 'hub.subscriptionId');
   assert.equal(resourceGroup.errors.length, 1);
   assert.match(resourceGroup.errors[0], /required/);
-  assert.equal(model.blockingCount, 1, 'only the one value this recipe actually needs is blocking');
+  assert.equal(subscription.errors.length, 1);
+  assert.match(subscription.errors[0], /required/);
+  assert.equal(model.blockingCount, 2, 'both command coordinates are blocking');
   assert.equal(model.satisfied, false);
 });
 
@@ -310,7 +314,7 @@ test('an untouched, empty required field reads as needed rather than as an error
   assert.match(field.needed[0], /required/);
 
   // The readiness count is unaffected: the recipe is still not runnable.
-  assert.equal(untouched.blockingCount, 1, 'readiness still counts it as unmet');
+  assert.equal(untouched.blockingCount, 2, 'readiness still counts both command coordinates as unmet');
 });
 
 test('a touched field, or one holding an invalid value, is a real error', () => {
@@ -374,7 +378,7 @@ test('the export is deterministic and names the values still missing', () => {
   const document = JSON.parse(build().json);
   assert.deepEqual(
     document.missing.map((entry) => entry.path),
-    ['hub.resourceGroupName'],
+    ['hub.subscriptionId', 'hub.resourceGroupName'],
   );
   assert.equal(document.generates.available, false);
 });
@@ -466,10 +470,10 @@ test('a missing mandatory value is counted as blocking in the context rail', () 
   assert.equal(model.readiness.ready, false);
   assert.deepEqual(
     model.readiness.blocking.map((entry) => entry.path),
-    ['hub.resourceGroupName'],
+    ['hub.subscriptionId', 'hub.resourceGroupName'],
   );
   const mandatory = model.readiness.groups.find((group) => group.id === 'mandatory');
-  assert.equal(mandatory.blocking, 1);
+  assert.equal(mandatory.blocking, 2);
 });
 
 test('the context rail reports the runtime this sample needs, per dependency', () => {
@@ -558,8 +562,8 @@ test('the configure tab counts the values still missing, and nothing else', () =
     activeTab: 'configure',
     capability,
   });
-  assert.equal(dirty.tabs.find((tab) => tab.id === 'configure').count, 1);
-  assert.match(dirty.runBlockedReason, /1 required value still missing/);
+  assert.equal(dirty.tabs.find((tab) => tab.id === 'configure').count, 2);
+  assert.match(dirty.runBlockedReason, /2 required values still missing/);
 });
 
 test('a risky recipe cannot be run until it is acknowledged, and then only if a runtime exists', () => {

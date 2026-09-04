@@ -189,11 +189,44 @@ test('`az rest` is restricted to the approved method and to ARM resource paths',
         'get',
         '--uri',
         '/subscriptions/00000000-1111-2222-3333-444444444444/resourceGroups/rg/providers/Microsoft.ApiManagement/service/apim/backends/y?api-version=2024-06-01-preview',
+        '--subscription',
+        '00000000-1111-2222-3333-444444444444',
         '-o',
         'json',
       ]),
     ),
   );
+  assert.throws(
+    () =>
+      resolveAzOperation(
+        'circuit-breaker-check',
+        step([
+          'rest',
+          '--method',
+          'get',
+          '--uri',
+          '/subscriptions/00000000-1111-2222-3333-444444444444/resourceGroups/rg/providers/Microsoft.ApiManagement/service/apim/backends/y?api-version=2024-06-01-preview',
+          '--subscription',
+          '99999999-1111-2222-3333-444444444444',
+          '-o',
+          'json',
+        ]),
+      ),
+    /same subscription in --uri and --subscription/,
+  );
+});
+
+test('role-assignment scopes cannot escape the explicitly bound hub subscription', () => {
+  const { plan } = planFor('apim-foundry-grant', {
+    'foundry.accountResourceId':
+      '/subscriptions/99999999-8888-7777-6666-555555555555/resourceGroups/rg-foundry/providers/Microsoft.CognitiveServices/accounts/aif-citadel-test',
+  });
+  for (const step of plan.steps.filter((candidate) => candidate.id === 'assign-role' || candidate.id === 'verify-assignment')) {
+    assert.throws(
+      () => resolveAzOperation('apim-foundry-grant', step),
+      /same subscription in --scope and --subscription/,
+    );
+  }
 });
 
 test('the CLI timeout and output limit are passed to the transport, not left to it', async () => {
@@ -668,6 +701,14 @@ test('every Python-backed step maps to a shipped wrapper, and nothing else does'
 test('an access token never reaches evidence, a log line or a result', async () => {
   const token = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.c2lnbmF0dXJlLXZhbHVl';
   const spawn = fakeSpawn([
+    {
+      match: (options) => options.args.slice(0, 3).join(' ') === 'cognitiveservices account list',
+      result: {
+        code: 0,
+        stdout:
+          '/subscriptions/00000000-1111-2222-3333-444444444444/resourceGroups/rg-foundry/providers/Microsoft.CognitiveServices/accounts/aif-citadel-test\n',
+      },
+    },
     { match: (options) => options.args[1] === 'get-access-token', result: { code: 0, stdout: `${token}\n` } },
   ]);
   const fetch = fakeFetch([
@@ -676,8 +717,9 @@ test('an access token never reaches evidence, a log line or a result', async () 
   const { result, transports } = await run('foundry-enable-a2a', { spawn, fetch });
   const serialised = JSON.stringify(result);
   assert.ok(!serialised.includes(token), 'the minted token must not appear anywhere in the result');
-  assert.equal(result.steps[0].evidence.tokenAcquired, true);
-  assert.equal(result.steps[0].evidence.tokenLength, token.length);
+  const tokenStep = result.steps.find((step) => step.id === 'acquire-token');
+  assert.equal(tokenStep.evidence.tokenAcquired, true);
+  assert.equal(tokenStep.evidence.tokenLength, token.length);
   // It is still bound into the outgoing request, which is the whole point.
   assert.equal(transports.fetch.calls[0].headers.Authorization, `Bearer ${token}`);
 });
@@ -685,6 +727,14 @@ test('an access token never reaches evidence, a log line or a result', async () 
 test('a credential echoed back by a later step is redacted out of its output', async () => {
   const token = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJlY2hvIn0.YW5vdGhlci1zaWc';
   const spawn = fakeSpawn([
+    {
+      match: (options) => options.args.slice(0, 3).join(' ') === 'cognitiveservices account list',
+      result: {
+        code: 0,
+        stdout:
+          '/subscriptions/00000000-1111-2222-3333-444444444444/resourceGroups/rg-foundry/providers/Microsoft.CognitiveServices/accounts/aif-citadel-test\n',
+      },
+    },
     { match: (options) => options.args[1] === 'get-access-token', result: { code: 0, stdout: token } },
   ]);
   const fetch = fakeFetch([
@@ -862,7 +912,10 @@ test('the server rebuilds the plan from its own catalogue and refuses an incompl
     {
       protocolVersion: EXECUTION_PROTOCOL_VERSION,
       sampleId: 'apim-discovery',
-      inputs: { 'hub.resourceGroupName': 'rg-test' },
+      inputs: {
+        'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'],
+        'hub.resourceGroupName': 'rg-test',
+      },
     },
     CATALOGUE,
   );
@@ -892,18 +945,93 @@ test('every registered az operation belongs to a step that actually exists', () 
   }
 });
 
-test('every azure-cli step in every plan has a registered operation', () => {
+test('every registered Azure command vector has exactly one validated subscription binding', () => {
+  const externalKeyVaultSubscription = '99999999-8888-7777-6666-555555555555';
   const overrides = {
+    'keyVault.subscriptionId': externalKeyVaultSubscription,
     'samples.cleanup.deleteAccessContract': true,
     'samples.cleanup.deletePublishedAssets': true,
     'samples.cleanup.deleteWeatherSourceApi': true,
   };
+  const seen = new Set();
   for (const sample of CATALOGUE.samples) {
     const { plan } = buildSamplePlan(sample, makeFixtureReader(overrides));
     for (const step of plan.steps.filter((candidate) => candidate.type === 'azure-cli')) {
-      assert.doesNotThrow(() => resolveAzOperation(sample.id, step), `${sample.id}/${step.id} is not registered`);
+      const key = `${sample.id}/${step.id.replace(/-\d+$/, '-*')}`;
+      const entry = resolveAzOperation(sample.id, step);
+      const args = step.command.args.map(String);
+      seen.add(key);
+      const indexes = args.flatMap((value, index) => (value === '--subscription' ? [index] : []));
+      if (entry.subscriptionTarget === 'active-context') {
+        assert.deepEqual(indexes, [], `${sample.id}/${step.id} must inspect active context`);
+        continue;
+      }
+      assert.deepEqual(indexes.length, 1, `${sample.id}/${step.id} must have exactly one --subscription`);
+      const expected =
+        entry.subscriptionTarget === 'keyVault'
+          ? externalKeyVaultSubscription
+          : FIXTURE_VALUES['hub.subscriptionId'];
+      assert.equal(args[indexes[0] + 1], expected, `${sample.id}/${step.id} targets the wrong subscription`);
+
+      const withoutBinding = {
+        ...step,
+        command: {
+          ...step.command,
+          args: args.filter((_, index) => index !== indexes[0] && index !== indexes[0] + 1),
+        },
+      };
+      assert.throws(
+        () => resolveAzOperation(sample.id, withoutBinding),
+        /exactly one explicit --subscription binding/,
+        `${sample.id}/${step.id} accepted a missing subscription binding`,
+      );
+
+      const smuggled = {
+        ...step,
+        command: {
+          ...step.command,
+          args: args.map((value, index) => (index === indexes[0] + 1 ? '--debug' : value)),
+        },
+      };
+      assert.throws(
+        () => resolveAzOperation(sample.id, smuggled),
+        /invalid Azure subscription id/,
+        `${sample.id}/${step.id} accepted an option in the subscription value position`,
+      );
     }
   }
+  for (const [key, entry] of Object.entries(AZ_OPERATIONS)) {
+    if (entry === null) continue;
+    assert.ok(seen.has(key), `${key} was not covered by a generated command vector`);
+    assert.ok(
+      ['active-context', 'hub', 'keyVault'].includes(entry.subscriptionTarget),
+      `${key} has no reviewed subscription target`,
+    );
+  }
+});
+
+test('Key Vault command vectors fall back to the validated hub subscription', () => {
+  for (const blankOverride of ['', 'REPLACE']) {
+    const { plan } = planFor('access-contract-kv-verify', { 'keyVault.subscriptionId': blankOverride });
+    for (const step of plan.steps.filter((candidate) => candidate.type === 'azure-cli')) {
+      const index = step.command.args.indexOf('--subscription');
+      assert.ok(index >= 0, `${step.id} has no explicit subscription binding`);
+      assert.equal(step.command.args[index + 1], FIXTURE_VALUES['hub.subscriptionId']);
+      assert.doesNotThrow(() => resolveAzOperation('access-contract-kv-verify', step));
+    }
+  }
+});
+
+test('endpoint-secret reads require a positive length without disclosing the value', () => {
+  const entry = AZ_OPERATIONS['access-contract-kv-verify/read-endpoint-*'];
+  assert.deepEqual(entry.map('0'), {
+    outputs: { endpointValue: '' },
+    evidence: { valueLength: 0 },
+  });
+  assert.deepEqual(entry.map('42'), {
+    outputs: { endpointValue: '(present)' },
+    evidence: { valueLength: 42 },
+  });
 });
 
 test('registered operations accept valid customized catalogue values without widening executable or verb allowlists', () => {

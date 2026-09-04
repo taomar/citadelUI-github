@@ -305,6 +305,8 @@ export const PROFILES = Object.freeze([
         classification: 'conditional',
         width: 'id',
         placeholder: 'aif-citadel-agent-08',
+        pattern: /^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$/,
+        patternMessage: 'Foundry account name must be a 2-63 character lowercase Azure DNS label.',
         requiredWhen: { field: 'foundry.enableA2aAsset', equals: true },
         help: 'The Azure AI Foundry (Cognitive Services) account hosting the project. Its data plane is `https://<account>.services.ai.azure.com`.',
         howToObtain:

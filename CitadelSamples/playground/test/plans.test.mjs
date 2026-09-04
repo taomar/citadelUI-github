@@ -163,6 +163,10 @@ test('golden: the publish contract writes the notebook`s exact parameter file', 
     '--name',
     'citadel-publish-contracts-validation',
   ]);
+  assert.equal(
+    deploy.command.args[deploy.command.args.indexOf('--subscription') + 1],
+    '00000000-1111-2222-3333-444444444444',
+  );
 });
 
 test('golden: dropping the A2A asset removes it from the publish contract', () => {
@@ -208,19 +212,36 @@ test('golden: with no LLM API present the contract code degrades correctly', () 
   assert.match(agentlessText, /product id: TOOL-Governance-PublishedAssets-DEV/);
 });
 
+test('golden: Key Vault parameter overrides use shared blank-value semantics', () => {
+  const plan = planFor('access-contract-deploy', {
+    'keyVault.subscriptionId': 'REPLACE',
+    'keyVault.resourceGroupName': 'REPLACE',
+  });
+  const content = plan.steps.find((step) => step.id === 'write-param').artifact.content;
+  assert.match(content, /subscriptionId: '00000000-1111-2222-3333-444444444444'/);
+  assert.match(content, /resourceGroupName: 'rg-citadel-hub-test'/);
+  assert.doesNotMatch(content, /REPLACE/);
+});
+
 test('golden: Key Vault verification checks the key without printing it, plus every endpoint', () => {
-  const plan = planFor('access-contract-kv-verify');
+  const externalSubscription = '99999999-8888-7777-6666-555555555555';
+  const plan = planFor('access-contract-kv-verify', { 'keyVault.subscriptionId': externalSubscription });
   const key = plan.steps.find((step) => step.id === 'read-key-secret');
   assert.ok(key.command.args.includes('length(value)'), 'the api-key secret must not be printed');
   assert.ok(!key.command.args.includes('value'), 'the api-key secret must not be read as a raw value');
 
   const endpointSteps = plan.steps.filter((step) => step.id.startsWith('read-endpoint-'));
   assert.equal(endpointSteps.length, 4, 'one step per reported endpoint secret');
+  for (const step of [key, ...endpointSteps]) {
+    assert.equal(step.command.args[step.command.args.indexOf('--subscription') + 1], externalSubscription);
+    assert.ok(step.command.args.includes('length(value)'));
+    assert.ok(!step.command.args.includes('value'));
+  }
 
   const assertion = plan.steps.at(-1);
   const text = assertion.assertion.expectations.join(' ');
   assert.match(text, /api-key secret returns a length greater than zero/);
-  assert.match(text, /endpoint secrets return a non-empty value/);
+  assert.match(text, /endpoint secrets return a positive value length/);
 });
 
 test('golden: an empty endpoint-secret list is inconclusive rather than vacuously true', () => {
@@ -336,6 +357,10 @@ test('golden: circuit-breaker checks target the backend resource with the previe
 
 test('golden: the Foundry PATCH sends a real bearer token bound from the token step', () => {
   const plan = planFor('foundry-enable-a2a');
+  assert.deepEqual(
+    plan.steps.slice(0, 2).map((step) => step.id),
+    ['find-account', 'assert-account'],
+  );
   const patch = plan.steps.find((step) => step.id === 'patch-agent');
   assert.equal(patch.request.headers.Authorization, 'Bearer {{steps.acquire-token.accessToken}}');
   assert.deepEqual(patch.consumes, ['acquire-token.accessToken']);

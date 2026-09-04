@@ -31,6 +31,7 @@ export const PREPARE_SAMPLES = [
       'Read the deviation note below before running this. The notebook as published sends a literal `******` as its Authorization header, so the PATCH it performs would be rejected. This recipe sends a real bearer token.',
     ],
     flow: [
+      'Verify the configured Foundry account exists in the validated Hub subscription.',
       'Acquire a bearer token for the `https://ai.azure.com` audience.',
       'PATCH `…/agents/<agent>?api-version=v1` with the agent card and a protocol configuration listing both `responses` and `a2a`.',
       'Confirm the response status is below 300.',
@@ -136,6 +137,7 @@ export const PREPARE_SAMPLES = [
       },
     ],
     configuration: [
+      mandatory('hub.subscriptionId', 'Binds the token request to the validated Hub profile subscription and tenant.'),
       mandatory('foundry.accountName', 'First segment of the Foundry data-plane host the PATCH is sent to.'),
       mandatory('foundry.projectName', 'Names the project in the agent URL; the PATCH cannot be addressed without it.'),
       mandatory('foundry.agentName', 'The agent being changed. This recipe never creates one.'),
@@ -205,17 +207,62 @@ export const PREPARE_SAMPLES = [
       return createExecutionPlan({
         sampleId: 'foundry-enable-a2a',
         title: 'Enable incoming A2A on the Foundry agent',
-        summary: 'Acquire a Foundry data-plane token and PATCH the agent to expose an A2A endpoint.',
+        summary: 'Verify the Foundry account target, acquire a data-plane token, and PATCH the agent to expose an A2A endpoint.',
         risk: ctx.risk,
         sourceCells: [7, 8],
         steps: [
+          step.cli({
+            id: 'find-account',
+            title: 'Verify the Foundry account subscription',
+            detail: 'Looks up the configured account name only inside the validated Hub subscription.',
+            command: {
+              executable: 'az',
+              args: [
+                'cognitiveservices',
+                'account',
+                'list',
+                '--query',
+                `[?name=='${accountName}'].id`,
+                '--subscription',
+                ctx.get('hub.subscriptionId'),
+                '-o',
+                'tsv',
+              ],
+            },
+            produces: ['accountResourceId'],
+          }),
+          step.assertion({
+            id: 'assert-account',
+            title: 'Confirm the Foundry account target',
+            detail: 'Stops before minting a bearer token unless exactly one matching account exists in the Hub subscription.',
+            assertion: {
+              kind: 'shape',
+              source: '{{steps.find-account.accountResourceId}}',
+              expectations: [
+                `Exactly one Foundry account named \`${accountName}\` exists in the Hub subscription.`,
+                'No token is minted and no PATCH is sent when the account is absent.',
+              ],
+            },
+            produces: ['accountResourceId'],
+          }),
           step.cli({
             id: 'acquire-token',
             title: 'Acquire a Foundry data-plane token',
             detail: 'Audience `https://ai.azure.com`. The value is bound by reference and never printed.',
             command: {
               executable: 'az',
-              args: ['account', 'get-access-token', '--resource', 'https://ai.azure.com', '--query', 'accessToken', '-o', 'tsv'],
+              args: [
+                'account',
+                'get-access-token',
+                '--resource',
+                'https://ai.azure.com',
+                '--subscription',
+                ctx.get('hub.subscriptionId'),
+                '--query',
+                'accessToken',
+                '-o',
+                'tsv',
+              ],
               note: 'Output is a credential. Capture it into a shell variable rather than echoing it.',
               producesCredential: true,
             },
@@ -337,6 +384,7 @@ export const PREPARE_SAMPLES = [
       },
     ],
     configuration: [
+      mandatory('hub.subscriptionId', 'Binds every Azure management command in this recipe to the Hub profile subscription.'),
       mandatory('hub.resourceGroupName', 'Scopes the `az apim show` that reads the managed identity block.'),
       mandatory('hub.apimName', 'The API Management service whose identity is granted the Foundry role.'),
       mandatory('foundry.accountName', 'Looked up by name to resolve the account resource id the project scope is built from.'),
@@ -423,6 +471,7 @@ export const PREPARE_SAMPLES = [
       const role = ctx.get('foundry.role');
       const accountResourceId = ctx.get('foundry.accountResourceId');
       const principalId = ctx.get('foundry.apimIdentityPrincipalId');
+      const subscriptionId = ctx.get('hub.subscriptionId');
       const knownScope = foundryProjectResourceId({ accountResourceId, projectName });
       const scope = knownScope || '{{steps.compose-scope.projectScope}}';
       return createExecutionPlan({
@@ -438,7 +487,20 @@ export const PREPARE_SAMPLES = [
             detail: 'A user-assigned identity is preferred because its client id can be pinned in the publish contract.',
             command: {
               executable: 'az',
-              args: ['apim', 'show', '-g', resourceGroup, '-n', apimName, '--query', 'identity', '-o', 'json'],
+              args: [
+                'apim',
+                'show',
+                '-g',
+                resourceGroup,
+                '-n',
+                apimName,
+                '--query',
+                'identity',
+                '--subscription',
+                subscriptionId,
+                '-o',
+                'json',
+              ],
             },
             produces: ['identity'],
           }),
@@ -465,7 +527,17 @@ export const PREPARE_SAMPLES = [
             detail: 'Looked up by name across the subscription, because the account may sit outside the hub resource group.',
             command: {
               executable: 'az',
-              args: ['cognitiveservices', 'account', 'list', '--query', `[?name=='${accountName}'].id`, '-o', 'tsv'],
+              args: [
+                'cognitiveservices',
+                'account',
+                'list',
+                '--query',
+                `[?name=='${accountName}'].id`,
+                '--subscription',
+                subscriptionId,
+                '-o',
+                'tsv',
+              ],
             },
             produces: ['accountResourceId'],
           }),
@@ -502,6 +574,8 @@ export const PREPARE_SAMPLES = [
                 role,
                 '--scope',
                 scope,
+                '--subscription',
+                subscriptionId,
                 '-o',
                 'json',
               ],
@@ -526,6 +600,8 @@ export const PREPARE_SAMPLES = [
                 scope,
                 '--query',
                 '[].{role:roleDefinitionName, scope:scope}',
+                '--subscription',
+                subscriptionId,
                 '-o',
                 'json',
               ],

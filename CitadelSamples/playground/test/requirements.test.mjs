@@ -255,11 +255,14 @@ test('the gateway URL is conditional for tool calls and mandatory for agent call
 });
 
 test('no recipe asks for a field it does not use — the shared profiles are filtered per sample', () => {
-  // Key Vault verification reads no hub field, so the Hub profile must not
-  // appear on its form at all even though the recipe lists it in usesProfiles.
+  // Key Vault verification uses an explicit override when supplied, otherwise
+  // it needs the hub subscription as the validated fallback.
   const kvVerify = getSample('access-contract-kv-verify');
-  const paths = kvVerify.configurationEntries.map((entry) => entry.path);
-  assert.ok(!paths.some((path) => path.startsWith('hub.')), 'Key Vault verification must not ask for hub fields');
+  const keyVaultSubscription = kvVerify.configurationEntries.find((entry) => entry.path === 'keyVault.subscriptionId');
+  const hubSubscription = kvVerify.configurationEntries.find((entry) => entry.path === 'hub.subscriptionId');
+  assert.equal(keyVaultSubscription?.requirement, 'optional');
+  assert.equal(hubSubscription?.requirement, 'conditional');
+  assert.deepEqual(hubSubscription?.requiredWhen, { field: 'keyVault.subscriptionId', blank: true });
 
   // The A2A card recipe declares no Foundry coordinates: the gateway, not the
   // caller, reaches Foundry.

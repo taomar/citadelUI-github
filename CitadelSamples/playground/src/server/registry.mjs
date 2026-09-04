@@ -72,6 +72,11 @@ const principalId = argument(
   'principal id',
   (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value),
 );
+const subscriptionId = argument(
+  'Azure subscription id',
+  (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value),
+  { allowStepBinding: false },
+);
 const armResourceId = argument(
   'ARM resource id',
   (value) => /^\/subscriptions\/[0-9a-f-]{36}\/[^\0\r\n?#\s]+(?:\/[^\0\r\n?#\s]+)*$/i.test(value),
@@ -114,6 +119,7 @@ const tsv = (text) => String(text ?? '').trim();
 export const AZ_OPERATIONS = Object.freeze({
   'azure-context-check/account-show': {
     verbs: ['account', 'show'],
+    subscriptionTarget: 'active-context',
     shape: shape('account', 'show', '-o', 'json'),
     parse: 'json',
     summary: 'Read the signed-in Azure CLI account.',
@@ -135,6 +141,7 @@ export const AZ_OPERATIONS = Object.freeze({
 
   'apim-discovery/list-services': {
     verbs: ['apim', 'list'],
+    subscriptionTarget: 'hub',
     shape: shape(
       'apim',
       'list',
@@ -142,6 +149,8 @@ export const AZ_OPERATIONS = Object.freeze({
       resourceGroup,
       '--query',
       '[].{name:name, gatewayUrl:gatewayUrl, sku:sku.name, location:location}',
+      '--subscription',
+      subscriptionId,
       '-o',
       'json',
     ),
@@ -158,6 +167,7 @@ export const AZ_OPERATIONS = Object.freeze({
 
   'apim-discovery/show-service': {
     verbs: ['apim', 'show'],
+    subscriptionTarget: 'hub',
     shape: shape(
       'apim',
       'show',
@@ -167,6 +177,8 @@ export const AZ_OPERATIONS = Object.freeze({
       azureName,
       '--query',
       '{name:name, gatewayUrl:gatewayUrl, sku:sku.name, location:location, publicIPs:publicIpAddresses}',
+      '--subscription',
+      subscriptionId,
       '-o',
       'json',
     ),
@@ -184,11 +196,14 @@ export const AZ_OPERATIONS = Object.freeze({
 
   'foundry-enable-a2a/acquire-token': {
     verbs: ['account', 'get-access-token'],
+    subscriptionTarget: 'hub',
     shape: shape(
       'account',
       'get-access-token',
       '--resource',
       'https://ai.azure.com',
+      '--subscription',
+      subscriptionId,
       '--query',
       'accessToken',
       '-o',
@@ -204,9 +219,48 @@ export const AZ_OPERATIONS = Object.freeze({
     }),
   },
 
+  'foundry-enable-a2a/find-account': {
+    verbs: ['cognitiveservices', 'account', 'list'],
+    subscriptionTarget: 'hub',
+    shape: shape(
+      'cognitiveservices',
+      'account',
+      'list',
+      '--query',
+      accountLookupQuery,
+      '--subscription',
+      subscriptionId,
+      '-o',
+      'tsv',
+    ),
+    parse: 'tsv',
+    summary: 'Verify the Foundry account exists in the Hub subscription.',
+    map: (text) => {
+      const ids = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      return {
+        outputs: { accountResourceId: ids.length === 1 ? ids[0] : '' },
+        evidence: { matches: ids.length, accountResourceId: ids.length === 1 ? ids[0] : '' },
+      };
+    },
+  },
+
   'apim-foundry-grant/read-identity': {
     verbs: ['apim', 'show'],
-    shape: shape('apim', 'show', '-g', resourceGroup, '-n', azureName, '--query', 'identity', '-o', 'json'),
+    subscriptionTarget: 'hub',
+    shape: shape(
+      'apim',
+      'show',
+      '-g',
+      resourceGroup,
+      '-n',
+      azureName,
+      '--query',
+      'identity',
+      '--subscription',
+      subscriptionId,
+      '-o',
+      'json',
+    ),
     parse: 'json',
     summary: 'Read the API Management identity block.',
     map: (data) => ({
@@ -221,7 +275,18 @@ export const AZ_OPERATIONS = Object.freeze({
 
   'apim-foundry-grant/find-account': {
     verbs: ['cognitiveservices', 'account', 'list'],
-    shape: shape('cognitiveservices', 'account', 'list', '--query', accountLookupQuery, '-o', 'tsv'),
+    subscriptionTarget: 'hub',
+    shape: shape(
+      'cognitiveservices',
+      'account',
+      'list',
+      '--query',
+      accountLookupQuery,
+      '--subscription',
+      subscriptionId,
+      '-o',
+      'tsv',
+    ),
     parse: 'tsv',
     summary: 'Resolve the Foundry account resource id.',
     map: (text) => {
@@ -236,6 +301,8 @@ export const AZ_OPERATIONS = Object.freeze({
 
   'apim-foundry-grant/assign-role': {
     verbs: ['role', 'assignment', 'create'],
+    subscriptionTarget: 'hub',
+    subscriptionInScope: true,
     shape: shape(
       'role',
       'assignment',
@@ -248,6 +315,8 @@ export const AZ_OPERATIONS = Object.freeze({
       'Foundry Agent Consumer',
       '--scope',
       armResourceId,
+      '--subscription',
+      subscriptionId,
       '-o',
       'json',
     ),
@@ -261,6 +330,8 @@ export const AZ_OPERATIONS = Object.freeze({
 
   'apim-foundry-grant/verify-assignment': {
     verbs: ['role', 'assignment', 'list'],
+    subscriptionTarget: 'hub',
+    subscriptionInScope: true,
     shape: shape(
       'role',
       'assignment',
@@ -271,6 +342,8 @@ export const AZ_OPERATIONS = Object.freeze({
       armResourceId,
       '--query',
       '[].{role:roleDefinitionName, scope:scope}',
+      '--subscription',
+      subscriptionId,
       '-o',
       'json',
     ),
@@ -286,6 +359,7 @@ export const AZ_OPERATIONS = Object.freeze({
 
   'publish-assets/deploy': {
     verbs: ['deployment', 'sub', 'create'],
+    subscriptionTarget: 'hub',
     shape: shape(
       'deployment',
       'sub',
@@ -298,6 +372,8 @@ export const AZ_OPERATIONS = Object.freeze({
       acceleratorTemplatePath,
       '--parameters',
       acceleratorParameterPath,
+      '--subscription',
+      subscriptionId,
       '-o',
       'json',
     ),
@@ -333,6 +409,7 @@ export const AZ_OPERATIONS = Object.freeze({
 
   'access-contract-deploy/list-apis': {
     verbs: ['apim', 'api', 'list'],
+    subscriptionTarget: 'hub',
     shape: shape(
       'apim',
       'api',
@@ -343,6 +420,8 @@ export const AZ_OPERATIONS = Object.freeze({
       azureName,
       '--query',
       '[].name',
+      '--subscription',
+      subscriptionId,
       '-o',
       'json',
     ),
@@ -362,6 +441,7 @@ export const AZ_OPERATIONS = Object.freeze({
 
   'access-contract-deploy/deploy': {
     verbs: ['deployment', 'sub', 'create'],
+    subscriptionTarget: 'hub',
     shape: shape(
       'deployment',
       'sub',
@@ -374,6 +454,8 @@ export const AZ_OPERATIONS = Object.freeze({
       acceleratorTemplatePath,
       '--parameters',
       acceleratorParameterPath,
+      '--subscription',
+      subscriptionId,
       '-o',
       'json',
     ),
@@ -411,6 +493,7 @@ export const AZ_OPERATIONS = Object.freeze({
 
   'access-contract-kv-verify/read-key-secret': {
     verbs: ['keyvault', 'secret', 'show'],
+    subscriptionTarget: 'keyVault',
     shape: shape(
       'keyvault',
       'secret',
@@ -419,6 +502,8 @@ export const AZ_OPERATIONS = Object.freeze({
       azureName,
       '--name',
       azureName,
+      '--subscription',
+      subscriptionId,
       '--query',
       'length(value)',
       '-o',
@@ -434,6 +519,7 @@ export const AZ_OPERATIONS = Object.freeze({
 
   'access-contract-kv-verify/read-endpoint-*': {
     verbs: ['keyvault', 'secret', 'show'],
+    subscriptionTarget: 'keyVault',
     shape: shape(
       'keyvault',
       'secret',
@@ -442,18 +528,27 @@ export const AZ_OPERATIONS = Object.freeze({
       azureName,
       '--name',
       azureName,
+      '--subscription',
+      subscriptionId,
       '--query',
-      'value',
+      'length(value)',
       '-o',
       'tsv',
     ),
     parse: 'tsv',
-    summary: 'Read one endpoint secret.',
-    map: (text) => ({ outputs: { endpointValue: text }, evidence: { value: text } }),
+    summary: 'Prove one endpoint secret exists, by length only.',
+    map: (text) => {
+      const valueLength = Number.parseInt(text, 10) || 0;
+      return {
+        outputs: { endpointValue: valueLength > 0 ? '(present)' : '' },
+        evidence: { valueLength },
+      };
+    },
   },
 
   'usage-metrics/list-components': {
     verbs: ['resource', 'list'],
+    subscriptionTarget: 'hub',
     shape: shape(
       'resource',
       'list',
@@ -463,6 +558,8 @@ export const AZ_OPERATIONS = Object.freeze({
       'Microsoft.Insights/components',
       '--query',
       '[].name',
+      '--subscription',
+      subscriptionId,
       '-o',
       'json',
     ),
@@ -476,6 +573,7 @@ export const AZ_OPERATIONS = Object.freeze({
 
   'usage-metrics/query-metrics': {
     verbs: ['monitor', 'app-insights', 'query'],
+    subscriptionTarget: 'hub',
     shape: shape(
       'monitor',
       'app-insights',
@@ -486,6 +584,8 @@ export const AZ_OPERATIONS = Object.freeze({
       resourceGroup,
       '--analytics-query',
       usageMetricsQuery,
+      '--subscription',
+      subscriptionId,
       '-o',
       'json',
     ),
@@ -500,7 +600,19 @@ export const AZ_OPERATIONS = Object.freeze({
   'circuit-breaker-check/read-backend-*': {
     verbs: ['rest'],
     rest: { methods: ['get'] },
-    shape: shape('rest', '--method', 'get', '--uri', backendReadUri, '-o', 'json'),
+    subscriptionTarget: 'hub',
+    subscriptionInUri: true,
+    shape: shape(
+      'rest',
+      '--method',
+      'get',
+      '--uri',
+      backendReadUri,
+      '--subscription',
+      subscriptionId,
+      '-o',
+      'json',
+    ),
     parse: 'json',
     summary: 'Read one backend and its circuit breaker.',
     map: (data) => ({
@@ -512,13 +624,26 @@ export const AZ_OPERATIONS = Object.freeze({
   'cleanup/delete-subscription': {
     verbs: ['rest'],
     rest: { methods: ['delete'] },
-    shape: shape('rest', '--method', 'delete', '--uri', subscriptionDeleteUri, '--headers', 'If-Match=*'),
+    subscriptionTarget: 'hub',
+    subscriptionInUri: true,
+    shape: shape(
+      'rest',
+      '--method',
+      'delete',
+      '--uri',
+      subscriptionDeleteUri,
+      '--subscription',
+      subscriptionId,
+      '--headers',
+      'If-Match=*',
+    ),
     parse: 'none',
     summary: 'Delete the APIM subscription.',
     map: () => ({ outputs: { subscriptionDeleted: true }, evidence: { deleted: true } }),
   },
   'cleanup/delete-product': {
     verbs: ['apim', 'product', 'delete'],
+    subscriptionTarget: 'hub',
     shape: shape(
       'apim',
       'product',
@@ -531,6 +656,8 @@ export const AZ_OPERATIONS = Object.freeze({
       azureName,
       '--delete-subscriptions',
       'true',
+      '--subscription',
+      subscriptionId,
       '--yes',
     ),
     parse: 'none',
@@ -539,6 +666,7 @@ export const AZ_OPERATIONS = Object.freeze({
   },
   'cleanup/delete-api-*': {
     verbs: ['apim', 'api', 'delete'],
+    subscriptionTarget: 'hub',
     shape: shape(
       'apim',
       'api',
@@ -549,6 +677,8 @@ export const AZ_OPERATIONS = Object.freeze({
       azureName,
       '--api-id',
       publishedApiId,
+      '--subscription',
+      subscriptionId,
       '--yes',
     ),
     parse: 'none',
@@ -558,13 +688,26 @@ export const AZ_OPERATIONS = Object.freeze({
   'cleanup/delete-backend-*': {
     verbs: ['rest'],
     rest: { methods: ['delete'] },
-    shape: shape('rest', '--method', 'delete', '--uri', backendDeleteUri, '--headers', 'If-Match=*'),
+    subscriptionTarget: 'hub',
+    subscriptionInUri: true,
+    shape: shape(
+      'rest',
+      '--method',
+      'delete',
+      '--uri',
+      backendDeleteUri,
+      '--subscription',
+      subscriptionId,
+      '--headers',
+      'If-Match=*',
+    ),
     parse: 'none',
     summary: 'Delete one published backend.',
     map: () => ({ outputs: { backendDeleted: true }, evidence: { deleted: true } }),
   },
   'cleanup/delete-source-api': {
     verbs: ['apim', 'api', 'delete'],
+    subscriptionTarget: 'hub',
     shape: shape(
       'apim',
       'api',
@@ -575,6 +718,8 @@ export const AZ_OPERATIONS = Object.freeze({
       azureName,
       '--api-id',
       'weather-api',
+      '--subscription',
+      subscriptionId,
       '--yes',
     ),
     parse: 'none',
@@ -637,6 +782,7 @@ function validateAzArguments(entry, args, { allowBindings, label }) {
   if (!Array.isArray(args) || args.some((value) => typeof value !== 'string')) {
     throw new Error(`${label} must provide an argument array of strings.`);
   }
+  validateSubscriptionBinding(entry, args, { allowBindings, label });
   if (!entry.shape || args.length !== entry.shape.length) {
     throw new Error(`${label} does not match the complete approved az command shape.`);
   }
@@ -649,9 +795,44 @@ function validateAzArguments(entry, args, { allowBindings, label }) {
       }
       continue;
     }
-    if (allowBindings && STEP_BINDING.test(actual)) continue;
+    if (allowBindings && expected.allowStepBinding !== false && STEP_BINDING.test(actual)) continue;
     if (!expected.test(actual)) {
       throw new Error(`${label} uses invalid ${expected.name} argument "${actual}".`);
+    }
+  }
+
+  function validateSubscriptionBinding(entry, args, { allowBindings, label }) {
+    const indexes = args.flatMap((value, index) => (value === '--subscription' ? [index] : []));
+    if (entry.subscriptionTarget === 'active-context') {
+      if (indexes.length > 0) {
+        throw new Error(`${label} must inspect the active Azure CLI context without overriding its subscription.`);
+      }
+      return;
+    }
+    if (!entry.subscriptionTarget) {
+      throw new Error(`${label} has no declared Azure subscription target.`);
+    }
+    if (indexes.length !== 1) {
+      throw new Error(`${label} must include exactly one explicit --subscription binding.`);
+    }
+    const value = args[indexes[0] + 1] ?? '';
+    if ((allowBindings && STEP_BINDING.test(value)) || !subscriptionId.test(value)) {
+      throw new Error(`${label} uses invalid Azure subscription id argument "${value}".`);
+    }
+    if (entry.subscriptionInUri) {
+      const uri = args[args.indexOf('--uri') + 1] ?? '';
+      const uriSubscription = /^\/subscriptions\/([^/]+)/i.exec(uri)?.[1] ?? '';
+      if (uriSubscription.toLowerCase() !== value.toLowerCase()) {
+        throw new Error(`${label} must use the same subscription in --uri and --subscription.`);
+      }
+    }
+    if (entry.subscriptionInScope) {
+      const scope = args[args.indexOf('--scope') + 1] ?? '';
+      if (allowBindings && STEP_BINDING.test(scope)) return;
+      const scopeSubscription = /^\/subscriptions\/([^/]+)/i.exec(scope)?.[1] ?? '';
+      if (scopeSubscription.toLowerCase() !== value.toLowerCase()) {
+        throw new Error(`${label} must use the same subscription in --scope and --subscription.`);
+      }
     }
   }
 }

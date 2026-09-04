@@ -12,6 +12,7 @@ import {
   foundryAgentCardBackendUrl,
   foundryAgentJsonRpcBackendUrl,
 } from '../../core/endpoints.mjs';
+import { isBlank } from '../../core/validation.mjs';
 import { conditional, generated, mandatory, optional } from '../requirements.mjs';
 import { LINKS } from '../profiles.mjs';
 
@@ -248,8 +249,10 @@ function productPolicyXml(ctx, contract) {
 }
 
 function accessParamText(ctx, contract) {
-  const kvSub = ctx.get('keyVault.subscriptionId') || ctx.get('hub.subscriptionId');
-  const kvRg = ctx.get('keyVault.resourceGroupName') || ctx.get('hub.resourceGroupName');
+  const kvSubscriptionOverride = ctx.get('keyVault.subscriptionId');
+  const kvResourceGroupOverride = ctx.get('keyVault.resourceGroupName');
+  const kvSub = isBlank(kvSubscriptionOverride) ? ctx.get('hub.subscriptionId') : kvSubscriptionOverride;
+  const kvRg = isBlank(kvResourceGroupOverride) ? ctx.get('hub.resourceGroupName') : kvResourceGroupOverride;
   const useKv = ctx.get('keyVault.useAccessContractKv');
   const kvName = useKv ? ctx.get('keyVault.name') : 'unused-kv';
   const apiList = `[${contract.productApis.map((name) => `'${name}'`).join(', ')}]`;
@@ -667,10 +670,12 @@ export const PUBLISH_SAMPLES = [
                 `${ctx.self('publishBicepDir')}/main.bicep`,
                 '--parameters',
                 paramPath,
+                '--subscription',
+                ctx.get('hub.subscriptionId'),
                 '-o',
                 'json',
               ],
-              note: 'Uses the active CLI subscription, not the `subscriptionId` written into the parameter file.',
+              note: 'Targets the validated Hub profile subscription explicitly.',
             },
             produces: ['provisioningState', 'publishedAssets'],
           }),
@@ -947,6 +952,8 @@ export const PUBLISH_SAMPLES = [
                 ctx.get('hub.apimName'),
                 '--query',
                 '[].name',
+                '--subscription',
+                ctx.get('hub.subscriptionId'),
                 '-o',
                 'json',
               ],
@@ -1019,6 +1026,8 @@ export const PUBLISH_SAMPLES = [
                 `${ctx.self('accessBicepDir')}/main.bicep`,
                 '--parameters',
                 paramPath,
+                '--subscription',
+                ctx.get('hub.subscriptionId'),
                 '-o',
                 'json',
               ],
@@ -1077,12 +1086,12 @@ export const PUBLISH_SAMPLES = [
       'The access contract is the only thing that writes those secrets, and a partial write is silent: the deployment still succeeds. This recipe checks both halves — the shared key and one endpoint per granted asset — so a contract owner knows they hold everything needed to reach every asset they were granted.',
     explanation: [
       'Two kinds of secret are written. One api-key secret holds the single shared credential. One endpoint secret per granted asset holds the URL that asset is reachable at, named `<code>-<bu>-<useCase>-<env>-<apiName>-endpoint`. The per-API naming is what stops two LLM front doors from overwriting each other — `universal-llm-api` resolves to `/models` while `azure-openai-api` resolves to `/openai`, and a shared name would leave whichever wrote last.',
-      'The key secret and the endpoint secrets are checked differently on purpose. An endpoint secret is a URL, so its value is read and shown. The api-key secret is a credential, so this recipe asks Key Vault for the length of the value rather than the value itself — enough to prove it is present and non-empty without printing it into a terminal or a log.',
+      'Both the key secret and endpoint secrets are checked by length only. Endpoint names are configurable inputs, so returning a raw value could disclose an unrelated vault secret if a name were changed. A positive length is enough to prove each expected secret is present without returning any value to the browser.',
       'Reading these secrets requires Key Vault Secrets User (or Secrets Officer) on the vault, and the vault may be in a different subscription from the hub. `az keyvault secret show` uses the data plane, so a role assignment on the resource group is not sufficient by itself.',
     ],
     flow: [
       'Read the shared api-key secret and confirm it is present and non-empty, without printing its value.',
-      'Read each endpoint secret and confirm it holds a non-empty URL.',
+      'Measure each endpoint secret and confirm it is non-empty without returning its value.',
       'Pass only when the key secret AND every endpoint secret are present.',
     ],
     prerequisites: [
@@ -1110,21 +1119,20 @@ export const PUBLISH_SAMPLES = [
       },
     ],
     usesProfiles: ['hub', 'keyVault'],
-    fields: [
-      {
-        name: 'revealEndpointValues',
-        label: 'Show endpoint secret values',
-        type: 'boolean',
-        classification: 'sample-default',
-        default: true,
-        help: 'Endpoint secrets hold URLs, not credentials, so their values are shown by default. The api-key secret is never shown regardless.',
-        howToObtain: 'Fixed behaviour of this playground. The notebook prints endpoint values too.',
-        links: [LINKS.azKeyVaultSecretShow],
-        notebookRef: 'cell 18 endpoint loop',
-      },
-    ],
+    fields: [],
     configuration: [
       mandatory('keyVault.name', 'The vault every `az keyvault secret show` in this recipe reads from.'),
+      optional(
+        'keyVault.subscriptionId',
+        'Binds every secret read to an external Key Vault subscription when supplied.',
+        'Left blank, the validated Hub profile subscription is used.',
+      ),
+      conditional(
+        'hub.subscriptionId',
+        'Provides the validated subscription binding when no external Key Vault subscription override is supplied.',
+        'The Key Vault subscription override is blank.',
+        { field: 'keyVault.subscriptionId', blank: true },
+      ),
       generated(
         'keyVault.keySecretName',
         'The shared api-key secret whose presence is proved without printing its value.',
@@ -1136,11 +1144,6 @@ export const PUBLISH_SAMPLES = [
         'One endpoint secret per granted asset; each becomes its own read step.',
         'Left empty the recipe reports inconclusive rather than passing on an empty set.',
         'Produced by Publish and grant › Deploy the mixed access contract.',
-      ),
-      optional(
-        'self:revealEndpointValues',
-        'Whether endpoint secret values are read directly or only measured by length.',
-        'Falls back to on. Endpoint secrets hold URLs; the api-key secret is never shown either way.',
       ),
     ],
     runtime: {
@@ -1167,8 +1170,8 @@ export const PUBLISH_SAMPLES = [
       {
         id: 'endpoint-secrets-present',
         title: 'Every endpoint secret exists and is non-empty',
-        assertion: 'One endpoint secret per granted asset returns a non-empty value.',
-        evidence: 'The endpoint URLs returned.',
+        assertion: 'One endpoint secret per granted asset returns a positive value length.',
+        evidence: 'The endpoint value lengths; never the values.',
         whenNotRun: 'Not run.',
       },
       {
@@ -1190,6 +1193,10 @@ export const PUBLISH_SAMPLES = [
     ],
     build(ctx) {
       const vaultName = ctx.get('keyVault.name');
+      const vaultSubscriptionOverride = ctx.get('keyVault.subscriptionId');
+      const vaultSubscriptionId = isBlank(vaultSubscriptionOverride)
+        ? ctx.get('hub.subscriptionId')
+        : vaultSubscriptionOverride;
       const keySecretName = ctx.get('keyVault.keySecretName');
       const endpointNames = ctx.get('keyVault.endpointSecretNames') ?? [];
       const steps = [
@@ -1207,6 +1214,8 @@ export const PUBLISH_SAMPLES = [
               vaultName,
               '--name',
               keySecretName || '<keyVaultApiKeySecretName from the contract outputs>',
+              '--subscription',
+              vaultSubscriptionId,
               '--query',
               'length(value)',
               '-o',
@@ -1222,7 +1231,7 @@ export const PUBLISH_SAMPLES = [
           step.cli({
             id: `read-endpoint-${index + 1}`,
             title: `Read endpoint secret ${name}`,
-            detail: 'Endpoint secrets hold URLs, so the value is read directly.',
+            detail: 'Asks only for the value length so a changed secret name cannot disclose an unrelated secret.',
             command: {
               executable: 'az',
               args: [
@@ -1233,8 +1242,10 @@ export const PUBLISH_SAMPLES = [
                 vaultName,
                 '--name',
                 name,
+                '--subscription',
+                vaultSubscriptionId,
                 '--query',
-                ctx.self('revealEndpointValues') ? 'value' : 'length(value)',
+                'length(value)',
                 '-o',
                 'tsv',
               ],
@@ -1254,7 +1265,7 @@ export const PUBLISH_SAMPLES = [
             expectations: [
               'The api-key secret returns a length greater than zero.',
               endpointNames.length > 0
-                ? `All ${endpointNames.length} endpoint secrets return a non-empty value.`
+                ? `All ${endpointNames.length} endpoint secrets return a positive value length.`
                 : 'No endpoint secret names are recorded yet — the result is inconclusive, not a pass.',
               'One endpoint secret exists per granted asset.',
             ],

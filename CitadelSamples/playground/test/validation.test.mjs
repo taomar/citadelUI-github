@@ -26,9 +26,9 @@ test('a blank, whitespace, empty-array or REPLACE value counts as not supplied',
 
 test('required hub fields block every recipe that uses them', () => {
   const read = makeEmptyReader();
-  // The Discovery recipe reads only the resource group, so only that blocks it.
+  // Discovery binds both APIM reads to the configured subscription and group.
   const discovery = errorPaths(getSample('apim-discovery'), read);
-  assert.deepEqual(discovery, ['hub.resourceGroupName']);
+  assert.deepEqual(discovery, ['hub.subscriptionId', 'hub.resourceGroupName']);
 
   // The context check reads only the subscription id.
   const context = errorPaths(getSample('azure-context-check'), read);
@@ -44,10 +44,15 @@ test('required hub fields block every recipe that uses them', () => {
 
 test('a recipe is never blocked by a shared-profile field it does not read', () => {
   const read = makeEmptyReader();
-  // Key Vault verification lists the Hub profile but reads nothing from it.
+  // Key Vault verification needs the hub subscription only as the fallback.
   const kvVerify = errorPaths(getSample('access-contract-kv-verify'), read);
-  assert.ok(!kvVerify.some((path) => path.startsWith('hub.')), 'no hub field may block Key Vault verification');
+  assert.ok(kvVerify.includes('hub.subscriptionId'));
   assert.ok(kvVerify.includes('keyVault.name'));
+  const externalKv = errorPaths(
+    getSample('access-contract-kv-verify'),
+    makeEmptyReader({ 'keyVault.subscriptionId': '99999999-8888-7777-6666-555555555555' }),
+  );
+  assert.ok(!externalKv.includes('hub.subscriptionId'), 'an external vault subscription removes the hub fallback');
 
   // The A2A card recipe lists the Foundry profile but never reads it.
   const card = errorPaths(getSample('a2a-agent-card'), read);
@@ -145,6 +150,14 @@ test('an https-only URL field rejects http and a bare host', () => {
     assert.ok(result.issues.some((issue) => /https:\/\/ URL/.test(issue.message)), `${value} should be rejected`);
   }
   assert.equal(validateFields(fields, () => 'https://example.net').issues.length, 0);
+});
+
+test('Foundry account names cannot alter the credentialed PATCH origin', () => {
+  const sample = getSample('foundry-enable-a2a');
+  for (const accountName of ['attacker.example/#', 'aif_test', '-aif-test', 'aif-test-', 'AIF-test']) {
+    const paths = errorPaths(sample, makeFixtureReader({ 'foundry.accountName': accountName }));
+    assert.ok(paths.includes('foundry.accountName'), `${accountName} must be rejected`);
+  }
 });
 
 test('a blank derived value warns rather than blocking', () => {
