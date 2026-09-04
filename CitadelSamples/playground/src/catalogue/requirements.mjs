@@ -91,8 +91,12 @@ export function normaliseConfiguration(sample, lookupField) {
       fallback: declaration.fallback ?? '',
       // A secret entry says separately whether THIS sample needs it at all.
       secret: field.classification === 'secret',
+      // A blank blocks unless the entry declares a working fallback. Optional
+      // and generated entries have one by construction; mandatory, conditional
+      // and needed secrets do not. A conditional entry is additionally gated on
+      // its condition still holding.
       blockingWhenBlank:
-        declaration.blockingWhenBlank ?? (requirement === 'mandatory' || requirement === 'secret'),
+        declaration.blockingWhenBlank ?? (requirement !== 'optional' && requirement !== 'generated'),
       // Guards are inputs the executor checks rather than values it interpolates.
       guard: Boolean(declaration.guard),
       producedBy: declaration.producedBy ?? field.derivedFrom ?? '',

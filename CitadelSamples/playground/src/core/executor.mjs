@@ -210,8 +210,13 @@ export function createRelayExecutor({
 /**
  * Guarded entry point used by the UI. It refuses to reach an executor when the
  * recipe is invalid or its risk has not been acknowledged for this run.
+ *
+ * Everything after the two guards is passed straight through, including the
+ * catalogue-shaped `inputs`, the transient `secrets`, and the acknowledgement
+ * payload the server independently re-checks.
  */
-export async function runPlan(executor, plan, { inputs = {}, validation, acknowledgement, signal } = {}) {
+export async function runPlan(executor, plan, context = {}) {
+  const { validation, acknowledgement } = context;
   if (validation && validation.satisfied === false) {
     return executionResult({
       state: 'blocked',
@@ -230,5 +235,11 @@ export async function runPlan(executor, plan, { inputs = {}, validation, acknowl
       meta: { reason: 'acknowledgement' },
     });
   }
-  return executor.execute(plan, { inputs, signal });
+  return executor.execute(plan, {
+    sampleId: context.sampleId ?? plan.sampleId,
+    inputs: context.inputs ?? {},
+    secrets: context.secrets ?? {},
+    acknowledgement: context.acknowledgementPayload ?? null,
+    signal: context.signal,
+  });
 }

@@ -10,7 +10,29 @@ import { step, createExecutionPlan } from '../../core/plan.mjs';
 import { agentEndpoint, mcpEndpoint } from '../../core/endpoints.mjs';
 import { mcpHeaders, mcpPayload, initializeParams } from '../../core/mcp.mjs';
 import { secretRef } from '../../core/secrets.mjs';
+import { conditional, generated, guard, mandatory, optional, secret } from '../requirements.mjs';
 import { LINKS } from '../profiles.mjs';
+
+/** The api-key both bursts present, and the guard both bursts require. */
+const BURST_KEY_NEED = secret(
+  'gatewayAccess.apiKey',
+  'Presented on every burst request. Without it every call is a 401 and the rate limit is never reached.',
+);
+
+const BURST_CONVENTION_NEEDS = [
+  optional('gatewayAccess.subscriptionKeyHeader', 'The header the contract key is sent in.', 'Falls back to `api-key`.'),
+  optional(
+    'gatewayAccess.useAssetTypePathPrefix',
+    'Decides whether the composed path carries the `mcp/` or `agent/` prefix.',
+    'Falls back to on, and is ignored once a deployed endpoint or path is recorded.',
+  ),
+];
+
+const BURST_SHAPE_NEEDS = [
+  optional('self:requestCount', 'How many requests the burst sends.', 'Falls back to the notebook`s limit-plus-15.'),
+  optional('self:concurrency', 'How many requests are in flight at once.', 'Falls back to 10, the notebook`s thread-pool size.'),
+  optional('self:timeoutSeconds', 'Per-request timeout; a timeout is counted as a transport error, not as throttling.', 'Falls back to 30 seconds.'),
+];
 
 const CONFIRM_FIELD = {
   name: 'confirmNonProduction',
@@ -148,6 +170,37 @@ export const POLICY_SAMPLES = [
         notebookRef: 'cell 31 `timeout=30`',
       },
     ],
+    configuration: [
+      guard(
+        'self:confirmNonProduction',
+        'A hard precondition, checked before any request is composed. The executor re-checks it server-side and refuses the run when it is not true.',
+      ),
+      conditional(
+        'hub.gatewayUrl',
+        'Base the burst endpoint is composed from.',
+        'No deployed endpoint has been recorded for the tool.',
+        { field: 'samples.tool-rate-limit-burst.deployedEndpoint', blank: true },
+      ),
+      BURST_KEY_NEED,
+      ...BURST_CONVENTION_NEEDS,
+      optional(
+        'policy.toolCallsPerMinute',
+        'The deployed Tool limit. It sizes the burst and is quoted in the assertion.',
+        'Falls back to 20. It must match what the access contract actually deployed, or the burst proves nothing.',
+      ),
+      optional('self:assetPath', 'Path segment of the published tool.', 'Falls back to `weather-tool-mcp`.'),
+      generated(
+        'self:deployedEndpoint',
+        'The endpoint the publish deployment reported.',
+        'Left blank the endpoint is composed from the gateway URL, the prefix toggle and the path.',
+        'Produced by Publish and grant › Publish the three assets.',
+      ),
+      ...BURST_SHAPE_NEEDS,
+    ],
+    runtime: {
+      dependencies: ['gateway-network'],
+      note: 'Bounded concurrency against one gateway endpoint. The run can be cancelled while it is in flight.',
+    },
     risk: {
       level: 'load-generating',
       effect:
@@ -432,6 +485,35 @@ export const POLICY_SAMPLES = [
         notebookRef: 'cell 31 `A2A-Version`',
       },
     ],
+    configuration: [
+      guard(
+        'self:confirmNonProduction',
+        'A hard precondition, checked before any request is composed. The executor re-checks it server-side and refuses the run when it is not true.',
+      ),
+      mandatory('hub.gatewayUrl', 'The agent endpoint is always the gateway host plus a path, so there is nothing to burst without it.'),
+      BURST_KEY_NEED,
+      ...BURST_CONVENTION_NEEDS,
+      optional(
+        'policy.agentCallsPerMinute',
+        'The deployed Agent limit. It sizes the burst and is quoted in the assertion.',
+        'Falls back to 10. It must match what the access contract actually deployed.',
+      ),
+      optional('self:agentPath', 'Path segment of the published agent.', 'Falls back to `hr-chat-agent`.'),
+      generated(
+        'self:deployedPath',
+        'The already-prefixed path the deployment reported.',
+        'Left blank the path is composed from the prefix toggle and the agent path.',
+        'Produced by Publish and grant › Publish the three assets.',
+      ),
+      ...BURST_SHAPE_NEEDS,
+      optional('self:messageText', 'The text every burst message carries.', 'Falls back to `ping`, as the notebook sends.'),
+      optional('self:messageId', 'The A2A `messageId` on every burst message.', 'Falls back to `burst`.'),
+      optional('self:a2aVersionHeader', 'The `A2A-Version` header this cell sends.', 'Falls back to `1.0`; blank omits the header entirely.'),
+    ],
+    runtime: {
+      dependencies: ['gateway-network'],
+      note: 'Unthrottled calls in this burst run real agent inferences, which the tool burst does not.',
+    },
     risk: {
       level: 'load-generating',
       effect:

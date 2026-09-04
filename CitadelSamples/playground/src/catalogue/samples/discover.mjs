@@ -268,6 +268,7 @@ export const DISCOVER_SAMPLES = [
                   : 'The candidate list holds exactly one service; otherwise supply an explicit name and re-run.',
               ],
               selected: explicitName || '(the single candidate)',
+              configurationPath: 'hub.apimName',
             },
             produces: ['apimName'],
           }),

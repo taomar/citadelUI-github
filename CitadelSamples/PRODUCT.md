@@ -24,16 +24,17 @@ The playground is an executable companion to the source notebook: each guided sa
 
 - The authoritative source is `citadel-publish-contract-tests.ipynb`, imported unchanged from the Azure Samples repository.
 - Users may be preparing or validating Azure API Management, MCP, A2A, Foundry, Application Insights, Key Vault, rate-limit, and cleanup workflows.
-- Real Azure and gateway credentials are not available during the initial build.
-- Future live execution may require browser-safe data-plane calls, an allowlisted relay for protected calls, Azure management-plane operations, or a Python Agent Framework adapter.
+- Real Azure and gateway credentials were not available during development, so live behavior must remain explicitly unproven until a non-production integration run.
+- Preview mode performs no effects. An explicitly enabled loopback-only operator mode executes catalogue-owned Azure CLI, HTTPS, generated-artifact, assertion, and registered Python steps. A remote deployment uses the narrower relay boundary instead.
 
 ## Capabilities and Constraints
 
 - Present one selected sample at a time rather than rendering every scenario on one page.
 - Preserve a catalogue of all 19 atomic recipes found in the notebook; do not invent image-generation, multimodal, LLM-inference, or other samples absent from the source.
-- Capture shared context once and add sample-specific parameters through typed, validated controls.
+- Show only the fields a selected sample actually uses, grouped as mandatory, conditional, optional/defaulted, generated/override, or secret.
 - Provide Guide, Configure, Request, and Response views for every sample.
-- Generate deterministic, redacted execution plans now.
+- Generate deterministic, redacted configuration manifests and execution plans that users can copy or download.
+- Execute validated samples through an explicit local operator mode while keeping ordinary startup preview-only.
 - Treat missing executors, credentials, and target environments as `Not configured` or `Not run`, never as success.
 - Never persist secrets in browser storage, copied previews, URLs, logs, or fixtures.
 - Require explicit confirmation for state-changing, load-generating, and destructive operations.

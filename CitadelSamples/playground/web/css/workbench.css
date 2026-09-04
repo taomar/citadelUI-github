@@ -801,6 +801,36 @@ input[type='search'].ctl {
   color: var(--cloud);
 }
 
+/* A row's requirement is what the reader is scanning for, so it is the one
+   thing carried on the row itself rather than in the label stack. */
+.prow[data-requirement='mandatory'] {
+  border-left: 2px solid var(--brand);
+}
+
+.prow[data-requirement='conditional'] {
+  border-left: 2px solid var(--cloud);
+}
+
+.prow[data-requirement='secret'] {
+  border-left: 2px solid var(--danger);
+}
+
+.prow[data-requirement='optional'],
+.prow[data-requirement='generated'] {
+  border-left: 2px solid transparent;
+}
+
+.prow-owner {
+  font-size: var(--t-micro);
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+/* The reason a field is needed leads the help stack and is not muted away. */
+.prow-why {
+  color: var(--ink-2);
+}
+
 .prow-val {
   display: grid;
   gap: var(--sp-3);
@@ -941,6 +971,30 @@ input[type='search'].ctl {
   font-family: var(--mono);
   font-size: var(--t-micro);
   color: var(--cloud);
+}
+
+/* A run's step carries its outcome on its left edge, so a failed step is
+   findable by scanning rather than by reading every heading. */
+.step[data-state='failed'] {
+  border-left: 2px solid var(--danger);
+  padding-left: var(--sp-4);
+}
+
+.step[data-state='completed'] {
+  border-left: 2px solid var(--success);
+  padding-left: var(--sp-4);
+}
+
+.step[data-state='blocked'],
+.step[data-state='inconclusive'] {
+  border-left: 2px solid var(--warning-line);
+  padding-left: var(--sp-4);
+}
+
+.step[data-state='cancelled'],
+.step[data-state='skipped'] {
+  border-left: 2px solid var(--rule);
+  padding-left: var(--sp-4);
 }
 
 /* ------------------------------------------------------------- run block */

@@ -149,7 +149,9 @@ export function validateFields(fields, read, prefix = '') {
   const issues = [];
   const missing = [];
   for (const field of fields ?? []) {
-    const path = prefix ? `${prefix}.${field.name}` : field.name;
+    // A decorated sample field already knows its own dotted path; a profile
+    // field is addressed by prefix. Both resolve to the same string.
+    const path = field.path ?? (prefix ? `${prefix}.${field.name}` : field.name);
     const value = coerceValue(field, read(path));
     const conditionallyRequired = field.requiredWhen ? evaluateCondition(field.requiredWhen, read) : false;
     const required = field.classification === 'required' || conditionallyRequired;

@@ -10,9 +10,30 @@ import { step, createExecutionPlan } from '../../core/plan.mjs';
 import { agentCardUrl, agentEndpoint, mcpEndpoint } from '../../core/endpoints.mjs';
 import { mcpCallStep, mcpHandshakeExpectations, mcpInitializeStep } from '../../core/mcp.mjs';
 import { secretRef } from '../../core/secrets.mjs';
+import { conditional, generated, mandatory, optional, secret } from '../requirements.mjs';
 import { LINKS } from '../profiles.mjs';
 
 const FAHRENHEIT_CITIES = ['Seattle', 'New York City', 'Los Angeles'];
+
+/** The api-key every gateway call in this group presents. */
+const GATEWAY_KEY_NEED = secret(
+  'gatewayAccess.apiKey',
+  'Presented on every call. Without it the gateway answers 401 before the published asset is reached.',
+);
+
+/** Header/prefix conventions shared by every gateway call. */
+const GATEWAY_CONVENTION_NEEDS = [
+  optional(
+    'gatewayAccess.subscriptionKeyHeader',
+    'The header the contract key is sent in.',
+    'Falls back to `api-key`, the gateway default the publish contract sets.',
+  ),
+  optional(
+    'gatewayAccess.useAssetTypePathPrefix',
+    'Decides whether the composed path carries the `mcp/` or `agent/` prefix.',
+    'Falls back to on, and is ignored entirely once a deployed endpoint or path is recorded.',
+  ),
+];
 
 function endpointFieldsFor({ pathDefault, assetType, label, docLink }) {
   return [
@@ -44,6 +65,50 @@ function endpointFieldsFor({ pathDefault, assetType, label, docLink }) {
       links: [LINKS.apimMcpOverview],
       notebookRef: 'cell 20 `published_by_name[...]["endpoint"]`',
     },
+  ];
+}
+
+/**
+ * What a tool-server call needs. The gateway URL is conditional rather than
+ * mandatory because a recorded deployed endpoint replaces it outright — which
+ * is exactly the rule `mcpEndpoint()` implements.
+ */
+function mcpEndpointNeeds({ sampleId, label, pathDefault, suffixNote }) {
+  return [
+    conditional(
+      'hub.gatewayUrl',
+      `Base the ${label} endpoint is composed from.`,
+      'No deployed endpoint has been recorded for this asset.',
+      { field: `samples.${sampleId}.deployedEndpoint`, blank: true },
+    ),
+    GATEWAY_KEY_NEED,
+    ...GATEWAY_CONVENTION_NEEDS,
+    optional('self:assetPath', `Path segment of the published ${label}.`, `Falls back to \`${pathDefault}\`. ${suffixNote}`),
+    generated(
+      'self:deployedEndpoint',
+      'The endpoint the publish deployment reported. When set it replaces everything composed from the gateway URL and the path.',
+      'Left blank the endpoint is composed from the gateway URL, the prefix toggle and the path.',
+      'Produced by Publish and grant › Publish the three assets (`publishedAssets[].endpoint`).',
+    ),
+  ];
+}
+
+/** What an A2A call needs. The agent base is always composed from the gateway. */
+function agentEndpointNeeds({ pathDefault }) {
+  return [
+    mandatory(
+      'hub.gatewayUrl',
+      'The agent endpoint is always the gateway host plus a path, so there is nothing to compose without it.',
+    ),
+    GATEWAY_KEY_NEED,
+    ...GATEWAY_CONVENTION_NEEDS,
+    optional('self:agentPath', 'Path segment of the published agent.', `Falls back to \`${pathDefault}\`.`),
+    generated(
+      'self:deployedPath',
+      'The already-prefixed path the deployment reported. When set it replaces the composed path.',
+      'Left blank the path is composed from the prefix toggle and the agent path.',
+      'Produced by Publish and grant › Publish the three assets (`publishedAssets[].path`).',
+    ),
   ];
 }
 
@@ -115,6 +180,16 @@ export const EXERCISE_SAMPLES = [
       label: 'Weather tool',
       docLink: LINKS.apimMcp,
     }),
+    configuration: mcpEndpointNeeds({
+      sampleId: 'weather-mcp-discovery',
+      label: 'Weather tool',
+      pathDefault: 'weather-tool-mcp',
+      suffixNote: 'An API→MCP server is served at `{gateway}/mcp/{path}/mcp`.',
+    }),
+    runtime: {
+      dependencies: ['gateway-network'],
+      note: 'Two HTTPS calls to the gateway. No Azure CLI and no Python are needed.',
+    },
     risk: {
       level: 'read-only',
       effect:
@@ -236,6 +311,16 @@ export const EXERCISE_SAMPLES = [
       label: 'Learn tool',
       docLink: LINKS.learnMcpServer,
     }),
+    configuration: mcpEndpointNeeds({
+      sampleId: 'learn-mcp-discovery',
+      label: 'Learn tool',
+      pathDefault: 'ms-learn-tool-mcp',
+      suffixNote: 'A native MCP server is served at `{gateway}/mcp/{path}` with no trailing `/mcp`.',
+    }),
+    runtime: {
+      dependencies: ['gateway-network'],
+      note: 'Two HTTPS calls to the gateway; the gateway itself reaches `learn.microsoft.com`, not this machine.',
+    },
     risk: {
       level: 'read-only',
       effect: 'Opens an MCP session against a remote server through the gateway. Nothing is created or changed.',
@@ -403,6 +488,14 @@ export const EXERCISE_SAMPLES = [
         notebookRef: 'cell 22 `card_url`',
       },
     ],
+    configuration: [
+      ...agentEndpointNeeds({ pathDefault: 'hr-chat-agent' }),
+      optional('self:agentCardPath', 'Relative card path resolved against the agent base URL.', 'Falls back to `/.well-known/agent.json`.'),
+    ],
+    runtime: {
+      dependencies: ['gateway-network'],
+      note: 'A single authenticated GET against the gateway.',
+    },
     risk: {
       level: 'read-only',
       effect: 'One GET. Nothing is created or changed, though it counts against the agent rate limit.',
@@ -609,6 +702,24 @@ export const EXERCISE_SAMPLES = [
         notebookRef: 'cell 22 omits it; cell 31 sends `A2A-Version: 1.0`',
       },
     ],
+    configuration: [
+      ...agentEndpointNeeds({ pathDefault: 'hr-chat-agent' }),
+      optional('self:question', 'The text sent as the message part.', 'Falls back to the notebook`s question.'),
+      optional(
+        'self:messageId',
+        'The A2A `messageId` the agent sees on the inbound message.',
+        'Falls back to a fixed id so the plan is reproducible; the notebook generates a UUID, which makes its request non-reproducible.',
+      ),
+      optional(
+        'self:a2aVersionHeader',
+        'The `A2A-Version` header, which this notebook cell omits and the burst cell sends.',
+        'Left blank the header is not sent at all, matching cell 22.',
+      ),
+    ],
+    runtime: {
+      dependencies: ['gateway-network'],
+      note: 'One JSON-RPC POST. The gateway, not this machine, authenticates to Foundry.',
+    },
     risk: {
       level: 'read-only',
       effect:
@@ -827,6 +938,24 @@ export const EXERCISE_SAMPLES = [
         notebookRef: 'cell 28 timeout',
       },
     ],
+    configuration: [
+      ...agentEndpointNeeds({ pathDefault: 'hr-chat-agent' }),
+      optional('self:question', 'The question the agent is asked.', 'Falls back to the notebook`s question.'),
+      optional(
+        'self:timeoutSeconds',
+        'HTTP client timeout for the card fetch and the agent turn.',
+        'Falls back to 120 seconds, matching the notebook.',
+      ),
+    ],
+    runtime: {
+      dependencies: ['python', 'gateway-network'],
+      python: {
+        packages: ['agent-framework', 'agent-framework-a2a', 'httpx', 'nest_asyncio'],
+        modules: ['httpx', 'nest_asyncio', 'a2a.client', 'agent_framework.a2a'],
+        install: 'pip install -U agent-framework agent-framework-a2a httpx nest_asyncio',
+      },
+      note: 'The only recipe here whose client library, rather than this playground, makes the gateway calls.',
+    },
     risk: {
       level: 'read-only',
       effect: 'Runs one agent turn. No Azure resource changes; the inference is billed and logged.',
@@ -1016,6 +1145,24 @@ export const EXERCISE_SAMPLES = [
         notebookRef: 'cell 29 `{"city": "London"}`',
       },
     ],
+    configuration: [
+      ...mcpEndpointNeeds({
+        sampleId: 'weather-tools-call',
+        label: 'Weather tool',
+        pathDefault: 'weather-tool-mcp',
+        suffixNote: 'An API→MCP server is served at `{gateway}/mcp/{path}/mcp`.',
+      }),
+      optional('self:toolName', 'The MCP tool invoked.', 'Falls back to `get-weather`, the single operation the contract exposed.'),
+      optional(
+        'self:city',
+        'The one argument, and the value the unit assertion branches on.',
+        'Falls back to `London`, which the mock policy answers in Celsius.',
+      ),
+    ],
+    runtime: {
+      dependencies: ['gateway-network'],
+      note: 'Two HTTPS calls: `initialize` then `tools/call` on the returned session.',
+    },
     risk: {
       level: 'read-only',
       effect: 'Invokes a tool that returns synthetic data from a mock policy. No real backend is called and nothing is changed.',

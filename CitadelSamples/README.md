@@ -65,29 +65,79 @@ UI, and asserted by a test.
 
 ## Quick start
 
-Node 20.6 or newer. There is nothing to install.
+Node 20.6 or newer is required. The web application has no package dependencies,
+and preview mode needs no installation.
 
 ```bash
 cd CitadelSamples/playground
 
-npm start          # serves http://127.0.0.1:4173/
-npm test           # 182 assertions across 11 files, via node --test
-npm run check      # static: imports resolve, zero dependencies, scope
-npm run smoke      # 54 headless-browser interaction checks
-npm run verify     # check + test + smoke, in that order
+npm start
 ```
 
-Environment variables, all optional:
+Open `http://127.0.0.1:4173/`. Preview mode lets you select all 19 samples,
+complete their configuration, export JSON or `.env.example`, and inspect the
+exact generated plan. It executes nothing.
+
+To execute samples from this machine:
+
+```bash
+az login
+
+# Required only by samples whose Runtime section names Python modules.
+python -m pip install -r runtime/requirements.txt
+
+npm run start:execute
+```
+
+Operator mode is deliberately separate from ordinary startup. It probes only
+local runtimes at boot; it does not contact Azure or a gateway until **Run this
+plan** is selected. Local execution is refused unless the server binds to
+loopback.
+
+Available commands:
+
+| Command | Purpose |
+| --- | --- |
+| `npm start` | Safe preview-only server |
+| `npm run start:execute` | Loopback-only local execution |
+| `npm test` | 279 assertions across 14 test files |
+| `npm run check` | Static imports, zero dependencies, and isolation checks |
+| `npm run smoke` | 81 browser interaction and responsive checks |
+| `npm run verify` | Check, unit/integration tests, then browser smoke |
+
+Environment variables:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CITADEL_PLAYGROUND_PORT` | `4173` | Listening port |
-| `CITADEL_PLAYGROUND_HOST` | `127.0.0.1` | Bind address — loopback by default |
-| `CITADEL_PLAYGROUND_RELAY_URL` | *(unset)* | Attach an approved execution relay |
+| `CITADEL_PLAYGROUND_HOST` | `127.0.0.1` | Bind address; local execution accepts loopback only |
+| `CITADEL_PLAYGROUND_PYTHON` | `python` on Windows, `python3` elsewhere | Approved Python interpreter |
+| `CITADEL_PLAYGROUND_RELAY_URL` | *(unset)* | Approved external execution relay |
 | `CITADEL_PLAYGROUND_RELAY_TOKEN` | *(unset)* | Bearer token for that relay |
 
-The relay URL and token are read by the server and are **never** sent to the
-browser. `GET /api/capabilities` reports only whether a relay is configured.
+The relay URL and token are never returned to browser code.
+
+---
+
+## Configure and generate
+
+Every sample declares its configuration explicitly. The Configure tab renders
+only fields that sample uses and groups them by execution meaning:
+
+| Group | Meaning |
+| --- | --- |
+| **Mandatory** | Must be supplied before the sample can run |
+| **Conditional** | Mandatory only while the stated condition is true |
+| **Optional** | Pre-filled from the notebook; blank uses the documented fallback |
+| **Generated / override** | Produced by discovery or an earlier recipe; may be overridden |
+| **Secrets** | Required only for samples that present a credential; memory-only |
+
+The summary names missing values and runtime dependencies before Run can be
+enabled. **Copy configuration (JSON)** and **Download configuration** produce a
+deterministic manifest containing source cells, prerequisites, grouped inputs,
+risk, runtime requirements, missing values, and generated operations.
+`.env.example` actions produce empty environment-variable placeholders. Neither
+format can contain a secret value.
 
 ---
 
@@ -101,21 +151,28 @@ CitadelSamples/
   playground/
     package.json          zero dependencies, "type": "module"
     provenance.json       upstream record + sample-to-cell map
-    server.mjs            loopback static server, capability probe, relay seam
+    server.mjs            preview/operator server and guarded API routes
+    runtime/
+      accelerator/        pinned closed Bicep/policy/weather dependency bundle
+      python/             registered Python wrappers
+      requirements.txt    optional Python modules; never auto-installed
     src/
       core/               types, endpoints, validation, secrets, parsing,
-                          mcp, bicep, plan, preview, state, executor
+                          configuration, capability, plan, state, executor
       catalogue/
         profiles.mjs      the five shared profiles + every reference link
+        requirements.mjs  exact per-sample execution requirements
         index.mjs         the single source of truth
         samples/          discover, prepare, publish, exercise, observe,
                           policy, lifecycle
+      server/             reconstruction, operation registry, transports,
+                          assertions, workspaces and run manager
       view/models.mjs     pure view models — no DOM, fully testable in Node
     web/
       index.html          the direction contract and the four landmarks
       css/                world.css (foundation), workbench.css (components)
       js/                 main.mjs + render/{dom,directory,panels,context}
-    test/                 11 files, run with node --test
+    test/                 14 test files, run with node --test
     scripts/              check.mjs (static), smoke.mjs (headless browser)
 ```
 
@@ -150,33 +207,45 @@ a typed non-production confirmation before a plan is generated at all.
 
 ## The live-execution boundary
 
-**The shipped executor cannot run anything, and says so.**
+The browser is never the authority for an operation. It sends only the selected
+sample ID, that sample's declared values, transient declared secrets, and a
+fresh acknowledgement. The server rejects unknown keys and independently
+validates the configuration, rechecks risk, and rebuilds the plan from its own
+catalogue. A browser cannot supply a plan, command, URL, executable, header set,
+script, or file path.
 
-`createUnavailableExecutor()` returns `blocked` for every plan, with the step
-types a capable adapter would need. `blocked` is not a failure and it is never a
-pass: nothing was attempted, so nothing is claimed. `passed` is not a state an
-executor can return at all.
+The local executor supports all five catalogue step types:
 
-Why the notebook cannot simply be replayed with `fetch`:
+| Step | Execution |
+| --- | --- |
+| `artifact` | Writes generated content into `.runs/<run-id>/` only |
+| `azure-cli` | Runs registered `az` operations with argument arrays and no shell |
+| `http` | Sends catalogue-built HTTPS requests with bounded redirects, time, size, and concurrency |
+| `library` | Runs a registered shipped Python wrapper after import preflight |
+| `assertion` | Evaluates the sample's expected behavior from captured evidence |
 
-- Nine recipes need `az` or the Python management SDK — a browser has neither.
-- The MCP handshake needs the `Mcp-Session-Id` **response** header, which a
-  cross-origin gateway must explicitly expose via CORS.
-- The A2A and MCP calls need a live contract key; putting one in the browser to
-  reach a gateway that did not opt into CORS would not work anyway.
-- Two recipes generate deliberate load, and one deletes a live product.
+Each run reports every step, duration, safe evidence, assertions, generated
+artifacts, and discovered configuration updates. Public discoveries can update
+later forms. A newly minted gateway key can update only the current browser's
+in-memory secret store; it never enters rendered evidence, logs, exported
+configuration, or persistent storage.
 
-The optional relay seam is narrow on purpose. The browser posts
-`{ protocolVersion, sampleId, inputs, secretRefs }` to one same-origin path,
-`/api/execute`. It cannot supply a URL, headers or a raw request, so the
-endpoint can never be used as a general proxy. The sample id is checked against
-the catalogue before anything is sent, secret *values* are not transmitted — the
-relay is expected to hold its own credentials for the refs it is told about —
-and an unrecognised relay answer becomes `inconclusive`, never a pass.
+Protection is enforced at the execution boundary:
 
-Two other adapters can implement the same three-method contract without touching
-the UI or the builders: an Azure management adapter for `azure-cli` steps, and a
-Python runner for `library` steps.
+- local execution is loopback-only and preview mode remains the default;
+- state-changing calls require same-origin JSON requests;
+- executable and sample/step operations are allowlisted;
+- subprocesses use `shell: false`, bounded output, timeout, and cancellation;
+- HTTP is HTTPS-only, does not follow redirects, and cannot become an arbitrary proxy;
+- generated paths are contained in a per-run workspace under `CitadelSamples`;
+- known secrets and credential-shaped output are redacted before a result leaves
+  the executor;
+- state-changing, load-generating, and destructive recipes require fresh
+  acknowledgement, and burst/cleanup samples require non-production confirmation.
+
+The external relay remains available for a future remote or container-hosted
+playground. It uses a fixed same-origin browser endpoint and never discloses the
+relay address or bearer token.
 
 ---
 
@@ -245,9 +314,9 @@ as an *error* in red — the user has not made a mistake, they have not arrived.
 ## Tests
 
 ```
-npm test                 182 assertions, node --test, no dependencies
-npm run check            static: imports resolve, 0 deps, nothing outside scope
-npm run smoke            54 headless-browser interaction checks
+npm test                 279 assertions, node --test, no dependencies
+npm run check            57 modules, 0 dependencies, nothing outside scope
+npm run smoke            81 headless-browser interaction checks
 npm run verify           all three, in order
 ```
 
@@ -263,13 +332,16 @@ npm run verify           all three, in order
 | `executor.test.mjs` | Unavailable executor never returns success; relay wire shape, allow-list and same-origin constraint; server headers, path traversal, capability disclosure |
 | `viewmodels.test.mjs` | Directory, search, guide, configure, request, response and workbench models; not-run is never a pass |
 | `markup.test.mjs` | Direction contract ≤150 words in five blocks, landmarks, tab wiring, component states, no gradients/nested cards/pixel tracks, responsive shape change |
+| `requirements.test.mjs` | Exact relevant fields and mandatory/conditional/optional/generated/secret manifests for all 19 samples |
+| `execution.test.mjs` | Allowlisted CLI/HTTP/Python/artifact/assertion execution with fake transports, bindings, redaction, limits, and cancellation |
+| `runmanager.test.mjs` | Server reconstruction, risk gates, concurrency, run IDs, workspaces, updates, and secret handling |
+| `server.test.mjs` | Preview/operator modes, loopback restriction, same-origin JSON guard, body limits, capability, and vendored runtime closure |
 
 `scripts/smoke.mjs` drives headless Chromium over the DevTools Protocol using
-Node's built-in `WebSocket` — no Playwright, no Puppeteer, no dependency. It
-covers selection, tab keyboard navigation, form filling by label, inline
-validation appearing and clearing, the acknowledgement gate and its
-invalidation, secret redaction in the live preview, directory search, and
-rendering at 320px and at 200% zoom.
+Node's built-in `WebSocket` — no Playwright, Puppeteer, or dependency. It covers
+selection, tabs, exact requirement groups, configuration copy/download,
+validation, risk acknowledgement, secret redaction, run/cancel and step evidence
+through a test-only executor seam, search, 320px layout, and 200% zoom.
 
 ---
 
@@ -279,13 +351,13 @@ rendering at 320px and at 200% zoom.
   gateway key or Foundry project was available. Every assertion in the catalogue
   is derived from the notebook and the accelerator's own sample files, not from
   an observed response.
-- **The default executor cannot run any recipe.** All 19 report `blocked`. That
-  is the intended shipping state, not a defect.
-- **Prerequisites are not probed.** The context rail lists them as `manual`;
-  this page never contacts your environment to check one.
-- **Nine recipes need a runtime a browser cannot provide** — `az` for seven,
-  Python for two.
-- **Discovered values are user-supplied here.** Deployment outputs such as the
-  APIM name, gateway URL, published endpoints and Key Vault secret names are
-  entered by hand, and the product id itself depends on which LLM APIs exist on
-  the target gateway.
+- **No live Azure result is proven yet.** Local execution and its failure modes
+  are tested with injected transports, but no real subscription, gateway,
+  Foundry project, Key Vault, burst, or cleanup was used during development.
+- **Operator prerequisites remain the operator's responsibility.** The server
+  probes local `az`, Python imports, and the vendored bundle. It does not sign
+  in, install packages, grant roles, or contact customer endpoints at startup.
+- **Runtime discoveries last only for the current browser session.** Secrets
+  remain memory-only and generated run workspaces remain local.
+- **Browser evidence is Chromium-only.** Firefox, Safari, and a real
+  NVDA/JAWS/VoiceOver pass remain outstanding.

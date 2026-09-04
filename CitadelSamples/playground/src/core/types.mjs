@@ -132,6 +132,28 @@ export const CLASSIFICATION_REQUIREMENT = Object.freeze({
 /** Executables the local executor may ever spawn. Nothing else is allowed. */
 export const ALLOWED_EXECUTABLES = Object.freeze(['az', 'python']);
 
+/**
+ * Reduce a spawn target to the name the allow-list is written in.
+ * `python3.11`, `/usr/bin/python3` and `C:\...\python.exe` all identify as
+ * `python`; anything else keeps its own basename so it fails the check.
+ *
+ * This lives beside the allow-list deliberately: a check and the way you match
+ * against it must not be able to drift apart.
+ */
+export function executableIdentity(executable) {
+  const base = String(executable ?? '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .pop()
+    .replace(/\.exe$/i, '')
+    .toLowerCase();
+  return /^python(\d(\.\d+)?)?$/.test(base) ? 'python' : base;
+}
+
+export function isAllowedExecutable(executable) {
+  return ALLOWED_EXECUTABLES.includes(executableIdentity(executable));
+}
+
 /** Runtime dependencies a sample can declare, used for per-sample capability. */
 export const RUNTIME_DEPENDENCIES = Object.freeze([
   'azure-cli', // the `az` executable, signed in

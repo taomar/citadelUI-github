@@ -7,6 +7,7 @@
 
 import { step, createExecutionPlan } from '../../core/plan.mjs';
 import { apimBackendResourceUri } from '../../core/endpoints.mjs';
+import { generated, mandatory, optional } from '../requirements.mjs';
 import { LINKS } from '../profiles.mjs';
 
 export const OBSERVE_SAMPLES = [
@@ -109,6 +110,26 @@ export const OBSERVE_SAMPLES = [
         notebookRef: 'cell 24 "allow a few minutes after the calls and re-run this cell"',
       },
     ],
+    configuration: [
+      mandatory('hub.resourceGroupName', 'Scopes both the component listing and the Application Insights query.'),
+      generated(
+        'self:appInsightsName',
+        'Pins one Application Insights component instead of choosing.',
+        'Left blank the recipe selects the single candidate, or the one whose name contains `apim`, and reports ambiguity rather than taking the first.',
+        'Produced by this recipe`s own component listing.',
+      ),
+      optional('self:lookbackMinutes', 'Bounds the KQL query with `ago(Nm)` so the result describes this run.', 'Falls back to 30 minutes.'),
+      optional('self:metricNames', 'The custom metrics the query filters on.', 'Falls back to `McpRequests` and `A2ARequests`.'),
+      optional(
+        'self:ingestionDelayMinutes',
+        'Separates "too early to tell" from "genuinely absent".',
+        'Falls back to 5 minutes, inside which an empty window is inconclusive rather than a failure.',
+      ),
+    ],
+    runtime: {
+      dependencies: ['azure-cli'],
+      note: 'The query step needs the `application-insights` CLI extension, which `az` installs on first use.',
+    },
     risk: {
       level: 'read-only',
       effect: 'Lists resources and runs a read-only KQL query.',
@@ -205,6 +226,8 @@ export const OBSERVE_SAMPLES = [
                 'Several candidates with no pinned name and no `apim` match is reported as ambiguous rather than resolved by position.',
               ],
               selected: pinned || '(the apim component, or the single candidate)',
+              preferContains: 'apim',
+              configurationPath: 'samples.usage-metrics.appInsightsName',
             },
             produces: ['appInsightsName'],
           }),
@@ -398,6 +421,23 @@ export const OBSERVE_SAMPLES = [
         notebookRef: 'publish-contract circuit breaker defaults',
       },
     ],
+    configuration: [
+      mandatory('hub.subscriptionId', 'First segment of the backend resource id each `az rest` call targets.'),
+      mandatory('hub.resourceGroupName', 'Second segment of the backend resource id.'),
+      mandatory('hub.apimName', 'Names the API Management service whose backends are read.'),
+      optional('self:backendAssetNames', 'Which published assets` backends are inspected.', 'Falls back to `ms-learn-tool`, the only `mcp-existing` asset the notebook checks.'),
+      optional('self:includeAgentBackend', 'Adds the A2A backend, which the notebook`s loop never reaches.', 'Falls back to off, matching the notebook`s actual behaviour rather than its heading.'),
+      optional('self:apiVersion', 'The management API version on the backend GET.', 'Falls back to `2024-06-01-preview`, as the notebook uses.'),
+      optional('self:expectedFailureCount', 'Expected `failureCondition.count`.', 'Falls back to 3, the publish contract`s default.'),
+      optional('self:expectedFailureInterval', 'Expected `failureCondition.interval`.', 'Falls back to `PT5M`.'),
+      optional('self:expectedTripDuration', 'Expected `tripDuration`.', 'Falls back to `PT1M`.'),
+      optional('self:expectedStatusCodes', 'Expected status-code ranges in the failure condition.', 'Falls back to 429 and 500–503.'),
+      optional('self:expectRetryAfter', 'Whether `acceptRetryAfter` is expected to be true.', 'Falls back to true, the contract default.'),
+    ],
+    runtime: {
+      dependencies: ['azure-cli'],
+      note: 'One `az rest` GET per backend. A Consumption-tier gateway reports unsupported rather than misconfigured.',
+    },
     risk: {
       level: 'read-only',
       effect: 'One management-plane GET per backend.',

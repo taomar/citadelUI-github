@@ -2,11 +2,33 @@
 
 ## Current Milestone
 
-Converting the verified preview workbench into an executable local playground with per-sample mandatory/optional configuration contracts and generated configuration exports.
+Executable-playground checkpoint complete and ready for live validation on a non-production Citadel hub.
 
-## Active Execution Enhancement
+## Executable Playground Checkpoint
 
-### Visible symptom
+### Delivered
+
+- Every one of the 19 recipes now declares only the configuration it actually uses, grouped as mandatory, conditional, optional/defaulted, generated/override, or secret.
+- The Configure tab shows those groups, missing values, runtime readiness, and deterministic JSON plus `.env.example` copy/download actions. Secret values never enter either export.
+- `npm start` remains preview-only. `npm run start:execute` attaches a loopback-only local executor for generated artifacts, registered Azure CLI operations, catalogue-built HTTPS requests, registered Python wrappers, and assertions.
+- The server accepts only a sample ID, declared values, transient declared secrets, and acknowledgement. It validates and rebuilds the plan from its own catalogue; a browser cannot supply an executable, command, URL, header set, script, plan, or path.
+- A pinned, closed accelerator dependency bundle and registered Python wrappers live under `playground/runtime`; runs write only under ignored `.runs/<run-id>/` workspaces.
+- Runs report per-step state, duration, safe evidence, assertions, public configuration updates, and memory-only secret updates. Active run IDs are returned in response headers so cancellation can stop an in-flight run.
+- Windows resolves the official `az.cmd` launcher to the Azure CLI's bundled Python entry point without enabling a shell.
+- Runtime capability is evaluated per sample. Optional Python fallback support does not block access-contract deployment; missing primary Python modules block only the recipes that actually need them.
+
+### Review corrections included
+
+- Applied the same-origin JSON guard to the external relay endpoint.
+- Added the missing subscription ID requirement to the Weather API Python recipe.
+- Preserved missing Python-module state when the browser reconstructs per-sample capability.
+- Enforced streaming HTTP response limits before an oversized body is buffered.
+- Propagated assertion outputs into downstream steps for APIM selection, managed-identity selection, Foundry scope composition, and Application Insights selection.
+- Stopped execution after a failed/inconclusive step so an empty derived binding can never reach a later side effect.
+- Added safe two-pass access-contract discovery: if the live LLM API set differs from the generated configuration, the run updates the form and stops before writing or deploying; the operator reviews and runs again.
+- Added exact role-and-scope verification after the Foundry identity grant.
+
+### Original symptom (resolved)
 
 - The Request tab can generate a complete `ExecutionPlan`, but the default server always reports that no runtime is attached.
 - Configure labels describe where a field came from (`required`, `derived`, `sample default`, `secret`) rather than answering the user's immediate question: “Must I provide this value to execute this sample?”
@@ -106,11 +128,11 @@ The correction belongs at three boundaries:
 
 ### Verification
 
-`npm run verify` is green end to end:
+`npm run verify` is green end to end at this checkpoint:
 
-- `npm run check` — 40 modules, every relative import resolves, zero dependencies, nothing references anything outside `CitadelSamples`.
-- `npm test` — 182 assertions across 11 files, 0 failures.
-- `npm run smoke` — 54 headless-browser checks, 0 failures, stable across three consecutive runs.
+- `npm run check` — 57 modules, every relative import resolves, zero dependencies, nothing references anything outside `CitadelSamples`.
+- `npm test` — 279 assertions across 14 files, 0 failures.
+- `npm run smoke` — 81 headless-browser checks, 0 failures.
 
 The smoke driver uses the DevTools Protocol over Node's built-in `WebSocket`, so browser-level verification adds no dependency. It covers selection, tab keyboard navigation, filling every field by label, inline validation appearing and clearing, the acknowledgement gate and its invalidation on input change, secret redaction in the live preview, directory search, and the 320px and 200%-zoom layouts. Screenshots of all four tabs at desktop, tablet and 320px were reviewed; two defects found that way were fixed — a grid-item bug that broke the error list onto stray rows, and a context-rail label breaking mid-word.
 
@@ -120,7 +142,7 @@ The smoke driver uses the DevTools Protocol over Node's built-in `WebSocket`, so
 - QA found and fixed two defects inside `CitadelSamples`: checkbox help/error ARIA was attached to the wrapping label rather than the focusable input, and untouched required confirmations rendered as errors rather than as needed inputs.
 - All 35 rendered boolean controls now expose their descriptions on the input, all three required confirmations expose `aria-required`, and untouched/touched confirmation states follow the same needed/error model as other fields.
 - Fourteen sampled text roles were independently measured for WCAG AA contrast; all passed, with the lowest ratio at 5.38:1.
-- The full `npm run verify` suite remains green after the fixes: 182/182 unit assertions and 54/54 browser smoke checks.
+- The earlier independent QA suite remains part of the history below. Iteration 2 added execution and configuration-generation coverage after that pass; its current automated result is 279/279 unit/integration assertions and 81/81 browser checks.
 
 ### Scope
 
@@ -146,16 +168,16 @@ All four hold and are enforced by tests:
 
 These are honest gaps, not deferred work described as done.
 
-1. **Nothing has been executed against Azure.** No subscription, gateway, key or Foundry project was available. Every assertion is derived from the notebook and the accelerator's own sample files, never from an observed response. No recipe has been proven to pass against a live gateway.
-2. **The default executor cannot run any recipe.** All 19 report `blocked`. This is the intended shipping state, not a defect.
-3. **The relay path is a contract, not a working integration.** Its wire shape, allow-list, same-origin constraint and error mapping are tested with a fake transport; no relay implementation exists and none has been exercised end to end.
-4. **Prerequisites are declared, not probed.** The context rail marks them `manual`; the page never contacts the user's environment to check one.
-5. **Nine recipes need a runtime a browser cannot provide** — `az` for seven, Python for two — so even with gateway CORS solved they would remain blocked.
-6. **Discovered values are entered by hand.** The APIM name, gateway URL, published endpoints, managed-identity ids and Key Vault secret names are inputs rather than outputs of a previous run; the app does not chain one recipe's results into the next.
-7. **Some expected results are stated but not executable by any recipe**, because no notebook cell performs them — that an unauthenticated call to `/weather` returns 401, and that an Agent Framework run genuinely traversed the gateway rather than merely returning an answer. Both are labelled as needing separate corroboration.
-8. **Browser evidence is Chromium-only.** There has been no Firefox, Safari, or real screen-reader pass. Chrome's accessibility tree verifies the corrected checkbox semantics, but it is not a substitute for NVDA, JAWS, or VoiceOver.
-9. **Documentation links were validated structurally, not re-fetched during QA.** All 61 links use HTTPS and authoritative hosts; future maintenance should periodically check for redirects or retired pages.
+1. **Nothing has been executed against Azure.** The local executor is covered with injected process, HTTP, filesystem, and Python transports. No subscription, gateway, key, Foundry project, burst, or cleanup was touched, so no recipe is yet proven against a live hub.
+2. **The current machine is partially ready.** Azure CLI 2.77 and Python 3.11 resolve correctly. The Weather API and Agent Framework recipes remain blocked until their modules from `runtime/requirements.txt` are installed. Access-contract deployment can run without Python unless its key fallback is needed.
+3. **The external relay remains an interface, not a deployed service.** It is the intended execution boundary for Container Apps or another remote host; no relay implementation has been deployed or integration-tested.
+4. **Customer endpoint reachability and Azure permissions are not probed at startup.** The operator must satisfy each sample's in-product prerequisites and role guidance. Network, RBAC, policy-version, and service-state failures appear in the run result.
+5. **State-changing retries remain operator decisions.** Plans are deterministic and read-backs/assertions expose partial outcomes, but the UI does not automatically retry deployments, role assignments, bursts, or deletions.
+6. **Some expected results require corroboration across recipes.** In particular, proving an Agent Framework call traversed the gateway needs the usage metric, and the source API's anonymous 401 check is documented but not a separate notebook recipe.
+7. **Browser evidence is Chromium-only.** Firefox, Safari, and a real NVDA/JAWS/VoiceOver pass remain outstanding.
+8. **The complete live scenario matrix is the next validation phase.** Work through Discover → Prepare → Publish and grant → Exercise → Observe. Do not run Policy bursts or Lifecycle cleanup until the earlier groups pass on an isolated non-production environment.
+9. **The vendored Bicep entry points compile, with one upstream warning.** `citadel-publish-contracts/modules/publishA2aAgent.bicep` emits BCP089 because the installed Bicep type definition does not recognize `a2aProperties` on the preview APIM API shape. This is inherited from the source bundle and must be verified against the target APIM API version during the first live publish run.
 
 ## Exact Next Action
 
-When a non-production Citadel hub is available, work the catalogue in group order — Discover, Prepare, Publish and grant, Exercise, Observe — and record the first real responses; those are the evidence every "not run" state currently stands in for. Do not run the Policy bursts or the Lifecycle cleanup until the earlier groups have passed on that environment.
+Install the optional Python modules if the next session will exercise those recipes, start with `npm run start:execute`, and validate the 19 scenarios on an isolated non-production hub in catalogue order. Record redacted response fixtures and any service/API-version differences. The Container Apps continuation should implement the existing external relay contract with managed identity and Key Vault rather than exposing the loopback process executor remotely.

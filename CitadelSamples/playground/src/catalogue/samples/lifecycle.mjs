@@ -7,8 +7,14 @@
  */
 
 import { step, createExecutionPlan } from '../../core/plan.mjs';
+import { conditional, guard, mandatory, optional } from '../requirements.mjs';
 import { LINKS } from '../profiles.mjs';
 import { buildPublishAssets, classifyContract } from './publish.mjs';
+
+/** Machine forms of the two deletion switches, used by the contract below. */
+const WHEN_DELETING_CONTRACT = { field: 'samples.cleanup.deleteAccessContract', equals: true };
+const WHEN_DELETING_ASSETS = { field: 'samples.cleanup.deletePublishedAssets', equals: true };
+const ANY_DELETION = { any: [WHEN_DELETING_CONTRACT, WHEN_DELETING_ASSETS] };
 
 /** Everything the notebook's cleanup does not remove, and where it came from. */
 export const CLEANUP_RESIDUE = Object.freeze([
@@ -172,6 +178,81 @@ export const LIFECYCLE_SAMPLES = [
         notebookRef: 'gap — cell 12 creates it, cell 35 does not remove it',
       },
     ],
+    configuration: [
+      guard(
+        'self:confirmNonProduction',
+        'A hard precondition, checked before any deletion is composed. The executor re-checks it server-side and refuses the run when it is not true.',
+      ),
+      mandatory('hub.resourceGroupName', 'Named in the target summary and in every deletion this recipe can compose.'),
+      mandatory('hub.apimName', 'The API Management service the product, subscription, APIs and backends would be deleted from.'),
+      optional('self:deleteAccessContract', 'Whether the product and its subscription are deleted.', 'Falls back to off: nothing is deleted.'),
+      optional('self:deletePublishedAssets', 'Whether the published APIs and their backends are deleted.', 'Falls back to off.'),
+      optional('self:deleteWeatherSourceApi', 'Whether the `weather-api` source API is deleted.', 'Falls back to off, matching the notebook`s gap.'),
+      conditional(
+        'hub.subscriptionId',
+        'First segment of the subscription and backend resource ids the `az rest` deletions target.',
+        'A deletion switch is on.',
+        ANY_DELETION,
+      ),
+      conditional(
+        'foundry.enableA2aAsset',
+        'Decides whether an agent asset is in the delete set and whether the contract classified as MULTI.',
+        'A deletion switch is on.',
+        ANY_DELETION,
+      ),
+      conditional(
+        'publish-assets:weatherToolName',
+        'The API id deleted for the Weather tool.',
+        'Delete the published assets is on.',
+        WHEN_DELETING_ASSETS,
+      ),
+      conditional(
+        'publish-assets:learnToolName',
+        'The API id and backend id deleted for the Learn tool.',
+        'Delete the published assets is on.',
+        WHEN_DELETING_ASSETS,
+      ),
+      conditional(
+        'publish-assets:agentAssetName',
+        'The API id and backend id deleted for the agent.',
+        'Delete the published assets is on.',
+        WHEN_DELETING_ASSETS,
+      ),
+      conditional(
+        'policy.candidateLlmApis',
+        'Feeds the same classification the access contract used, so the product id deleted here is the one that was created.',
+        'Delete the access contract is on.',
+        WHEN_DELETING_CONTRACT,
+      ),
+      conditional(
+        'policy.businessUnit',
+        'First segment of the product id being deleted.',
+        'Delete the access contract is on.',
+        WHEN_DELETING_CONTRACT,
+      ),
+      conditional(
+        'policy.useCaseName',
+        'Second segment of the product id being deleted.',
+        'Delete the access contract is on.',
+        WHEN_DELETING_CONTRACT,
+      ),
+      conditional(
+        'policy.environment',
+        'Third segment of the product id being deleted.',
+        'Delete the access contract is on.',
+        WHEN_DELETING_CONTRACT,
+      ),
+      conditional(
+        'access-contract-deploy:existingLlmApis',
+        'Which LLM APIs the contract found. It changes the contract code and therefore the product id being deleted.',
+        'Delete the access contract is on.',
+        WHEN_DELETING_CONTRACT,
+      ),
+    ],
+    runtime: {
+      dependencies: ['azure-cli'],
+      note: 'With every switch off the plan contains no deletion at all and only the residue report runs.',
+    },
     risk: {
       level: 'destructive',
       effect:

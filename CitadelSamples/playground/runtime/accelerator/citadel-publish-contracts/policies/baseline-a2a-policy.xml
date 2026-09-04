@@ -1,0 +1,46 @@
+<!--
+    Baseline policy for published Agents (A2A endpoints).
+
+    Applied by default to every A2A asset created through the Citadel Publish Contract.
+      - authentication-managed-identity : the gateway authenticates to the (Foundry) agent backend with
+        its managed identity (injected by publishA2aAgent.bicep in place of the {backendAuth} marker).
+      - a2a-usage : inbound request-count metric (a2a-usage namespace) for FinOps tracking.
+
+    Client-side auth: when the API is published with subscriptionRequired=true, APIM validates the caller's
+    subscription (API) key natively — presented in the configured header (subscriptionKeyHeaderName: 'api-key'
+    or 'Ocp-Apim-Subscription-Key'). When subscriptionRequired=false the endpoint is anonymous at the gateway.
+    Richer client auth (JWT, product scoping) is layered on by the phase-2 Access Contract.
+
+    A2A v1.0 is JSON-RPC and non-streaming (no SSE), so outbound response inspection is safe if needed
+    (supply a custom policyXml). Foundry serves A2A v0.3 by default; send 'A2A-Version: 1.0' to select v1.0.
+-->
+<policies>
+    <inbound>
+        <base />
+        <!-- Record the asset name so the usage metric can attribute calls -->
+        <set-variable name="publishedBackendId" value="@(context.Api?.Name?.ToString() ?? "NA")" />
+        <!-- Request uncompressed backend responses so the outbound agent-card rewrite works (find-and-replace
+             cannot operate on a gzip-compressed body). -->
+        <set-header name="Accept-Encoding" exists-action="override">
+            <value>identity</value>
+        </set-header>
+        <!-- Backend (agent) authentication via managed identity -->
+        <!-- {backendAuth} -->
+        <!-- Usage metric -->
+        <include-fragment fragment-id="a2a-usage" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+        <!-- Rewrite the agent card's backend (Foundry) transport URLs to the gateway so A2A/MAF clients
+             route THROUGH the gateway instead of calling Foundry directly. Injected by publishA2aAgent.bicep. -->
+        <!-- {cardRewrite} -->
+    </outbound>
+    <on-error>
+        <base />
+        <!-- Opt-in alerting on backend/throttling failures (no-op unless enabled) -->
+        <include-fragment fragment-id="raise-alert-events" />
+    </on-error>
+</policies>

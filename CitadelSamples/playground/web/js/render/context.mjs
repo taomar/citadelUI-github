@@ -10,16 +10,14 @@ function block(title, children) {
 }
 
 function readinessRows(model) {
-  return model.readiness.profiles.map((profile) => {
-    const missing = profile.fields.filter((field) => field.errors.length > 0).length;
-    const supplied = profile.fields.filter((field) => field.supplied).length;
-    return el('div', { class: 'ctx-row' }, [
-      el('span', { class: 'ctx-row-label', text: profile.title }),
-      missing > 0
-        ? chip(`${missing} missing`, 'warning')
-        : chip(`${supplied}/${profile.fields.length}`, 'success', { mono: true }),
-    ]);
-  });
+  return model.readiness.groups.map((group) =>
+    el('div', { class: 'ctx-row' }, [
+      el('span', { class: 'ctx-row-label', text: group.title }),
+      group.blocking > 0
+        ? chip(`${group.blocking} needed`, 'warning')
+        : chip(`${group.supplied}/${group.count}`, 'success', { mono: true }),
+    ]),
+  );
 }
 
 function buildContextNodes(model) {
@@ -28,18 +26,61 @@ function buildContextNodes(model) {
   nodes.push(
     block('Readiness', [
       el('div', { class: 'ctx-row' }, [
-        el('span', { class: 'ctx-row-label', text: 'Inputs' }),
-        model.readiness.ready ? chip('Complete', 'success') : chip(`${model.readiness.totalErrorCount} to fix`, 'warning'),
+        el('span', { class: 'ctx-row-label', text: 'Configuration' }),
+        model.readiness.ready
+          ? chip('Complete', 'success')
+          : chip(`${model.readiness.blocking.length} needed`, 'warning'),
       ]),
       ...readinessRows(model),
+      model.readiness.blocking.length > 0
+        ? el('p', {
+            class: 'hint',
+            text: `Still needed: ${model.readiness.blocking.map((entry) => entry.label).join(', ')}.`,
+          })
+        : null,
       model.readiness.totalWarningCount > 0
         ? el('p', {
             class: 'hint',
-            text: `${model.readiness.totalWarningCount} derived value${model.readiness.totalWarningCount === 1 ? '' : 's'} not known yet. A plan can still be generated.`,
+            text: `${model.readiness.totalWarningCount} generated value${model.readiness.totalWarningCount === 1 ? '' : 's'} not known yet. Each one falls back as documented.`,
           })
         : null,
     ]),
   );
+
+  if (model.runtime) {
+    nodes.push(
+      block('Runtime for this sample', [
+        el('div', { class: 'ctx-row' }, [
+          el('span', { class: 'ctx-row-label', text: 'Capability' }),
+          chip(model.runtime.badge.label, model.runtime.badge.tone),
+        ]),
+        ...model.runtime.dependencies.map((dependency) =>
+          el('div', { class: 'ctx-row' }, [
+            el('span', { class: 'ctx-row-label', text: dependency.label }),
+            chip(
+              dependency.optional && dependency.available === false
+                ? 'optional fallback missing'
+                : dependency.available === true
+                  ? 'present'
+                  : dependency.available === false
+                    ? 'missing'
+                    : 'unknown',
+              dependency.available === true
+                ? 'success'
+                : dependency.optional
+                  ? 'neutral'
+                  : dependency.available === false
+                    ? 'warning'
+                    : 'neutral',
+            ),
+          ]),
+        ),
+        model.runtime.note ? el('p', { class: 'hint', text: model.runtime.note }) : null,
+        ...model.runtime.reasons.map((reason) => el('p', { class: 'hint', text: reason })),
+        ...(model.runtime.advisories ?? []).map((advisory) => el('p', { class: 'hint', text: advisory })),
+      ]),
+    );
+  }
 
   nodes.push(
     block('Prerequisites', [

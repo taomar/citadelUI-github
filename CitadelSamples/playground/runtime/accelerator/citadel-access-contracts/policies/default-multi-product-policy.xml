@@ -1,0 +1,84 @@
+<!--
+    default-multi-product-policy.xml — asset-type-aware access-contract PRODUCT policy.
+
+    Governs a SINGLE product that grants a mix of asset types (LLM + Tool/MCP + Agent/A2A). The product
+    policy runs before the API policy, so it self-classifies the request (set-asset-kind fragment) and
+    applies the right controls per asset type. Client auth (subscription key / JWT) and usage metrics are
+    handled by the API-level baseline policies (inference APIs, baseline-mcp-policy, baseline-a2a-policy).
+
+    HOW TO USE (this is the DEFAULT applied when a MULTI/TOOL/AGENT contract does not supply its own
+    policyXml). For real contracts the validation notebook / skill GENERATE this file with the
+    contractToolApis / contractAgentApis lists and the per-type limits baked in.
+-->
+<policies>
+    <inbound>
+        <base />
+
+        <!-- =================================================================== -->
+        <!-- COMMON POLICIES — asset-agnostic; applied to every asset type.       -->
+        <!-- Add here anything that should run for LLM, Tool and Agent requests.  -->
+        <!-- =================================================================== -->
+        <!-- Opt-in content safety (works for LLM prompts, agent messages, tool args). Requires the
+             'content-safety-backend' provisioned with the gateway. Uncomment to enable for this contract. -->
+        <!--
+        <llm-content-safety backend-id="content-safety-backend" shield-prompt="true" window-size="1000" window-overlap-size="200" enforce-on-completions="false">
+            <categories output-type="EightSeverityLevels">
+                <category name="Hate" threshold="3" />
+                <category name="Violence" threshold="3" />
+            </categories>
+        </llm-content-safety>
+        -->
+
+        <!-- =================================================================== -->
+        <!-- ASSET-TYPE CLASSIFICATION                                            -->
+        <!-- List the APIM API resource names granted by this contract per type.  -->
+        <!-- LLM APIs need not be listed — anything unlisted defaults to 'llm'.   -->
+        <!-- =================================================================== -->
+        <set-variable name="contractToolApis" value="" />
+        <set-variable name="contractAgentApis" value="" />
+        <include-fragment fragment-id="set-asset-kind" />
+
+        <!-- =================================================================== -->
+        <!-- ASSET-TYPE-SPECIFIC CONTROLS                                         -->
+        <!-- =================================================================== -->
+        <choose>
+            <!-- ===== LLM: model RBAC + token capacity (existing behavior) ===== -->
+            <when condition="@(context.Variables.GetValueOrDefault<string>("assetKind","llm") == "llm")">
+                <include-fragment fragment-id="set-llm-requested-model" />
+                <set-variable name="allowedModels" value="gpt-4o,gpt-4.1,gpt-5.4-mini" />
+                <include-fragment fragment-id="validate-model-access" />
+                <llm-token-limit counter-key="@(context.Subscription.Id)"
+                                 tokens-per-minute="1000"
+                                 estimate-prompt-tokens="false"
+                                 token-quota="100000"
+                                 token-quota-period="Monthly" />
+                <set-variable name="enableResponseHeaders" value="@(true)" />
+            </when>
+            <!-- ===== TOOL (MCP): request-based rate limit + call quota ===== -->
+            <when condition="@(context.Variables.GetValueOrDefault<string>("assetKind","") == "tool")">
+                <rate-limit-by-key calls="60" renewal-period="60"
+                                   counter-key="@(context.Subscription.Id + ":tool")"
+                                   remaining-calls-variable-name="toolRateRemaining" />
+                <quota-by-key calls="10000" renewal-period="2592000"
+                              counter-key="@(context.Subscription.Id + ":tool")" />
+            </when>
+            <!-- ===== AGENT (A2A): request-based rate limit + call quota ===== -->
+            <when condition="@(context.Variables.GetValueOrDefault<string>("assetKind","") == "agent")">
+                <rate-limit-by-key calls="30" renewal-period="60"
+                                   counter-key="@(context.Subscription.Id + ":agent")"
+                                   remaining-calls-variable-name="agentRateRemaining" />
+                <quota-by-key calls="5000" renewal-period="2592000"
+                              counter-key="@(context.Subscription.Id + ":agent")" />
+            </when>
+        </choose>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

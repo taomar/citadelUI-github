@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node server.mjs",
+    "start:execute": "node server.mjs --execute",
     "test": "node --test",
     "check": "node scripts/check.mjs",
     "smoke": "node scripts/smoke.mjs",

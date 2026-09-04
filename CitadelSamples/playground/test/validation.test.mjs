@@ -26,11 +26,32 @@ test('a blank, whitespace, empty-array or REPLACE value counts as not supplied',
 
 test('required hub fields block every recipe that uses them', () => {
   const read = makeEmptyReader();
-  const sample = getSample('apim-discovery');
-  const paths = errorPaths(sample, read);
-  assert.ok(paths.includes('hub.subscriptionId'));
-  assert.ok(paths.includes('hub.resourceGroupName'));
-  assert.ok(paths.includes('hub.location'));
+  // The Discovery recipe reads only the resource group, so only that blocks it.
+  const discovery = errorPaths(getSample('apim-discovery'), read);
+  assert.deepEqual(discovery, ['hub.resourceGroupName']);
+
+  // The context check reads only the subscription id.
+  const context = errorPaths(getSample('azure-context-check'), read);
+  assert.deepEqual(context, ['hub.subscriptionId']);
+
+  // A subscription-scoped deployment needs all four, because it writes them
+  // into the parameter file and names the deployment location.
+  const publish = errorPaths(getSample('publish-assets'), read);
+  for (const path of ['hub.subscriptionId', 'hub.resourceGroupName', 'hub.apimName', 'hub.location']) {
+    assert.ok(publish.includes(path), `publish-assets must be blocked by ${path}`);
+  }
+});
+
+test('a recipe is never blocked by a shared-profile field it does not read', () => {
+  const read = makeEmptyReader();
+  // Key Vault verification lists the Hub profile but reads nothing from it.
+  const kvVerify = errorPaths(getSample('access-contract-kv-verify'), read);
+  assert.ok(!kvVerify.some((path) => path.startsWith('hub.')), 'no hub field may block Key Vault verification');
+  assert.ok(kvVerify.includes('keyVault.name'));
+
+  // The A2A card recipe lists the Foundry profile but never reads it.
+  const card = errorPaths(getSample('a2a-agent-card'), read);
+  assert.ok(!card.some((path) => path.startsWith('foundry.')), 'no Foundry field may block the agent-card recipe');
 });
 
 test('a complete configuration produces no errors for any recipe', () => {
@@ -46,7 +67,7 @@ test('a complete configuration produces no errors for any recipe', () => {
 });
 
 test('conditional Foundry fields are required only when the A2A asset is on', () => {
-  const sample = getSample('foundry-enable-a2a');
+  const sample = getSample('publish-assets');
   const withoutFoundry = {
     'foundry.accountName': '',
     'foundry.projectName': '',
@@ -69,30 +90,23 @@ test('the Key Vault name is required only when Key Vault publishing is on', () =
   assert.ok(!off.includes('keyVault.name'));
 });
 
-test('the conditional matrix holds for every conditional field in the catalogue', () => {
-  const conditionals = [];
-  for (const profile of CATALOGUE.profiles) {
-    for (const field of profile.fields) {
-      if (field.requiredWhen) conditionals.push({ path: `${profile.id}.${field.name}`, field });
-    }
-  }
-  assert.ok(conditionals.length >= 4, 'the catalogue should have conditional fields');
-
-  for (const { path, field } of conditionals) {
-    const read = makeFixtureReader({ [path]: '' });
-    const holds = evaluateCondition(field.requiredWhen, read);
-    const users = CATALOGUE.samples.filter((sample) =>
-      sample.usesProfiles.includes(path.split('.')[0]),
-    );
-    for (const sample of users) {
+test('the conditional matrix holds for every conditional entry every sample declares', () => {
+  let checked = 0;
+  for (const sample of CATALOGUE.samples) {
+    for (const entry of sample.configurationEntries) {
+      if (entry.requirement !== 'conditional') continue;
+      checked += 1;
+      const read = makeFixtureReader({ [entry.path]: '' });
+      const holds = evaluateCondition(entry.requiredWhen, read);
       const paths = errorPaths(sample, read);
       assert.equal(
-        paths.includes(path),
+        paths.includes(entry.path),
         holds,
-        `${sample.id}: ${path} required=${paths.includes(path)} but condition holds=${holds}`,
+        `${sample.id}: ${entry.path} required=${paths.includes(entry.path)} but its condition holds=${holds}`,
       );
     }
   }
+  assert.ok(checked >= 8, `the catalogue should declare conditional entries; found ${checked}`);
 });
 
 test('type validation rejects a non-numeric integer, an out-of-range value and a bad GUID', () => {

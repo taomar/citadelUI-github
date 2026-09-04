@@ -137,7 +137,8 @@ test('golden: the publish contract writes the notebook`s exact parameter file', 
   const artifact = plan.steps.find((step) => step.type === 'artifact');
   assert.equal(
     artifact.artifact.path,
-    '../bicep/infra/citadel-publish-contracts/contracts/sample-assets/dev/main.bicepparam',
+    'runtime/accelerator/citadel-publish-contracts/contracts/sample-assets/dev/main.bicepparam',
+    'the default now points at the vendored bundle inside CitadelSamples, not at the wider repository',
   );
   const content = artifact.artifact.content;
   assert.ok(content.startsWith("using '../../../main.bicep'\n"));

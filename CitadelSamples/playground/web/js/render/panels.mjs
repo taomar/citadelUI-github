@@ -12,6 +12,15 @@ const CLASSIFICATION_LABEL = {
   secret: 'secret · memory only',
 };
 
+/** The group chip tone: only a blocking group is coloured for attention. */
+const GROUP_TONE = {
+  mandatory: 'warning',
+  conditional: 'brand',
+  optional: 'neutral',
+  generated: 'cloud',
+  secret: 'danger',
+};
+
 /* --------------------------------------------------------------- guide */
 
 export function renderGuide(panel, guide) {
@@ -168,13 +177,24 @@ function renderField(field, { onChange, onBlur }) {
   }
 
   const helpNodes = [];
+  // The requirement is the first thing said about a field, because it answers
+  // the question the user actually has: must I supply this?
+  helpNodes.push(el('p', { class: 'prow-help prow-why', text: field.requirementReason }));
+  if (field.condition) {
+    helpNodes.push(
+      el('p', { class: 'prow-help', text: `Required when: ${field.condition}${field.conditionActive ? ' — that condition holds now.' : ' — that condition does not hold now.'}` }),
+    );
+  }
+  if (field.fallback) {
+    helpNodes.push(el('p', { class: 'prow-help', text: `If left blank: ${field.fallback}` }));
+  }
+  if (field.producedBy) {
+    helpNodes.push(el('p', { class: 'prow-help', text: field.producedBy }));
+  }
   if (field.help) {
     const helpId = `${inputId}-help`;
     describedBy.push(helpId);
     helpNodes.push(el('p', { class: 'prow-help', id: helpId, text: field.help }));
-  }
-  if (field.classification === 'derived' && field.derivedFrom) {
-    helpNodes.push(el('p', { class: 'prow-help', text: field.derivedFrom }));
   }
   if (field.howToObtain) {
     helpNodes.push(el('p', { class: 'prow-help', text: `How to obtain: ${field.howToObtain}` }));
@@ -207,19 +227,24 @@ function renderField(field, { onChange, onBlur }) {
   const aria = ariaTarget ?? control;
   if (describedBy.length) aria.setAttribute('aria-describedby', describedBy.join(' '));
   if (field.pending) aria.setAttribute('data-needed', 'true');
-  if (field.classification === 'required' || field.conditional) {
+  if (field.requirement === 'mandatory' || (field.requirement === 'conditional' && field.conditionActive)) {
+    aria.setAttribute('aria-required', 'true');
+  }
+  if (field.requirement === 'secret' && field.blocking) {
     aria.setAttribute('aria-required', 'true');
   }
 
-  return el('div', { class: 'prow' }, [
+  return el('div', { class: 'prow', 'data-requirement': field.requirement }, [
     el('div', { class: 'prow-ident' }, [
       el('label', { class: 'prow-label', for: inputId, text: field.label }),
+      el('span', { class: 'prow-owner', text: field.ownerLabel }),
       el('span', {
         class: 'prow-class',
         'data-class': field.classification,
         text: CLASSIFICATION_LABEL[field.classification] ?? field.classification,
       }),
       field.secretSet ? chip('set', 'success') : null,
+      field.blocking ? chip('needed', 'warning') : null,
     ]),
     el('div', { class: 'prow-val' }, [
       control,
@@ -236,33 +261,92 @@ function renderField(field, { onChange, onBlur }) {
   ]);
 }
 
-export function renderConfigure(panel, configure, { onChange, onBlur }) {
-  const sections = configure.profiles.map((profile) =>
+export function renderConfigure(panel, configure, { onChange, onBlur, onCopy, onDownload }) {
+  const nodes = [];
+
+  // The contract summary: what this sample needs, before any scrolling.
+  nodes.push(
     section(
-      profile.title,
+      'Configuration contract',
       [
-        el('p', { class: 'prose', text: profile.summary }),
-        el('div', { class: 'prows' }, profile.fields.map((field) => renderField(field, { onChange, onBlur }))),
+        el('p', { class: 'prose', text: configure.contractLine }),
+        el(
+          'div',
+          { class: 'strip-meta' },
+          configure.groups.map((group) =>
+            chip(`${group.title}: ${group.suppliedCount}/${group.count}`, GROUP_TONE[group.id] ?? 'neutral', { mono: true }),
+          ),
+        ),
+        configure.blockingCount > 0
+          ? el(
+              'ul',
+              { class: 'bullets bullets-warn' },
+              configure.blocking.map((entry) =>
+                el('li', {}, [el('span', {}, [el('code', { class: 'mono', text: entry.path }), ` — ${entry.label} is still needed.`])]),
+              ),
+            )
+          : el('p', { class: 'hint', text: 'Every value this sample needs is present. Optional and generated values fall back as documented.' }),
+        el('div', { class: 'runbar' }, [
+          el('button', {
+            type: 'button',
+            class: 'btn btn-sm',
+            id: 'copy-config',
+            text: 'Copy configuration (JSON)',
+            onclick: () => onCopy?.(configure.exports.json),
+          }),
+          el('button', {
+            type: 'button',
+            class: 'btn btn-sm',
+            id: 'download-config',
+            text: `Download ${configure.exports.fileNames.json}`,
+            onclick: () => onDownload?.(configure.exports.fileNames.json, configure.exports.json, 'application/json'),
+          }),
+          el('button', {
+            type: 'button',
+            class: 'btn btn-sm',
+            id: 'copy-env',
+            text: 'Copy .env.example',
+            onclick: () => onCopy?.(configure.exports.env),
+          }),
+          el('button', {
+            type: 'button',
+            class: 'btn btn-sm',
+            id: 'download-env',
+            text: `Download ${configure.exports.fileNames.env}`,
+            onclick: () => onDownload?.(configure.exports.fileNames.env, configure.exports.env, 'text/plain'),
+          }),
+        ]),
+        el('p', {
+          class: 'hint',
+          text:
+            configure.exports.secretCount > 0
+              ? `${configure.exports.secretCount} credential(s) are exported as environment placeholders only. No secret value is ever written into either file.`
+              : 'This sample needs no credential, so the exported environment file is empty by design.',
+        }),
       ],
-      { note: `shared · notebook cell ${profile.sourceCells.join(', ')}` },
+      { note: `${configure.exports.fileNames.base}` },
     ),
   );
 
-  if (configure.own.fields.length) {
-    sections.push(
-      section(configure.own.title, [
-        el('div', { class: 'prows' }, configure.own.fields.map((field) => renderField(field, { onChange, onBlur }))),
-      ]),
-    );
-  } else {
-    sections.push(
-      section('Recipe parameters', [
-        el('p', { class: 'empty', text: 'This recipe adds no parameters of its own; it uses the shared profiles only.' }),
-      ]),
+  for (const group of configure.groups) {
+    nodes.push(
+      section(
+        group.title,
+        [
+          el('p', { class: 'prose', text: group.summary }),
+          el('div', { class: 'prows' }, group.fields.map((field) => renderField(field, { onChange, onBlur }))),
+        ],
+        {
+          note:
+            group.blockingCount > 0
+              ? `${group.blockingCount} of ${group.count} still needed`
+              : `${group.count} field${group.count === 1 ? '' : 's'}`,
+        },
+      ),
     );
   }
 
-  replace(panel, sections);
+  replace(panel, nodes);
 }
 
 /* ------------------------------------------------------------- request */
@@ -275,7 +359,11 @@ const STEP_TYPE_TONE = {
   assertion: 'neutral',
 };
 
-export function renderRequest(panel, request, { onCopy, canRun, runBlockedReason, onAcknowledge, acknowledged, onRun, running }) {
+export function renderRequest(
+  panel,
+  request,
+  { onCopy, canRun, runBlockedReason, onAcknowledge, acknowledged, onRun, onCancel, running, runtime },
+) {
   if (!request.available) {
     replace(panel, [
       section('Not generated', [
@@ -391,9 +479,61 @@ export function renderRequest(panel, request, { onCopy, canRun, runBlockedReason
         text: running ? 'Running…' : 'Run this plan',
         onclick: () => onRun(),
       }),
+      el('button', {
+        type: 'button',
+        class: 'btn btn-sm',
+        id: 'cancel-button',
+        disabled: !running,
+        text: 'Cancel',
+        onclick: () => onCancel?.(),
+      }),
       runBlockedReason ? el('p', { class: 'runbar-reason', text: runBlockedReason }) : null,
     ]),
   );
+
+  if (runtime) {
+    nodes.push(
+      section(
+        'Runtime for this sample',
+        [
+          el('div', { class: 'strip-meta' }, [
+            chip(
+              runtime.state === 'ready' ? 'Local execution ready' : runtime.state === 'partial' ? 'Missing runtime' : 'Preview only',
+              runtime.state === 'ready' ? 'success' : runtime.state === 'partial' ? 'warning' : 'neutral',
+            ),
+          ]),
+          el(
+            'div',
+            {},
+            runtime.dependencies.map((dependency) =>
+              el('div', { class: 'ctx-row' }, [
+                el('span', { class: 'ctx-row-label', text: dependency.label }),
+                chip(
+                  dependency.optional && dependency.available === false
+                    ? 'optional fallback missing'
+                    : dependency.available === true
+                      ? 'present'
+                      : dependency.available === false
+                        ? 'missing'
+                        : 'unknown',
+                  dependency.available === true
+                    ? 'success'
+                    : dependency.optional
+                      ? 'neutral'
+                      : dependency.available === false
+                        ? 'warning'
+                        : 'neutral',
+                ),
+              ]),
+            ),
+          ),
+          runtime.reasons.length ? bullets(runtime.reasons, { warn: true }) : null,
+          runtime.advisories?.length ? bullets(runtime.advisories) : null,
+        ],
+        { note: `${runtime.dependencies.length} declared` },
+      ),
+    );
+  }
 
   if (request.deviations.length) {
     nodes.push(
@@ -411,10 +551,11 @@ const EXPECT_MARK = {
   passed: 'pass',
   failed: 'fail',
   inconclusive: '?',
+  'not-run': '—',
 };
 
 export function renderResponse(panel, response) {
-  replace(panel, [
+  const nodes = [
     section('Result', [
       el('div', { class: 'result', 'data-state': response.state }, [
         el('div', { class: 'result-head' }, [
@@ -422,16 +563,94 @@ export function renderResponse(panel, response) {
           el('p', { class: 'result-summary', text: response.summary }),
         ]),
         response.detail ? el('p', { class: 'result-detail', text: response.detail }) : null,
+        response.runId ? el('p', { class: 'result-detail' }, [el('code', { class: 'mono', text: `run ${response.runId}` })]) : null,
       ]),
       el('p', {
         class: 'hint',
         text:
           response.state === 'blocked'
             ? 'Blocked is not a failure and it is not a pass. Nothing was attempted, so nothing is claimed.'
-            : 'Every state here is reported from what actually happened. No result is simulated.',
+            : response.state === 'cancelled'
+              ? 'Cancelled. Steps that had already run are reported; nothing after the cancellation was attempted.'
+              : 'Every state here is reported from what actually happened. No result is simulated.',
       }),
     ]),
+  ];
 
+  if (response.steps.length) {
+    nodes.push(
+      section(
+        'Steps',
+        response.steps.map((step, index) =>
+          el('article', { class: 'step', 'data-state': step.state }, [
+            el('div', { class: 'step-head' }, [
+              el('span', { class: 'step-index', text: `${index + 1}/${response.steps.length}` }),
+              el('h3', { class: 'step-title', text: step.title }),
+              chip(step.kind, STEP_TYPE_TONE[step.kind] ?? 'neutral', { mono: true }),
+              chip(step.state, step.badge.tone),
+              step.durationMs ? chip(`${step.durationMs} ms`, 'neutral', { mono: true }) : null,
+            ]),
+            step.detail ? el('p', { class: 'step-detail', text: step.detail }) : null,
+            step.artifactPath
+              ? el('p', { class: 'step-binding' }, ['generated ', el('code', { class: 'mono', text: step.artifactPath })])
+              : null,
+            step.evidenceLines.length
+              ? facts(step.evidenceLines.map((line) => [line.key, line.value, { mono: true }]))
+              : null,
+          ]),
+        ),
+        { note: `${response.steps.length} reported` },
+      ),
+    );
+  }
+
+  if (response.configurationUpdates.length || response.secretUpdateCount > 0) {
+    nodes.push(
+      section(
+        'Values this run discovered',
+        [
+          response.configurationUpdates.length
+            ? facts(response.configurationUpdates.map((update) => [update.label, update.value, { mono: true }]))
+            : el('p', { class: 'empty', text: 'No public value was discovered.' }),
+          response.secretUpdateCount > 0
+            ? el('p', {
+                class: 'hint',
+                text: `${response.secretUpdateCount} credential was returned to this browser tab and held in memory only. Its value is never shown here, logged, or written to disk.`,
+              })
+            : null,
+          response.configurationUpdates.length
+            ? el('p', {
+                class: 'hint',
+                text: 'These are public values only. Apply them to fill in the derived fields the later recipes need.',
+              })
+            : null,
+        ],
+        { note: `${response.configurationUpdates.length} public` },
+      ),
+    );
+  }
+
+  if (response.artifacts.length) {
+    nodes.push(
+      section(
+        'Generated files',
+        [
+          el(
+            'ul',
+            { class: 'bullets' },
+            response.artifacts.map((path) => el('li', {}, [el('code', { class: 'mono', text: path })])),
+          ),
+          el('p', {
+            class: 'hint',
+            text: 'Written into this run`s workspace under `playground/.runs/`, which is git-ignored. Nothing is written outside CitadelSamples.',
+          }),
+        ],
+        { note: `${response.artifacts.length} file${response.artifacts.length === 1 ? '' : 's'}` },
+      ),
+    );
+  }
+
+  nodes.push(
     section(
       'Expected results',
       [
@@ -451,5 +670,7 @@ export function renderResponse(panel, response) {
       ],
       { note: `${response.expected.length} assertions defined` },
     ),
-  ]);
+  );
+
+  replace(panel, nodes);
 }

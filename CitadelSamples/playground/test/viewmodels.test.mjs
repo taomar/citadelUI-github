@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import { CATALOGUE, getSample } from '../src/catalogue/index.mjs';
 import { createPlaygroundState } from '../src/core/state.mjs';
 import { createUnavailableExecutor, executionResult } from '../src/core/executor.mjs';
+import { describeSampleCapability } from '../src/core/capability.mjs';
 import {
   buildConfigureModel,
   buildContextModel,
@@ -40,6 +41,7 @@ function workbench(id, overrides = {}) {
     acknowledged: overrides.acknowledged ?? false,
     result: overrides.result ?? null,
     capability: overrides.capability ?? capability,
+    runtimeProbe: overrides.runtimeProbe ?? { mode: 'preview' },
   });
 }
 
@@ -103,18 +105,64 @@ test('the guide model carries every documented part of a recipe', () => {
 
 /* ----------------------------------------------------------- configure */
 
+/** Find one field across the requirement groups. */
+function fieldOf(model, path) {
+  for (const group of model.groups) {
+    const found = group.fields.find((field) => field.path === path);
+    if (found) return found;
+  }
+  return null;
+}
+
 test('the configure model never exposes a secret value, only its presence', () => {
   const model = buildConfigureModel({
     sample: getSample('weather-mcp-discovery'),
     read,
     hasSecret: () => true,
   });
-  const gateway = model.profiles.find((profile) => profile.id === 'gatewayAccess');
-  const apiKey = gateway.fields.find((field) => field.name === 'apiKey');
+  const apiKey = fieldOf(model, 'gatewayAccess.apiKey');
   assert.equal(apiKey.classification, 'secret');
+  assert.equal(apiKey.requirement, 'secret');
   assert.equal(apiKey.value, '', 'a secret value must never reach the view model');
   assert.equal(apiKey.secretSet, true);
   assert.equal(JSON.stringify(model).includes(FAKE_API_KEY), false);
+});
+
+test('the configure model groups fields by requirement and counts each group', () => {
+  const model = buildConfigureModel({ sample: getSample('weather-mcp-discovery'), read, hasSecret: () => true });
+  const ids = model.groups.map((group) => group.id);
+  assert.deepEqual(ids, ['conditional', 'optional', 'generated', 'secret']);
+  for (const group of model.groups) {
+    assert.equal(group.fields.length, group.count);
+    assert.ok(group.summary.length > 20, `${group.id} must explain itself`);
+  }
+  assert.match(model.contractLine, /nothing missing/);
+});
+
+test('the configure model renders only the fields the sample declares', () => {
+  const model = buildConfigureModel({ sample: getSample('access-contract-kv-verify'), read, hasSecret: () => false });
+  const paths = model.groups.flatMap((group) => group.fields.map((field) => field.path));
+  assert.ok(paths.includes('keyVault.name'));
+  assert.ok(!paths.some((path) => path.startsWith('hub.')), 'no hub field is read by this recipe, so none is shown');
+  assert.ok(!paths.some((path) => path.startsWith('gatewayAccess.')));
+});
+
+test('every rendered field says why it is needed and what happens if it is blank', () => {
+  for (const sample of CATALOGUE.samples) {
+    const model = buildConfigureModel({ sample, read, hasSecret: () => true });
+    for (const group of model.groups) {
+      for (const field of group.fields) {
+        assert.ok(field.requirementReason, `${sample.id}/${field.path} has no reason`);
+        assert.ok(field.ownerLabel, `${sample.id}/${field.path} has no owner label`);
+        if (field.requirement === 'optional' || field.requirement === 'generated') {
+          assert.ok(field.fallback, `${sample.id}/${field.path} has no stated fallback`);
+        }
+        if (field.requirement === 'conditional') {
+          assert.ok(field.condition, `${sample.id}/${field.path} has no stated condition`);
+        }
+      }
+    }
+  }
 });
 
 test('the configure model surfaces per-field errors on the right field', () => {
@@ -124,11 +172,11 @@ test('the configure model surfaces per-field errors on the right field', () => {
     hasSecret: () => false,
     isTouched: () => true,
   });
-  const hub = model.profiles.find((profile) => profile.id === 'hub');
-  const subscription = hub.fields.find((field) => field.name === 'subscriptionId');
-  assert.equal(subscription.errors.length, 1);
-  assert.match(subscription.errors[0], /required/);
-  assert.ok(model.errorCount >= 3);
+  const resourceGroup = fieldOf(model, 'hub.resourceGroupName');
+  assert.equal(resourceGroup.errors.length, 1);
+  assert.match(resourceGroup.errors[0], /required/);
+  assert.equal(model.blockingCount, 1, 'only the one value this recipe actually needs is blocking');
+  assert.equal(model.satisfied, false);
 });
 
 test('an untouched, empty required field reads as needed rather than as an error', () => {
@@ -138,50 +186,80 @@ test('an untouched, empty required field reads as needed rather than as an error
     hasSecret: () => false,
     isTouched: () => false,
   });
-  const field = untouched.profiles
-    .find((profile) => profile.id === 'hub')
-    .fields.find((entry) => entry.name === 'subscriptionId');
+  const field = fieldOf(untouched, 'hub.resourceGroupName');
   assert.equal(field.pending, true, 'an untouched empty required field is pending');
   assert.deepEqual(field.errors, [], 'it must not be painted as an error');
   assert.equal(field.needed.length, 1, 'but it must still say what it needs');
   assert.match(field.needed[0], /required/);
 
   // The readiness count is unaffected: the recipe is still not runnable.
-  assert.ok(untouched.errorCount >= 3, 'readiness still counts it as unmet');
+  assert.equal(untouched.blockingCount, 1, 'readiness still counts it as unmet');
 });
 
 test('a touched field, or one holding an invalid value, is a real error', () => {
   const touched = buildConfigureModel({
-    sample: getSample('apim-discovery'),
+    sample: getSample('azure-context-check'),
     read: makeEmptyReader(),
     hasSecret: () => false,
     isTouched: (path) => path === 'hub.subscriptionId',
   });
-  const fields = touched.profiles.find((profile) => profile.id === 'hub').fields;
-  const subscription = fields.find((field) => field.name === 'subscriptionId');
+  const subscription = fieldOf(touched, 'hub.subscriptionId');
   assert.equal(subscription.pending, false);
   assert.equal(subscription.errors.length, 1);
 
   const badGuid = buildConfigureModel({
-    sample: getSample('apim-discovery'),
+    sample: getSample('azure-context-check'),
     read: makeEmptyReader({ 'hub.subscriptionId': 'not-a-guid' }),
     hasSecret: () => false,
     isTouched: () => false,
   });
-  const invalid = badGuid.profiles
-    .find((profile) => profile.id === 'hub')
-    .fields.find((field) => field.name === 'subscriptionId');
+  const invalid = fieldOf(badGuid, 'hub.subscriptionId');
   assert.equal(invalid.pending, false, 'a non-blank invalid value is an error even when untouched');
   assert.match(invalid.errors[0], /GUID/);
 });
 
-test('a recipe with no parameters of its own says so rather than showing an empty box', () => {
+test('a recipe with one parameter shows exactly one group entry for it', () => {
+  const model = buildConfigureModel({ sample: getSample('azure-context-check'), read, hasSecret: () => false });
+  const paths = model.groups.flatMap((group) => group.fields.map((field) => field.path));
+  assert.deepEqual(paths, ['hub.subscriptionId'], 'the context check reads exactly one value');
+});
+
+/* ------------------------------------------------------------ exports */
+
+test('the configuration export is copyable JSON that never carries a secret value', () => {
   const model = buildConfigureModel({
-    sample: getSample('azure-context-check'),
+    sample: getSample('weather-mcp-discovery'),
     read,
-    hasSecret: () => false,
+    hasSecret: () => true,
+    plan: buildRequestModel({ sample: getSample('weather-mcp-discovery'), read, secrets: FIXTURE_SECRETS }).plan,
   });
-  assert.equal(model.own.fields.length, 0);
+  assert.equal(model.exports.fileNames.json, 'citadel-weather-mcp-discovery.config.json');
+  assert.equal(model.exports.fileNames.env, 'citadel-weather-mcp-discovery.env.example');
+  assert.equal(model.exports.json.includes(FAKE_API_KEY), false, 'the JSON must never carry a credential');
+  assert.equal(model.exports.env.includes(FAKE_API_KEY), false, 'the env example must never carry a credential');
+  assert.match(model.exports.env, /CITADEL_GATEWAY_ACCESS_API_KEY=\s*$/m, 'the placeholder is left empty');
+
+  const document = JSON.parse(model.exports.json);
+  assert.equal(document.sample.id, 'weather-mcp-discovery');
+  assert.equal(document.source.sha256, CATALOGUE.sourceNotebook.sha256);
+  assert.ok(document.inputs.optional.length > 0);
+  assert.equal(document.secrets[0].environmentVariable, 'CITADEL_GATEWAY_ACCESS_API_KEY');
+  assert.equal(document.secrets[0].required, true);
+  assert.equal(document.generates.available, true);
+  assert.ok(document.generates.requests.length >= 2);
+  assert.ok(document.requirements.runtime.dependencies.includes('gateway-network'));
+});
+
+test('the export is deterministic and names the values still missing', () => {
+  const build = () =>
+    buildConfigureModel({ sample: getSample('apim-discovery'), read: makeEmptyReader(), hasSecret: () => false }).exports;
+  assert.equal(build().json, build().json, 'two exports of the same state must be byte-identical');
+  const document = JSON.parse(build().json);
+  assert.deepEqual(
+    document.missing.map((entry) => entry.path),
+    ['hub.resourceGroupName'],
+  );
+  assert.equal(document.generates.available, false);
 });
 
 /* ------------------------------------------------------------- request */
@@ -190,7 +268,7 @@ test('an incomplete configuration reports why no plan exists rather than showing
   const model = buildRequestModel({ sample: getSample('apim-discovery'), read: makeEmptyReader() });
   assert.equal(model.available, false);
   assert.match(model.reason, /Complete the required inputs/);
-  assert.ok(model.errors.length >= 3);
+  assert.ok(model.errors.length >= 1);
   assert.ok(model.errors.every((error) => error.path && error.message));
 });
 
@@ -250,26 +328,47 @@ test('assertion outcomes are shown only when the executor reported them', () => 
 
 /* ------------------------------------------------------------- context */
 
-test('the context rail reports readiness per profile and never claims capability it lacks', () => {
-  const model = buildContextModel({ sample: getSample('access-contract-deploy'), read, capability });
+test('the context rail reports readiness per requirement group and never claims capability it lacks', () => {
+  const model = buildContextModel({ sample: getSample('access-contract-deploy'), read, hasSecret: () => false, capability });
   assert.equal(model.readiness.ready, true);
-  assert.equal(model.readiness.profiles.length, 5);
+  assert.ok(model.readiness.groups.length >= 3);
+  assert.deepEqual(model.readiness.blocking, []);
   assert.equal(model.capability.canExecute, false);
   assert.equal(model.capability.badge.label, 'Not attached');
   assert.equal(model.provenance.sha256, CATALOGUE.sourceNotebook.sha256);
   assert.ok(model.provenance.cells.length > 0);
 });
 
-test('an incomplete profile is counted as blocking in the context rail', () => {
+test('a missing mandatory value is counted as blocking in the context rail', () => {
   const model = buildContextModel({
     sample: getSample('apim-discovery'),
     read: makeEmptyReader(),
+    hasSecret: () => false,
     capability,
   });
   assert.equal(model.readiness.ready, false);
-  const hub = model.readiness.profiles.find((profile) => profile.id === 'hub');
-  assert.ok(hub.blockingCount >= 3);
-  assert.equal(hub.ready, false);
+  assert.deepEqual(
+    model.readiness.blocking.map((entry) => entry.path),
+    ['hub.resourceGroupName'],
+  );
+  const mandatory = model.readiness.groups.find((group) => group.id === 'mandatory');
+  assert.equal(mandatory.blocking, 1);
+});
+
+test('the context rail reports the runtime this sample needs, per dependency', () => {
+  const preview = buildContextModel({
+    sample: getSample('weather-api-ensure'),
+    read,
+    hasSecret: () => false,
+    capability,
+    sampleCapability: describeSampleCapability(getSample('weather-api-ensure'), { mode: 'preview' }),
+  });
+  assert.equal(preview.runtime.state, 'preview-only');
+  assert.equal(preview.runtime.badge.label, 'Preview only');
+  assert.deepEqual(
+    preview.runtime.dependencies.map((dependency) => dependency.id),
+    ['azure-cli', 'python', 'accelerator'],
+  );
 });
 
 /* ----------------------------------------------------------- workbench */
@@ -280,7 +379,7 @@ test('the workbench exposes exactly four tabs in a fixed order', () => {
   assert.equal(model.activeTab, 'guide');
 });
 
-test('the configure tab carries an error count badge only when there are errors', () => {
+test('the configure tab counts the values still missing, and nothing else', () => {
   const clean = workbench('apim-discovery');
   assert.equal(clean.tabs.find((tab) => tab.id === 'configure').count, 0);
 
@@ -291,7 +390,8 @@ test('the configure tab carries an error count badge only when there are errors'
     activeTab: 'configure',
     capability,
   });
-  assert.ok(dirty.tabs.find((tab) => tab.id === 'configure').count >= 3);
+  assert.equal(dirty.tabs.find((tab) => tab.id === 'configure').count, 1);
+  assert.match(dirty.runBlockedReason, /1 required value still missing/);
 });
 
 test('a risky recipe cannot be run until it is acknowledged, and then only if a runtime exists', () => {
@@ -300,15 +400,30 @@ test('a risky recipe cannot be run until it is acknowledged, and then only if a 
   assert.match(unacknowledged.runBlockedReason, /Acknowledge/);
 
   const acknowledged = workbench('cleanup', { acknowledged: true });
-  assert.equal(acknowledged.canRun, true, 'the plan is runnable in principle');
-  assert.match(acknowledged.runBlockedReason, /No execution runtime|not attached/i);
+  assert.equal(acknowledged.canRun, false, 'preview mode is not a runtime');
+  assert.match(acknowledged.runBlockedReason, /preview mode/i);
+
+  const ready = workbench('cleanup', {
+    acknowledged: true,
+    runtimeProbe: { mode: 'execute', azureCli: { available: true }, accelerator: { available: true } },
+  });
+  assert.equal(ready.canRun, true, 'with the CLI present and consent given, cleanup is runnable');
+  assert.equal(ready.runBlockedReason, '');
 });
 
-test('a read-only recipe needs no acknowledgement but still reports the missing runtime', () => {
-  const model = workbench('a2a-agent-card');
-  assert.equal(model.request.acknowledgement.required, false);
-  assert.equal(model.canRun, true);
-  assert.ok(model.runBlockedReason.length > 0, 'the runtime gap must still be stated');
+test('a sample whose runtime is incomplete says exactly which dependency is missing', () => {
+  const model = workbench('weather-api-ensure', {
+    acknowledged: true,
+    runtimeProbe: {
+      mode: 'execute',
+      azureCli: { available: true },
+      accelerator: { available: true },
+      python: { available: false, reason: 'No Python interpreter was found.' },
+    },
+  });
+  assert.equal(model.canRun, false);
+  assert.match(model.runBlockedReason, /No Python interpreter/);
+  assert.equal(model.runtime.state, 'partial');
 });
 
 test('the workbench reports "generated" once a plan exists and "not run" when it does not', () => {
@@ -343,7 +458,8 @@ test('every recipe produces a complete workbench model without throwing', () => 
       const model = workbench(sample.id, { activeTab: tab });
       assert.equal(model.activeTab, tab);
       assert.ok(model.guide.purpose);
-      assert.ok(model.configure.profiles.length > 0);
+      assert.ok(model.configure.groups.length > 0);
+      assert.ok(model.configure.exports.json.length > 100);
       assert.ok(model.response.expected.length >= 2);
       assert.ok(model.context.provenance.cells.length > 0);
     }

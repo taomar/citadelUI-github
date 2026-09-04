@@ -1,0 +1,23 @@
+# Python packages the two Python-backed recipes need.
+#
+# NOTHING INSTALLS THESE FOR YOU. The playground preflights the imports and
+# blocks the sample with the exact command below when one is missing, rather
+# than running pip on your behalf.
+#
+#   python -m pip install -r runtime/requirements.txt
+#
+# Authentication uses the Azure CLI credential you already have from `az login`.
+# No credential is read from, or written to, this file.
+
+# Prepare > Ensure the `weather-api` source API exists
+azure-mgmt-apimanagement
+azure-identity
+
+# Publish and grant > Deploy the mixed access contract (key fallback only)
+# — already covered by azure-mgmt-apimanagement above.
+
+# Exercise > Agent Framework: ask the HR agent
+agent-framework
+agent-framework-a2a
+httpx
+nest_asyncio

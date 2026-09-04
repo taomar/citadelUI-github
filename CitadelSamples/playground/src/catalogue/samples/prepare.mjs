@@ -349,6 +349,12 @@ export const PREPARE_SAMPLES = [
         'Produced by this recipe`s own identity step, or by a previous run.',
       ),
       generated(
+        'foundry.apimIdentityClientId',
+        'Pins the selected user-assigned identity in the later publish contract.',
+        'Left blank for a system-assigned identity, or populated from the identity-selection step.',
+        'Produced by this recipe`s own identity step, or by a previous run.',
+      ),
+      generated(
         'foundry.accountResourceId',
         'Composes the project scope without a lookup.',
         'Left blank, the plan binds the scope from the account-lookup step at run time.',
@@ -441,8 +447,10 @@ export const PREPARE_SAMPLES = [
             title: 'Choose the identity to grant',
             detail: 'User-assigned first, system-assigned as the fallback, and neither is a failure rather than a default.',
             assertion: {
-              kind: 'selection',
+              kind: 'identity-selection',
               source: '{{steps.read-identity.identity}}',
+              selectedPrincipalId: principalId,
+              selectedClientId: ctx.get('foundry.apimIdentityClientId'),
               expectations: [
                 'If `userAssignedIdentities` is non-empty, take the first entry`s `clientId` and `principalId`.',
                 'Otherwise take the top-level `principalId` and leave the client id empty.',
@@ -468,6 +476,7 @@ export const PREPARE_SAMPLES = [
             assertion: {
               kind: 'shape',
               source: '{{steps.find-account.accountResourceId}}',
+              outputSuffix: `/projects/${projectName}`,
               expectations: [
                 'Exactly one account id is returned for the configured account name.',
                 `The scope is <accountId>/projects/${projectName || '<project>'}.`,
@@ -528,8 +537,10 @@ export const PREPARE_SAMPLES = [
             title: 'Confirm the grant',
             detail: 'The identity`s client id is recorded for the publish contract.',
             assertion: {
-              kind: 'contains',
+              kind: 'role-assignment',
               source: '{{steps.verify-assignment.assignments}}',
+              expectedRole: role,
+              expectedScope: scope,
               expectations: [
                 `An assignment with role "${role}" exists at the project scope.`,
                 'The client id is recorded for `managedIdentityClientId` when a user-assigned identity was used.',
@@ -666,6 +677,7 @@ export const PREPARE_SAMPLES = [
       },
     ],
     configuration: [
+      mandatory('hub.subscriptionId', 'Selects the Azure subscription used to construct the API Management SDK client.'),
       mandatory('hub.resourceGroupName', 'Names the resource group in the management SDK call that upserts the API.'),
       mandatory('hub.apimName', 'The API Management service the `weather-api` is created on.'),
       optional(

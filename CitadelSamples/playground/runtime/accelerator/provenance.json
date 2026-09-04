@@ -1,0 +1,129 @@
+{
+  "bundleVersion": 1,
+  "purpose": "Pinned copy of the accelerator resources the publish, access-contract and weather recipes need, so the playground never reads or writes an application file outside CitadelSamples at run time.",
+  "upstream": {
+    "repository": "Azure-Samples/AI-Hub-Gateway-Solution-Accelerator",
+    "vendoredFrom": "this repository working tree at bicep/infra",
+    "repositoryCommit": "46bff50b44799e3207598bab757dbdc324edd0cc",
+    "lastChangeToTheseFiles": {
+      "commit": "a2711969519582baca785a2b16210a971ea62ac9",
+      "date": "2026-09-03"
+    },
+    "copiedOn": "2026-09-04"
+  },
+  "closure": "Every relative dependency needed to compile the two main.bicep templates is included: module references, loadTextContent policy fragments, and the two weather sample files. Nothing outside this list is reachable from them.",
+  "layout": "Directory structure is preserved exactly, because the templates use relative paths such as ../policies/baseline-mcp-policy.xml and ../../modules/apim/policies/frag-mcp-usage.xml.",
+  "verification": "Every file below is byte-identical to its source. playground/test/runtime.test.mjs recomputes each SHA-256 from disk and fails on any drift.",
+  "files": [
+    {
+      "path": "citadel-access-contracts/main.bicep",
+      "sha256": "b8b12b810223e21c84865afcacc593e85186bc848670cd4649e9be4261210de5",
+      "bytes": 27630
+    },
+    {
+      "path": "citadel-access-contracts/modules/apimOnboardService.bicep",
+      "sha256": "27f23fd132897e17f9f848e6927ea4900d97d3d9548c6056982f1d9a1348b744",
+      "bytes": 5499
+    },
+    {
+      "path": "citadel-access-contracts/modules/apimProduct.bicep",
+      "sha256": "f8cfe442059e8c9dfa14896ac87e0ae16d6d6a2f88ffe54a14179a5bb63c544f",
+      "bytes": 2074
+    },
+    {
+      "path": "citadel-access-contracts/modules/apimSubscription.bicep",
+      "sha256": "97782eaa81cd89daf3ee73b8ec452cdde048cc29a17099696730e1c95fea6c0a",
+      "bytes": 1193
+    },
+    {
+      "path": "citadel-access-contracts/modules/foundryConnection.bicep",
+      "sha256": "860491b6ed37269c38b6d0d83ee37733f99853bef88c4c5c621e353d3f48b803",
+      "bytes": 6069
+    },
+    {
+      "path": "citadel-access-contracts/modules/kvSecrets.bicep",
+      "sha256": "917b3d6469ad2ffeac9010b1758f51ac7bd1bb513bde30c04e4964015b7c9ded",
+      "bytes": 634
+    },
+    {
+      "path": "citadel-access-contracts/policies/default-ai-product-policy.xml",
+      "sha256": "56145cd91b97e422c2e46ac193f0ad482f13734b84989587f91259653f9d392b",
+      "bytes": 2261
+    },
+    {
+      "path": "citadel-access-contracts/policies/default-multi-product-policy.xml",
+      "sha256": "85bc4df286156bd6f38e21e29ba7e085f96d6d1db7654614ec374b53a45222ac",
+      "bytes": 5010
+    },
+    {
+      "path": "citadel-publish-contracts/main.bicep",
+      "sha256": "6fd7fa4da6a8d997f3bf959d7d0c8499749a497a0b38eb4dbc096a6f04978cf0",
+      "bytes": 13262
+    },
+    {
+      "path": "citadel-publish-contracts/modules/publishA2aAgent.bicep",
+      "sha256": "ce5eaf8f6df831d970e88ee14a4094bad8209bcf6a4dcc1b860bfdd3f8a32aa2",
+      "bytes": 7277
+    },
+    {
+      "path": "citadel-publish-contracts/modules/publishApiCenter.bicep",
+      "sha256": "60eb1b2894409f883dd94d496dada0c664495d4b7fe7382a8a8ea790bc4f72a2",
+      "bytes": 2372
+    },
+    {
+      "path": "citadel-publish-contracts/modules/publishBackend.bicep",
+      "sha256": "eca25dc582a9f412297d7b14be437d9ba4a26c78318ef44bf7e9551b037167c0",
+      "bytes": 6171
+    },
+    {
+      "path": "citadel-publish-contracts/modules/publishMcpExisting.bicep",
+      "sha256": "b045c2640700a02bf072dd59ecf631eefbad778495fdbfdf997bf54ee3e7109e",
+      "bytes": 3865
+    },
+    {
+      "path": "citadel-publish-contracts/modules/publishMcpFromApi.bicep",
+      "sha256": "74b781b2a29a3edad8383efb0a565dd07960e9c8b714de5f76050f1c590bb288",
+      "bytes": 5829
+    },
+    {
+      "path": "citadel-publish-contracts/modules/publishPolicyFragments.bicep",
+      "sha256": "ac43a92326abf211a98f4527c5812fc36540f0f304ef1bd852452f1938294105",
+      "bytes": 1498
+    },
+    {
+      "path": "citadel-publish-contracts/policies/baseline-a2a-policy.xml",
+      "sha256": "4c6602d327915625e795504e21c553406cc52b67f30da7745466c2e1359bb78a",
+      "bytes": 2410
+    },
+    {
+      "path": "citadel-publish-contracts/policies/baseline-mcp-policy.xml",
+      "sha256": "845c42350cf5006c4eee2f5a946850f43f6e0c7a315da3802c723570570a3da9",
+      "bytes": 1927
+    },
+    {
+      "path": "modules/apim/api-center-onboarding.bicep",
+      "sha256": "d5a2d30d879c2bb33758f414c72114cae58387f1c09048353784b9b4a01d5e43",
+      "bytes": 4961
+    },
+    {
+      "path": "modules/apim/policies/frag-a2a-usage.xml",
+      "sha256": "d371e0b24fb355776ebef9fec90ec2be2c219fb91c257e8925666ee702c8ecaf",
+      "bytes": 1505
+    },
+    {
+      "path": "modules/apim/policies/frag-mcp-usage.xml",
+      "sha256": "2252921087f99290bfc73d108bfcc22d76927009761674511295ae40b2f8aa21",
+      "bytes": 1610
+    },
+    {
+      "path": "modules/apim/sample/weather/openapi.json",
+      "sha256": "017c66403caf80bb46a78649b51c45b583378ca7f8705165097a480a04413d99",
+      "bytes": 4923
+    },
+    {
+      "path": "modules/apim/sample/weather/policy.xml",
+      "sha256": "c9c4878e2f5911fbc33e064d205865f36829e6bcab2d8311987e559213571a6b",
+      "bytes": 1841
+    }
+  ]
+}

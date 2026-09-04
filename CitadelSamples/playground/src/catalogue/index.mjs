@@ -13,6 +13,7 @@ import {
   isRiskAcknowledgementRequired,
 } from '../core/types.mjs';
 import { PROFILES, PROFILE_BY_ID, collectProfileDefaults, collectProfileSecretPaths } from './profiles.mjs';
+import { buildRequirementManifest, normaliseConfiguration } from './requirements.mjs';
 import { DISCOVER_SAMPLES } from './samples/discover.mjs';
 import { PREPARE_SAMPLES } from './samples/prepare.mjs';
 import { PUBLISH_SAMPLES } from './samples/publish.mjs';
@@ -76,18 +77,58 @@ function decorate(sample) {
   const fields = (sample.fields ?? []).map((field) =>
     Object.freeze({ ...field, path: sampleFieldPath(sample.id, field.name) }),
   );
-  return Object.freeze({
+  // Deliberately not frozen yet: the configuration contract can only be
+  // normalised once every sample's fields are in the catalogue-wide index,
+  // because a declaration may name another recipe's field.
+  return {
     ...sample,
     risk,
     fields: Object.freeze(fields),
     groupTitle: group.title,
     fieldPathPrefix: `samples.${sample.id}`,
-  });
+  };
 }
 
-export const SAMPLES = Object.freeze(RAW_SAMPLES.map(decorate));
+const DECORATED = RAW_SAMPLES.map(decorate);
+
+/**
+ * Field index spanning every profile and every sample.
+ *
+ * The index is catalogue-wide, not scoped to a recipe's own `usesProfiles`,
+ * because three recipes legitimately read another recipe's configuration: the
+ * access contract and cleanup both need the publish contract's asset names, and
+ * cleanup needs the access contract's discovered LLM API list. Scoping the
+ * index silently resolved those to empty strings instead of failing, which is
+ * exactly the class of bug this index removes.
+ */
+const FIELD_BY_PATH = new Map();
+for (const profile of PROFILES) {
+  for (const field of profile.fields) FIELD_BY_PATH.set(`${profile.id}.${field.name}`, field);
+}
+for (const sample of DECORATED) {
+  for (const field of sample.fields) FIELD_BY_PATH.set(field.path, field);
+}
+
+export function fieldByPath(path) {
+  return FIELD_BY_PATH.get(path) ?? null;
+}
+
+/**
+ * Every sample's configuration contract, normalised once at load. A typo in a
+ * declaration throws here rather than producing a form row that never appears.
+ */
+export const SAMPLES = Object.freeze(
+  DECORATED.map((sample) =>
+    Object.freeze({ ...sample, configurationEntries: normaliseConfiguration(sample, fieldByPath) }),
+  ),
+);
 
 const byId = new Map(SAMPLES.map((sample) => [sample.id, sample]));
+
+/** The live requirement view for one sample against the current values. */
+export function requirementsFor(sample, read, options = {}) {
+  return buildRequirementManifest(sample, read, options);
+}
 
 /** Sample-field defaults, keyed by dotted path. */
 function collectSampleDefaults() {
@@ -142,7 +183,12 @@ export function profilesFor(sample) {
 }
 
 /**
- * Validate everything a sample needs: its profiles' fields and its own.
+ * Validate exactly what a sample declares it needs.
+ *
+ * Scoping this to the sample's configuration contract rather than to every
+ * field of every profile it lists is the whole point of the contract: API
+ * Management discovery must not be blocked by a missing subscription id it
+ * never reads, and Key Vault verification must not ask for a gateway URL.
  *
  * @param {object} sample
  * @param {(path: string) => unknown} read
@@ -150,14 +196,14 @@ export function profilesFor(sample) {
 export function validateSample(sample, read) {
   const issues = [];
   const missing = [];
-  for (const profile of profilesFor(sample)) {
-    const result = validateFields(profile.fields, read, profile.id);
+
+  for (const entry of sample.configurationEntries) {
+    const field = fieldByPath(entry.path);
+    if (!field) continue;
+    const result = validateFields([asRequiredBy(field, entry)], read);
     issues.push(...result.issues);
     missing.push(...result.missing);
   }
-  const own = validateFields(sample.fields, read, sample.fieldPathPrefix);
-  issues.push(...own.issues);
-  missing.push(...own.missing);
 
   // `mustEqual` guards (the non-production confirmations).
   for (const field of sample.fields) {
@@ -182,26 +228,30 @@ export function validateSample(sample, read) {
 }
 
 /**
- * Every field in the catalogue, keyed by dotted path.
+ * Project a catalogue field through one sample's requirement level.
  *
- * The index spans all profiles and all samples, not just the ones a given
- * recipe declares, because three recipes legitimately read another recipe's
- * configuration: the access contract and cleanup both need the publish
- * contract's asset names, and cleanup needs the access contract's discovered
- * LLM API list. Scoping the index to `usesProfiles` silently resolved those to
- * empty strings instead of failing, which is exactly the class of bug this
- * index removes.
+ * The field says where a value comes from; the entry says whether THIS sample
+ * can run without it. Validation follows the entry.
  */
-const FIELD_BY_PATH = new Map();
-for (const profile of PROFILES) {
-  for (const field of profile.fields) FIELD_BY_PATH.set(`${profile.id}.${field.name}`, field);
-}
-for (const sample of SAMPLES) {
-  for (const field of sample.fields) FIELD_BY_PATH.set(field.path, field);
-}
-
-export function fieldByPath(path) {
-  return FIELD_BY_PATH.get(path) ?? null;
+function asRequiredBy(field, entry) {
+  const classification =
+    entry.requirement === 'mandatory'
+      ? 'required'
+      : entry.requirement === 'conditional'
+        ? 'conditional'
+        : entry.requirement === 'secret'
+          ? entry.blockingWhenBlank
+            ? 'required'
+            : 'secret'
+          : entry.requirement === 'generated'
+            ? 'derived'
+            : 'sample-default';
+  return {
+    ...field,
+    path: entry.path,
+    classification,
+    requiredWhen: entry.requirement === 'conditional' ? entry.requiredWhen : undefined,
+  };
 }
 
 /**

@@ -1,0 +1,38 @@
+<!--
+    Baseline policy for published Tools (MCP servers).
+
+    Applied by default to every MCP asset created through the Citadel Publish Contract. It layers
+    the gateway's shared governance fragments on top of the MCP endpoint:
+      - security-handler : API key (+ optional per-product JWT) authentication / defense-in-depth
+      - mcp-usage        : inbound request-count metric (mcp-usage namespace) for FinOps tracking
+
+    IMPORTANT (MCP streaming constraint): do NOT read context.Response.Body in MCP policies. Doing so
+    triggers response buffering, which breaks the streaming (SSE) behavior MCP servers require. All
+    request inspection (auth, usage, and any opt-in PII/content-safety you add per asset) must happen
+    INBOUND only. PII de-anonymization and response content-safety are therefore NOT supported for MCP.
+
+    To layer additional controls (e.g. inbound PII anonymization or content safety) for a specific
+    asset, supply a custom policyXml on that asset in the bicepparam instead of editing this baseline.
+-->
+<policies>
+    <inbound>
+        <base />
+        <!-- Record which backend serves this tool so the usage metric can attribute calls -->
+        <set-variable name="publishedBackendId" value="@(context.Api?.Name?.ToString() ?? "NA")" />
+        <!-- Authentication (API key + optional JWT per access-contract product) -->
+        <include-fragment fragment-id="security-handler" />
+        <!-- Usage metric (inbound only; see streaming note above) -->
+        <include-fragment fragment-id="mcp-usage" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+        <!-- Opt-in alerting on auth/backend/throttling failures (no-op unless enabled on the product) -->
+        <include-fragment fragment-id="raise-alert-events" />
+    </on-error>
+</policies>

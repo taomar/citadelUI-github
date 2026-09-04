@@ -17,6 +17,7 @@ import {
   unsupportedStepTypes,
 } from '../src/core/executor.mjs';
 import { EXECUTION_STATES } from '../src/core/types.mjs';
+import { createLocalExecutorClient } from '../web/js/localClient.mjs';
 import { FAKE_API_KEY, makeFixtureReader } from './helpers/fixtures.mjs';
 
 const ALL_IDS = CATALOGUE.samples.map((sample) => sample.id);
@@ -200,6 +201,58 @@ test('runPlan never reaches an executor for an unacknowledged risky plan', async
   });
   assert.equal(reached, true);
   assert.equal(allowed.state, 'completed');
+});
+
+test('the local client learns the run id before completion so it can cancel the active run', async () => {
+  let finishRun;
+  const runBody = new Promise((resolve) => {
+    finishRun = resolve;
+  });
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    if (url === '/api/run/cancel') {
+      return {
+        ok: true,
+        status: 200,
+        headers: {},
+        json: async () => ({ cancelled: true, runId: 'weather-run-1' }),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: (name) => (name.toLowerCase() === 'x-citadel-run-id' ? 'weather-run-1' : null) },
+      json: async () => runBody,
+    };
+  };
+  const client = createLocalExecutorClient({
+    allowedSampleIds: ALL_IDS,
+    supportedStepTypes: ['http', 'assertion'],
+    fetchImpl,
+  });
+  const plan = planFor('weather-mcp-discovery');
+  const running = client.execute(plan, {
+    sampleId: plan.sampleId,
+    inputs: {},
+    secrets: {},
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(client.activeRunId, 'weather-run-1');
+  assert.deepEqual(await client.cancel(), { cancelled: true, runId: 'weather-run-1' });
+  assert.equal(JSON.parse(calls[1].init.body).runId, 'weather-run-1');
+
+  finishRun({
+    runId: 'weather-run-1',
+    state: 'cancelled',
+    summary: 'Cancelled.',
+    steps: [],
+    assertions: [],
+  });
+  const result = await running;
+  assert.equal(result.state, 'cancelled');
+  assert.equal(result.meta.runId, 'weather-run-1');
+  assert.equal(client.activeRunId, null);
 });
 
 /* ------------------------------------------------------------ the server */

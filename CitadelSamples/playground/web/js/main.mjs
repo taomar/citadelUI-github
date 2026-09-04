@@ -1,16 +1,19 @@
 /**
  * Application bootstrap.
  *
- * Owns: state, capability discovery, tab keyboard behaviour, re-render, and
- * the guarded run action. Everything it renders comes from a pure view model,
- * so the decisions this file makes are about the DOM only.
+ * Owns: state, capability discovery, tab keyboard behaviour, re-render, the
+ * guarded run/cancel actions, and the configuration exports. Everything it
+ * renders comes from a pure view model, so the decisions this file makes are
+ * about the DOM only.
  */
 
 import { CATALOGUE, acknowledgementFor, buildSamplePlan, fieldByPath, getSample } from '../../src/catalogue/index.mjs';
+import { probeFromCapabilityPayload } from '../../src/core/capability.mjs';
 import { createPlaygroundState } from '../../src/core/state.mjs';
 import { createRelayExecutor, createUnavailableExecutor, runPlan } from '../../src/core/executor.mjs';
 import { assertNoSecretValues } from '../../src/core/secrets.mjs';
 import { buildDirectoryModel, buildWorkbenchModel } from '../../src/view/models.mjs';
+import { createLocalExecutorClient } from './localClient.mjs';
 import { chip, el, replace } from './render/dom.mjs';
 import { renderDirectory, renderSampleSelect } from './render/directory.mjs';
 import { renderConfigure, renderGuide, renderRequest, renderResponse } from './render/panels.mjs';
@@ -46,8 +49,12 @@ const state = createPlaygroundState({ catalogue: CATALOGUE });
 
 let executor = createUnavailableExecutor();
 let capability = executor.describeCapability();
-let results = new Map();
+/** Per-dependency probe results from the server. Empty means "preview only". */
+let runtimeProbe = { mode: 'preview' };
+let capabilitySummary = null;
+const results = new Map();
 let running = false;
+let runId = null;
 
 function announce(message) {
   nodes.live.textContent = message;
@@ -60,7 +67,17 @@ async function probeCapability() {
     const response = await fetch('/api/capabilities', { headers: { Accept: 'application/json' } });
     if (!response.ok) return;
     const payload = await response.json();
-    if (payload?.executor?.kind === 'relay' && payload.executor.canExecute) {
+    runtimeProbe = {
+      mode: payload.mode ?? 'preview',
+      ...probeFromCapabilityPayload(payload, CATALOGUE.byId),
+    };
+    capabilitySummary = payload.capability ?? null;
+    if (payload.executor?.kind === 'local' && payload.executor.canExecute) {
+      executor = createLocalExecutorClient({
+        allowedSampleIds: CATALOGUE.samples.map((sample) => sample.id),
+        supportedStepTypes: payload.executor.supportedStepTypes ?? [],
+      });
+    } else if (payload.executor?.kind === 'relay' && payload.executor.canExecute) {
       executor = createRelayExecutor({
         allowedSampleIds: CATALOGUE.samples.map((sample) => sample.id),
         endpoint: '/api/execute',
@@ -81,10 +98,8 @@ async function probeCapability() {
 
 function renderCapability() {
   nodes.capability.dataset.canExecute = capability.canExecute ? 'true' : 'false';
-  nodes.capabilityLabel.textContent = capability.canExecute
-    ? 'Live execution: relay attached'
-    : 'Live execution: not configured';
-  nodes.capability.title = capability.reason ?? '';
+  nodes.capabilityLabel.textContent = capabilitySummary?.label ?? (capability.canExecute ? 'Local execution ready' : 'Preview only');
+  nodes.capability.title = capabilitySummary?.detail ?? capability.reason ?? '';
 }
 
 /* ---------------------------------------------------------------- tabs */
@@ -139,8 +154,8 @@ function onTabKeydown(event) {
 /* ------------------------------------------------------------ actions */
 
 async function copyText(text) {
-  // The plan never holds a secret value, and this re-checks before the
-  // clipboard ever sees the string.
+  // Neither the plan nor the configuration document holds a secret value, and
+  // this re-checks before the clipboard ever sees the string.
   try {
     assertNoSecretValues(text, state.secretValues(), 'Copied text');
   } catch {
@@ -155,29 +170,96 @@ async function copyText(text) {
   }
 }
 
+function downloadText(fileName, text, mimeType) {
+  try {
+    assertNoSecretValues(text, state.secretValues(), 'Downloaded file');
+  } catch {
+    announce('Download refused: the file contained a credential.');
+    return;
+  }
+  const blob = new Blob([text], { type: `${mimeType}; charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const anchor = el('a', { href: url, download: fileName });
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+  announce(`${fileName} downloaded. It carries placeholders, never a credential.`);
+}
+
+/** The catalogue-shaped public inputs for one sample. Never a secret. */
+function publicInputsFor(sample) {
+  const inputs = {};
+  for (const entry of sample.configurationEntries) {
+    if (entry.secret) continue;
+    const value = state.read(entry.path);
+    if (value !== undefined) inputs[entry.path] = value;
+  }
+  return inputs;
+}
+
+/** The transient secrets this sample declares, and only those. */
+function secretsFor(sample) {
+  const secrets = {};
+  for (const entry of sample.configurationEntries) {
+    if (!entry.secret) continue;
+    const value = state.read(entry.path);
+    if (typeof value === 'string' && value.length > 0) secrets[entry.path] = value;
+  }
+  return secrets;
+}
+
 async function runSelected() {
   const sample = getSample(state.selectedSampleId);
   const acknowledged = state.isAcknowledged(sample.id);
   const { plan, validation } = buildSamplePlan(sample, (path) => state.read(path));
   if (!plan) {
-    announce('Not run: required inputs are missing.');
+    announce('Not run: required values are missing.');
     render();
     return;
   }
   running = true;
+  runId = null;
   render();
   announce(`Running ${sample.title}…`);
   const result = await runPlan(executor, plan, {
-    inputs: state.toPersistable(),
-    validation,
+    sampleId: sample.id,
+    inputs: publicInputsFor(sample),
+    secrets: secretsFor(sample),
     acknowledgement: acknowledgementFor(sample, acknowledged),
+    acknowledgementPayload: acknowledged ? { accepted: true, sampleId: sample.id } : null,
+    validation,
   });
   // Consent is per run, so it is spent whether or not the run got anywhere.
   state.consumeAcknowledgement(sample.id);
+  applyUpdates(result);
   results.set(sample.id, result);
   running = false;
+  runId = result.meta?.runId ?? null;
   render();
   announce(`${sample.title}: ${result.summary}`);
+}
+
+/**
+ * Apply what the run discovered.
+ *
+ * Public values fill in the generated fields later recipes need. A returned
+ * credential goes straight into the in-memory secret store and is never
+ * rendered, persisted, or logged.
+ */
+function applyUpdates(result) {
+  for (const [path, value] of Object.entries(result.configurationUpdates ?? {})) {
+    if (fieldByPath(path)) state.set(path, value, fieldByPath(path));
+  }
+  for (const [path, value] of Object.entries(result.secretUpdates ?? {})) {
+    if (fieldByPath(path)) state.set(path, value, fieldByPath(path));
+  }
+}
+
+async function cancelRun() {
+  if (!running) return;
+  announce('Cancelling…');
+  await executor.cancel?.();
 }
 
 /* ------------------------------------------------------------- render */
@@ -210,7 +292,10 @@ function render() {
     activeTab: state.activeTab,
     acknowledged: state.isAcknowledged(sample.id),
     result: results.get(sample.id) ?? null,
+    running,
+    runId,
     capability,
+    runtimeProbe,
   });
 
   nodes.title.textContent = model.sample.title;
@@ -226,15 +311,19 @@ function render() {
   renderConfigure(nodes.panels.configure, model.configure, {
     onChange: (path, value) => state.set(path, value, fieldByPath(path)),
     onBlur: (path) => state.markTouched(path),
+    onCopy: copyText,
+    onDownload: downloadText,
   });
   renderRequest(nodes.panels.request, model.request, {
     onCopy: copyText,
-    canRun: model.canRun && capability.canExecute && !running,
+    canRun: model.canRun && !running,
     runBlockedReason: model.runBlockedReason,
     acknowledged: state.isAcknowledged(sample.id),
     onAcknowledge: (checked) => state.setAcknowledged(sample.id, checked),
     onRun: runSelected,
+    onCancel: cancelRun,
     running,
+    runtime: model.runtime,
   });
   renderResponse(nodes.panels.response, model.response);
   renderContext({ rail: nodes.context, compact: nodes.contextCompact, model: model.context });
@@ -255,3 +344,35 @@ state.subscribe((reason) => {
 renderCapability();
 render();
 probeCapability();
+
+/*
+ * A seam for the browser smoke driver.
+ *
+ * Real execution needs a live Azure environment, which the test suite must
+ * never touch, so the driver installs a fake executor instead. The seam exists
+ * only when the page is opened from loopback WITH an explicit `?testExecutor`
+ * flag, so a normal session — and any deployed copy — never has it. A "fake
+ * success" is therefore not reachable in production.
+ */
+if (location.hostname === '127.0.0.1' && new URLSearchParams(location.search).has('testExecutor')) {
+  globalThis.__citadelTestHooks = Object.freeze({
+    installExecutor(fake) {
+      executor = fake;
+      capability = fake.describeCapability();
+      capabilitySummary = {
+        label: 'Local execution ready (test executor)',
+        detail: 'A test executor is installed for this page only. Nothing reaches Azure.',
+      };
+      runtimeProbe = {
+        mode: 'execute',
+        azureCli: { available: true, version: 'test' },
+        python: { available: true, version: 'test', modules: {} },
+        accelerator: { available: true, files: 1 },
+      };
+      renderCapability();
+      render();
+    },
+    setValue: (path, value) => state.set(path, value, fieldByPath(path)),
+    isRunning: () => running,
+  });
+}

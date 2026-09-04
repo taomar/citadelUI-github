@@ -19,25 +19,38 @@ import { LINKS } from '../profiles.mjs';
 const WHEN_A2A_ON = { field: 'foundry.enableA2aAsset', equals: true };
 
 /**
- * The asset definitions cell 14 builds. Three recipes read the same fields —
- * the publish contract owns them, the access contract and cleanup must agree
- * with what was actually deployed — so the declaration is written once.
+ * The asset definitions cell 14 builds.
+ *
+ * Three recipes call `buildPublishAssets`, but they read different parts of the
+ * result, so the declarations are split rather than shared wholesale. The
+ * publish contract serialises every attribute; the access contract classifies
+ * by asset *name* and type; cleanup deletes by name. Declaring the full set
+ * everywhere would put a Foundry account name on the access-contract form that
+ * nothing in its plan reads.
  */
+export const PUBLISHED_ASSET_NAME_NEEDS = Object.freeze([
+  optional(
+    'foundry.enableA2aAsset',
+    'Decides whether the A2A asset is part of the published set at all, and therefore whether the contract mixes asset types.',
+    'Falls back to on, matching the notebook.',
+  ),
+  optional('publish-assets:weatherToolName', 'API id of the published Weather tool.', 'Falls back to `weather-tool`.'),
+  optional('publish-assets:learnToolName', 'API id of the published Learn tool.', 'Falls back to `ms-learn-tool`.'),
+  optional('publish-assets:agentAssetName', 'API id of the published agent.', 'Falls back to `hr-chat-agent`.'),
+]);
+
+/** Everything else the publish contract itself writes into its parameter file. */
 export const PUBLISH_ASSET_NEEDS = Object.freeze([
+  ...PUBLISHED_ASSET_NAME_NEEDS,
   optional(
     'gatewayAccess.weatherSourceKeyHeader',
-    'Written into the Weather tool as `sourceSubscriptionKeyHeaderName`.',
+    'Written into the Weather tool as `sourceSubscriptionKeyHeaderName`, so the forwarded key survives the internal hop.',
     'Falls back to `x-mcp-sub-key`.',
   ),
   optional(
     'gatewayAccess.subscriptionKeyHeader',
     'Written into the A2A asset as `subscriptionKeyHeaderName`.',
     'Falls back to `api-key`, the gateway default.',
-  ),
-  optional(
-    'foundry.enableA2aAsset',
-    'Decides whether the A2A asset is part of the contract at all.',
-    'Falls back to on, matching the notebook.',
   ),
   conditional(
     'foundry.accountName',
@@ -52,17 +65,18 @@ export const PUBLISH_ASSET_NEEDS = Object.freeze([
     WHEN_A2A_ON,
   ),
   conditional('foundry.agentName', 'Named as the asset`s `agentId` and in its backend URLs.', 'Publish the A2A asset is on.', WHEN_A2A_ON),
-  optional('publish-assets:weatherToolName', 'API id of the published Weather tool.', 'Falls back to `weather-tool`.'),
   optional('publish-assets:weatherToolPath', 'Gateway path of the published Weather tool.', 'Falls back to `weather-tool-mcp`.'),
   optional('publish-assets:weatherSourceApiName', 'Source API the Weather tool is generated from.', 'Falls back to `weather-api`.'),
   optional('publish-assets:weatherOperationName', 'The single operation exposed as a tool.', 'Falls back to `get-weather`.'),
-  optional('publish-assets:learnToolName', 'API id of the published Learn tool.', 'Falls back to `ms-learn-tool`.'),
   optional('publish-assets:learnToolPath', 'Gateway path of the published Learn tool.', 'Falls back to `ms-learn-tool-mcp`.'),
   optional('publish-assets:learnBackendUrl', 'Remote MCP server the Learn tool proxies.', 'Falls back to the public Microsoft Learn MCP endpoint.'),
-  optional('publish-assets:agentAssetName', 'API id of the published agent.', 'Falls back to `hr-chat-agent`.'),
   optional('publish-assets:agentPath', 'Gateway path of the published agent.', 'Falls back to `hr-chat-agent`.'),
   optional('publish-assets:agentCardPath', 'Where the gateway re-exposes the agent card.', 'Falls back to `/.well-known/agent.json`.'),
-  optional('publish-assets:publishToApiCenter', 'Whether each asset is registered with API Center.', 'Falls back to off, as all three assets do in the notebook.'),
+  optional(
+    'publish-assets:publishToApiCenter',
+    'Whether each asset is registered with API Center.',
+    'Falls back to off, as all three assets do in the notebook.',
+  ),
 ]);
 
 /**
@@ -788,7 +802,12 @@ export const PUBLISH_SAMPLES = [
       mandatory('hub.resourceGroupName', 'Scopes the API listing and is written into the contract parameter file.'),
       mandatory('hub.apimName', 'The gateway whose APIs are listed and whose product the contract creates.'),
       mandatory('hub.location', 'Deployment location for the subscription-scoped `az deployment sub create`.'),
-      ...PUBLISH_ASSET_NEEDS,
+      ...PUBLISHED_ASSET_NAME_NEEDS,
+      optional(
+        'publish-assets:weatherSourceApiName',
+        'A forwarding tool`s source API joins the same product, so the shared key authorises both the tool and the protected raw API.',
+        'Falls back to `weather-api`.',
+      ),
       optional(
         'policy.candidateLlmApis',
         'The APIs the contract looks for on the gateway; only the ones that exist are granted.',
@@ -941,6 +960,12 @@ export const PUBLISH_SAMPLES = [
             assertion: {
               kind: 'classification',
               source: '{{steps.list-apis.existingApis}}',
+              candidateLlmApis: ctx.get('policy.candidateLlmApis'),
+              configuredLlmApis: contract.llmApis,
+              outputValues: {
+                productId: contract.productId,
+                contractCode: contract.contractCode,
+              },
               expectations: [
                 `LLM APIs: ${contract.llmApis.join(', ') || '(none found on this gateway)'}`,
                 `Tools: ${contract.toolApis.join(', ')}`,
@@ -1098,6 +1123,30 @@ export const PUBLISH_SAMPLES = [
         notebookRef: 'cell 18 endpoint loop',
       },
     ],
+    configuration: [
+      mandatory('keyVault.name', 'The vault every `az keyvault secret show` in this recipe reads from.'),
+      generated(
+        'keyVault.keySecretName',
+        'The shared api-key secret whose presence is proved without printing its value.',
+        'Left blank the plan shows a placeholder name and the run is blocked on that step rather than reading an invented secret.',
+        'Produced by Publish and grant › Deploy the mixed access contract.',
+      ),
+      generated(
+        'keyVault.endpointSecretNames',
+        'One endpoint secret per granted asset; each becomes its own read step.',
+        'Left empty the recipe reports inconclusive rather than passing on an empty set.',
+        'Produced by Publish and grant › Deploy the mixed access contract.',
+      ),
+      optional(
+        'self:revealEndpointValues',
+        'Whether endpoint secret values are read directly or only measured by length.',
+        'Falls back to on. Endpoint secrets hold URLs; the api-key secret is never shown either way.',
+      ),
+    ],
+    runtime: {
+      dependencies: ['azure-cli'],
+      note: 'Key Vault data-plane reads. Needs Key Vault Secrets User on the vault, which management-plane access does not grant.',
+    },
     risk: {
       level: 'read-only',
       effect: 'Reads Key Vault secrets. Nothing is written or deleted.',
