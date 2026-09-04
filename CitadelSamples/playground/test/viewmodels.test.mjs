@@ -18,9 +18,12 @@ import {
   buildConfigureModel,
   buildContextModel,
   buildDirectoryModel,
+  buildExecutionEnvironmentModel,
   buildGuideModel,
   buildRequestModel,
   buildResponseModel,
+  buildSourceModel,
+  buildSourceValidationModel,
   buildWorkbenchModel,
   riskBadge,
   stateBadge,
@@ -29,6 +32,43 @@ import { FAKE_API_KEY, FIXTURE_SECRETS, makeEmptyReader, makeFixtureReader } fro
 
 const capability = createUnavailableExecutor().describeCapability();
 const read = makeFixtureReader();
+
+function sourcePayload(sample) {
+  return {
+    protocolVersion: 2,
+    sampleId: sample.id,
+    notebook: {
+      fileName: CATALOGUE.sourceNotebook.fileName,
+      sha256: CATALOGUE.sourceNotebook.sha256,
+      bytes: 123456,
+    },
+    protection: {
+      editable: false,
+      source: 'imported-notebook',
+      statement: 'This source is selected and verified by the server.',
+    },
+    parameterZones: [
+      {
+        id: 'configuration',
+        title: 'Configuration',
+        count: 1,
+        fields: [{ path: 'hub.subscriptionId', label: 'Subscription ID', secret: false, blockingWhenBlank: true }],
+      },
+    ],
+    cells: [
+      {
+        cellIndex: sample.sourceCells[0],
+        cellType: 'code',
+        language: 'python',
+        text: 'value = "unchanged"  \nprint(value)\n',
+        bytes: new TextEncoder().encode('value = "unchanged"  \nprint(value)\n').byteLength,
+        sha256: 'a'.repeat(64),
+        editable: false,
+        protected: true,
+      },
+    ],
+  };
+}
 
 function workbench(id, overrides = {}) {
   const sample = getSample(id);
@@ -101,6 +141,67 @@ test('the guide model carries every documented part of a recipe', () => {
     assert.ok(guide.risk.badge.label, `${sample.id} guide risk badge`);
     assert.ok(guide.source.cells.length > 0, `${sample.id} guide source`);
   }
+});
+
+/* ---------------------------------------------------------------- source */
+
+test('the protected source model keeps exact code and exposes no editable surface', () => {
+  const sample = getSample('azure-context-check');
+  const payload = sourcePayload(sample);
+  const model = buildSourceModel({ sample, sourceState: { status: 'ready', payload } });
+  assert.equal(model.state, 'ready');
+  assert.equal(model.protected, true);
+  assert.equal(model.editable, false);
+  assert.equal(model.cells[0].text, payload.cells[0].text, 'source whitespace and final newline must remain exact');
+  assert.equal(model.cells[0].lineCount, 3);
+  assert.equal(model.cells[0].editable, false);
+  assert.equal(model.cells[0].protected, true);
+  assert.equal(model.parameterZones[0].fields[0].path, 'hub.subscriptionId');
+});
+
+test('the source model rejects stale, editable, or digest-mismatched responses', () => {
+  const sample = getSample('azure-context-check');
+  for (const payload of [
+    { ...sourcePayload(sample), sampleId: 'cleanup' },
+    { ...sourcePayload(sample), notebook: { ...sourcePayload(sample).notebook, sha256: 'b'.repeat(64) } },
+    {
+      ...sourcePayload(sample),
+      cells: sourcePayload(sample).cells.map((cell) => ({ ...cell, editable: true })),
+    },
+  ]) {
+    const model = buildSourceModel({ sample, sourceState: { status: 'ready', payload } });
+    assert.equal(model.state, 'error');
+    assert.deepEqual(model.cells, []);
+  }
+});
+
+test('offline validation accepts only a compile-only response with no live evidence', () => {
+  const result = {
+    mode: 'offline-local',
+    validation: 'python-compile-only',
+    sourceExecuted: false,
+    azureContacted: false,
+    networkContacted: false,
+    liveEvidence: false,
+    state: 'passed',
+    summary: 'Two cells compiled.',
+    workspaceRemoved: true,
+    checks: [{ id: 'compile', label: 'Python syntax', passed: true, detail: 'Both cells compiled.' }],
+    steps: [{ id: 'compile-1', title: 'Compile cell 1', state: 'completed', detail: 'Syntax accepted.' }],
+  };
+  const model = buildSourceValidationModel({ status: 'ready', result });
+  assert.equal(model.state, 'passed');
+  assert.equal(model.badge.label, 'Passed offline');
+  assert.equal(model.validationMode, 'python-compile-only');
+  assert.equal(model.liveEvidence, false);
+  assert.equal(model.workspaceRemoved, true);
+
+  const unsafe = buildSourceValidationModel({
+    status: 'ready',
+    result: { ...result, sourceExecuted: true, liveEvidence: true },
+  });
+  assert.equal(unsafe.state, 'failed');
+  assert.match(unsafe.summary, /did not preserve/);
 });
 
 /* ----------------------------------------------------------- configure */
@@ -371,11 +472,31 @@ test('the context rail reports the runtime this sample needs, per dependency', (
   );
 });
 
+test('execution environments distinguish preview, local machine, and hosted relay evidence', () => {
+  assert.deepEqual(
+    [capability, { kind: 'local', canExecute: true }, { kind: 'relay', canExecute: true }].map((item) => {
+      const model = buildExecutionEnvironmentModel(item);
+      return [model.label, model.evidenceLabel];
+    }),
+    [
+      ['Preview only', 'Offline validation'],
+      ['Local machine', 'Live-capable'],
+      ['Hosted relay', 'Live-capable'],
+    ],
+  );
+});
+
 /* ----------------------------------------------------------- workbench */
 
-test('the workbench exposes exactly four tabs in a fixed order', () => {
+test('the workbench exposes the protected code-to-output journey in a fixed order', () => {
   const model = workbench('weather-mcp-discovery');
-  assert.deepEqual(model.tabs.map((tab) => tab.id), ['guide', 'configure', 'request', 'response']);
+  assert.deepEqual(model.tabs.map((tab) => [tab.id, tab.label]), [
+    ['guide', 'Guide'],
+    ['code', 'Code'],
+    ['configure', 'Configure'],
+    ['request', 'Review & approve'],
+    ['response', 'Output'],
+  ]);
   assert.equal(model.activeTab, 'guide');
 });
 
@@ -454,7 +575,7 @@ test('a full workbench model for every recipe never leaks the fixture secret', (
 
 test('every recipe produces a complete workbench model without throwing', () => {
   for (const sample of CATALOGUE.samples) {
-    for (const tab of ['guide', 'configure', 'request', 'response']) {
+    for (const tab of ['guide', 'code', 'configure', 'request', 'response']) {
       const model = workbench(sample.id, { activeTab: tab });
       assert.equal(model.activeTab, tab);
       assert.ok(model.guide.purpose);

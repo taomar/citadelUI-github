@@ -20,6 +20,7 @@ import { previewPlan, previewSteps } from '../core/preview.mjs';
 import { errorsOf, warningsOf } from '../core/validation.mjs';
 import { buildConfigurationDocument, buildEnvExample, configurationFileNames, serializeConfiguration } from '../core/configuration.mjs';
 import { describeSampleCapability } from '../core/capability.mjs';
+import { EXECUTION_PROTOCOL_VERSION } from '../core/types.mjs';
 
 const RISK_TONE = Object.freeze({
   'read-only': { tone: 'neutral', label: 'Read-only' },
@@ -45,6 +46,250 @@ export function riskBadge(level) {
 
 export function stateBadge(state) {
   return STATE_TONE[state] ?? { tone: 'neutral', label: state ?? 'unknown' };
+}
+
+export function buildExecutionEnvironmentModel(capability) {
+  if (!capability?.canExecute) {
+    return {
+      mode: 'preview',
+      label: 'Preview only',
+      evidenceMode: 'offline-validation',
+      evidenceLabel: 'Offline validation',
+      liveCapable: false,
+      detail: 'Plans and protected source can be inspected, but no live Azure operation can run.',
+    };
+  }
+  if (capability.kind === 'relay') {
+    return {
+      mode: 'hosted-relay',
+      label: 'Hosted relay',
+      evidenceMode: 'live-capable',
+      evidenceLabel: 'Live-capable',
+      liveCapable: true,
+      detail: 'An approved hosted relay can execute this plan and return live evidence.',
+    };
+  }
+  return {
+    mode: 'local-machine',
+    label: 'Local machine',
+    evidenceMode: 'live-capable',
+    evidenceLabel: 'Live-capable',
+    liveCapable: true,
+    detail: 'The local executor can run this plan from this machine and return live evidence.',
+  };
+}
+
+function sourceError(sampleId, message) {
+  return {
+    sampleId,
+    state: 'error',
+    protected: true,
+    editable: false,
+    message,
+    notebook: null,
+    protection: null,
+    parameterZones: [],
+    cells: [],
+  };
+}
+
+/**
+ * The protected source contract. Source text is retained byte-for-byte and is
+ * never converted into an editable field.
+ */
+export function buildSourceModel({ sample, sourceState = {} }) {
+  const state = sourceState.status ?? 'loading';
+  if (state === 'loading' || state === 'idle') {
+    return {
+      sampleId: sample.id,
+      state: 'loading',
+      protected: true,
+      editable: false,
+      message: 'Loading the protected notebook cells cited by this recipe…',
+      notebook: null,
+      protection: null,
+      parameterZones: [],
+      cells: [],
+    };
+  }
+  if (state === 'error') {
+    return sourceError(sample.id, sourceState.message || 'The protected source could not be loaded.');
+  }
+
+  const payload = sourceState.payload;
+  const declaredFields = new Map(sample.configurationEntries.map((entry) => [entry.path, entry]));
+  const validNotebook =
+    payload?.notebook &&
+    typeof payload.notebook.fileName === 'string' &&
+    payload.notebook.fileName.length > 0 &&
+    typeof payload.notebook.sha256 === 'string' &&
+    payload.notebook.sha256 === CATALOGUE.sourceNotebook.sha256 &&
+    Number.isSafeInteger(payload.notebook.bytes) &&
+    payload.notebook.bytes >= 0;
+  const validProtection =
+    payload?.protection &&
+    payload.protection.editable === false &&
+    payload.protection.source === 'imported-notebook' &&
+    typeof payload.protection.statement === 'string' &&
+    payload.protection.statement.length > 0;
+  const validCells =
+    Array.isArray(payload?.cells) &&
+    payload.cells.length > 0 &&
+    payload.cells.every(
+      (cell) =>
+        Number.isSafeInteger(cell?.cellIndex) &&
+        sample.sourceCells.includes(cell.cellIndex) &&
+        typeof cell.cellType === 'string' &&
+        typeof cell.language === 'string' &&
+        typeof cell.text === 'string' &&
+        Number.isSafeInteger(cell.bytes) &&
+        cell.bytes === new TextEncoder().encode(cell.text).byteLength &&
+        typeof cell.sha256 === 'string' &&
+        /^[a-f0-9]{64}$/i.test(cell.sha256) &&
+        cell.editable === false &&
+        cell.protected === true,
+    );
+  const validZones =
+    Array.isArray(payload?.parameterZones) &&
+    payload.parameterZones.every(
+      (zone) =>
+        typeof zone?.id === 'string' &&
+        typeof zone.title === 'string' &&
+        Number.isSafeInteger(zone.count) &&
+        Array.isArray(zone.fields) &&
+        zone.count === zone.fields.length &&
+        zone.fields.every(
+          (field) => {
+            const declared = declaredFields.get(field?.path);
+            return (
+              Boolean(declared) &&
+              typeof field.label === 'string' &&
+              typeof field.secret === 'boolean' &&
+              field.secret === Boolean(declared.secret) &&
+              typeof field.blockingWhenBlank === 'boolean'
+            );
+          },
+        ),
+    );
+
+  if (
+    payload?.protocolVersion !== EXECUTION_PROTOCOL_VERSION ||
+    payload?.sampleId !== sample.id ||
+    !validNotebook ||
+    !validProtection ||
+    !validCells ||
+    !validZones
+  ) {
+    return sourceError(sample.id, 'The server returned a protected-source response that did not match this recipe.');
+  }
+
+  return {
+    sampleId: sample.id,
+    state: 'ready',
+    protected: true,
+    editable: false,
+    message: '',
+    notebook: { ...payload.notebook },
+    protection: { ...payload.protection },
+    parameterZones: payload.parameterZones.map((zone) => ({
+      id: zone.id,
+      title: zone.title,
+      count: zone.count,
+      fields: zone.fields.map((field) => ({ ...field })),
+    })),
+    cells: payload.cells.map((cell) => ({
+      cellIndex: cell.cellIndex,
+      cellType: cell.cellType,
+      language: cell.language,
+      text: cell.text,
+      bytes: cell.bytes,
+      sha256: cell.sha256,
+      editable: false,
+      protected: true,
+      lineCount: cell.text === '' ? 0 : (cell.text.match(/\n/g)?.length ?? 0) + 1,
+    })),
+  };
+}
+
+export function buildSourceValidationModel(validationState = {}) {
+  const status = validationState.status ?? 'not-run';
+  const base = {
+    mode: 'offline-local',
+    validationMode: 'python-compile-only',
+    evidenceLabel: 'Offline validation',
+    sourceExecuted: false,
+    azureContacted: false,
+    networkContacted: false,
+    liveEvidence: false,
+    checks: [],
+    steps: [],
+  };
+  if (status === 'loading') {
+    return { ...base, state: 'running', badge: validationBadge('running'), summary: 'Compiling protected Python cells without executing them…' };
+  }
+  if (status === 'error') {
+    return {
+      ...base,
+      state: 'failed',
+      badge: validationBadge('failed'),
+      summary: validationState.message || 'Offline validation could not be completed.',
+    };
+  }
+  if (status !== 'ready') {
+    return {
+      ...base,
+      state: 'not-run',
+      badge: validationBadge('not-run'),
+      summary: 'Not run. Offline validation compiles protected Python cells; it does not execute source or contact Azure.',
+    };
+  }
+
+  const result = validationState.result;
+  const safeBoundary =
+    result?.mode === base.mode &&
+    result.validation === base.validationMode &&
+    result.sourceExecuted === false &&
+    result.azureContacted === false &&
+    result.networkContacted === false &&
+    result.liveEvidence === false;
+  if (!safeBoundary) {
+    return {
+      ...base,
+      state: 'failed',
+      badge: validationBadge('failed'),
+      summary: 'The validation response did not preserve the offline compile-only boundary.',
+    };
+  }
+
+  const checkPassed = (check) => check?.passed === true || check?.status === 'passed';
+  const state = result.state ?? (result.checks?.every(checkPassed) ? 'passed' : 'failed');
+  return {
+    ...base,
+    state,
+    badge: validationBadge(state),
+    summary: result.summary ?? 'Offline compile validation finished.',
+    checks: (result.checks ?? []).map((check) => ({
+      id: String(check.id ?? ''),
+      label: String(check.label ?? check.title ?? check.id ?? 'Check'),
+      passed: checkPassed(check),
+      detail: String(check.detail ?? ''),
+    })),
+    steps: (result.steps ?? []).map((step) => ({
+      id: String(step.id ?? ''),
+      title: String(step.title ?? step.id ?? 'Validation step'),
+      state: String(step.state ?? (step.passed === false ? 'failed' : 'completed')),
+      detail: String(step.detail ?? ''),
+    })),
+    workspaceRemoved: result.workspaceRemoved === true,
+  };
+}
+
+function validationBadge(state) {
+  if (state === 'passed') return { tone: 'success', label: 'Passed offline' };
+  if (state === 'failed') return { tone: 'danger', label: 'Failed offline' };
+  if (state === 'blocked') return { tone: 'warning', label: 'Blocked' };
+  if (state === 'cancelled') return { tone: 'neutral', label: 'Cancelled' };
+  return stateBadge(state);
 }
 
 function matchesQuery(sample, query) {
@@ -371,6 +616,7 @@ export function buildRequestModel({ sample, read, acknowledged = false, secrets 
 export function buildResponseModel({ sample, result, capability, running = false, runId = null }) {
   const state = running ? 'running' : (result?.state ?? 'not-run');
   const badge = stateBadge(state);
+  const environment = buildExecutionEnvironmentModel(capability);
   const steps = (result?.steps ?? []).map((step) => ({
     ...step,
     badge: stateBadge(step.state === 'skipped' ? 'not-run' : step.state),
@@ -419,6 +665,7 @@ export function buildResponseModel({ sample, result, capability, running = false
             : { tone: 'warning', label: 'inconclusive' },
     })),
     capability,
+    environment,
   };
 }
 
@@ -450,6 +697,8 @@ export function buildWorkbenchModel({
   runId = null,
   capability,
   runtimeProbe = {},
+  sourceState = {},
+  sourceValidationState = {},
 }) {
   const validation = validateSample(sample, read);
   const request = buildRequestModel({ sample, read, acknowledged, secrets });
@@ -492,11 +741,14 @@ export function buildWorkbenchModel({
     activeTab,
     tabs: [
       { id: 'guide', label: 'Guide' },
+      { id: 'code', label: 'Code' },
       { id: 'configure', label: 'Configure', count: configure.blockingCount },
-      { id: 'request', label: 'Request' },
-      { id: 'response', label: 'Response', state: running ? 'running' : (result?.state ?? 'not-run') },
+      { id: 'request', label: 'Review & approve' },
+      { id: 'response', label: 'Output', state: running ? 'running' : (result?.state ?? 'not-run') },
     ],
     guide: buildGuideModel(sample),
+    source: buildSourceModel({ sample, sourceState }),
+    sourceValidation: buildSourceValidationModel(sourceValidationState),
     configure,
     request,
     response: buildResponseModel({ sample, result, capability, running, runId }),
@@ -509,6 +761,7 @@ export function buildWorkbenchModel({
       executionState: running ? 'running' : (result?.state ?? (request.available ? 'generated' : 'not-run')),
     }),
     runtime: sampleCapability,
+    environment: buildExecutionEnvironmentModel(capability),
     canRun: Boolean(
       configure.satisfied &&
         request.available &&

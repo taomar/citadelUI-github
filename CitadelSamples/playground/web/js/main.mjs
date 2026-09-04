@@ -13,14 +13,14 @@ import { createPlaygroundState } from '../../src/core/state.mjs';
 import { createRelayExecutor, createUnavailableExecutor, runPlan } from '../../src/core/executor.mjs';
 import { assertNoSecretValues } from '../../src/core/secrets.mjs';
 import { EXECUTION_PROTOCOL_VERSION } from '../../src/core/types.mjs';
-import { buildDirectoryModel, buildWorkbenchModel } from '../../src/view/models.mjs';
+import { buildDirectoryModel, buildExecutionEnvironmentModel, buildWorkbenchModel } from '../../src/view/models.mjs';
 import { createLocalExecutorClient } from './localClient.mjs';
 import { chip, el, replace } from './render/dom.mjs';
 import { renderDirectory, renderSampleSelect } from './render/directory.mjs';
-import { renderConfigure, renderGuide, renderRequest, renderResponse } from './render/panels.mjs';
+import { renderConfigure, renderGuide, renderRequest, renderResponse, renderSource } from './render/panels.mjs';
 import { renderContext } from './render/context.mjs';
 
-const TABS = ['guide', 'configure', 'request', 'response'];
+const TABS = ['guide', 'code', 'configure', 'request', 'response'];
 
 const nodes = {
   sourceFile: document.getElementById('source-file'),
@@ -37,6 +37,7 @@ const nodes = {
   tablist: document.getElementById('tablist'),
   panels: {
     guide: document.getElementById('panel-guide'),
+    code: document.getElementById('panel-code'),
     configure: document.getElementById('panel-configure'),
     request: document.getElementById('panel-request'),
     response: document.getElementById('panel-response'),
@@ -58,8 +59,15 @@ let capability = executor.describeCapability();
 let runtimeProbe = { mode: 'preview' };
 let capabilitySummary = null;
 const results = new Map();
+const sourceStates = new Map();
+const sourceValidationStates = new Map();
 let running = false;
+let runningSampleId = null;
 let runId = null;
+let sourceRequest = null;
+let sourceRequestVersion = 0;
+let validationRequest = null;
+let validationRequestVersion = 0;
 
 function announce(message) {
   nodes.live.textContent = message;
@@ -105,9 +113,98 @@ async function probeCapability() {
 }
 
 function renderCapability() {
+  const environment = buildExecutionEnvironmentModel(capability);
   nodes.capability.dataset.canExecute = capability.canExecute ? 'true' : 'false';
-  nodes.capabilityLabel.textContent = capabilitySummary?.label ?? (capability.canExecute ? 'Local execution ready' : 'Preview only');
-  nodes.capability.title = capabilitySummary?.detail ?? capability.reason ?? '';
+  nodes.capability.dataset.executionMode = environment.mode;
+  nodes.capabilityLabel.textContent = environment.label;
+  nodes.capability.title = capabilitySummary?.detail ?? environment.detail ?? capability.reason ?? '';
+}
+
+/* ----------------------------------------------------- protected source */
+
+async function loadProtectedSource(sampleId = state.selectedSampleId) {
+  sourceRequest?.controller.abort();
+  const version = ++sourceRequestVersion;
+  const controller = new AbortController();
+  sourceRequest = { sampleId, version, controller };
+  sourceStates.set(sampleId, { status: 'loading' });
+  render();
+
+  try {
+    const response = await fetch(`/api/source/${encodeURIComponent(sampleId)}`, {
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    });
+    if (version !== sourceRequestVersion || state.selectedSampleId !== sampleId) return;
+    if (!response.ok) {
+      sourceStates.set(sampleId, {
+        status: 'error',
+        message: `The protected source could not be loaded (HTTP ${response.status}).`,
+      });
+    } else {
+      const payload = await response.json();
+      if (version !== sourceRequestVersion || state.selectedSampleId !== sampleId) return;
+      sourceStates.set(sampleId, { status: 'ready', payload });
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError' || version !== sourceRequestVersion || state.selectedSampleId !== sampleId) return;
+    sourceStates.set(sampleId, {
+      status: 'error',
+      message: 'The protected source could not be loaded. Check that the playground server is available.',
+    });
+  }
+  if (version !== sourceRequestVersion || state.selectedSampleId !== sampleId) return;
+  render();
+}
+
+async function validateProtectedSource() {
+  const sampleId = state.selectedSampleId;
+  if (sourceStates.get(sampleId)?.status !== 'ready') {
+    announce('Load the protected source before validating it.');
+    return;
+  }
+  validationRequest?.controller.abort();
+  const version = ++validationRequestVersion;
+  const controller = new AbortController();
+  validationRequest = { sampleId, version, controller };
+  sourceValidationStates.set(sampleId, { status: 'loading' });
+  render();
+  announce('Validating protected Python cells offline. No source is executed.');
+
+  try {
+    const response = await fetch(`/api/source/${encodeURIComponent(sampleId)}/validate`, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
+      signal: controller.signal,
+    });
+    if (version !== validationRequestVersion || state.selectedSampleId !== sampleId) return;
+    if (!response.ok) {
+      sourceValidationStates.set(sampleId, {
+        status: 'error',
+        message: `Offline source validation could not be completed (HTTP ${response.status}).`,
+      });
+    } else {
+      const result = await response.json();
+      if (version !== validationRequestVersion || state.selectedSampleId !== sampleId) return;
+      sourceValidationStates.set(sampleId, { status: 'ready', result });
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError' || version !== validationRequestVersion || state.selectedSampleId !== sampleId) return;
+    sourceValidationStates.set(sampleId, {
+      status: 'error',
+      message: 'Offline source validation could not reach the playground server.',
+    });
+  }
+  if (version !== validationRequestVersion || state.selectedSampleId !== sampleId) return;
+  render();
+  const outcome = sourceValidationStates.get(sampleId);
+  announce(outcome.status === 'ready' ? 'Offline source validation finished.' : outcome.message);
+}
+
+function openConfigurationField(path) {
+  state.setActiveTab('configure');
+  requestAnimationFrame(() => document.getElementById(`f-${path.replace(/[^a-zA-Z0-9-]/g, '-')}`)?.focus());
 }
 
 /* ------------------------------------------------------------ self-test */
@@ -294,6 +391,7 @@ async function runSelected() {
     return;
   }
   running = true;
+  runningSampleId = sample.id;
   runId = null;
   results.set(sample.id, {
     state: 'running',
@@ -306,7 +404,7 @@ async function runSelected() {
     secretUpdates: {},
     meta: { executor: capability.kind ?? 'local' },
   });
-  render();
+  state.setActiveTab('response');
   announce(`Running ${sample.title}…`);
   const result = await runPlan(executor, plan, {
     sampleId: sample.id,
@@ -322,6 +420,7 @@ async function runSelected() {
   applyUpdates(result);
   results.set(sample.id, result);
   running = false;
+  runningSampleId = null;
   runId = result.meta?.runId ?? null;
   render();
   announce(`${sample.title}: ${result.summary}`);
@@ -329,6 +428,12 @@ async function runSelected() {
 
 function applyRunProgress(sample, event) {
   if (!event || typeof event !== 'object') return;
+  try {
+    assertNoSecretValues(event, state.secretValues(), 'Execution progress');
+  } catch {
+    announce('A progress update was hidden because it contained a credential.');
+    return;
+  }
   const current = results.get(sample.id) ?? {
     state: 'running',
     sampleId: sample.id,
@@ -359,6 +464,9 @@ function applyRunProgress(sample, event) {
       summary: `${event.step.title ?? event.step.id}: ${event.step.state ?? 'reported'}.`,
       steps: upsertProgressStep(current.steps, event.step),
     });
+  } else if (event.type === 'result' && event.result?.sampleId === sample.id) {
+    runId = event.result.meta?.runId ?? runId;
+    results.set(sample.id, event.result);
   } else {
     return;
   }
@@ -425,10 +533,12 @@ function render() {
     activeTab: state.activeTab,
     acknowledged: state.isAcknowledged(sample.id),
     result: results.get(sample.id) ?? null,
-    running,
+    running: running && runningSampleId === sample.id,
     runId,
     capability,
     runtimeProbe,
+    sourceState: sourceStates.get(sample.id) ?? { status: 'loading' },
+    sourceValidationState: sourceValidationStates.get(sample.id) ?? { status: 'not-run' },
   });
 
   nodes.title.textContent = model.sample.title;
@@ -441,6 +551,11 @@ function render() {
 
   renderTabs(model);
   renderGuide(nodes.panels.guide, model.guide);
+  renderSource(nodes.panels.code, model.source, model.sourceValidation, {
+    onRetry: () => loadProtectedSource(sample.id),
+    onConfigure: openConfigurationField,
+    onValidate: validateProtectedSource,
+  });
   renderConfigure(nodes.panels.configure, model.configure, {
     onChange: (path, value) => state.set(path, value, fieldByPath(path)),
     onBlur: (path) => state.markTouched(path),
@@ -457,6 +572,7 @@ function render() {
     onCancel: cancelRun,
     running,
     runtime: model.runtime,
+    environment: model.environment,
   });
   renderResponse(nodes.panels.response, model.response);
   renderContext({ rail: nodes.context, compact: nodes.contextCompact, model: model.context });
@@ -471,13 +587,17 @@ nodes.selfTestRun.addEventListener('click', runSelfTestCheck);
 state.subscribe((reason) => {
   render();
   if (reason === 'selection') {
+    sourceRequest?.controller.abort();
+    validationRequest?.controller.abort();
     announce(`${getSample(state.selectedSampleId).title} selected.`);
+    loadProtectedSource(state.selectedSampleId);
   }
 });
 
 renderCapability();
 renderSelfTest();
 render();
+loadProtectedSource(state.selectedSampleId);
 probeCapability();
 
 /*
