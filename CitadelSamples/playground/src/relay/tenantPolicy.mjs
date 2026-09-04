@@ -102,6 +102,9 @@ function assertBundle(tenantId, bundle) {
   if (bundle.allowedRoles !== undefined && !Array.isArray(bundle.allowedRoles)) {
     throw new TypeError(`Tenant "${tenantId}"'s policy bundle's allowedRoles, when present, must be a string[].`);
   }
+  if (bundle.allowedPrincipals !== undefined && !Array.isArray(bundle.allowedPrincipals)) {
+    throw new TypeError(`Tenant "${tenantId}"'s policy bundle's allowedPrincipals, when present, must be a string[].`);
+  }
 }
 
 /**
@@ -147,14 +150,16 @@ export function createStaticTenantPolicy(tenants, { structuralAllowedSampleIds }
      * @param {string} [context.principal]
      * @param {string[]} [context.roles]
      * @returns {Promise<object|null>} the resolved bundle, or `null` when this
-     *          tenant is unknown, or known but this principal's roles do not
-     *          satisfy the bundle's `allowedRoles` gate
+     *          tenant is unknown, its principal is not allowed, or its roles do
+     *          not satisfy the bundle's `allowedRoles` gate
      */
     async resolve({ tenant, principal, roles = [] } = {}) {
-      void principal;
       if (typeof tenant !== 'string' || tenant === '') return null;
       const bundle = byTenant.get(tenant);
       if (!bundle) return null;
+      if (Array.isArray(bundle.allowedPrincipals) && bundle.allowedPrincipals.length > 0) {
+        if (!bundle.allowedPrincipals.includes(principal)) return null;
+      }
       if (Array.isArray(bundle.allowedRoles) && bundle.allowedRoles.length > 0) {
         const grantedRoles = Array.isArray(roles) ? roles : [];
         const authorized = bundle.allowedRoles.some((role) => grantedRoles.includes(role));
@@ -185,6 +190,7 @@ export function createStaticTenantPolicy(tenants, { structuralAllowedSampleIds }
  * @param {Function} [options.fetchImpl]     forwarded to `createRelayHttpExecutor`
  * @param {object} [options.limits]          forwarded to `createRelayHttpExecutor`
  * @param {string[]} [options.allowedRoles]
+ * @param {string[]} [options.allowedPrincipals]
  */
 export function createRelayTenantBundle({
   allowedSampleIds,
@@ -194,6 +200,7 @@ export function createRelayTenantBundle({
   fetchImpl,
   limits,
   allowedRoles,
+  allowedPrincipals,
 } = {}) {
   const httpExecutor = createRelayHttpExecutor({ fetchImpl, allowlist: originAllowlist, requestPolicy, limits });
   return {
@@ -203,5 +210,6 @@ export function createRelayTenantBundle({
     requestPolicy,
     secretProvider,
     ...(allowedRoles !== undefined ? { allowedRoles } : {}),
+    ...(allowedPrincipals !== undefined ? { allowedPrincipals } : {}),
   };
 }

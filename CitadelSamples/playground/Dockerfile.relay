@@ -1,0 +1,16 @@
+FROM node:20-alpine
+
+WORKDIR /app
+COPY --chown=node:node relay-server.mjs ./
+COPY --chown=node:node src/catalogue ./src/catalogue
+COPY --chown=node:node src/core ./src/core
+COPY --chown=node:node src/relay ./src/relay
+COPY --chown=node:node src/server/runRequest.mjs ./src/server/runRequest.mjs
+
+ENV NODE_ENV=production \
+    CITADEL_RELAY_PORT=8080 \
+    CITADEL_RELAY_HOST=0.0.0.0
+
+USER node
+EXPOSE 8080
+CMD ["node", "relay-server.mjs"]

@@ -105,6 +105,53 @@ export function createDenyAllAuthenticator(reason = 'No authenticator is configu
 }
 
 /**
+ * Trust the identity header emitted by Container Apps' Entra authentication
+ * middleware. This is deliberately opt-in: callers must place the app behind
+ * that middleware, which is enforced by the accompanying deployment Bicep.
+ * It is not a replacement for validating a bearer token at an arbitrary HTTP
+ * listener.
+ */
+export function createContainerAppsEntraAuthenticator({ tenantId } = {}) {
+  if (typeof tenantId !== 'string' || tenantId === '') {
+    throw new TypeError('createContainerAppsEntraAuthenticator requires a non-empty tenantId.');
+  }
+  return Object.freeze({
+    mode: 'container-apps-entra',
+    async authenticate(request) {
+      const encoded = request.headers?.['x-ms-client-principal'];
+      if (typeof encoded !== 'string' || encoded === '') {
+        return { ok: false, reason: 'missing-container-apps-principal' };
+      }
+      let payload;
+      try {
+        payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf-8'));
+      } catch {
+        return { ok: false, reason: 'malformed-container-apps-principal' };
+      }
+      const claims = new Map(
+        Array.isArray(payload.claims)
+          ? payload.claims
+              .filter((claim) => claim && typeof claim.typ === 'string' && typeof claim.val === 'string')
+              .map((claim) => [claim.typ, claim.val])
+          : [],
+      );
+      const tenant = claims.get('tid') ?? claims.get('http://schemas.microsoft.com/identity/claims/tenantid');
+      const principal =
+        claims.get('oid') ??
+        claims.get('http://schemas.microsoft.com/identity/claims/objectidentifier') ??
+        claims.get(payload.name_typ);
+      if (tenant !== tenantId || typeof principal !== 'string' || principal === '') {
+        return { ok: false, reason: 'container-apps-principal-not-authorized' };
+      }
+      const roles = Array.isArray(payload.claims)
+        ? payload.claims.filter((claim) => claim?.typ === payload.role_typ && typeof claim.val === 'string').map((claim) => claim.val)
+        : [];
+      return { ok: true, principal, tenant, roles };
+    },
+  });
+}
+
+/**
  * The composed guard `handleExecute` calls: loopback is trusted as-is, with
  * the fixed dev principal/tenant above; anything else must pass
  * `authenticator.authenticate(request)` AND resolve a non-empty `principal`

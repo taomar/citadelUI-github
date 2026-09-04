@@ -1,0 +1,14 @@
+FROM node:20-alpine
+
+WORKDIR /app
+COPY --chown=node:node package.json server.mjs ./
+COPY --chown=node:node src ./src
+COPY --chown=node:node web ./web
+
+ENV NODE_ENV=production \
+    CITADEL_PLAYGROUND_PORT=8080 \
+    CITADEL_PLAYGROUND_HOST=0.0.0.0
+
+USER node
+EXPOSE 8080
+CMD ["node", "server.mjs"]

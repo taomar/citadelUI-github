@@ -459,6 +459,16 @@ export function createRelayServer({
   const server = createServer(async (request, response) => {
     try {
       const requestPath = (request.url ?? '/').split('?')[0];
+      if (requestPath === '/healthz' || requestPath === '/readyz') {
+        if (request.method !== 'GET') {
+          response.writeHead(405, securityHeaders());
+          response.end(JSON.stringify({ status: 'error', detail: 'Use GET.' }));
+          return;
+        }
+        response.writeHead(200, securityHeaders());
+        response.end(JSON.stringify({ status: 'ok' }));
+        return;
+      }
       if (requestPath !== path) {
         response.writeHead(404, securityHeaders());
         response.end(JSON.stringify({ state: 'blocked', summary: 'Not found.' }));

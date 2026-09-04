@@ -37,6 +37,7 @@ import {
 } from './src/relay/relayCredential.mjs';
 import {
   authenticatePrincipal,
+  createContainerAppsEntraAuthenticator,
   createDenyAllAuthenticator,
   createSharedSecretAuthenticator,
 } from './src/relay/principalAuth.mjs';
@@ -101,11 +102,14 @@ export function buildRelayConfig(env = process.env) {
         });
 
   const executeToken = env.CITADEL_PLAYGROUND_EXECUTE_TOKEN ?? '';
+  const trustedEntraProxy = env.CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED === 'true';
   // Fail closed: a non-loopback bind with nothing configured refuses every
   // `/api/execute` caller rather than accepting them all.
-  const authenticator = executeToken
-    ? createSharedSecretAuthenticator({ token: executeToken })
-    : createDenyAllAuthenticator();
+  const authenticator = trustedEntraProxy
+    ? createContainerAppsEntraAuthenticator({ tenantId: env.CITADEL_PLAYGROUND_ENTRA_TENANT_ID ?? '' })
+    : executeToken
+      ? createSharedSecretAuthenticator({ token: executeToken })
+      : createDenyAllAuthenticator();
 
   // Fixed, operator-configured identity this proxy presents to the relay's
   // OWN tenant-policy check — see the doc comment above. Never blank: a
