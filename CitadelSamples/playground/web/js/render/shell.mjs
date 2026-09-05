@@ -451,6 +451,7 @@ export function renderShell({
   onDirectoryToggle,
   onRecipeSelect,
   onDirectoryQuery,
+  onDirectoryGroupChange,
   onStageChange,
   onOpenProvenance,
   onOpenDiagnostics,
@@ -473,6 +474,12 @@ export function renderShell({
   const ownerDocument = container.ownerDocument ?? globalThis.document;
   const priorActive = ownerDocument?.activeElement ?? null;
   const priorDirectoryFocused = priorActive?.closest?.(`#${DOSSIER_IDS.recipeDrawer}`) != null;
+  const priorDirectory = container.querySelector(`#${DOSSIER_IDS.recipeDirectory}`);
+  const priorListScroll = priorDirectory?.querySelector('.recipe-directory-groups')?.scrollTop ?? 0;
+  const priorDirectoryOpen = container.querySelector(`#${DOSSIER_IDS.recipeDrawer}`)?.dataset.open === 'true';
+  const recipeChanged = priorDirectory?.dataset.recipeId !== recipe.id;
+  const queryChanged = priorDirectory?.dataset.query !== (model.directory?.query ?? '');
+  const revealSelected = directoryOpen && (!priorDirectoryOpen || recipeChanged);
   const priorSearchSelection = priorActive?.id === 'recipe-directory-search'
     && typeof priorActive.selectionStart === 'number'
     ? { start: priorActive.selectionStart, end: priorActive.selectionEnd }
@@ -686,17 +693,39 @@ export function renderShell({
     model: model.directory,
     onSelect: onRecipeSelect,
     onQuery: onDirectoryQuery,
+    onGroupChange: onDirectoryGroupChange,
     onClose: () => onDirectoryToggle?.(false),
   });
 
-  if (directoryOpen) {
+  directory.dataset.recipeId = recipe.id ?? '';
+  const list = directory.querySelector('.recipe-directory-groups');
+  if (list && !revealSelected && !queryChanged) list.scrollTop = priorListScroll;
+
+  if (directoryOpen && (!priorDirectoryOpen || priorDirectoryFocused)) {
     const search = directory.querySelector('#recipe-directory-search');
-    search?.focus();
+    const previous = priorActive?.id ? ownerDocument.getElementById(priorActive.id) : null;
+    const target = previous && directory.contains(previous)
+      && (previous.tagName === 'SUMMARY' || !previous.closest('details:not([open])'))
+      ? previous
+      : search;
+    target?.focus({ preventScroll: true });
     if (search && priorSearchSelection) {
       search.setSelectionRange(priorSearchSelection.start, priorSearchSelection.end);
     }
-  } else if (priorDirectoryFocused) {
+  } else if (!directoryOpen && priorDirectoryFocused) {
     root.querySelector('.dossier-directory-toggle')?.focus();
+  }
+
+  if (revealSelected) {
+    requestAnimationFrame(() => {
+      if (!list?.isConnected) return;
+      const selected = directory.querySelector('[aria-current="page"]');
+      if (!selected || selected.closest('details:not([open])')) return;
+      const bounds = list.getBoundingClientRect();
+      const row = selected.getBoundingClientRect();
+      if (row.bottom > bounds.bottom) list.scrollTop += row.bottom - bounds.bottom;
+      else if (row.top < bounds.top) list.scrollTop -= bounds.top - row.top;
+    });
   }
 
   return Object.freeze({ root, dossier, actions, directory, drawer });

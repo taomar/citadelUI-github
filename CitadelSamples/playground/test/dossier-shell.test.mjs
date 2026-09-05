@@ -306,6 +306,14 @@ test('the renderer source enforces the dossier shell constraints', async () => {
   assert.match(directory, /data-dependencies/);
   assert.match(directory, /name: 'recipe-search'/);
   assert.match(directory, /autocomplete: 'off'/);
+  assert.match(directory, /el\('details'/);
+  assert.match(directory, /el\('summary'/);
+  assert.match(directory, /name: searching \? undefined : 'recipe-navigation'/);
+  assert.match(directory, /onGroupChange/);
+  assert.match(directory, /text: 'Clear search'/);
+  assert.doesNotMatch(directory, /class: 'recipe-directory-(?:states|meta|group-summary)'/);
+  assert.match(shell, /priorListScroll/);
+  assert.match(shell, /revealSelected/);
   assert.match(directory, /export function renderSampleSelect/);
   assert.doesNotMatch(shell, /renderSampleSelect/);
 

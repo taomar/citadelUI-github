@@ -8,12 +8,27 @@ import {
   dossierScreenshotName,
   fieldContractIssues,
   nonLoopbackRequestIssues,
+  navigationContractIssues,
   viewportContractIssues,
   wizardStepIssues,
 } from '../scripts/dossier-browser-acceptance.mjs';
 
 const RESPONSIVE_CSS = new URL('../web/css/responsive.css', import.meta.url);
 const css = await readFile(RESPONSIVE_CSS, 'utf8');
+
+test('navigation evidence rejects a report-like, clipped or inaccessible directory', () => {
+  const compact = {
+    overflow: false, searchVisible: true, headerVisible: true, closeVisible: true,
+    scrollOwners: 1, visibleGroups: 7, minimumTarget: 44, minimumFont: 14, metadataRows: 0,
+  };
+  assert.deepEqual(navigationContractIssues(compact, { desktop: true }), []);
+  assert.deepEqual(navigationContractIssues(compact), []);
+  assert.equal(navigationContractIssues({
+    ...compact, visibleGroups: 3, metadataRows: 19, scrollOwners: 2, searchVisible: false,
+  }, { desktop: true }).length, 4);
+  assert.equal(navigationContractIssues({ ...compact, minimumTarget: 40 }).length, 1);
+  assert.equal(navigationContractIssues({ ...compact, minimumFont: 12 }).length, 1);
+});
 
 test('dossier acceptance scenarios and screenshot names are deterministic', () => {
   assert.deepEqual(

@@ -580,24 +580,19 @@ code.execution-context-value {
 .recipe-directory {
   height: 100%;
   min-height: 0;
-  overflow: hidden auto;
-  overscroll-behavior: contain;
+  overflow: hidden;
   border-right: 1px solid var(--rule-strong, #b3c3d2);
   background: var(--band, #f6f9fc);
 }
 
 .recipe-directory-header,
-.recipe-directory-heading,
-.recipe-directory-group-heading {
+.recipe-directory-heading {
   display: flex;
   align-items: center;
   gap: var(--sp-3, 0.25rem);
 }
 
 .recipe-directory-header {
-  position: sticky;
-  top: 0;
-  z-index: 2;
   justify-content: space-between;
   min-height: 2.75rem;
   padding: var(--sp-4, 0.5rem) var(--sp-5, 0.75rem);
@@ -641,29 +636,56 @@ code.execution-context-value {
   border-top: 1px solid var(--rule, #d8e2ec);
 }
 
-.recipe-directory-group-heading {
-  justify-content: space-between;
-  padding: var(--sp-4, 0.5rem) var(--sp-5, 0.75rem) 0;
+.recipe-directory-groups {
+  min-height: 0;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  scroll-padding-block: var(--sp-3);
+  scrollbar-width: thin;
 }
 
-.recipe-directory-group-summary {
-  padding: var(--sp-2, 0.25rem) var(--sp-5, 0.75rem) var(--sp-4, 0.5rem);
-  color: var(--ink-3, #526171);
-  font-size: var(--t-micro, 0.6875rem);
+.recipe-directory-group-heading {
+  min-height: var(--dossier-control-size, 2.5rem);
+  padding: var(--sp-4, 0.5rem) var(--sp-5, 0.75rem);
+  list-style-position: inside;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.recipe-directory-group-heading h3 {
+  display: inline;
+  font-size: var(--t-body);
+}
+
+.recipe-directory-group-count {
+  float: right;
+  margin-inline-start: var(--sp-3);
+}
+
+.recipe-directory-group-heading:hover {
+  background: var(--well);
+}
+
+.recipe-directory-group[data-current-group='true']:not([open]) > summary {
+  color: var(--brand);
+  background: var(--brand-wash);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
 }
 
 .recipe-directory-list {
   margin: 0;
-  padding: 0 0 var(--sp-4, 0.5rem);
+  padding: 0;
   list-style: none;
 }
 
 .recipe-directory-item {
   position: relative;
   display: grid;
-  gap: var(--sp-2, 0.25rem);
+  align-items: center;
   width: 100%;
-  padding: var(--sp-4, 0.5rem) var(--sp-5, 0.75rem);
+  min-height: var(--dossier-control-size, 2.5rem);
+  padding: var(--sp-4, 0.5rem) var(--sp-5, 0.75rem) var(--sp-4, 0.5rem) var(--sp-7, 1.5rem);
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -671,6 +693,7 @@ code.execution-context-value {
   font: inherit;
   text-align: left;
   cursor: pointer;
+  overflow-wrap: anywhere;
 }
 
 .recipe-directory-item:hover {
@@ -695,24 +718,11 @@ code.execution-context-value {
 }
 
 .recipe-directory-title {
+  font-weight: 400;
+}
+
+.recipe-directory-item[aria-current='page'] .recipe-directory-title {
   font-weight: 600;
-}
-
-.recipe-directory-summary {
-  display: -webkit-box;
-  overflow: hidden;
-  color: var(--ink-3, #526171);
-  font-size: var(--t-micro, 0.6875rem);
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.recipe-directory-states,
-.recipe-directory-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3, 0.25rem);
-  flex-wrap: wrap;
 }
 
 .recipe-state {
@@ -745,12 +755,6 @@ code.execution-context-value {
   color: var(--warning, #8a3707);
 }
 
-.recipe-directory-meta {
-  color: var(--ink-3, #526171);
-  font-family: var(--mono, 'Cascadia Mono', Consolas, monospace);
-  font-size: var(--t-micro, 0.6875rem);
-}
-
 .recipe-risk[data-risk='state-changing'],
 .recipe-risk[data-risk='load-generating'] {
   color: var(--warning, #8a3707);
@@ -764,6 +768,10 @@ code.execution-context-value {
   padding: var(--sp-6, 1rem) var(--sp-5, 0.75rem);
   color: var(--ink-3, #526171);
   font-size: var(--t-small, 0.78125rem);
+}
+
+.recipe-directory-empty button {
+  margin-block-start: var(--sp-4);
 }
 
 .dossier-content {

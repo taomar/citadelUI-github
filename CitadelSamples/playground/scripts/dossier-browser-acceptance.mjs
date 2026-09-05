@@ -485,7 +485,7 @@ async function installTestExecutor(harness) {
   await settle(harness);
 }
 
-async function navigateToRecipe(harness, recipeId, stepId = 'account-target') {
+async function navigateToRecipe(harness, recipeId, stepId = 'account-target', { previewOnly = false } = {}) {
   await harness.evaluate("globalThis.__dossierNavigationMarker = 'pending'");
   const url = new URL(harness.baseUrl);
   url.searchParams.set('testExecutor', '');
@@ -497,7 +497,7 @@ async function navigateToRecipe(harness, recipeId, stepId = 'account-target') {
     { timeoutMs: 30_000, label: `${recipeId} document navigation` },
   );
   await waitForWizard(harness, recipeId);
-  await installTestExecutor(harness);
+  if (!previewOnly) await installTestExecutor(harness);
 }
 
 async function malformedWizardUrlSnapshot(harness) {
@@ -720,7 +720,8 @@ async function viewportSnapshot(harness) {
     const main = document.getElementById('run-dossier');
     const mainStyle = main ? getComputedStyle(main) : null;
     const bodyStyle = getComputedStyle(document.body);
-    const directoryStyle = directory ? getComputedStyle(directory) : null;
+    const directoryList = directory?.querySelector('.recipe-directory-groups');
+    const directoryStyle = directoryList ? getComputedStyle(directoryList) : null;
     const controls = [...document.querySelectorAll(
       '#dossier-shell button:not([disabled]), #dossier-shell input:not([disabled]), #dossier-shell select:not([disabled]), #dossier-shell textarea:not([disabled]), #dossier-shell summary'
     )].filter(visible);
@@ -776,8 +777,8 @@ async function viewportSnapshot(harness) {
       mainHorizontalOverflow: Boolean(main) && main.scrollWidth > main.clientWidth + 1,
       bodyOverflowY: bodyStyle.overflowY,
       directoryOverflowY: directoryStyle?.overflowY ?? '',
-      directoryClientHeight: directory?.clientHeight ?? 0,
-      directoryScrollHeight: directory?.scrollHeight ?? 0,
+      directoryClientHeight: directoryList?.clientHeight ?? 0,
+      directoryScrollHeight: directoryList?.scrollHeight ?? 0,
       nestedFormScrollers,
       visibleStepContents: [...document.querySelectorAll('.wizard-step-content')].filter(visible).length,
       directoryVisible: visible(directory),
@@ -1292,14 +1293,9 @@ async function crossRecipeHistorySnapshot(harness) {
   await navigateToRecipe(harness, 'publish-assets');
   await preparePublishReview(harness);
   const reviewHref = await harness.evaluate('location.href');
-  await harness.evaluate(`(() => {
-    window.confirm = () => true;
-    const item = document.querySelector(
-      '.recipe-directory-item[data-recipe-id="weather-mcp-discovery"]'
-    );
-    item?.click();
-    return Boolean(item);
-  })()`);
+  await harness.evaluate('window.confirm = () => true');
+  await navigationGroup(harness, 'exercise');
+  await navigationPointer(harness, '[data-recipe-id="weather-mcp-discovery"]', { scroll: true });
   await harness.waitFor(
     "document.querySelector('.dossier-current-id')?.textContent === 'weather-mcp-discovery' && new URL(location.href).searchParams.get('recipe') === 'weather-mcp-discovery'",
     { label: 'gateway recipe before history restoration' },
@@ -1674,11 +1670,12 @@ async function activeRunIsolationSnapshot(harness) {
     step: document.querySelector('[data-wizard-step]')?.dataset.wizardStep,
     actionText: document.getElementById('wizard-action-bar')?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
   }))()`);
-  await harness.evaluate(`(() => {
-    document.querySelector('.recipe-directory-item[data-recipe-id="weather-mcp-discovery"]')?.click();
-    history.back();
-    return true;
-  })()`);
+  await navigationGroup(harness, 'exercise');
+  await navigationPointer(harness, '[data-recipe-id="weather-mcp-discovery"]', { scroll: true });
+  if (await harness.evaluate("document.querySelector('#recipe-drawer').getAttribute('aria-modal') === 'true'")) {
+    await navigationPointer(harness, '.recipe-directory-close');
+  }
+  await harness.evaluate('history.back()');
   await harness.evaluate('new Promise((resolve) => setTimeout(resolve, 150))');
   const during = await harness.evaluate(`(() => ({
     recipeId: document.querySelector('.dossier-current-id')?.textContent ?? '',
@@ -2233,7 +2230,293 @@ async function checkHostedRelayReadiness(reporter) {
   }
 }
 
+export function navigationContractIssues(snapshot, { desktop = false } = {}) {
+  const issues = [];
+  if (snapshot.overflow) issues.push('the page overflows horizontally');
+  if (!snapshot.searchVisible || !snapshot.headerVisible) issues.push('navigation chrome is not reachable');
+  if (!desktop && !snapshot.closeVisible) issues.push('picker close is not reachable');
+  if (snapshot.scrollOwners !== 1) issues.push('navigation must have one scroll owner');
+  if (desktop && snapshot.visibleGroups !== 7) issues.push('not all seven group headings are visible');
+  if (snapshot.minimumTarget < (desktop ? 40 : 44) - 0.5) issues.push('navigation targets are too short');
+  if (snapshot.minimumFont < 14) issues.push('recipe names were shrunk');
+  if (snapshot.metadataRows !== 0) issues.push('report metadata remains in the navigator');
+  return issues;
+}
+
+async function navigationKey(harness, key, windowsVirtualKeyCode, modifiers = 0) {
+  const text = key === 'Enter' ? '\r' : key === ' ' ? ' ' : undefined;
+  for (const type of ['keyDown', 'keyUp']) {
+    await harness.page.send('Input.dispatchKeyEvent', {
+      type, key, windowsVirtualKeyCode, modifiers,
+      ...(type === 'keyDown' && text ? { text, unmodifiedText: text } : {}),
+    });
+  }
+  await settle(harness);
+}
+
+async function navigationPointer(harness, selector, { scroll = false } = {}) {
+  for (let attempt = 0; attempt < (scroll ? 12 : 1); attempt += 1) {
+    const point = await harness.evaluate(`(() => {
+      const n = document.querySelector(${JSON.stringify(selector)});
+      if (!n || n.closest('details:not([open])') && n.tagName !== 'SUMMARY') return null;
+      const r = n.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+      const list = n.closest('.recipe-directory-groups')?.getBoundingClientRect();
+      return {
+        x, y, visible: r.width > 0 && r.height > 0 && r.top >= (list?.top ?? 0) &&
+          r.bottom <= (list?.bottom ?? innerHeight) && n.contains(document.elementFromPoint(x, y)),
+        wheelY: list ? (list.top + list.bottom) / 2 : innerHeight / 2,
+        delta: r.top < (list?.top ?? 0) ? -160 : 160
+      };
+    })()`);
+    if (!point) throw new Error(`Navigation target is absent or collapsed: ${selector}`);
+    if (point.visible) {
+      for (const type of ['mousePressed', 'mouseReleased']) {
+        await harness.page.send('Input.dispatchMouseEvent', {
+          type, x: point.x, y: point.y, button: 'left', clickCount: 1,
+        });
+      }
+      await settle(harness);
+      return;
+    }
+    if (!scroll) break;
+    await harness.page.send('Input.dispatchMouseEvent', {
+      type: 'mouseWheel', x: point.x, y: point.wheelY, deltaX: 0, deltaY: point.delta,
+    });
+    await harness.evaluate('new Promise(resolve => setTimeout(resolve, 80))');
+  }
+  throw new Error(`Navigation target is not visibly clickable: ${selector}`);
+}
+
+async function navigationTabTo(harness, selector) {
+  for (let index = 0; index < 60; index += 1) {
+    if (await harness.evaluate(`document.activeElement?.matches(${JSON.stringify(selector)})`)) return;
+    await navigationKey(harness, 'Tab', 9);
+  }
+  throw new Error(`Keyboard did not reach ${selector}`);
+}
+
+async function navigationGroup(harness, group) {
+  await settle(harness);
+  const compact = await harness.evaluate('innerWidth < 1200');
+  if (compact && await harness.evaluate("document.querySelector('#recipe-drawer').dataset.open !== 'true'")) {
+    await navigationPointer(harness, '.dossier-directory-toggle');
+  }
+  if (!await harness.evaluate(`document.querySelector('#recipe-group-${group}').parentElement.open`)) {
+    await navigationPointer(harness, `#recipe-group-${group}`, { scroll: compact });
+  }
+}
+
+async function navigationSnapshot(harness) {
+  await settle(harness);
+  return harness.evaluate(`(() => {
+    const nav = document.querySelector('#recipe-directory');
+    const list = nav.querySelector('.recipe-directory-groups');
+    const rect = n => { const r = n.getBoundingClientRect(); return { top:r.top, bottom:r.bottom, height:r.height, width:r.width }; };
+    const visible = n => {
+      if (!n || n.closest('details:not([open])') && n.tagName !== 'SUMMARY') return false;
+      const r = n.getBoundingClientRect(), insideList = list.contains(n), b = (insideList ? list : nav).getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && r.top >= Math.max(0,b.top)-0.5 &&
+        r.bottom <= Math.min(innerHeight,b.bottom)+0.5 &&
+        n.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2));
+    };
+    const groups = [...nav.querySelectorAll('summary')].map(n => ({
+      title:n.querySelector('h3').textContent, ...rect(n), visible:visible(n), open:n.parentElement.open
+    }));
+    const rows = [...nav.querySelectorAll('.recipe-directory-item')].map(n => ({
+      id:n.dataset.recipeId, title:n.textContent, ...rect(n), visible:visible(n),
+      expanded:!n.closest('details:not([open])'), font:parseFloat(getComputedStyle(n).fontSize)
+    }));
+    const targets = [...nav.querySelectorAll('summary,button,input')].filter(visible);
+    return {
+      viewport:[innerWidth,innerHeight], directory:rect(nav),
+      list:{...rect(list),scrollTop:list.scrollTop,clientHeight:list.clientHeight,scrollHeight:list.scrollHeight},
+      groups,rows,visibleGroups:groups.filter(n=>n.visible).length,visibleRecipes:rows.filter(n=>n.visible).length,
+      minimumTarget:Math.min(...targets.map(n=>n.getBoundingClientRect().height)),
+      minimumFont:Math.min(...rows.map(n=>n.font)),
+      scrollOwners:[nav,...nav.querySelectorAll('*')].filter(n=>/auto|scroll/.test(getComputedStyle(n).overflowY)).length,
+      searchVisible:visible(nav.querySelector('input')),headerVisible:visible(nav.querySelector('.recipe-directory-header')),
+      closeVisible:visible(nav.querySelector('.recipe-directory-close')),
+      selectedVisible:visible(nav.querySelector('[aria-current="page"]')),
+      metadataRows:nav.querySelectorAll('.recipe-directory-states,.recipe-directory-meta,.recipe-directory-group-summary').length,
+      overflow:Math.max(document.documentElement.scrollWidth,document.body.scrollWidth)>innerWidth,
+      focus:document.activeElement?.id,openGroups:[...nav.querySelectorAll('details[open]')].map(n=>n.dataset.groupId)
+    };
+  })()`);
+}
+
+async function runNavigationAcceptance() {
+  const reporter = createCheckReporter({ name: 'recipe navigation acceptance' });
+  const output = resolve(argumentValue('--artifacts') ?? resolve(ARTIFACT_DIRECTORY, 'navigation'));
+  await mkdir(output, { recursive: true });
+  const harness = await launchBrowserHarness({
+    browserPath: argumentValue('--chrome'),
+    createServer: (options) => createPlaygroundServer({
+      ...options, host: '127.0.0.1', mode: 'preview', publicOrigin: null, relay: { enabled: false },
+    }),
+  });
+  const snapshots = [];
+  let guard;
+  const record = async (label) => {
+    const snapshot = await navigationSnapshot(harness);
+    snapshots.push({ label, ...snapshot });
+    const { data } = await harness.page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    await writeFile(resolve(output, `after-${label}.png`), Buffer.from(data, 'base64'));
+    return snapshot;
+  };
+  const openPicker = async () => {
+    if (await harness.evaluate("innerWidth < 1200 && document.querySelector('#recipe-drawer').dataset.open !== 'true'")) {
+      await navigationPointer(harness, '.dossier-directory-toggle');
+    }
+  };
+  const choose = async (group, recipe, scroll = false) => {
+    await openPicker();
+    if (!await harness.evaluate(`document.querySelector('#recipe-group-${group}').parentElement.open`)) {
+      await navigationPointer(harness, `#recipe-group-${group}`, { scroll });
+    }
+    await navigationPointer(harness, `[data-recipe-id="${recipe}"]`, { scroll });
+    await harness.waitFor(`new URL(location.href).searchParams.get('recipe') === '${recipe}'`);
+    await settle(harness);
+  };
+  try {
+    await waitForWizard(harness, 'azure-context-check');
+    guard = await installRequestGuard(harness);
+    for (const viewport of [
+      { width: 1440, height: 900 },
+      { width: 660, height: 800 },
+      { width: 390, height: 844, mobile: true },
+      { width: 320, height: 480, mobile: true },
+    ]) {
+      await harness.setViewport(viewport);
+      await navigateToRecipe(harness, 'azure-context-check', 'account-target', { previewOnly: true });
+      await openPicker();
+      const desktop = viewport.width === 1440;
+      const label = `${viewport.width}x${viewport.height}`;
+      reportIssues(reporter, `${label}: compact initial navigation`, navigationContractIssues(await record(label), { desktop }));
+      for (const [group, recipe] of [['exercise', 'weather-tools-call'], ['publish-grant', 'publish-assets'], ['lifecycle', 'cleanup']]) {
+        await choose(group, recipe, !desktop);
+        await openPicker();
+        const selected = await navigationSnapshot(harness);
+        reporter.check(`${label}: ${recipe} visibly selected`, selected.selectedVisible, JSON.stringify(selected));
+        reportIssues(reporter, `${label}: ${recipe} navigation geometry`, navigationContractIssues(selected, { desktop }));
+        if (recipe === 'weather-tools-call' || desktop) await record(`${label}-${recipe}`);
+      }
+      if (!desktop) {
+        await navigationKey(harness, 'Escape', 27);
+        reporter.check(`${label}: Escape returns focus to browse`, await harness.evaluate("document.activeElement?.classList.contains('dossier-directory-toggle')"));
+        await openPicker();
+        for (let index = 0; index < 20; index += 1) {
+          await navigationKey(harness, 'Tab', 9);
+          reporter.check(`${label}: Tab stays in picker ${index + 1}`, await harness.evaluate("document.querySelector('#recipe-drawer').contains(document.activeElement)"));
+        }
+        await navigationTabTo(harness, '.recipe-directory-close');
+        await navigationKey(harness, 'Tab', 9, 8);
+        reporter.check(`${label}: Shift+Tab wraps inside picker`, await harness.evaluate("document.querySelector('#recipe-drawer').contains(document.activeElement) && !document.activeElement.matches('.recipe-directory-close')"));
+        await navigationPointer(harness, '.recipe-directory-close');
+        reporter.check(`${label}: close returns focus to browse`, await harness.evaluate("document.activeElement?.classList.contains('dossier-directory-toggle')"));
+      }
+    }
+    await harness.setViewport({ width: 1440, height: 900 });
+    await navigateToRecipe(harness, 'cleanup', 'account-target', { previewOnly: true });
+    await navigationPointer(harness, '#recipe-group-prepare');
+    reporter.check('collapsed current group still identifies Cleanup', await harness.evaluate(`(() => {
+      const group = document.querySelector('[data-current-group="true"]');
+      return group?.dataset.groupId === 'lifecycle' && !group.open &&
+        group.querySelector('summary').getAttribute('aria-describedby') &&
+        group.querySelector('.visually-hidden').textContent.includes('Cleanup');
+    })()`));
+    await navigationPointer(harness, '#recipe-directory-search');
+    await harness.page.send('Input.insertText', { text: 'weat' });
+    await settle(harness);
+    await harness.page.send('Input.insertText', { text: 'her' });
+    await settle(harness);
+    reporter.check('continued search typing keeps focus and caret', await harness.evaluate(`(() => {
+      const n=document.activeElement;return n?.id==='recipe-directory-search' && n.value==='weather' && n.selectionStart===7;
+    })()`));
+    reporter.check('search opens matching recipes across collapsed groups', await harness.evaluate(`(() => {
+      const n=document.querySelector('[data-recipe-id="weather-tools-call"]');
+      return n && !n.closest('details:not([open])') && document.querySelectorAll('.recipe-directory-group[open]').length > 1;
+    })()`));
+    await navigationKey(harness, 'ArrowLeft', 37);
+    await navigationKey(harness, 'ArrowLeft', 37);
+    await harness.page.send('Input.insertText', { text: 'x' });
+    await settle(harness);
+    reporter.check('mid-string search editing retains caret and offers recovery', await harness.evaluate(`(() => {
+      const n=document.activeElement;return n?.value==='weathxer' && n.selectionStart===6 &&
+        document.querySelector('.recipe-directory-empty button')?.textContent==='Clear search';
+    })()`));
+    await navigationPointer(harness, '.recipe-directory-empty button');
+    reporter.check('clear restores browse group without stealing search focus', await harness.evaluate(`(() => {
+      const n=document.activeElement;return n?.id==='recipe-directory-search' && n.value==='' && n.selectionStart===0 &&
+        document.querySelector('.recipe-directory-group[open]')?.dataset.groupId==='prepare';
+    })()`));
+    for (const [group, recipe] of [['exercise', 'weather-tools-call'], ['publish-grant', 'publish-assets'], ['lifecycle', 'cleanup']]) {
+      await navigationTabTo(harness, `#recipe-group-${group}`);
+      await navigationKey(harness, 'Enter', 13);
+      await navigationTabTo(harness, `[data-recipe-id="${recipe}"]`);
+      await navigationKey(harness, 'Enter', 13);
+      await harness.waitFor(`new URL(location.href).searchParams.get('recipe') === '${recipe}'`);
+      reporter.check(`keyboard selects ${recipe}`, (await navigationSnapshot(harness)).selectedVisible);
+    }
+    await navigationPointer(harness, '#recipe-group-lifecycle');
+    reporter.equal('all groups can be collapsed', (await navigationSnapshot(harness)).openGroups.length, 0);
+    await harness.evaluate("globalThis.__citadelTestHooks.installContext(null, 'unavailable')");
+    await settle(harness);
+    reporter.check('a background render retains focus on a collapsed group heading', await harness.evaluate("document.activeElement?.id === 'recipe-group-lifecycle' && !document.activeElement.parentElement.open"));
+    await navigationKey(harness, ' ', 32);
+    reporter.equal('Space reopens a native group', (await navigationSnapshot(harness)).openGroups[0], 'lifecycle');
+    for (const [query, recipe] of [['weather tools/call', 'weather-tools-call'], ['publish assets', 'publish-assets'], ['cleanup', 'cleanup']]) {
+      await navigationPointer(harness, '#recipe-directory-search');
+      await harness.page.send('Input.insertText', { text: query });
+      await settle(harness);
+      await navigationPointer(harness, `[data-recipe-id="${recipe}"]`);
+      await harness.waitFor(`new URL(location.href).searchParams.get('recipe') === '${recipe}'`);
+      reporter.check(`search selects ${recipe} and clears query`, await harness.evaluate("document.querySelector('#recipe-directory-search').value === ''"));
+    }
+    await harness.setViewport({ width: 660, height: 800 });
+    await settle(harness);
+    await openPicker();
+    await navigationPointer(harness, '#recipe-group-exercise');
+    await harness.setViewport({ width: 700, height: 800 });
+    await settle(harness);
+    reporter.check('same-breakpoint resize preserves open picker and browse group', await harness.evaluate("document.querySelector('#recipe-drawer').dataset.open === 'true' && document.querySelector('[data-group-id=\"exercise\"]').open"));
+    await harness.setViewport({ width: 1440, height: 900 });
+    await settle(harness);
+    reporter.check('modal becomes a usable rail without inert workspace or lost browse group', await harness.evaluate("!document.querySelector('#recipe-drawer').hasAttribute('aria-modal') && !document.querySelector('#run-dossier').hasAttribute('inert') && document.querySelector('[data-group-id=\"exercise\"]').open"));
+
+    await navigateToRecipe(harness, 'azure-context-check', 'account-target', { previewOnly: true });
+    await navigationPointer(harness, '#f-hub-subscriptionId');
+    await harness.page.send('Input.insertText', { text: 'draft-subscription' });
+    await navigationKey(harness, 'Tab', 9);
+    let dialogCount = 0;
+    const removeDialog = harness.page.on('Page.javascriptDialogOpening', () => {
+      dialogCount += 1;
+      void harness.page.send('Page.handleJavaScriptDialog', { accept: false });
+    });
+    await navigationPointer(harness, '#recipe-group-publish-grant');
+    await navigationPointer(harness, '[data-recipe-id="publish-assets"]');
+    reporter.check('dirty-input cancellation preserves recipe, URL and draft', dialogCount === 1 && await harness.evaluate("new URL(location.href).searchParams.get('recipe') === 'azure-context-check' && document.querySelector('#f-hub-subscriptionId').value === 'draft-subscription'"));
+    removeDialog();
+    await harness.evaluate("window.confirm = () => true");
+    await choose('publish-grant', 'publish-assets');
+    reporter.check('accepted dirty navigation selects the new recipe', (await navigationSnapshot(harness)).selectedVisible);
+    const history = await crossRecipeHistorySnapshot(harness);
+    reporter.check('history restores recipe, wizard position and expanded group', history.href === history.expectedHref && await harness.evaluate("document.querySelector('[data-group-id=\"publish-grant\"]').open"));
+    await harness.setViewport({ width: 390, height: 844, mobile: true });
+    await settle(harness);
+    const activeRun = await activeRunIsolationSnapshot(harness);
+    reporter.check('active run blocks pointer and history navigation and cancels once', activeRun.recipeId === 'publish-assets' && activeRun.step === 'run-result' && activeRun.recipeDisabled && activeRun.cancelCalls === 1 && !activeRun.foreignProgressVisible, JSON.stringify(activeRun));
+    reportIssues(reporter, 'navigation attempted no live request', nonLoopbackRequestIssues(guard.requests, harness.baseUrl));
+    reporter.check('navigation has no browser errors', harness.pageErrors.length === 0, harness.pageErrors.join('; '));
+  } finally {
+    await writeFile(resolve(output, 'navigation-after.json'), JSON.stringify({ snapshots, checks: reporter.results }, null, 2));
+    await guard?.close();
+    await harness.close();
+  }
+  if (!reporter.finish().ok) process.exitCode = 1;
+}
+
 async function main() {
+  if (process.argv.includes('--navigation-only')) return runNavigationAcceptance();
   const reporter = createCheckReporter({ name: 'wizard browser acceptance' });
   await prepareArtifacts();
   const harness = await launchBrowserHarness({

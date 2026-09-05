@@ -2,17 +2,6 @@
 
 import { el, replace } from './dom.mjs';
 
-const STATE_TONES = Object.freeze({
-  ready: 'success',
-  complete: 'success',
-  blocked: 'warning',
-  missing: 'warning',
-  'needs-input': 'warning',
-  unknown: 'neutral',
-  pending: 'neutral',
-  'not-checked': 'neutral',
-});
-
 function statusDescriptor(value, fallback) {
   if (typeof value === 'string') {
     return { state: value, label: value.replaceAll('-', ' ') };
@@ -61,16 +50,6 @@ export function directoryDependencyStatus(sample) {
   });
 }
 
-function statusChip(descriptor, className) {
-  const tone = STATE_TONES[descriptor.state] ?? 'neutral';
-  return el('span', {
-    class: `recipe-state ${className}`,
-    'data-state': descriptor.state,
-    'data-tone': tone,
-    text: descriptor.label,
-  });
-}
-
 function renderSample(sample, onSelect) {
   const readiness = readinessFor(sample);
   const dependencies = directoryDependencyStatus(sample);
@@ -81,6 +60,7 @@ function renderSample(sample, onSelect) {
       'button',
       {
         type: 'button',
+        id: `recipe-link-${sample.id}`,
         class: 'recipe-directory-item',
         'aria-current': sample.selected ? 'page' : undefined,
         'data-recipe-id': sample.id,
@@ -92,28 +72,6 @@ function renderSample(sample, onSelect) {
       },
       [
         el('span', { class: 'recipe-directory-title', text: sample.title }),
-        el('span', { class: 'recipe-directory-states' }, [
-          recommendedNext
-            ? el('span', {
-                class: 'recipe-state recipe-state-recommended',
-                'data-tone': 'brand',
-                text: 'Recommended next',
-              })
-            : null,
-          statusChip(readiness, 'recipe-state-readiness'),
-          dependencies.state === 'missing'
-            ? statusChip(dependencies, 'recipe-state-dependencies')
-            : null,
-        ]),
-        el('span', { class: 'recipe-directory-meta' }, [
-          sample.risk?.label
-            ? el('span', {
-                class: 'recipe-risk',
-                'data-risk': sample.riskLevel ?? 'unknown',
-                text: sample.risk.label,
-              })
-            : null,
-        ]),
       ],
     ),
   ]);
@@ -182,6 +140,7 @@ export function renderDirectory({
   onSelect,
   onQuery,
   onClose,
+  onGroupChange,
 } = {}) {
   if (!container) throw new TypeError('A recipe directory container is required.');
   if (countNode) return renderLegacyDirectory({ container, countNode, model, onSelect });
@@ -202,8 +161,13 @@ export function renderDirectory({
   const countLabel = total === catalogueTotal ? `${total}` : `${total}/${catalogueTotal}`;
   const headingId = 'recipe-directory-heading';
   const searchId = 'recipe-directory-search';
+  const searching = String(model.query ?? '').trim().length > 0;
+  const openGroupId = model.openGroupId === undefined
+    ? groups.find((group) => group.samples?.some((sample) => sample.selected))?.id
+    : model.openGroupId;
 
   container.setAttribute('aria-labelledby', headingId);
+  container.dataset.query = model.query ?? '';
   replace(container, [
     el('div', { class: 'recipe-directory-header' }, [
       el('div', { class: 'recipe-directory-heading' }, [
@@ -241,30 +205,52 @@ export function renderDirectory({
       }),
     ]),
     model.empty || groups.length === 0
-      ? el('p', {
-          class: 'recipe-directory-empty',
-          text: `No recipe matches "${model.query ?? ''}".`,
-        })
+      ? el('div', { class: 'recipe-directory-groups recipe-directory-empty' }, [
+          el('p', { role: 'status', text: `No recipe matches "${model.query ?? ''}".` }),
+          el('button', {
+            type: 'button',
+            text: 'Clear search',
+            onclick: () => {
+              onQuery?.('');
+              ownerDocument.getElementById(searchId)?.focus({ preventScroll: true });
+            },
+          }),
+        ])
       : el(
           'div',
           { class: 'recipe-directory-groups' },
           groups.map((group) => {
             const groupHeadingId = `recipe-group-${String(group.id).replace(/[^a-zA-Z0-9-]/g, '-')}`;
-            return el('section', {
+            const selected = group.samples?.find((sample) => sample.selected);
+            return el('details', {
               class: 'recipe-directory-group',
-              'aria-labelledby': groupHeadingId,
+              name: searching ? undefined : 'recipe-navigation',
+              open: searching || group.id === openGroupId,
+              'data-group-id': group.id,
+              'data-current-group': selected ? 'true' : undefined,
+              ontoggle: (event) => {
+                if (searching || !event.currentTarget.isConnected) return;
+                // Native exclusive disclosure events can arrive in either order.
+                onGroupChange?.(container.querySelector('.recipe-directory-group[open]')?.dataset.groupId ?? null);
+              },
             }, [
-              el('div', { class: 'recipe-directory-group-heading' }, [
-                el('h3', { id: groupHeadingId, text: group.title }),
+              el('summary', {
+                id: groupHeadingId,
+                class: 'recipe-directory-group-heading',
+                'aria-describedby': selected ? `${groupHeadingId}-current` : undefined,
+              }, [
+                el('h3', { text: group.title }),
                 el('span', {
                   class: 'recipe-directory-group-count',
                   'aria-label': `${group.samples?.length ?? 0} recipes`,
                   text: String(group.samples?.length ?? 0),
                 }),
+                selected ? el('span', {
+                  id: `${groupHeadingId}-current`,
+                  class: 'visually-hidden',
+                  text: `Current recipe: ${selected.title}`,
+                }) : null,
               ]),
-              group.summary
-                ? el('p', { class: 'recipe-directory-group-summary', text: group.summary })
-                : null,
               el(
                 'ul',
                 { class: 'recipe-directory-list' },

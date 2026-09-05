@@ -74,6 +74,7 @@ const state = {
   directoryOpen: window.innerWidth >= 1200,
   directoryModal: window.innerWidth < 1200,
   directoryQuery: '',
+  directoryGroupId: null,
   stage: 'configure',
   wizardStep: 'account-target',
   completedWizardSteps: new Set(),
@@ -818,6 +819,7 @@ function shellModel(models) {
     directoryModal: state.directoryModal,
     directory: {
       ...models.directory,
+      openGroupId: state.directoryGroupId,
       groups: models.directory.groups.map((group) => ({
         ...group,
         samples: group.samples.map((sample) => ({ ...sample, disabled: running })),
@@ -1268,9 +1270,13 @@ function render() {
     onIdentitySetActive: setActiveSubscription,
     onIdentityCancel: cancelSystemBrowserLogin,
     onIdentityTerminalFallback: openDiagnostics,
-    onDirectoryToggle() {
-      state.directoryOpen = !state.directoryOpen;
+    onDirectoryToggle(open) {
+      state.directoryOpen = open;
+      if (open) state.directoryGroupId = state.sample.group;
       render();
+    },
+    onDirectoryGroupChange(groupId) {
+      state.directoryGroupId = groupId;
     },
     onRecipeSelect(id) {
       selectRecipeFromUi(id);
@@ -1419,6 +1425,7 @@ function render() {
     requestAnimationFrame(() => {
       const target = document.getElementById(focusId);
       if (!target) return;
+      if (target.closest('#recipe-directory')) return;
       if (shell.dossier.contains(target)) focusWorkspaceTarget(target, { block: 'nearest' });
       else target.focus({ preventScroll: true });
     });
@@ -1635,6 +1642,7 @@ async function selectSample(id) {
   state.activeRunToken = null;
   state.contextFingerprint = null;
   state.directoryQuery = '';
+  state.directoryGroupId = sample.group;
   state.selectedSubscriptionId = '';
   state.destructiveArmed = false;
   state.lastRevealedRunId = null;

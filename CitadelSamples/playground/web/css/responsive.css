@@ -120,7 +120,8 @@ body {
 }
 
 #recipe-directory {
-  display: block;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-inline-size: 0;
   min-block-size: 0;
 }
