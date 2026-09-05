@@ -904,7 +904,7 @@ export const PYTHON_WRAPPERS = Object.freeze({
 
   'agent-framework-hr-question/ask-agent': {
     script: 'agent_framework_ask.py',
-    modules: ['httpx', 'nest_asyncio', 'a2a.client', 'agent_framework.a2a'],
+    modules: ['httpx', 'nest_asyncio', 'a2a.client.card_resolver', 'agent_framework.a2a'],
     summary: 'Resolve the published card and run one agent turn.',
     secretEnv: { CITADEL_GATEWAY_ACCESS_API_KEY: 'gatewayAccess.apiKey' },
     // The URL comes from the plan the SERVER rebuilt — the assertion step
@@ -919,7 +919,14 @@ export const PYTHON_WRAPPERS = Object.freeze({
     }),
     map: (data) => ({
       outputs: { answer: data?.answer ?? '', card: data?.card ?? null },
-      evidence: { answerLength: (data?.answer ?? '').length, cardName: data?.card?.name ?? '' },
+      evidence: {
+        answerLength: (data?.answer ?? '').length,
+        cardName: data?.card?.name ?? '',
+        transportUrls: data?.card?.transportUrls ?? [],
+        routeValidated: data?.route?.validated === true,
+        expectedOrigin: data?.route?.expectedOrigin ?? '',
+        expectedAgentPath: data?.route?.expectedAgentPath ?? '',
+      },
     }),
   },
 });

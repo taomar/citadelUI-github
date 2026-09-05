@@ -430,7 +430,7 @@ export const EXERCISE_SAMPLES = [
       'GET `{agent base}/.well-known/agent.json` with the contract key in the configured header.',
       'Confirm HTTP 2xx and a JSON body.',
       'Confirm the card carries a name and a description.',
-      'Confirm every transport URL in the card points at the gateway host, not at Foundry.',
+      'Confirm every transport URL in the card exactly matches the selected gateway origin and agent path.',
     ],
     prerequisites: [
       {
@@ -523,13 +523,13 @@ export const EXERCISE_SAMPLES = [
         id: 'transport-rewritten',
         title: 'Transport URLs point at the gateway',
         assertion:
-          'Every transport URL in the card resolves to the gateway host. A URL still pointing at `*.services.ai.azure.com` means a client would bypass the gateway.',
+          'Every transport URL in the card has the exact scheme, host, port and agent path selected for this gateway run.',
         evidence: 'The card`s `url` and any additional interface URLs.',
         whenNotRun: 'Not run — bypass risk is unverified.',
       },
     ],
     deviations: [
-      'The notebook records success from the status code alone and never inspects the card body. This recipe additionally checks the card shape and, importantly, that the transport URLs were rewritten to the gateway.',
+      'The notebook records success from the status code alone and never inspects the card body. This recipe additionally requires every transport URL to match the exact gateway origin and selected agent path.',
     ],
     notes: [
       'A browser can only make this call cross-origin when the gateway returns permissive CORS headers. The card path is a plain GET, so it is the most likely of these recipes to work from a browser, but it is still not assumed.',
@@ -571,7 +571,7 @@ export const EXERCISE_SAMPLES = [
           step.assertion({
             id: 'assert-card',
             title: 'Confirm the card and its transport URLs',
-            detail: 'A card still advertising Foundry transport URLs would let clients bypass the gateway.',
+            detail: 'Any alternate origin, port or path would let a client escape the selected gateway route.',
             assertion: {
               kind: 'a2a-card',
               source: '{{steps.get-card.card}}',
@@ -579,10 +579,11 @@ export const EXERCISE_SAMPLES = [
                 'HTTP status is 2xx.',
                 'The body parses as JSON.',
                 'The card carries `name` and `description`.',
-                `Every transport URL in the card starts with ${ctx.get('hub.gatewayUrl') || 'the gateway URL'}.`,
-                'No transport URL points at `*.services.ai.azure.com`.',
+                `Every transport URL has the exact origin and agent path of ${base || 'the selected gateway agent URL'}.`,
+                'Alternate hosts, ports, user information, fragments and encoded path forms fail.',
               ],
               endpoint: cardUrl,
+              expectedAgentUrl: base,
             },
             produces: ['cardOk'],
           }),
@@ -847,18 +848,18 @@ export const EXERCISE_SAMPLES = [
     shortTitle: 'Agent Framework question',
     summary: 'Resolve the published card with a real A2A client and ask an HR question through the gateway.',
     purpose:
-      'The previous recipes prove the protocol works. This one proves the asset is usable by an off-the-shelf client: Microsoft Agent Framework`s `A2AAgent` resolves the card, follows its transport URLs, and gets an answer — all through the gateway, presenting the contract key on every call.',
+      'The previous recipes prove the protocol works. This one proves the asset is usable by Microsoft Agent Framework without trusting card-selected destinations: the shipped wrapper validates the card, pins every request to the exact gateway agent route, and only then presents the contract key.',
     explanation: [
-      'The client is given the gateway`s agent base URL and an HTTP client pre-loaded with the api-key header. `A2ACardResolver` fetches `/.well-known/agent.json`, and `A2AAgent` then follows the transport URLs inside that card. Because the publish contract rewrote them to the gateway, every subsequent call also carries the key and is subject to the product policy.',
-      'That is exactly why the card-rewrite assertion in the agent-card recipe matters. If the card advertised Foundry directly, this client would resolve through the gateway and then talk to Foundry without a key — and it would still appear to work.',
+      'The client is given the server-derived gateway agent URL. A pinned HTTP transport fetches `/.well-known/agent.json`, rejects redirects, validates every advertised JSON-RPC interface against the exact scheme, host, port and agent path, and parses the card before constructing `A2AAgent`.',
+      'The contract key is not a default client header. The transport adds it immediately before transmission, after revalidating each GET or POST destination, so a malicious card cannot send the key to another origin or path.',
       'This is a Python step. It needs `agent-framework` and `agent-framework-a2a` at matching versions, plus `httpx`, the `a2a` client package and `nest_asyncio` to run an event loop inside a notebook. There is no browser equivalent, so the default executor reports this recipe as blocked rather than attempting it.',
     ],
     flow: [
-      'Create an HTTP client whose default headers include the contract key.',
-      'Resolve the agent card at `/.well-known/agent.json` relative to the gateway agent base.',
-      'Construct an `A2AAgent` from the resolved card.',
+      'Derive the approved gateway origin and exact agent path from the server-built agent URL.',
+      'Fetch the card without redirects through a transport that validates the card endpoint before adding the key.',
+      'Validate every advertised JSON-RPC URL, then schema-parse the card before constructing `A2AAgent`.',
       'Run the question and join the text of the returned messages.',
-      'Confirm the joined answer is non-empty.',
+      'Confirm the joined answer is non-empty and record the validated origin, path and transport URLs.',
     ],
     prerequisites: [
       {
@@ -871,8 +872,8 @@ export const EXERCISE_SAMPLES = [
       {
         id: 'card-rewritten',
         title: 'The card`s transport URLs point at the gateway',
-        detail: 'If they do not, this client silently bypasses the gateway and the result proves nothing about the contract.',
-        howTo: 'Run Exercise › A2A agent card first and check the transport-URL assertion.',
+        detail: 'Every interface must match the exact selected gateway origin and agent path; matching only the hostname is insufficient.',
+        howTo: 'Run Exercise › A2A agent card first and check the exact-route assertion.',
         links: [LINKS.foundryA2a],
       },
       {
@@ -951,7 +952,7 @@ export const EXERCISE_SAMPLES = [
       dependencies: ['python', 'gateway-network'],
       python: {
         packages: ['agent-framework', 'agent-framework-a2a', 'httpx', 'nest_asyncio'],
-        modules: ['httpx', 'nest_asyncio', 'a2a.client', 'agent_framework.a2a'],
+        modules: ['httpx', 'nest_asyncio', 'a2a.client.card_resolver', 'agent_framework.a2a'],
         install: 'pip install -U agent-framework agent-framework-a2a httpx nest_asyncio',
       },
       note: 'The only recipe here whose client library, rather than this playground, makes the gateway calls.',
@@ -964,13 +965,13 @@ export const EXERCISE_SAMPLES = [
     },
     sourceCells: [27, 28],
     sourceNote:
-      'Cell 28 uses `A2ACardResolver` and `A2AAgent` with an api-key-bearing httpx client, and records `results["hr-chat-agent-maf"]` from whether the answer is non-empty.',
+      'Cell 28 uses `A2ACardResolver` and `A2AAgent` with an api-key-bearing httpx client. The shipped wrapper deliberately replaces that unsafe global header with an exact-route transport gate before recording the answer.',
     expectedResults: [
       {
         id: 'card-resolved',
         title: 'The card resolves through the gateway',
-        assertion: '`A2ACardResolver.get_agent_card` succeeds against the gateway base with the api-key header set.',
-        evidence: 'The resolved card object.',
+        assertion: 'The card fetch does not redirect, every advertised JSON-RPC URL matches the exact gateway agent route, and the card schema parses before `A2AAgent` is constructed.',
+        evidence: 'The resolved card plus the validated expected origin, agent path and transport URLs.',
         whenNotRun: 'Not run — no Python runtime is attached.',
       },
       {
@@ -984,14 +985,15 @@ export const EXERCISE_SAMPLES = [
         id: 'through-gateway',
         title: 'Traffic went through the gateway',
         assertion:
-          'The transport URLs the client followed are gateway URLs, so the call was subject to the product policy and appears in `a2a-usage` telemetry.',
-        evidence: 'The card`s transport URLs, plus a matching increase in the A2A usage metric.',
+          'The transport gate allowed only the exact gateway origin and selected agent path, so the call was subject to the product policy and appears in `a2a-usage` telemetry.',
+        evidence: 'The exact expected origin and path, the validated card transport URLs, plus a matching increase in the A2A usage metric.',
         whenNotRun: 'Not run.',
       },
     ],
     deviations: [
       'The notebook catches every exception, prints an install hint and records a failure. This recipe reports the exception type and message rather than collapsing all causes into one.',
       'The notebook does not verify that the client actually traversed the gateway. This recipe states it as an expected result to be corroborated with the usage metric, and does not claim it from a successful answer alone.',
+      'The notebook installs the api-key as a global httpx header before trusting the fetched card. The shipped wrapper instead validates the card and injects the key only at a transport boundary pinned to the exact gateway route.',
     ],
     notes: [
       'This is a `library` step. The shipped executor cannot run Python, so this recipe reports `blocked` until an adapter that supports `library` steps is attached.',
@@ -1009,43 +1011,34 @@ export const EXERCISE_SAMPLES = [
       const apiKeyHeader = ctx.get('gatewayAccess.subscriptionKeyHeader');
       const timeout = ctx.self('timeoutSeconds');
       const code = [
-        'import asyncio, os',
-        'import httpx, nest_asyncio',
-        'from a2a.client import A2ACardResolver',
-        'from agent_framework.a2a import A2AAgent',
-        'nest_asyncio.apply()',
+        'import os',
         '',
         `agent_url = ${JSON.stringify(base)}`,
-        '# The key is read from the environment; it is never written into this snippet.',
+        `api_key_header = ${JSON.stringify(apiKeyHeader)}`,
+        '# The shipped runtime/python/agent_framework_ask.py wrapper validates the card',
+        '# and every outgoing URL before its transport adds this key to that request.',
         'api_key = os.environ["CITADEL_GATEWAY_ACCESS_API_KEY"]',
-        '',
-        'async def ask_hr_agent(question):',
-        `    async with httpx.AsyncClient(timeout=${timeout}.0, headers={${JSON.stringify(apiKeyHeader)}: api_key}) as http_client:`,
-        '        resolver = A2ACardResolver(httpx_client=http_client, base_url=agent_url)',
-        `        card = await resolver.get_agent_card(relative_card_path=${JSON.stringify('/.well-known/agent.json')})`,
-        '        agent = A2AAgent(name=card.name, description=card.description, agent_card=card, http_client=http_client)',
-        '        resp = await agent.run(question)',
-        '        return "\\n".join(getattr(m, "text", "") for m in resp.messages)',
-        '',
-        `answer = asyncio.run(ask_hr_agent(${JSON.stringify(ctx.self('question'))}))`,
-        'print(answer)',
+        `question = ${JSON.stringify(ctx.self('question'))}`,
+        `timeout_seconds = ${timeout}`,
+        '# The local executor invokes the registered shipped wrapper with these values;',
+        '# generated code is never executed and the key is never a default client header.',
       ].join('\n');
       return createExecutionPlan({
         sampleId: 'agent-framework-hr-question',
         title: 'Agent Framework: ask the HR agent',
-        summary: 'Resolve the published card with `A2ACardResolver` and answer a question with `A2AAgent`.',
+        summary: 'Validate the published card and answer a question with `A2AAgent` through a pinned transport.',
         risk: ctx.risk,
         sourceCells: [27, 28],
         steps: [
           step.library({
             id: 'ask-agent',
             title: 'Resolve the card and run the question',
-            detail: 'The api-key is supplied through the environment, so it never appears in the snippet or the preview.',
+            detail: 'The api-key is supplied through the environment and added only after each outgoing URL passes the wrapper`s exact-route validation.',
             library: {
               runtime: 'python>=3.10',
               packages: ['agent-framework', 'agent-framework-a2a', 'httpx', 'nest_asyncio'],
               install: 'pip install -U agent-framework agent-framework-a2a httpx nest_asyncio',
-              entry: 'A2ACardResolver.get_agent_card + A2AAgent.run',
+              entry: 'Pinned card fetch + validated A2AAgent.run',
               secretEnv: { CITADEL_GATEWAY_ACCESS_API_KEY: secretRef('gatewayAccess.apiKey') },
               code,
             },
@@ -1059,9 +1052,9 @@ export const EXERCISE_SAMPLES = [
               kind: 'non-empty',
               source: '{{steps.ask-agent.answer}}',
               expectations: [
-                'The card resolved from the gateway base URL.',
+                'The card resolved without redirects and every transport URL matched the exact gateway origin and agent path.',
                 'The joined answer text is non-empty after trimming.',
-                'The card`s transport URLs are gateway URLs, so the run is attributable to the contract.',
+                'The wrapper recorded the exact validated origin, path and transport URLs, so the run is attributable to the contract.',
                 'Corroborate with the `a2a-usage` metric rather than assuming the route from a successful answer.',
               ],
               endpoint: base,

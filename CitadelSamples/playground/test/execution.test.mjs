@@ -418,7 +418,8 @@ test('an HTTP 200 carrying a JSON-RPC error is a failure, not a pass', async () 
   assert.equal(result.state, 'failed');
 });
 
-test('an agent card still advertising a Foundry URL fails the gateway check', async () => {
+test('an agent card succeeds only when every transport exactly matches the selected gateway route', async () => {
+  const agentUrl = 'https://apim-citadel-test.azure-api.net/agent/hr-chat-agent';
   const fetch = fakeFetch([
     {
       match: () => true,
@@ -428,15 +429,53 @@ test('an agent card still advertising a Foundry URL fails the gateway check', as
         text: JSON.stringify({
           name: 'HR',
           description: 'HR agent',
-          url: 'https://aif-citadel-test.services.ai.azure.com/api/projects/p/agents/a',
+          supportedInterfaces: [{ url: agentUrl, protocolBinding: 'JSONRPC' }],
         }),
       },
     },
   ]);
   const { result } = await run('a2a-agent-card', { fetch });
   const assertion = result.assertions.find((entry) => entry.id === 'assert-card');
-  assert.equal(assertion.status, 'failed');
-  assert.match(assertion.detail, /bypass the gateway/);
+  assert.equal(assertion.status, 'passed');
+  assert.deepEqual(assertion.evidence, {
+    name: 'HR',
+    urls: [agentUrl],
+    expectedOrigin: 'https://apim-citadel-test.azure-api.net',
+    expectedPath: '/agent/hr-chat-agent',
+  });
+});
+
+test('agent-card evidence rejects any non-exact gateway origin or path, not only Foundry hosts', async () => {
+  const cases = [
+    ['alternate origin', 'https://attacker.example/collect'],
+    ['alternate port', 'https://apim-citadel-test.azure-api.net:444/agent/hr-chat-agent'],
+    ['userinfo', 'https://user@apim-citadel-test.azure-api.net/agent/hr-chat-agent'],
+    ['fragment', 'https://apim-citadel-test.azure-api.net/agent/hr-chat-agent#outside'],
+    ['encoded path', 'https://apim-citadel-test.azure-api.net/agent/%68r-chat-agent'],
+    ['dot segment', 'https://apim-citadel-test.azure-api.net/agent/./hr-chat-agent'],
+    ['disallowed path', 'https://apim-citadel-test.azure-api.net/agent/other-agent'],
+  ];
+
+  for (const [label, url] of cases) {
+    const fetch = fakeFetch([
+      {
+        match: () => true,
+        response: {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+          text: JSON.stringify({
+            name: 'HR',
+            description: 'HR agent',
+            supportedInterfaces: [{ url, protocolBinding: 'JSONRPC' }],
+          }),
+        },
+      },
+    ]);
+    const { result } = await run('a2a-agent-card', { fetch });
+    const assertion = result.assertions.find((entry) => entry.id === 'assert-card');
+    assert.equal(assertion.status, 'failed', label);
+    assert.match(assertion.detail, /exact gateway agent route/i, label);
+  }
 });
 
 test('the weather tool call asserts the unit branch rather than the randomised values', async () => {
@@ -1031,6 +1070,41 @@ test('endpoint-secret reads require a positive length without disclosing the val
   assert.deepEqual(entry.map('42'), {
     outputs: { endpointValue: '(present)' },
     evidence: { valueLength: 42 },
+  });
+});
+
+test('the Agent Framework registry binds the server-built route and preserves exact-route evidence', () => {
+  const { sample, plan } = planFor('agent-framework-hr-question');
+  const wrapper = resolvePythonWrapper(sample.id, plan.steps.find((step) => step.id === 'ask-agent'));
+  const params = wrapper.params({ inputs: inputsFor(sample), plan });
+  assert.deepEqual(params, {
+    agentUrl: 'https://apim-citadel-test.azure-api.net/agent/hr-chat-agent',
+    apiKeyHeader: 'api-key',
+    cardPath: '/.well-known/agent.json',
+    question: 'What is our leave policy?',
+    timeoutSeconds: 120,
+  });
+
+  const mapped = wrapper.map({
+    answer: 'Approved answer',
+    card: {
+      name: 'HR',
+      description: 'HR agent',
+      transportUrls: ['https://apim-citadel-test.azure-api.net/agent/hr-chat-agent'],
+    },
+    route: {
+      validated: true,
+      expectedOrigin: 'https://apim-citadel-test.azure-api.net',
+      expectedAgentPath: '/agent/hr-chat-agent',
+    },
+  });
+  assert.deepEqual(mapped.evidence, {
+    answerLength: 15,
+    cardName: 'HR',
+    transportUrls: ['https://apim-citadel-test.azure-api.net/agent/hr-chat-agent'],
+    routeValidated: true,
+    expectedOrigin: 'https://apim-citadel-test.azure-api.net',
+    expectedAgentPath: '/agent/hr-chat-agent',
   });
 });
 

@@ -277,6 +277,13 @@ test('golden: the weather tool call asserts the unit branch per city', () => {
   }
 });
 
+test('golden: A2A card assertions carry the exact server-built agent route', () => {
+  const plan = planFor('a2a-agent-card');
+  const assertion = plan.steps.find((step) => step.id === 'assert-card').assertion;
+  assert.equal(assertion.expectedAgentUrl, 'https://apim-citadel-test.azure-api.net/agent/hr-chat-agent');
+  assert.match(assertion.expectations.join(' '), /exact origin and agent path/);
+});
+
 test('golden: the burst plans carry a repeat descriptor sized from the policy limit', () => {
   const tool = planFor('tool-rate-limit-burst');
   const toolBurst = tool.steps.find((step) => step.id === 'burst');

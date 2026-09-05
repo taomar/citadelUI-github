@@ -209,14 +209,42 @@ const EVALUATORS = {
     const card = readSource(assertion.source, outputs);
     if (!card || typeof card !== 'object') return outcome(UNKNOWN, 'No agent card was captured.');
     if (!card.name || !card.description) return outcome(FAIL, 'The card is missing `name` or `description`.', { card });
-    const urls = collectUrls(card);
-    const leaking = urls.filter((url) => /\.services\.ai\.azure\.com/i.test(url));
-    if (leaking.length > 0) {
-      return outcome(FAIL, `The card still advertises ${leaking.length} Foundry transport URL(s), which would let clients bypass the gateway.`, {
-        offending: leaking,
+    const expected = parsePinnedAgentUrl(assertion.expectedAgentUrl);
+    if (!expected) {
+      return outcome(FAIL, 'The assertion has no valid expected gateway agent URL.');
+    }
+    const collected = collectTransportUrls(card);
+    if (collected.problems.length > 0) {
+      return outcome(FAIL, collected.problems.join(' '), { expectedOrigin: expected.origin, expectedPath: expected.pathname });
+    }
+    if (collected.urls.length === 0) {
+      return outcome(FAIL, 'The card advertises no A2A transport URL.', {
+        expectedOrigin: expected.origin,
+        expectedPath: expected.pathname,
       });
     }
-    return outcome(PASS, 'The card resolves and every transport URL points at the gateway.', { name: card.name, urls });
+    const offending = [];
+    for (const rawUrl of collected.urls) {
+      const parsed = parsePinnedAgentUrl(rawUrl);
+      if (!parsed || parsed.origin !== expected.origin || parsed.pathname !== expected.pathname) offending.push(rawUrl);
+    }
+    if (offending.length > 0) {
+      return outcome(
+        FAIL,
+        `The card advertises ${offending.length} transport URL(s) outside the exact gateway agent route.`,
+        {
+          offending,
+          expectedOrigin: expected.origin,
+          expectedPath: expected.pathname,
+        },
+      );
+    }
+    return outcome(PASS, 'The card resolves and every transport URL matches the exact gateway agent route.', {
+      name: card.name,
+      urls: collected.urls,
+      expectedOrigin: expected.origin,
+      expectedPath: expected.pathname,
+    });
   },
 
   'rate-limit'({ assertion, outputs }) {
@@ -406,16 +434,58 @@ function selectedOutcome(assertion, step, names, selected, detail) {
   );
 }
 
-function collectUrls(value, found = [], depth = 0) {
-  if (depth > 8) return found;
-  if (typeof value === 'string') {
-    if (/^https?:\/\//i.test(value)) found.push(value);
-  } else if (Array.isArray(value)) {
-    for (const item of value) collectUrls(item, found, depth + 1);
-  } else if (value && typeof value === 'object') {
-    for (const item of Object.values(value)) collectUrls(item, found, depth + 1);
+const RAW_URL_HAZARD = /[\u0000-\u0020\u007f\\]/;
+
+function parsePinnedAgentUrl(rawUrl) {
+  if (typeof rawUrl !== 'string' || rawUrl === '' || !/^[\x21-\x7e]+$/.test(rawUrl)) return null;
+  if (RAW_URL_HAZARD.test(rawUrl) || rawUrl.includes('%')) return null;
+  if (/\/\.{1,2}(?:\/|$)/.test(rawUrl)) return null;
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return null;
   }
-  return found;
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) return null;
+  if (!parsed.hostname || parsed.hostname.endsWith('.')) return null;
+  if (!parsed.pathname.startsWith('/') || parsed.pathname === '/' || parsed.pathname.endsWith('/') || parsed.pathname.includes('//')) {
+    return null;
+  }
+  if (parsed.pathname.split('/').some((segment) => segment === '.' || segment === '..')) return null;
+  return parsed;
+}
+
+function collectTransportUrls(card) {
+  const urls = [];
+  const problems = [];
+  const add = (label, entry, defaultBinding = '') => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      problems.push(`The card transport ${label} is not an object.`);
+      return;
+    }
+    const binding = entry.protocolBinding ?? entry.protocol_binding ?? entry.transport ?? defaultBinding;
+    if (typeof binding !== 'string' || binding.toUpperCase() !== 'JSONRPC') {
+      problems.push(`The card transport ${label} is not JSON-RPC.`);
+    }
+    if (typeof entry.url !== 'string' || entry.url === '') {
+      problems.push(`The card transport ${label} has no URL.`);
+      return;
+    }
+    urls.push(entry.url);
+  };
+
+  if (Object.prototype.hasOwnProperty.call(card, 'url')) {
+    add('url', { url: card.url, transport: card.preferredTransport ?? 'JSONRPC' });
+  }
+  for (const field of ['supportedInterfaces', 'supported_interfaces', 'additionalInterfaces', 'additional_interfaces']) {
+    if (!Object.prototype.hasOwnProperty.call(card, field)) continue;
+    if (!Array.isArray(card[field])) {
+      problems.push(`The card field ${field} is not an array.`);
+      continue;
+    }
+    card[field].forEach((entry, index) => add(`${field}[${index}]`, entry));
+  }
+  return { urls: [...new Set(urls)], problems };
 }
 
 export const ASSERTION_KINDS = Object.freeze(Object.keys(EVALUATORS));
