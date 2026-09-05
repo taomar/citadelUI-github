@@ -30,7 +30,12 @@ Node.js 20.6 or newer is required. There are no package dependencies.
 npm start
 ```
 
-Open `http://127.0.0.1:4173/`. This is preview mode and executes no sample.
+Open the **secure launch URL** printed in the terminal. It contains a one-time
+bootstrap capability in the URL fragment. The browser removes the fragment
+immediately, exchanges it for an HttpOnly session cookie, and never stores either
+value in browser storage. The plain `http://127.0.0.1:4173/` URL remains
+read-only: source and plans can be inspected, but state-changing APIs are
+unavailable.
 
 To attach the trusted-workstation local executor:
 
@@ -40,7 +45,10 @@ npm run start:execute
 
 Execution-capable startup is loopback-only. It uses the operator's local Azure
 CLI and optional registered Python dependencies; it is not a hostile-code
-sandbox.
+sandbox. The launch capability and session rotate on every server restart, and
+only a browser opened from the current terminal URL can invoke local execution,
+validation, self-test, or Azure account operations. Hosted deployments continue
+to use their trusted proxy and Entra boundary instead of this local cookie.
 
 ## Execution identity contract
 

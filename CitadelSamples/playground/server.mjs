@@ -13,8 +13,8 @@
  *   * binds loopback; local execution is REFUSED on any other host
  *   * serves only `web/` and `src/`, with paths resolved and re-checked
  *   * sends a restrictive CSP with no inline script and no remote origins
- *   * state-changing endpoints require same-origin, a JSON content type and a
- *     bounded body
+ *   * loopback state-changing endpoints require a per-launch browser session,
+ *     same-origin, a JSON content type and a bounded body
  *   * the browser never sends a plan, a command, a URL or a path — the server
  *     rebuilds all of them from its own catalogue
  *   * the relay URL and token are never disclosed to browser code
@@ -53,6 +53,11 @@ import {
 import { parseRelayAllowedSampleIds, rebuildRelayPlan, validateExecuteRequest } from './src/relay/requestSchema.mjs';
 import { mintAcknowledgement, planRequestUrls } from './src/relay/acknowledgement.mjs';
 import { runSelfTest, SELF_TEST_SCENARIO, validateSelfTestRequest } from './src/server/selfTest.mjs';
+import {
+  createLocalSessionAuth,
+  LOCAL_SESSION_BOOTSTRAP_HEADER,
+  LOCAL_SESSION_CLAIM_PATH,
+} from './src/server/localSessionAuth.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const SERVED_ROOTS = ['web', 'src'].map((dir) => resolve(ROOT, dir));
@@ -116,10 +121,10 @@ export function parseTrustedPublicOrigin(rawValue, { name = 'CITADEL_PLAYGROUND_
  *     use it.
  *   - `authenticator`       what a CALLER of THIS server's `/api/execute`
  *     must present, when this server itself is bound to a non-loopback host
- *     (`principalAuth.mjs`). Loopback callers remain implicitly trusted, same
- *     as `/api/run` always has been. This is unrelated to the two identities
- *     above — it is about who may ask THIS proxy to run something, not
- *     about how this proxy identifies itself to the relay.
+ *     (`principalAuth.mjs`). Loopback callers reach this layer only after the
+ *     per-launch browser session has authenticated them. This is unrelated to
+ *     the two identities above — it is about who may ask THIS proxy to run
+ *     something, not about how this proxy identifies itself to the relay.
  *
  * `createPlaygroundServer({ relay })` can override this wholesale, so tests
  * never need to touch `process.env` or reach a real network.
@@ -334,51 +339,63 @@ export function capabilitiesPayload({
   probe = {},
   relay = DEFAULT_RELAY_CONFIG,
   loginAvailable = mode === 'execute',
+  sessionAuth = { required: false, state: 'not-required', claimEndpoint: null, message: '' },
 } = {}) {
   const capability = summariseCapability(CATALOGUE.samples, { ...probe, mode });
+  const sessionReady = sessionAuth.required !== true || sessionAuth.state === 'claimed';
+  const secureLaunchMessage = sessionAuth.message || 'Open the secure launch URL shown in the terminal.';
   return {
     status: 'ok',
     application: 'citadel-publish-playground',
     protocolVersion: EXECUTION_PROTOCOL_VERSION,
     mode,
     capability,
-    executor: relay.enabled
+    executor: !sessionReady
       ? {
-          kind: 'relay',
-          canExecute: relay.allowedSampleIds.length > 0,
-          endpoint: '/api/execute',
-          supportedStepTypes: ['http', 'assertion'],
-          // The exact sample ids the relay will run — never a claim wider
-          // than reality. A caller has no way to widen this from the wire.
-          allowedSampleIds: [...relay.allowedSampleIds],
-          reason:
-            relay.allowedSampleIds.length > 0
-              ? 'An approved relay is configured on the local server. It executes a fixed, explicitly allow-listed set of read-only catalogue samples.'
-              : 'The relay is configured, but this deployment enables no catalogue samples.',
+          kind: 'unavailable',
+          canExecute: false,
+          endpoint: null,
+          supportedStepTypes: [],
+          reason: secureLaunchMessage,
         }
-      : mode === 'execute'
+      : relay.enabled
         ? {
-            kind: 'local',
-            canExecute: true,
-            endpoint: '/api/run',
-            supportedStepTypes: ['artifact', 'azure-cli', 'http', 'library', 'assertion'],
-            reason: capability.detail,
-          }
-        : {
-            kind: 'unavailable',
-            canExecute: false,
-            endpoint: null,
-            supportedStepTypes: [],
+            kind: 'relay',
+            canExecute: relay.allowedSampleIds.length > 0,
+            endpoint: '/api/execute',
+            supportedStepTypes: ['http', 'assertion'],
+            // The exact sample ids the relay will run — never a claim wider
+            // than reality. A caller has no way to widen this from the wire.
+            allowedSampleIds: [...relay.allowedSampleIds],
             reason:
-              'No execution runtime is attached. Plans are generated and previewed only; nothing is sent anywhere. Start with `npm run start:execute` to attach the local executor.',
-          },
+              relay.allowedSampleIds.length > 0
+                ? 'An approved relay is configured on the local server. It executes a fixed, explicitly allow-listed set of read-only catalogue samples.'
+                : 'The relay is configured, but this deployment enables no catalogue samples.',
+          }
+        : mode === 'execute'
+          ? {
+              kind: 'local',
+              canExecute: true,
+              endpoint: '/api/run',
+              supportedStepTypes: ['artifact', 'azure-cli', 'http', 'library', 'assertion'],
+              reason: capability.detail,
+            }
+          : {
+              kind: 'unavailable',
+              canExecute: false,
+              endpoint: null,
+              supportedStepTypes: [],
+              reason:
+                'No execution runtime is attached. Plans are generated and previewed only; nothing is sent anywhere. Start with `npm run start:execute` to attach the local executor.',
+            },
+    sessionAuth,
     // Presence only. The URL and every credential are never disclosed.
     relayConfigured: relay.enabled,
     // Always available, in every mode: it never depends on Azure CLI, Python,
     // a relay, or an operator credential — see `src/server/selfTest.mjs`.
     selfTest: Object.freeze({
       endpoint: '/api/self-test',
-      available: true,
+      available: sessionReady,
       scenario: SELF_TEST_SCENARIO,
     }),
     protectedSource: Object.freeze({
@@ -389,7 +406,7 @@ export function capabilitiesPayload({
     }),
     sourceValidation: Object.freeze({
       endpointTemplate: '/api/source/{sampleId}/validate',
-      available: mode === 'execute',
+      available: mode === 'execute' && sessionReady,
       scenario: CODE_VALIDATION_SCENARIO,
       mode: 'offline-local',
       validation: 'python-compile-only',
@@ -400,12 +417,12 @@ export function capabilitiesPayload({
       executionIdentity: 'local-python-parser',
     }),
     executionContext: Object.freeze({
-      endpoint: '/api/execution-context',
+      endpoint: sessionReady ? '/api/execution-context' : null,
       login: Object.freeze({
         startEndpoint: '/api/azure-login/start',
         statusEndpoint: '/api/azure-login/status',
         cancelEndpoint: '/api/azure-login/cancel',
-        available: loginAvailable,
+        available: loginAvailable && sessionReady,
       }),
     }),
   };
@@ -416,17 +433,17 @@ function send(response, status, headers, body) {
   response.end(body);
 }
 
-function sendJson(response, status, payload) {
+function sendJson(response, status, payload, headers = {}) {
   const body = JSON.stringify(payload);
-  send(response, status, securityHeaders('application/json; charset=utf-8'), body);
+  send(response, status, { ...securityHeaders('application/json; charset=utf-8'), ...headers }, body);
 }
 
-async function readBody(request, limitBytes = 256 * 1024) {
+async function readBody(request, limitBytes = 256 * 1024, limitLabel = '256 KB') {
   const chunks = [];
   let total = 0;
   for await (const chunk of request) {
     total += chunk.length;
-    if (total > limitBytes) throw new RequestRefused('The request body is larger than the 256 KB limit.', { status: 413 });
+    if (total > limitBytes) throw new RequestRefused(`The request body is larger than the ${limitLabel} limit.`, { status: 413 });
     chunks.push(chunk);
   }
   return Buffer.concat(chunks).toString('utf-8');
@@ -463,7 +480,7 @@ function monitorClientDisconnect(request, response, { signal } = {}) {
  */
 export function checkStateChangingRequest(
   request,
-  { port = PORT, host = HOST, publicOrigin = DEFAULT_PUBLIC_ORIGIN } = {},
+  { port = PORT, host = HOST, publicOrigin = DEFAULT_PUBLIC_ORIGIN, requireOrigin = false } = {},
 ) {
   const site = request.headers['sec-fetch-site'];
   if (site && site !== 'same-origin' && site !== 'none') {
@@ -471,7 +488,15 @@ export function checkStateChangingRequest(
   }
   const origin = request.headers.origin;
   if (isLoopbackHost(host)) {
-    const expected = new Set([httpOrigin(host, port), httpOrigin('localhost', port), httpOrigin('127.0.0.1', port)]);
+    if (requireOrigin && !origin) {
+      return { ok: false, status: 403, message: 'Refused a request without an Origin header.' };
+    }
+    const effectivePort = request.socket?.localPort ?? port;
+    const expected = new Set([
+      httpOrigin(host, effectivePort),
+      httpOrigin('localhost', effectivePort),
+      httpOrigin('127.0.0.1', effectivePort),
+    ]);
     if (publicOrigin) expected.add(publicOrigin);
     if (origin && !expected.has(origin)) {
       return { ok: false, status: 403, message: `Refused a request from origin ${origin}.` };
@@ -491,6 +516,79 @@ export function checkStateChangingRequest(
   return { ok: true };
 }
 
+function isPrivilegedLocalPath(path) {
+  return path.startsWith('/api/') && path !== LOCAL_SESSION_CLAIM_PATH;
+}
+
+function requireLocalSession(request, response, localSessionAuth) {
+  if (!localSessionAuth) return true;
+  const authorization = localSessionAuth.authorize(request);
+  if (authorization.ok) return true;
+  sendJson(response, authorization.status, {
+    state: 'blocked',
+    summary: authorization.message,
+    code: authorization.code,
+  });
+  return false;
+}
+
+async function handleSessionClaim(request, response, { localSessionAuth, port, host, publicOrigin }) {
+  if (!localSessionAuth) {
+    send(response, 404, securityHeaders('text/plain; charset=utf-8'), 'Not found');
+    return;
+  }
+  const guard = checkStateChangingRequest(request, {
+    port,
+    host,
+    publicOrigin,
+    requireOrigin: true,
+  });
+  if (!guard.ok) {
+    sendJson(response, guard.status, { state: 'blocked', summary: guard.message, code: 'claim-refused' });
+    return;
+  }
+  if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(String(request.headers['content-type'] ?? ''))) {
+    sendJson(response, 415, {
+      state: 'blocked',
+      summary: 'The local session claim accepts application/json only.',
+      code: 'invalid-claim',
+    });
+    return;
+  }
+  if (request.headers['content-encoding']) {
+    sendJson(response, 415, {
+      state: 'blocked',
+      summary: 'The local session claim does not accept content encoding.',
+      code: 'invalid-claim',
+    });
+    return;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(await readBody(request, 1024, '1 KB'));
+  } catch (error) {
+    const status = error instanceof RequestRefused ? error.status : 400;
+    sendJson(response, status, {
+      state: 'blocked',
+      summary: status === 413 ? error.message : 'The local session claim is invalid.',
+      code: 'invalid-claim',
+    });
+    return;
+  }
+
+  const result = localSessionAuth.claim({
+    request,
+    payload,
+    capability: request.headers[LOCAL_SESSION_BOOTSTRAP_HEADER.toLowerCase()],
+  });
+  if (!result.ok) {
+    sendJson(response, result.status, { state: 'blocked', summary: result.message, code: result.code });
+    return;
+  }
+  send(response, 204, { ...securityHeaders('application/json; charset=utf-8'), 'Set-Cookie': result.cookie }, '');
+}
+
 function httpOrigin(host, port) {
   const hostname = String(host).replace(/^\[|\]$/g, '');
   const url = new URL('http://localhost');
@@ -500,7 +598,12 @@ function httpOrigin(host, port) {
 }
 
 async function handleExecute(request, response, { port, host, publicOrigin, relay }) {
-  const guard = checkStateChangingRequest(request, { port, host, publicOrigin });
+  const guard = checkStateChangingRequest(request, {
+    port,
+    host,
+    publicOrigin,
+    requireOrigin: isLoopbackHost(host),
+  });
   if (!guard.ok) {
     sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
     return;
@@ -515,9 +618,9 @@ async function handleExecute(request, response, { port, host, publicOrigin, rela
     return;
   }
 
-  // Loopback callers remain implicitly trusted, exactly like `/api/run`. A
-  // non-loopback bind must present a principal the configured authenticator
-  // accepts; nothing here fails open.
+  // The router has already authenticated loopback callers with the per-launch
+  // browser session. A non-loopback bind must present a principal the configured
+  // authenticator accepts; nothing here fails open.
   const auth = await authenticatePrincipal(request, {
     isLoopbackHost,
     host,
@@ -720,7 +823,12 @@ async function handleStatic(request, response) {
 }
 
 async function handleRun(request, response, { mode, manager, port, host, publicOrigin, shutdownSignal }) {
-  const guard = checkStateChangingRequest(request, { port, host, publicOrigin });
+  const guard = checkStateChangingRequest(request, {
+    port,
+    host,
+    publicOrigin,
+    requireOrigin: isLoopbackHost(host),
+  });
   if (!guard.ok) {
     sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
     return;
@@ -803,7 +911,12 @@ async function handleRun(request, response, { mode, manager, port, host, publicO
 }
 
 async function handleExecutionContext(request, response, { manager, port, host, publicOrigin }) {
-  const guard = checkStateChangingRequest(request, { port, host, publicOrigin });
+  const guard = checkStateChangingRequest(request, {
+    port,
+    host,
+    publicOrigin,
+    requireOrigin: isLoopbackHost(host),
+  });
   if (!guard.ok) {
     sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
     return;
@@ -832,7 +945,12 @@ async function handleExecutionContext(request, response, { manager, port, host, 
 }
 
 async function handleAzureLogin(request, response, { action, manager, port, host, publicOrigin }) {
-  const guard = checkStateChangingRequest(request, { port, host, publicOrigin });
+  const guard = checkStateChangingRequest(request, {
+    port,
+    host,
+    publicOrigin,
+    requireOrigin: isLoopbackHost(host),
+  });
   if (!guard.ok) {
     sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
     return;
@@ -882,7 +1000,12 @@ async function handleAzureLogin(request, response, { action, manager, port, host
 }
 
 async function handleCancel(request, response, { manager, port, host, publicOrigin }) {
-  const guard = checkStateChangingRequest(request, { port, host, publicOrigin });
+  const guard = checkStateChangingRequest(request, {
+    port,
+    host,
+    publicOrigin,
+    requireOrigin: isLoopbackHost(host),
+  });
   if (!guard.ok) {
     sendJson(response, guard.status, { cancelled: false, reason: guard.message });
     return;
@@ -912,7 +1035,12 @@ async function handleCancel(request, response, { manager, port, host, publicOrig
  * changes nothing, so it cannot be triggered from a cross-site page.
  */
 async function handleSelfTest(request, response, { mode, port, host, publicOrigin }) {
-  const guard = checkStateChangingRequest(request, { port, host, publicOrigin });
+  const guard = checkStateChangingRequest(request, {
+    port,
+    host,
+    publicOrigin,
+    requireOrigin: isLoopbackHost(host),
+  });
   if (!guard.ok) {
     sendJson(response, guard.status, {
       scenario: SELF_TEST_SCENARIO,
@@ -990,7 +1118,12 @@ async function handleProtectedSource(response, sampleId) {
 }
 
 async function handleSourceValidation(request, response, { mode, manager, sampleId, port, host, publicOrigin }) {
-  const guard = checkStateChangingRequest(request, { port, host, publicOrigin });
+  const guard = checkStateChangingRequest(request, {
+    port,
+    host,
+    publicOrigin,
+    requireOrigin: isLoopbackHost(host),
+  });
   if (!guard.ok) {
     sendJson(response, guard.status, {
       scenario: CODE_VALIDATION_SCENARIO,
@@ -1103,6 +1236,7 @@ function decodeSampleId(value) {
  * @param {object} [options.probe]        injected for tests
  * @param {object} [options.relay]        injected relay config for tests (see buildRelayConfig)
  * @param {string|null} [options.publicOrigin] exact hosted HTTPS browser origin
+ * @param {string} [options.testBootstrapCapability] deterministic test-only bootstrap
  */
 export function createPlaygroundServer({
   mode = 'preview',
@@ -1114,11 +1248,19 @@ export function createPlaygroundServer({
   host = HOST,
   relay = DEFAULT_RELAY_CONFIG,
   publicOrigin = DEFAULT_PUBLIC_ORIGIN,
+  testBootstrapCapability,
+  secureSessionCookie = false,
 } = {}) {
   publicOrigin =
     publicOrigin === null
       ? null
       : parseTrustedPublicOrigin(publicOrigin, { name: 'createPlaygroundServer publicOrigin' });
+  const localSessionAuth = isLoopbackHost(host)
+    ? createLocalSessionAuth({
+        bootstrapCapability: testBootstrapCapability,
+        secureCookie: secureSessionCookie,
+      })
+    : null;
   const identityManager =
     executionContextManager ??
     createExecutionContextManager({
@@ -1144,7 +1286,21 @@ export function createPlaygroundServer({
 
   const server = createServer(async (request, response) => {
     try {
-      const path = (request.url ?? '/').split('?')[0];
+      const requestTarget = request.url ?? '/';
+      const path = requestTarget.split('?')[0];
+
+      if (path === LOCAL_SESSION_CLAIM_PATH || path.startsWith(`${LOCAL_SESSION_CLAIM_PATH}/`)) {
+        if (requestTarget !== LOCAL_SESSION_CLAIM_PATH) {
+          send(response, 404, securityHeaders('text/plain; charset=utf-8'), 'Not found');
+          return;
+        }
+        if (request.method !== 'POST') {
+          sendJson(response, 405, { state: 'blocked', summary: 'Use POST.', code: 'method-not-allowed' });
+          return;
+        }
+        await handleSessionClaim(request, response, { localSessionAuth, port, host, publicOrigin });
+        return;
+      }
 
       if (path === '/api/health' || path === '/api/capabilities') {
         if (request.method !== 'GET') {
@@ -1159,9 +1315,21 @@ export function createPlaygroundServer({
             probe: runtimeProbe,
             relay,
             loginAvailable: mode === 'execute' && isLoopbackHost(host),
+            sessionAuth:
+              localSessionAuth?.describe(request) ??
+              Object.freeze({
+                required: false,
+                state: 'not-required',
+                claimEndpoint: null,
+                message: '',
+              }),
           }),
         );
         return;
+      }
+
+      if (request.method === 'POST' && isPrivilegedLocalPath(path)) {
+        if (!requireLocalSession(request, response, localSessionAuth)) return;
       }
 
       if (path === '/api/run') {
@@ -1291,6 +1459,7 @@ export function createPlaygroundServer({
   server.runManager = manager;
   server.codeValidationManager = validationManager;
   server.executionContextManager = identityManager;
+  server.localSessionAuth = localSessionAuth;
   const close = server.close.bind(server);
   let shutdown = null;
   server.close = (callback) => {
@@ -1353,7 +1522,15 @@ if (invokedDirectly) {
   const mode = wantsExecution ? 'execute' : 'preview';
   const server = createPlaygroundServer({ mode });
   server.listen(PORT, HOST, async () => {
-    process.stdout.write(`Citadel Publish Playground: http://${HOST}:${PORT}/\n`);
+    const origin = httpOrigin(HOST, PORT);
+    process.stdout.write(
+      server.localSessionAuth
+        ? `Citadel Publish Playground secure launch URL: ${server.localSessionAuth.launchUrl(origin)}\n`
+        : `Citadel Publish Playground: ${origin}/\n`,
+    );
+    if (server.localSessionAuth) {
+      process.stdout.write('The plain URL is preview-only until this browser claims the launch capability.\n');
+    }
     process.stdout.write(`Mode: ${mode}\n`);
     if (mode === 'execute') {
       process.stdout.write('Probing local runtimes…\n');

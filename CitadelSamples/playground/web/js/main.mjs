@@ -11,6 +11,11 @@ import { CATALOGUE, acknowledgementFor, buildSamplePlan, fieldByPath, getSample 
 import { probeFromCapabilityPayload } from '../../src/core/capability.mjs';
 import { createPlaygroundState } from '../../src/core/state.mjs';
 import { createRelayExecutor, createUnavailableExecutor, runPlan } from '../../src/core/executor.mjs';
+import {
+  LOCAL_SESSION_BOOTSTRAP_HEADER,
+  LOCAL_SESSION_CLAIM_PATH,
+  LOCAL_SESSION_PROTOCOL_VERSION,
+} from '../../src/core/localSession.mjs';
 import { assertNoSecretValues } from '../../src/core/secrets.mjs';
 import { EXECUTION_PROTOCOL_VERSION } from '../../src/core/types.mjs';
 import {
@@ -29,6 +34,18 @@ import { renderGuide, renderRequest, renderResponse, renderSource } from './rend
 const TABS = ['code', 'guide', 'request', 'response'];
 const TEST_EXECUTOR_ENABLED =
   location.hostname === '127.0.0.1' && new URLSearchParams(location.search).has('testExecutor');
+
+function takeBootstrapCapability() {
+  const parameters = new URLSearchParams(location.hash.startsWith('#') ? location.hash.slice(1) : '');
+  if (!parameters.has('bootstrap')) return null;
+  const capability = parameters.get('bootstrap');
+  parameters.delete('bootstrap');
+  const remaining = parameters.toString();
+  history.replaceState(null, '', `${location.pathname}${location.search}${remaining ? `#${remaining}` : ''}`);
+  return capability;
+}
+
+let pendingBootstrapCapability = takeBootstrapCapability();
 
 const nodes = {
   sourceFile: document.getElementById('source-file'),
@@ -67,6 +84,8 @@ let runtimeProbe = { mode: 'preview' };
 let capabilitySummary = null;
 let sourceValidationAvailable = false;
 let executionContextAvailable = false;
+let selfTestAvailable = true;
+let localSessionAuth = { required: false, state: 'not-required', message: '' };
 const results = new Map();
 const sourceStates = new Map();
 const sourceValidationStates = new Map();
@@ -105,11 +124,35 @@ function refreshExecutionContext() {
 
 /* ------------------------------------------------------ capability probe */
 
+async function claimLocalSession() {
+  const capabilityValue = pendingBootstrapCapability;
+  pendingBootstrapCapability = null;
+  if (!capabilityValue) return;
+  try {
+    await fetch(LOCAL_SESSION_CLAIM_PATH, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        [LOCAL_SESSION_BOOTSTRAP_HEADER]: capabilityValue,
+      },
+      body: JSON.stringify({ protocolVersion: LOCAL_SESSION_PROTOCOL_VERSION }),
+    });
+  } catch {
+    // The capability probe below reports the authoritative claimed state.
+  }
+}
+
 async function probeCapability() {
   try {
-    const response = await fetch('/api/capabilities', { headers: { Accept: 'application/json' } });
+    const response = await fetch('/api/capabilities', {
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+    });
     if (!response.ok) throw new Error(`Capability probe failed with HTTP ${response.status}.`);
     const payload = await response.json();
+    localSessionAuth = payload.sessionAuth ?? { required: false, state: 'not-required', message: '' };
     runtimeProbe = {
       mode: payload.mode ?? 'preview',
       ...probeFromCapabilityPayload(payload, CATALOGUE.byId),
@@ -117,6 +160,7 @@ async function probeCapability() {
     capabilitySummary = payload.capability ?? null;
     sourceValidationAvailable = payload.sourceValidation?.available === true;
     executionContextAvailable = typeof payload.executionContext?.endpoint === 'string';
+    selfTestAvailable = payload.selfTest?.available === true;
     if (payload.executor?.kind === 'local' && payload.executor.canExecute) {
       executor = createLocalExecutorClient({
         allowedSampleIds: CATALOGUE.samples.map((sample) => sample.id),
@@ -135,7 +179,12 @@ async function probeCapability() {
       executor = createUnavailableExecutor({ reason: payload?.executor?.reason });
     }
     capability = executor.describeCapability();
-    if (executionContextAvailable && !testExecutionContextOverride) {
+    if (localSessionAuth.required && localSessionAuth.state !== 'claimed' && !testExecutionContextOverride) {
+      executionContextState = {
+        status: 'unavailable',
+        message: localSessionAuth.message || 'Open the secure launch URL shown in the terminal.',
+      };
+    } else if (executionContextAvailable && !testExecutionContextOverride) {
       loadExecutionContext();
     } else if (!testExecutionContextOverride) {
       executionContextState = {
@@ -160,6 +209,13 @@ async function probeCapability() {
 }
 
 function renderCapability() {
+  if (localSessionAuth.required && localSessionAuth.state !== 'claimed') {
+    nodes.capability.dataset.canExecute = 'false';
+    nodes.capability.dataset.executionMode = 'unclaimed';
+    nodes.capabilityLabel.textContent = 'Secure launch required';
+    nodes.capability.title = localSessionAuth.message || 'Open the secure launch URL shown in the terminal.';
+    return;
+  }
   const environment = buildExecutionEnvironmentModel(capability);
   nodes.capability.dataset.canExecute = capability.canExecute ? 'true' : 'false';
   nodes.capability.dataset.executionMode = environment.mode;
@@ -454,6 +510,7 @@ async function loadProtectedSource(sampleId = state.selectedSampleId) {
 
   try {
     const response = await fetch(`/api/source/${encodeURIComponent(sampleId)}`, {
+      credentials: 'same-origin',
       headers: { Accept: 'application/json' },
       signal: controller.signal,
     });
@@ -500,6 +557,7 @@ async function validateProtectedSource() {
   try {
     const response = await fetch(`/api/source/${encodeURIComponent(sampleId)}/validate`, {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
       signal: controller.signal,
@@ -595,7 +653,7 @@ const SELF_TEST_CHIP = {
 function renderSelfTest() {
   const [label, tone] = SELF_TEST_CHIP[selfTest.state] ?? SELF_TEST_CHIP.idle;
   replace(nodes.selfTestStatus, [chip(label, tone)]);
-  nodes.selfTestRun.disabled = selfTest.state === 'running';
+  nodes.selfTestRun.disabled = !selfTestAvailable || selfTest.state === 'running';
   nodes.selfTestSummary.textContent = selfTest.summary ?? '';
   replace(
     nodes.selfTestChecks,
@@ -618,11 +676,16 @@ function renderSelfTest() {
  */
 async function runSelfTestCheck() {
   if (selfTest.state === 'running') return;
+  if (!selfTestAvailable) {
+    announce(localSessionAuth.message || 'Open the secure launch URL shown in the terminal.');
+    return;
+  }
   selfTest = { state: 'running' };
   renderSelfTest();
   try {
     const response = await fetch('/api/self-test', {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
     });
@@ -1007,7 +1070,10 @@ renderCapability();
 renderSelfTest();
 render();
 loadProtectedSource(state.selectedSampleId);
-probeCapability();
+void (async () => {
+  await claimLocalSession();
+  await probeCapability();
+})();
 
 /*
  * A seam for the browser smoke driver.

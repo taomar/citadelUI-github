@@ -37,6 +37,11 @@ import { resolveSpawnInvocation, spawnProcess } from '../src/server/transports.m
 import { createRunManager } from '../src/server/runManager.mjs';
 import { createDenyAllAuthenticator, createSharedSecretAuthenticator } from '../src/relay/principalAuth.mjs';
 import { FIXTURE_VALUES } from './helpers/fixtures.mjs';
+import {
+  claimLocalSession,
+  createAuthenticatedFetch,
+  TEST_BOOTSTRAP_CAPABILITY,
+} from './helpers/localSession.mjs';
 import { fakeFileSystem, fakeSpawn } from './helpers/transports.mjs';
 
 const PLAYGROUND_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -44,12 +49,18 @@ const BUNDLE_ROOT = resolve(PLAYGROUND_ROOT, ACCELERATOR_ROOT);
 
 /** Start a server on an ephemeral port and hand back a fetch helper. */
 async function withServer(options, body) {
-  const server = createPlaygroundServer(options);
+  const server = createPlaygroundServer({
+    ...options,
+    testBootstrapCapability: options?.testBootstrapCapability ?? TEST_BOOTSTRAP_CAPABILITY,
+  });
   await new Promise((done) => server.listen(0, '127.0.0.1', done));
   const { port } = server.address();
-  const call = (path, init = {}) => fetch(`http://127.0.0.1:${port}${path}`, init);
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const rawCall = (path, init = {}) => fetch(new URL(path, baseUrl), init);
+  const claimed = server.localSessionAuth ? await claimLocalSession(baseUrl, TEST_BOOTSTRAP_CAPABILITY) : null;
+  const call = claimed ? createAuthenticatedFetch(baseUrl, claimed.cookie) : rawCall;
   try {
-    return await body({ call, port, server });
+    return await body({ call, rawCall, cookie: claimed?.cookie ?? '', port, server, baseUrl });
   } finally {
     if (server.listening) await new Promise((done) => server.close(done));
   }
@@ -191,7 +202,7 @@ test('disconnecting during delayed execution-context admission aborts the probe 
     },
   });
 
-  await withServer({ mode: 'execute', runManager: manager }, async ({ port, server }) => {
+  await withServer({ mode: 'execute', runManager: manager }, async ({ cookie, baseUrl, port, server }) => {
     const body = JSON.stringify({
       protocolVersion: EXECUTION_PROTOCOL_VERSION,
       sampleId: 'azure-context-check',
@@ -201,7 +212,13 @@ test('disconnecting during delayed execution-context admission aborts the probe 
     try {
       const pending = fetch(`http://127.0.0.1:${port}/api/run`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Connection: 'close' },
+        headers: {
+          'Content-Type': 'application/json',
+          Connection: 'close',
+          Cookie: cookie,
+          Origin: baseUrl,
+          'Sec-Fetch-Site': 'same-origin',
+        },
         body,
         signal: controller.signal,
       }).then(
@@ -267,12 +284,24 @@ test('server.close aborts delayed admission and waits for the reservation to dra
       access: filesystem.access,
     },
   });
-  const server = createPlaygroundServer({ mode: 'execute', runManager: manager });
+  const server = createPlaygroundServer({
+    mode: 'execute',
+    runManager: manager,
+    testBootstrapCapability: TEST_BOOTSTRAP_CAPABILITY,
+  });
   await new Promise((done) => server.listen(0, '127.0.0.1', done));
   const { port } = server.address();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const { cookie } = await claimLocalSession(baseUrl);
   const pending = fetch(`http://127.0.0.1:${port}/api/run`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Connection: 'close' },
+    headers: {
+      'Content-Type': 'application/json',
+      Connection: 'close',
+      Cookie: cookie,
+      Origin: baseUrl,
+      'Sec-Fetch-Site': 'same-origin',
+    },
     body: JSON.stringify({
       protocolVersion: EXECUTION_PROTOCOL_VERSION,
       sampleId: 'azure-context-check',
@@ -310,9 +339,15 @@ test('server.close fences a request that was accepted before its body finished',
     activeCount: 0,
     listActive: () => [],
   };
-  const server = createPlaygroundServer({ mode: 'execute', runManager: manager });
+  const server = createPlaygroundServer({
+    mode: 'execute',
+    runManager: manager,
+    testBootstrapCapability: TEST_BOOTSTRAP_CAPABILITY,
+  });
   await new Promise((done) => server.listen(0, '127.0.0.1', done));
   const { port } = server.address();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const { cookie } = await claimLocalSession(baseUrl);
   let markAccepted;
   const accepted = new Promise((resolveAccepted) => {
     markAccepted = resolveAccepted;
@@ -336,6 +371,9 @@ test('server.close fences a request that was accepted before its body finished',
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(body),
           Connection: 'close',
+          Cookie: cookie,
+          Origin: baseUrl,
+          'Sec-Fetch-Site': 'same-origin',
         },
       },
       (incoming) => {
@@ -418,12 +456,24 @@ test('the shared SIGINT/SIGTERM shutdown handler is idempotent while admission i
     cancelAllCalls += 1;
     return cancelAll();
   };
-  const server = createPlaygroundServer({ mode: 'execute', runManager: manager });
+  const server = createPlaygroundServer({
+    mode: 'execute',
+    runManager: manager,
+    testBootstrapCapability: TEST_BOOTSTRAP_CAPABILITY,
+  });
   await new Promise((done) => server.listen(0, '127.0.0.1', done));
   const { port } = server.address();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const { cookie } = await claimLocalSession(baseUrl);
   const pending = fetch(`http://127.0.0.1:${port}/api/run`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Connection: 'close' },
+    headers: {
+      'Content-Type': 'application/json',
+      Connection: 'close',
+      Cookie: cookie,
+      Origin: baseUrl,
+      'Sec-Fetch-Site': 'same-origin',
+    },
     body: JSON.stringify({
       protocolVersion: EXECUTION_PROTOCOL_VERSION,
       sampleId: 'azure-context-check',
@@ -511,13 +561,25 @@ test('signal shutdown waits for a disconnected admission reservation to finish c
       access: filesystem.access,
     },
   });
-  const server = createPlaygroundServer({ mode: 'execute', runManager: manager });
+  const server = createPlaygroundServer({
+    mode: 'execute',
+    runManager: manager,
+    testBootstrapCapability: TEST_BOOTSTRAP_CAPABILITY,
+  });
   await new Promise((done) => server.listen(0, '127.0.0.1', done));
   const { port } = server.address();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const { cookie } = await claimLocalSession(baseUrl);
   const controller = new AbortController();
   const pending = fetch(`http://127.0.0.1:${port}/api/run`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Connection: 'close' },
+    headers: {
+      'Content-Type': 'application/json',
+      Connection: 'close',
+      Cookie: cookie,
+      Origin: baseUrl,
+      'Sec-Fetch-Site': 'same-origin',
+    },
     body: JSON.stringify({
       protocolVersion: EXECUTION_PROTOCOL_VERSION,
       sampleId: 'azure-context-check',
@@ -848,7 +910,9 @@ test('disconnecting a source-validation socket cancels its exact run and release
     },
   };
 
-  await withServer({ mode: 'execute', codeValidationManager: manager }, async ({ call, port }) => {
+  await withServer(
+    { mode: 'execute', codeValidationManager: manager },
+    async ({ call, cookie, baseUrl, port }) => {
     const body = JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION });
     let socketRequest;
     const socketClosed = new Promise((resolveClosed) => {
@@ -857,8 +921,15 @@ test('disconnecting a source-validation socket cancels its exact run and release
         port,
         path: '/api/source/azure-context-check/validate',
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      });
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          Cookie: cookie,
+          Origin: baseUrl,
+          'Sec-Fetch-Site': 'same-origin',
+        },
+        },
+      );
       socketRequest.once('error', resolveClosed);
       socketRequest.once('close', resolveClosed);
       socketRequest.end(body);
