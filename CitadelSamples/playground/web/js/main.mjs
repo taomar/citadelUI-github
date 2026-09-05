@@ -522,6 +522,7 @@ function shellIdentity(models) {
     selectedSubscriptionId,
     activeSubscription,
     message: accountMessage,
+    statusImportant: state.accountUi != null,
     keyPresent: identity.gateway?.keyPresent ?? projectedContext.gateway?.keyPresent,
     headerName: identity.gateway?.headerName ?? projectedContext.gateway?.headerName,
     canManage: true,
@@ -544,6 +545,12 @@ function shellExecution(models) {
   const identity = models.dossier.identity;
   const hosted = models.context?.context?.hostedRelay;
   const gateway = wizardIdentityKind() === 'gateway';
+  const endpoints = [...new Set((models.dossier.request.plan?.steps ?? [])
+    .map((step) => step.request?.url ?? step.assertion?.endpoint)
+    .filter((endpoint) => typeof endpoint === 'string' && endpoint.length > 0))];
+  const exactTarget = gateway || hosted
+    ? endpoints.join('\n') || 'Complete the connection to resolve the exact endpoint.'
+    : models.dossier.reviewDecision.target.exact;
   const subscriptionValue = gateway || hosted
     ? 'Not applicable'
     : identity.subscription
@@ -563,7 +570,7 @@ function shellExecution(models) {
           : 'Citadel private Azure CLI subscription; the intended target remains separate.',
     },
     target: {
-      value: models.dossier.reviewDecision.target.exact,
+      value: exactTarget,
       detail: 'The exact intended target for this attempt.',
     },
     authorization: {
@@ -576,7 +583,7 @@ function shellExecution(models) {
           playgroundIdentity: 'Hosted playground identity',
           relayIdentity: hosted.relayIdentity,
           keyReference: hosted.keySource,
-          target: models.dossier.reviewDecision.target.exact,
+          target: exactTarget,
         }
       : null,
   };
@@ -987,14 +994,29 @@ function renderWizardHeading(container, steps) {
   const current = steps[currentIndex] ?? steps[0];
   container.append(
     node('header', { class: 'wizard-heading' }, [
-      node('h1', { id: 'wizard-step-title', tabindex: '-1', text: current.title }),
-      node('p', { class: 'wizard-step-summary', text: wizardDescription(current.id) }),
+      node('h1', { id: 'wizard-step-title', tabindex: '-1', text: state.sample.shortTitle }),
+      node('p', {
+        class: 'wizard-step-summary',
+        text: ['review-approve', 'run-result'].includes(current.id)
+          ? wizardDescription(current.id)
+          : state.sample.summary,
+      }),
     ]),
   );
 }
 
 function renderWizardStepNav(container, steps) {
+  const labels = {
+    'account-target': { azure: 'Account & target', gateway: 'Connection', hosted: 'Execution context' }[wizardIdentityKind()],
+    'required-inputs': 'Inputs',
+    'credentials-options': 'Options',
+    'review-approve': 'Confirm & run',
+    'run-result': 'Run & result',
+  };
   container.append(node('nav', { class: 'wizard-step-nav', 'aria-label': 'Recipe setup steps' }, [
+    node('div', { class: 'dossier-stage-progress visually-hidden' }, [
+      node('span', { text: `Step ${steps.findIndex((step) => step.id === state.wizardStep) + 1} of ${steps.length}` }),
+    ]),
     node('ol', {}, steps.map((step, index) =>
       node('li', {}, [
         node('button', {
@@ -1002,13 +1024,57 @@ function renderWizardStepNav(container, steps) {
           class: 'wizard-step-link',
           disabled: step.enabled === false,
           'aria-current': step.id === state.wizardStep ? 'step' : undefined,
+          'aria-label': `${index + 1}. ${step.title}${step.completed ? ' (completed)' : ''}`,
+          'data-step-id': step.id,
+          'data-completed': step.completed ? 'true' : undefined,
           onclick: () => navigateWizardStep(step.id),
         }, [
           node('span', { class: 'wizard-step-index', text: String(index + 1) }),
-          node('span', { text: step.title }),
+          node('span', { text: labels[step.id] ?? step.title }),
         ]),
       ]),
     )),
+  ]));
+}
+
+function renderWizardContext(container, models, shell) {
+  const kind = wizardIdentityKind();
+  if (kind === 'azure' && state.wizardStep === 'account-target') {
+    if (shell.identitySurface) container.append(shell.identitySurface);
+    return;
+  }
+  if (!kind || (kind === 'gateway' && state.wizardStep === 'account-target')) return;
+  const identity = shellIdentity(models);
+  const execution = shellExecution(models);
+  const operator = models.capabilities?.operatorAuthorization;
+  container.append(node('section', { class: 'task-target', 'aria-label': 'Target and execution context' }, [
+    node('div', { class: 'task-target-heading' }, [
+      node('span', { text: 'Intended target' }),
+      state.wizardStep !== 'account-target' ? node('button', {
+        type: 'button',
+        class: 'task-context-edit',
+        text: kind === 'gateway' ? 'Edit connection' : 'Edit account & target',
+        onclick: () => {
+          navigateWizardStep('account-target', { force: true });
+          if (kind === 'gateway') requestAnimationFrame(() => focusPath('gatewayAccess.apiKey'));
+        },
+      }) : null,
+    ]),
+    node('code', { class: 'task-target-exact', text: execution.target.value, translate: 'no' }),
+    kind === 'gateway' ? node('p', { class: 'task-credential' }, [
+      `${identity.keyPresent ? 'Key present in memory' : 'Key missing'} · `,
+      node('code', { text: identity.headerName, translate: 'no' }),
+    ]) : node('p', { text: `${execution.human.value} · ${execution.runsAs.value}` }),
+    kind === 'azure' ? node('p', { text: `Active subscription: ${execution.activeSubscription.value}` }) : null,
+    kind === 'hosted' && operator?.required === true ? node('p', {
+      text: `${operator.signedIn ? 'Signed in' : 'Not signed in'} · ${operator.authorized ? 'Authorized to operate' : 'Not authorized to operate'}`,
+    }) : null,
+    node('p', {
+      class: 'task-authorization',
+      text: kind === 'gateway'
+        ? 'Key excluded from exports. Gateway authorization is unverified; the target decides whether to accept the request.'
+        : models.dossier.reviewDecision.authorization.summary,
+    }),
   ]));
 }
 
@@ -1104,7 +1170,7 @@ function renderWizardActions(container, models, steps) {
     id: 'wizard-action-bar',
     class: 'wizard-action-bar dossier-action-bar',
     'data-dossier-action-bar': 'true',
-    'data-dossier-bottom-dock': 'true',
+    'data-dossier-inline-action': 'true',
   });
   if (currentIndex > 0 && !running) {
     bar.append(node('button', {
@@ -1221,6 +1287,8 @@ function renderWizardActions(container, models, steps) {
       onclick: directReadOnlyRun ? startRun : () => continueWizard(models, steps),
     }));
   }
+  const reason = bar.querySelector('.wizard-action-reason, .wizard-action-gate');
+  if (reason) bar.append(reason);
   container.append(bar);
 }
 
@@ -1238,6 +1306,9 @@ function render() {
     priorRecipeId === state.sample.id
     && priorWizardStep === state.wizardStep;
   const priorWorkspaceScrollTop = preserveWorkspace ? priorWorkspace?.scrollTop ?? 0 : 0;
+  const openDisclosures = new Set(preserveWorkspace
+    ? [...priorWorkspace.querySelectorAll('details[open][data-disclosure-key]')].map((item) => item.dataset.disclosureKey)
+    : []);
   const focusId = state.pendingFocusId || document.activeElement?.id || '';
   state.pendingFocusId = '';
   const models = currentModels();
@@ -1297,9 +1368,9 @@ function render() {
     'aria-labelledby': 'wizard-step-title',
     'data-wizard-step': state.wizardStep,
   });
-  renderWizardStepNav(wizard, steps);
   const wizardMain = node('div', { class: 'wizard-main' });
   renderWizardHeading(wizardMain, steps);
+  renderWizardStepNav(wizardMain, steps);
   const stepHost = node('div', { class: 'wizard-step-content' });
   wizardMain.append(stepHost);
   wizard.append(wizardMain);
@@ -1334,32 +1405,26 @@ function render() {
   const showReadOnlyOperation =
     showConfigurationExports
     && models.dossier.reviewDecision.acknowledgement?.required !== true;
-  if (state.wizardStep === 'account-target') {
-    renderConfigure(stepHost, {
-      guide: models.guide,
-      configure: fieldsForWizardStep(models.configure, 'account-target'),
-      source: models.dossier.source,
-      sourceValidation: models.dossier.sourceValidation,
-      mode: 'account-target',
-      showExports: showConfigurationExports,
-    }, configureCallbacks);
-    if (showReadOnlyOperation) {
-      stepHost.append(renderOperationDisclosure(models.dossier.reviewDecision));
-    }
-  } else if (state.wizardStep === 'required-inputs' || state.wizardStep === 'credentials-options') {
-    renderConfigure(stepHost, {
+  const actionHost = node('div', { class: 'task-action-host' });
+  renderWizardActions(actionHost, models, steps);
+  if (configurationStepIds.includes(state.wizardStep)) {
+    renderWizardContext(stepHost, models, shell);
+    const formHost = node('div', { class: 'task-form' });
+    stepHost.append(formHost);
+    renderConfigure(formHost, {
       guide: models.guide,
       configure: fieldsForWizardStep(models.configure, state.wizardStep),
       source: models.dossier.source,
       sourceValidation: models.dossier.sourceValidation,
       mode: state.wizardStep,
       showExports: showConfigurationExports,
+      action: actionHost,
     }, configureCallbacks);
-    if (showReadOnlyOperation) {
-      stepHost.append(renderOperationDisclosure(models.dossier.reviewDecision));
-    }
   } else if (state.wizardStep === 'review-approve') {
     renderReview(stepHost, models.dossier.reviewDecision, {
+      compact: true,
+      exactTarget: shellExecution(models).target.value,
+      action: actionHost,
       onAcknowledge(value) {
         playgroundState.setAcknowledged(state.sample.id, value);
         render();
@@ -1394,7 +1459,20 @@ function render() {
       },
     });
   }
-  renderWizardActions(shell.actions, models, steps);
+  if (state.wizardStep === 'run-result') stepHost.append(actionHost);
+  stepHost.append(shell.contextBar);
+  if (showReadOnlyOperation) stepHost.append(renderOperationDisclosure(models.dossier.reviewDecision));
+  stepHost.append(node('details', { class: 'task-support', 'data-disclosure-key': 'source-help' }, [
+    node('summary', { text: 'Protected source & help' }),
+    node('div', { class: 'configure-actions' }, [
+      node('button', { type: 'button', class: 'btn', text: 'Inspect protected source', onclick: openSourceInspector }),
+      node('button', { type: 'button', class: 'btn', text: 'Guide & provenance', onclick: openProvenance }),
+      node('button', { type: 'button', class: 'btn', text: 'Diagnostics', onclick: openDiagnostics }),
+    ]),
+  ]));
+  for (const disclosure of shell.dossier.querySelectorAll('details[data-disclosure-key]')) {
+    if (openDisclosures.has(disclosure.dataset.disclosureKey)) disclosure.open = true;
+  }
   if (preserveWorkspace) {
     shell.dossier.scrollTop = Math.min(
       priorWorkspaceScrollTop,
@@ -1426,7 +1504,7 @@ function render() {
       const target = document.getElementById(focusId);
       if (!target) return;
       if (target.closest('#recipe-directory')) return;
-      if (shell.dossier.contains(target)) focusWorkspaceTarget(target, { block: 'nearest' });
+      if (shell.dossier.contains(target) && !preserveWorkspace) focusWorkspaceTarget(target, { block: 'nearest' });
       else target.focus({ preventScroll: true });
     });
   }

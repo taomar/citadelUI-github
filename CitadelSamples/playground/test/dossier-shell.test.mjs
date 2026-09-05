@@ -282,7 +282,8 @@ test('the renderer source enforces the dossier shell constraints', async () => {
   assert.match(shell, /DOSSIER_IDS\.globalIdentity/);
   assert.match(shell, /dossier-mobile-actions/);
   assert.match(shell, /Open guide and diagnostics/);
-  assert.match(shell, /data-compact-label/);
+  assert.match(shell, /class: 'task-identity'/);
+  assert.match(shell, /data-disclosure-key': 'execution-details'/);
   assert.match(shell, /Ready to Attempt/);
   assert.match(shell, /Entra caller/);
   assert.match(shell, /Playground identity/);

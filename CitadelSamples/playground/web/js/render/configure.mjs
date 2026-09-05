@@ -45,6 +45,17 @@ const INPUT_TYPE = Object.freeze({
   url: 'url',
 });
 
+// Presentation only: the catalogue still owns defaults, requirements and values.
+const FIELD_PRESENTATION = Object.freeze({
+  'hub.subscriptionId': {
+    help: 'The intended subscription for this recipe. Entering it does not switch the active CLI subscription.',
+  },
+  'samples.weather-tools-call.city': {
+    primary: true,
+    help: 'Mock weather. London returns Celsius; Seattle, New York City and Los Angeles return Fahrenheit.',
+  },
+});
+
 function list(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -310,7 +321,7 @@ function producerActionLabel(producer) {
   return `Open ${producer}`;
 }
 
-function renderAcquisitionHelp(field, callbacks) {
+function renderAcquisitionHelp(field, callbacks, label = 'Get this value') {
   const producer = producerLabel(field);
   const command = cliCommand(field);
   const technical = [
@@ -319,7 +330,7 @@ function renderAcquisitionHelp(field, callbacks) {
     field.notebookRef ? ['Protected source reference', field.notebookRef] : null,
   ].filter(Boolean);
   return el('details', { class: 'configure-field-help', 'data-disclosure-key': `${field.controlId}-help` }, [
-    el('summary', { id: `${field.controlId}-help-toggle`, text: 'Get this value' }),
+    el('summary', { id: `${field.controlId}-help-toggle`, text: label }),
     el('div', { class: 'configure-field-help-body' }, [
       producer
         ? el('button', {
@@ -356,6 +367,8 @@ function renderAcquisitionHelp(field, callbacks) {
       technical.length || field.help || field.fallback || field.secretNote || list(field.links).length
         ? el('details', { class: 'configure-technical-details' }, [
             el('summary', { text: 'Technical details' }),
+            field.requirementReason ? el('p', { class: 'configure-help-copy', text: field.requirementReason }) : null,
+            el('p', { class: 'configure-field-pattern', text: fieldPattern(field) }),
             field.help ? el('p', { class: 'configure-help-copy', text: field.help }) : null,
             field.fallback ? el('p', { class: 'configure-help-copy', text: `If left blank: ${field.fallback}` }) : null,
             field.secretNote ? el('p', { class: 'configure-help-copy', text: field.secretNote }) : null,
@@ -375,7 +388,6 @@ function renderFieldControl(field, callbacks, describedBy) {
     autocomplete: 'off',
     spellcheck: 'false',
     'data-focus-hook': 'configure-field',
-    'data-needed': field.pending ? 'true' : undefined,
     'aria-invalid': list(field.errors).length ? 'true' : undefined,
     'aria-describedby': describedBy.join(' '),
     'aria-required':
@@ -442,14 +454,14 @@ function renderFieldControl(field, callbacks, describedBy) {
   });
 }
 
-function renderField(field, callbacks) {
+function renderField(field, callbacks, { showAcquisition = true } = {}) {
   const reasonId = `${field.controlId}-reason`;
   const errorId = `${field.controlId}-error`;
   const neededId = `${field.controlId}-needed`;
   const warningId = `${field.controlId}-warning`;
   const describedBy = [reasonId];
   const error = list(field.errors).map(operatorMessage).join(' ');
-  const needed = list(field.needed).map(operatorMessage).join(' ');
+  const needed = field.touched ? list(field.needed).map(operatorMessage).join(' ') : '';
   const warning = list(field.warnings).map(operatorMessage).join(' ');
   if (error) describedBy.push(errorId);
   if (needed) describedBy.push(neededId);
@@ -463,6 +475,7 @@ function renderField(field, callbacks) {
       'data-parameter-path': field.path,
       'data-parameter-secret': field.inputType === 'password' ? 'true' : 'false',
       'data-requirement': field.requirement,
+      'data-field-width': field.type === 'url' ? 'long' : field.width ?? 'id',
     },
     [
       el('div', { class: 'configure-field-head' }, [
@@ -472,36 +485,36 @@ function renderField(field, callbacks) {
             ? el('span', { class: 'configure-field-origin', text: producerLabel(field) })
             : null,
         ]),
-        chip(field.status.label, field.status.tone, { mono: false }),
       ]),
-      el('p', {
-        class: 'configure-field-reason',
-        id: reasonId,
-        text: `Needed because ${String(field.requirementReason || 'this recipe requires the value').replace(/\.$/, '')}.`,
-      }),
       field.inputType === 'checkbox'
         ? el('label', { class: 'configure-checkbox' }, [
             control,
             el('span', { text: field.mustEqual === true ? 'Yes — confirmed' : 'Enabled' }),
           ])
         : control,
+      el('p', {
+        class: 'configure-field-reason',
+        id: reasonId,
+        text: field.inputType === 'password'
+         ? `${field.secretSet ? 'Key present in memory.' : 'Supply the key for this run.'} Kept in this tab only and excluded from exports.`
+         : FIELD_PRESENTATION[field.path]?.help ?? field.requirementReason ?? field.help,
+      }),
       error ? el('p', { class: 'configure-field-error', id: errorId, role: 'alert', text: error }) : null,
       !error && needed ? el('p', { class: 'configure-field-needed', id: neededId, text: needed }) : null,
       warning ? el('p', { class: 'configure-field-warning', id: warningId, text: warning }) : null,
-      el('p', { class: 'configure-field-pattern', text: fieldPattern(field) }),
-      renderAcquisitionHelp(field, callbacks),
+      showAcquisition ? renderAcquisitionHelp(field, callbacks) : null,
     ],
   );
 }
 
-function renderGroup(group, callbacks) {
+function renderGroup(group, callbacks, { compact = false } = {}) {
   const titleId = `configure-group-${group.id}`;
   const content = [
-    el('div', { class: 'configure-group-head' }, [
+    !compact ? el('div', { class: 'configure-group-head' }, [
       heading(3, titleId, group.title, 'configure-group-title'),
       chip(`${group.fields.length} field${group.fields.length === 1 ? '' : 's'}`, 'neutral', { mono: true }),
-    ]),
-    el('p', { class: 'configure-help-copy', text: group.summary }),
+    ]) : null,
+    !compact || group.id === 'secret' ? el('p', { class: 'configure-help-copy', text: group.summary }) : null,
     el('div', { class: 'configure-fields' }, group.fields.map((field) => renderField(field, callbacks))),
   ];
 
@@ -515,8 +528,7 @@ function renderGroup(group, callbacks) {
       },
       [
         el('summary', {}, [
-          el('span', { text: group.title }),
-          chip(`${group.fields.length}`, 'neutral', { mono: true }),
+          el('span', { text: compact ? 'Advanced settings' : group.title }),
         ]),
         el('div', { class: 'configure-advanced-body' }, content.slice(1)),
       ],
@@ -528,7 +540,8 @@ function renderGroup(group, callbacks) {
     {
       class: 'configure-group',
       'data-configure-group': group.id,
-      'aria-labelledby': titleId,
+      'aria-labelledby': compact ? undefined : titleId,
+      'aria-label': compact ? group.title : undefined,
     },
     content,
   );
@@ -625,6 +638,7 @@ export function renderConfigure(
     sourceValidation = {},
     mode = 'all',
     showExports = null,
+    action = null,
   } = {},
   callbacks = {},
 ) {
@@ -640,16 +654,36 @@ export function renderConfigure(
     || mode === 'credentials-options';
   const showEvidence = mode === 'all';
   const shouldShowExports = showExports ?? (mode === 'all' || mode === 'credentials-options');
+  const compact = mode !== 'all';
+  const advanced = contract.sections.find((group) => group.id === 'advanced');
+  const primaryOptions = compact
+    ? list(advanced?.fields).filter((field) => FIELD_PRESENTATION[field.path]?.primary)
+    : [];
+  const primaryPaths = new Set(primaryOptions.map((field) => field.path));
+  const hasCoreFields = contract.sections.some((group) => group.id !== 'advanced') || primaryOptions.length > 0;
+  const primaryGroups = contract.sections.filter((group) => !compact || group.id !== 'advanced');
+  const advancedFields = list(advanced?.fields).filter((field) => !primaryPaths.has(field.path));
+  if (compact && advanced && !hasCoreFields) {
+    primaryGroups.push({ ...advanced, collapsed: false });
+  }
 
   replace(container, [
-    el('article', { class: `dossier-configure dossier-configure-${mode}`, 'aria-labelledby': titleId }, [
-      el('header', { class: 'configure-header' }, [
+    el('article', {
+      class: `dossier-configure dossier-configure-${mode}`,
+      'aria-labelledby': compact ? 'wizard-step-title' : titleId,
+    }, [
+      !compact ? el('header', { class: 'configure-header' }, [
         heading(1, titleId, text(guide.title, 'Configure this run'), 'configure-title'),
         guide.summary ? el('p', { class: 'configure-summary', text: guide.summary }) : null,
-      ]),
+      ]) : null,
       showContext ? renderContext(guide) : null,
-      showInputs ? el('section', { id: DOSSIER_IDS.inputs, class: 'configure-inputs', 'aria-labelledby': 'configure-inputs-title' }, [
-        el('div', { class: 'configure-inputs-head' }, [
+      showInputs ? el('form', {
+        id: DOSSIER_IDS.inputs,
+        class: 'configure-inputs',
+        'aria-label': 'Recipe inputs',
+        onsubmit: (event) => event.preventDefault(),
+      }, [
+        !compact ? el('div', { class: 'configure-inputs-head' }, [
           el('div', {}, [
             heading(2, 'configure-inputs-title', 'Inputs', 'configure-section-title'),
             configure.contractLine
@@ -659,17 +693,23 @@ export function renderConfigure(
           contract.firstBlockingPath
             ? chip(`${contract.blockingCount} needed`, 'danger', { mono: true })
             : chip('Ready to review', contract.ready ? 'success' : 'danger'),
-        ]),
-        ...contract.sections.map((group) => renderGroup(group, callbacks)),
+        ]) : null,
+        ...primaryGroups.map((group) => renderGroup(group, callbacks, { compact })),
+        primaryOptions.length ? el('div', { class: 'configure-fields' }, primaryOptions.map((field) => renderField(field, callbacks, { showAcquisition: false }))) : null,
+        action,
+        compact && hasCoreFields && advancedFields.length
+          ? renderGroup({ ...advanced, fields: advancedFields }, callbacks, { compact })
+          : null,
+        ...primaryOptions.map((field) => renderAcquisitionHelp(field, callbacks, `${field.label} details`)),
         shouldShowExports
           ? renderExports(configure, callbacks)
           : null,
-        el('p', {
+        !compact ? el('p', {
           class: 'configure-help-copy configure-review-note',
           text: contract.ready
             ? 'Required values are complete.'
             : 'Complete or correct the blocking fields to continue.',
-        }),
+        }) : null,
       ]) : null,
       showEvidence ? renderEvidenceSummary(source, sourceValidation, callbacks) : null,
     ]),

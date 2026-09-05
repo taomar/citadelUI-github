@@ -1,16 +1,14 @@
-/* Signed Run Dossier shell: one masthead, one context bar, one recipe navigator. */
+/* Signed Run Dossier shell: one masthead and one recipe navigator. */
 
 .dossier-shell {
   --dossier-rail-width: 15rem;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr);
   grid-template-areas:
     'masthead'
-    'context'
     'workspace'
-    'content'
-    'actions';
+    'content';
   min-height: 100dvh;
   overflow: hidden;
   background: var(--ground, #f1f5f9);
@@ -305,25 +303,25 @@ code.dossier-identity-value {
 }
 
 .execution-context-bar {
-  grid-area: context;
   min-width: 0;
-  border-bottom: 1px solid var(--rule-strong, #b3c3d2);
-  background: var(--band, #f6f9fc);
+  border-block: 1px solid var(--rule);
+  background: var(--sheet);
 }
 
 .execution-context-disclosure > summary {
-  display: none;
+  display: list-item;
 }
 
 .execution-context-summary {
   min-height: var(--dossier-control-size, 2.5rem);
-  padding: var(--sp-4, 0.5rem) var(--gutter, 1rem);
+  padding: var(--sp-5) 0;
+  font-size: var(--t-small);
   cursor: pointer;
 }
 
 .execution-context-summary-label,
 .execution-context-summary-state {
-  font-weight: 700;
+  font-weight: 400;
 }
 
 .execution-context-summary-target {
@@ -344,7 +342,7 @@ code.dossier-identity-value {
 
 .execution-context-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .execution-context-item {
@@ -353,7 +351,7 @@ code.dossier-identity-value {
   min-width: 0;
   min-height: 3.25rem;
   padding: var(--sp-3, 0.25rem) var(--gutter, 1rem);
-  border-right: 1px solid var(--rule, #d8e2ec);
+  border-bottom: 1px solid var(--rule);
 }
 
 .execution-context-item:last-child {
@@ -362,16 +360,15 @@ code.dossier-identity-value {
 
 .execution-context-label {
   color: var(--ink-3, #526171);
-  font-size: var(--t-micro, 0.6875rem);
+  font-size: var(--t-small);
   font-weight: 700;
 }
 
 .execution-context-value,
 .execution-context-detail {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .execution-context-value {
@@ -386,22 +383,13 @@ code.execution-context-value {
 
 .execution-context-detail {
   color: var(--ink-3, #526171);
-  font-size: var(--t-micro, 0.6875rem);
-}
-
-.execution-context-item[data-context-state='ready-to-attempt'] {
-  box-shadow: inset 0 -2px 0 var(--success, #107c10);
-}
-
-.execution-context-item[data-context-state='blocked'] {
-  box-shadow: inset 0 -2px 0 var(--warning, #8a3707);
+  font-size: var(--t-small);
 }
 
 .hosted-identity-path {
-  display: flex;
+  display: grid;
   align-items: stretch;
   min-width: 0;
-  overflow-x: auto;
   border-top: 1px solid var(--rule, #d8e2ec);
   scrollbar-width: thin;
 }
@@ -783,26 +771,21 @@ code.execution-context-value {
   background: var(--sheet, #fff);
 }
 
-.dossier-action-host {
-  grid-area: actions;
-  z-index: 30;
-  min-width: 0;
-  background: var(--sheet, #fff);
-}
-
 @media (min-width: 75rem) {
   .dossier-shell {
     grid-template-columns: var(--dossier-rail-width) minmax(0, 1fr);
     grid-template-areas:
       'masthead masthead'
-      'context context'
       'drawer workspace'
-      'drawer content'
-      'drawer actions';
+      'drawer content';
   }
 
   .dossier-directory-toggle,
   .recipe-directory-close {
+    display: none;
+  }
+
+  .dossier-workspace-bar {
     display: none;
   }
 }
@@ -847,13 +830,6 @@ code.execution-context-value {
 
   .dossier-recipe-drawer[data-open='true'] .recipe-directory {
     transform: translateX(0);
-  }
-
-  .execution-context-disclosure > summary {
-    display: grid;
-    grid-template-columns: max-content minmax(0, 1fr) max-content;
-    align-items: center;
-    gap: var(--sp-4, 0.5rem);
   }
 
   .dossier-directory-toggle {

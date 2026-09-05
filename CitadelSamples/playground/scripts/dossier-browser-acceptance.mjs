@@ -14,7 +14,7 @@ import { createPlaygroundServer } from '../server.mjs';
 import { createExecutionContextManager } from '../src/server/executionContextManager.mjs';
 import { createCheckReporter, launchBrowserHarness } from './browser-harness.mjs';
 
-const ARTIFACT_DIRECTORY = fileURLToPath(new URL('../.artifacts/dossier/', import.meta.url));
+const ARTIFACT_DIRECTORY = resolve(argumentValue('--artifacts') ?? fileURLToPath(new URL('../.artifacts/dossier/', import.meta.url)));
 const PLAYGROUND_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SECRET = 'DOSSIER-ACCEPTANCE-SECRET';
 const ACTIVE_SUBSCRIPTION_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -294,7 +294,13 @@ export function viewportContractIssues(snapshot, scenario) {
   }
   if (snapshot.nestedFormScrollers > 0) issues.push('the form contains a nested vertical scroller');
   if (snapshot.visibleStepContents !== 1) issues.push(`expected one visible step surface, got ${snapshot.visibleStepContents}`);
-  if (!['sticky', 'fixed'].includes(snapshot.actionBarPosition)) issues.push('wizard action bar is not sticky or fixed');
+  if (snapshot.actionBarPosition !== 'static' || !snapshot.actionInWorkspace) {
+    issues.push('the task action must remain in the workspace reading flow');
+  }
+  if (!snapshot.stepNavVisible || snapshot.stepSelectorVisible) issues.push('use one inline step navigation at every width');
+  if (snapshot.contextDisclosureOpen || !snapshot.contextSummaryVisible) {
+    issues.push('execution details must remain available through a collapsed disclosure');
+  }
   if (snapshot.primaryActionCount !== 1) issues.push(`expected one primary page action, got ${snapshot.primaryActionCount}`);
   if (!/(auto|scroll)/.test(snapshot.mainOverflowY)) {
     issues.push(`wizard workspace overflow-y is ${snapshot.mainOverflowY || 'unset'}, not auto`);
@@ -317,17 +323,11 @@ export function viewportContractIssues(snapshot, scenario) {
     if (!snapshot.directoryVisible || snapshot.drawerControlVisible) {
       issues.push('desktop must expose the recipe rail without a duplicate drawer control');
     }
-    if (!snapshot.stepNavVisible || snapshot.stepSelectorVisible) {
-      issues.push('desktop must use the left wizard step navigation');
-    }
     if (!/(auto|scroll)/.test(snapshot.directoryOverflowY)) {
       issues.push('desktop recipe navigation is not independently scrollable');
     }
     if (snapshot.minimumControlHeight < 39.5) {
       issues.push(`desktop controls are only ${snapshot.minimumControlHeight}px high`);
-    }
-    if (!snapshot.contextDisclosureOpen || snapshot.contextSummaryVisible) {
-      issues.push('desktop must expose execution context without a redundant disclosure row');
     }
   } else {
     if (snapshot.directoryVisible || !snapshot.drawerControlVisible) {
@@ -340,15 +340,6 @@ export function viewportContractIssues(snapshot, scenario) {
       if (snapshot.drawerControlWidth < snapshot.workspaceContentWidth - 2) {
         issues.push('narrow recipe navigation does not own the full workspace row');
       }
-      if (snapshot.stepSelectorTop < snapshot.drawerControlBottom - 1) {
-        issues.push('narrow recipe navigation still competes horizontally with the step selector');
-      }
-    }
-    if (snapshot.stepNavVisible || !snapshot.stepSelectorVisible) {
-      issues.push('compact layouts must use the current-step selector');
-    }
-    if (!['sticky', 'fixed'].includes(snapshot.actionBarPosition)) {
-      issues.push('compact wizard action bar is not persistently docked');
     }
     if (!snapshot.safeAreaRule) issues.push('compact action bar has no safe-area inset rule');
     if (['phone', 'zoom'].includes(scenario.breakpoint) && snapshot.minimumControlHeight < 43.5) {
@@ -356,12 +347,6 @@ export function viewportContractIssues(snapshot, scenario) {
     }
     if (snapshot.contextHorizontalOverflow) {
       issues.push('compact execution context requires horizontal scrolling');
-    }
-    if (snapshot.contextDisclosureOpen || !snapshot.contextSummaryVisible) {
-      issues.push('compact layouts must collapse execution detail behind one visible summary');
-    }
-    if (!snapshot.contextSummaryTargetVisible) {
-      issues.push('compact execution summary must keep the target visible');
     }
   }
   return issues;
@@ -491,7 +476,14 @@ async function navigateToRecipe(harness, recipeId, stepId = 'account-target', { 
   url.searchParams.set('testExecutor', '');
   url.searchParams.set('recipe', recipeId);
   url.hash = `step=${stepId}`;
-  await harness.page.send('Page.navigate', { url: url.href });
+  const removeDialog = harness.page.on('Page.javascriptDialogOpening', ({ type }) => {
+    if (type === 'beforeunload') void harness.page.send('Page.handleJavaScriptDialog', { accept: true });
+  });
+  try {
+    await harness.page.send('Page.navigate', { url: url.href });
+  } finally {
+    removeDialog();
+  }
   await harness.waitFor(
     "globalThis.__dossierNavigationMarker !== 'pending'",
     { timeoutMs: 30_000, label: `${recipeId} document navigation` },
@@ -530,12 +522,7 @@ async function setValues(harness, values) {
 
 async function clickContinue(harness) {
   const before = await harness.evaluate("document.querySelector('[data-wizard-step]')?.dataset.wizardStep");
-  const clicked = await harness.evaluate(`(() => {
-    const button = document.querySelector('#wizard-action-bar .btn-primary');
-    button?.click();
-    return Boolean(button);
-  })()`);
-  if (!clicked) return false;
+  await workspacePointer(harness, '#wizard-action-bar .btn-primary');
   await harness.waitFor(
     `document.querySelector('[data-wizard-step]')?.dataset.wizardStep !== ${JSON.stringify(before)}`,
     { label: `wizard to advance from ${before}` },
@@ -675,6 +662,7 @@ async function wizardSnapshot(harness) {
     return {
       recipeId: document.querySelector('.dossier-current-id')?.textContent ?? '',
       title: document.getElementById('wizard-step-title')?.textContent ?? '',
+      stepTitle: document.querySelector('.wizard-step-link[aria-current="step"]')?.getAttribute('aria-label') ?? '',
       stepProgress: document.querySelector('.dossier-stage-progress > span')?.textContent.trim() ?? '',
       stepCount: document.querySelectorAll('.wizard-step-link').length,
       hasReviewStep: [...document.querySelectorAll('.wizard-step-link')]
@@ -686,6 +674,7 @@ async function wizardSnapshot(harness) {
       identityKind: document.querySelector('.execution-context-bar')?.dataset.identityKind ?? '',
       azureAccountControls: /Sign in with Microsoft|Switch Azure account|Account \\/ subscription|Set Active/
         .test(document.body.textContent ?? ''),
+      signInEnabled: document.querySelector('.dossier-identity-action-primary')?.disabled === false,
       terminalFallback: /Refresh Azure CLI Status/.test(document.body.textContent ?? ''),
       deviceFlowContent: /device\\s*code|microsoft\\.com\\/devicelogin/i.test(document.body.textContent ?? ''),
       futureStepDisabled: [...document.querySelectorAll('.wizard-step-link')]
@@ -796,6 +785,7 @@ async function viewportSnapshot(harness) {
       stepSelectorVisible: visible(stepSelector),
       stepSelectorTop: stepSelector?.getBoundingClientRect().top ?? 0,
       actionBarPosition: actionBar ? getComputedStyle(actionBar).position : '',
+      actionInWorkspace: main?.contains(actionBar) === true,
       primaryActionCount: [...document.querySelectorAll('#wizard-action-bar .btn-primary')].filter(visible).length,
       safeAreaRule,
       minimumControlHeight: controls.length
@@ -846,17 +836,22 @@ async function scrollReachabilitySnapshot(harness, path) {
     target.focus({ preventScroll: true });
     target.scrollIntoView({ block: 'center', inline: 'nearest' });
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const targetVisible = withinWorkspace(target);
     last.focus({ preventScroll: true });
     last.scrollIntoView({ block: 'center', inline: 'nearest' });
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const lastVisible = withinWorkspace(last);
+    const activeIsLast = document.activeElement === last;
+    action.scrollIntoView({ block: 'center', inline: 'nearest' });
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     return {
       found: true,
       initialTargetVisible,
       actionVisibleBefore,
-      targetVisible: withinWorkspace(target),
-      lastVisible: withinWorkspace(last),
+      targetVisible,
+      lastVisible,
       actionVisibleAfter: visible(action) && withinViewport(action),
-      activeIsLast: document.activeElement === last,
+      activeIsLast,
       targetPath: target.closest('[data-parameter-path]')?.dataset.parameterPath ?? '',
       lastPath: last.closest('[data-parameter-path]')?.dataset.parameterPath ?? '',
       scrollTop: main.scrollTop,
@@ -967,11 +962,7 @@ async function sourceSnapshot(harness) {
 
 async function validationFocusSnapshot(harness) {
   const before = await harness.evaluate("document.querySelector('[data-wizard-step]')?.dataset.wizardStep");
-  await harness.evaluate(`(() => {
-    const button = document.querySelector('#wizard-action-bar .btn-primary');
-    button?.click();
-    return true;
-  })()`);
+  await workspacePointer(harness, '#wizard-action-bar .btn-primary');
   await settle(harness);
   return harness.evaluate(`(() => {
     const main = document.getElementById('run-dossier');
@@ -980,7 +971,7 @@ async function validationFocusSnapshot(harness) {
     const mainRect = main?.getBoundingClientRect();
     const actionRect = action?.getBoundingClientRect();
     const activeRect = active?.getBoundingClientRect();
-    const visibleBottom = Math.min(mainRect?.bottom ?? innerHeight, actionRect?.top ?? innerHeight);
+    const visibleBottom = Math.min(mainRect?.bottom ?? innerHeight, innerHeight);
     return {
       before: ${JSON.stringify(before)},
       after: document.querySelector('[data-wizard-step]')?.dataset.wizardStep,
@@ -1072,6 +1063,8 @@ async function longActionLabelSnapshot(harness) {
     'samples.cleanup.deleteWeatherSourceApi': true,
   });
   const reachedReview = await advanceToReview(harness);
+  await harness.evaluate("document.querySelector('#wizard-action-bar .wizard-primary').scrollIntoView({block:'center'})");
+  await settle(harness);
   const snapshot = await harness.evaluate(`(() => {
     const shell = document.getElementById('dossier-shell');
     const action = document.getElementById('wizard-action-bar');
@@ -1278,7 +1271,7 @@ async function hostedGatewaySnapshot(harness) {
   })()`);
   await settle(harness);
   return harness.evaluate(`(() => ({
-    title: document.getElementById('wizard-step-title')?.textContent ?? '',
+    title: document.querySelector('.wizard-step-link[aria-current="step"]')?.getAttribute('aria-label') ?? '',
     identityKind: document.querySelector('.execution-context-bar')?.dataset.identityKind ?? '',
     hostedPath: Boolean(document.querySelector('.hosted-identity-path')),
     gatewayKeyField: Boolean(
@@ -1513,14 +1506,15 @@ async function secretSnapshot(harness) {
 
 async function typingContinuitySnapshot(harness) {
   await navigateToRecipe(harness, 'weather-mcp-discovery');
+  await workspacePointer(harness, '.configure-advanced > summary');
   return harness.evaluate(`(async () => {
     const row = [...document.querySelectorAll('[data-parameter-path]')]
-      .find((candidate) => candidate.dataset.parameterPath === 'hub.gatewayUrl');
+      .find((candidate) => candidate.dataset.parameterPath === 'gatewayAccess.subscriptionKeyHeader');
     const control = row?.querySelector('input');
     if (!control) return { found: false };
-    control.dataset.acceptanceIdentity = 'gateway-url-control';
+    control.dataset.acceptanceIdentity = 'gateway-header-control';
     control.focus();
-    control.value = 'https://gateway.example.test/very/long/operator/path';
+    control.value = 'x-gateway-operator-acceptance-header';
     control.setSelectionRange(29, 29);
     control.dispatchEvent(new Event('input', { bubbles: true }));
     await new Promise((resolve) => setTimeout(resolve, 400));
@@ -1529,7 +1523,7 @@ async function typingContinuitySnapshot(harness) {
       value: control.value,
       active: document.activeElement === control,
       selectionStart: control.selectionStart,
-      identityPreserved: control.dataset.acceptanceIdentity === 'gateway-url-control',
+      identityPreserved: control.dataset.acceptanceIdentity === 'gateway-header-control',
     };
   })()`);
 }
@@ -1540,16 +1534,11 @@ async function gatewayKeyNavigationSnapshot(harness) {
     'hub.gatewayUrl': 'https://gateway.example.test',
     'gatewayAccess.apiKey': SECRET,
   });
-  const clicked = await harness.evaluate(`(() => {
-    const button = [...document.querySelectorAll('button')]
-      .find((candidate) => candidate.textContent.trim() === 'Manage gateway key');
-    button?.click();
-    return Boolean(button);
-  })()`);
-  if (!clicked) return { readyToRun: false, clicked: false };
+  await clickContinue(harness);
+  await workspacePointer(harness, '.task-context-edit');
   await harness.waitFor(
     "document.querySelector('[data-wizard-step]')?.dataset.wizardStep === 'account-target'",
-    { label: 'Gateway connection after Manage gateway key' },
+    { label: 'Gateway connection after Edit connection' },
   );
   await settle(harness);
   return harness.evaluate(`(() => ({
@@ -1751,15 +1740,15 @@ async function runScenario(harness, reporter, scenario) {
       reporter.check(`${scenario.name}: gateway recipe has no Azure account controls`, !wizard.azureAccountControls);
       reporter.check(
         `${scenario.name}: gateway task is direct and skips low-risk review`,
-        wizard.title.includes('Gateway connection') && wizard.hasReviewStep === false,
+        wizard.stepTitle.includes('Gateway connection') && wizard.hasReviewStep === false,
         JSON.stringify(wizard),
       );
     }
     if (scenario.recipeId === 'apim-discovery') {
-      reporter.includes(`${scenario.name}: Azure step title is correct`, wizard.title, 'Azure account & target');
+      reporter.includes(`${scenario.name}: Azure step title is correct`, wizard.stepTitle, 'Azure account & target');
       reporter.check(
         `${scenario.name}: unavailable system login fails closed without exposing the private CLI path`,
-        wizard.terminalFallback && !wizard.azureAccountControls,
+        wizard.terminalFallback && !wizard.signInEnabled,
         JSON.stringify(wizard),
       );
     }
@@ -1790,10 +1779,9 @@ async function runScenario(harness, reporter, scenario) {
   if (scenario.requiresWorkspaceScroll) {
     const reachability = await scrollReachabilitySnapshot(harness, scenario.reachabilityPath);
     reporter.check(
-      `${scenario.name}: lower and last fields remain reachable above the action dock`,
+      `${scenario.name}: lower fields and the following action share one reachable scroll flow`,
       reachability.found &&
         !reachability.initialTargetVisible &&
-        reachability.actionVisibleBefore &&
         reachability.targetVisible &&
         reachability.lastVisible &&
         reachability.actionVisibleAfter &&
@@ -2011,7 +1999,7 @@ async function checkSystemAzureIdentityControls(reporter) {
       JSON.stringify(initial),
     );
 
-    await harness.evaluate("document.querySelector('.dossier-identity-action-primary')?.click()");
+    await workspacePointer(harness, '.dossier-identity-action-primary');
     await harness.waitFor(
       "[...document.querySelectorAll('.dossier-identity-action')].some((button) => button.textContent === 'Cancel sign-in')",
       { label: 'cancellable system Azure login' },
@@ -2025,9 +2013,7 @@ async function checkSystemAzureIdentityControls(reporter) {
       pending.cancel && !pending.deviceMaterial,
       JSON.stringify(pending),
     );
-    await harness.evaluate(
-      "[...document.querySelectorAll('.dossier-identity-action')].find((button) => button.textContent === 'Cancel sign-in')?.click()",
-    );
+    await workspacePointer(harness, '.task-identity > .dossier-identity-action');
     await harness.waitFor(
       "document.querySelector('.dossier-identity-action-primary')?.textContent === 'Switch Azure account'",
       { label: 'cancelled login recovery' },
@@ -2038,6 +2024,8 @@ async function checkSystemAzureIdentityControls(reporter) {
       { label: 'refreshed Azure subscription inventory' },
     );
 
+    await workspacePointer(harness, '.task-account-controls > summary');
+    await navigationGroup(harness, 'exercise');
     await harness.evaluate(`(() => {
       const select = document.getElementById('dossier-account-subscription');
       select.value = ${JSON.stringify(ALTERNATE_SUBSCRIPTION_ID)};
@@ -2284,7 +2272,127 @@ export async function navigationPointer(harness, selector, { scroll = false } = 
     });
     await harness.evaluate('new Promise(resolve => setTimeout(resolve, 80))');
   }
-  throw new Error(`Navigation target is not visibly clickable: ${selector}`);
+  const obstruction = await harness.evaluate(`(() => {
+    const node = document.querySelector(${JSON.stringify(selector)});
+    const rect = node?.getBoundingClientRect();
+    const covering = rect ? document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2) : null;
+    return { step: document.querySelector('.wizard-step[aria-current="step"]')?.dataset.wizardStep,
+      rect: rect?.toJSON(), active: document.activeElement?.id,
+      covering: covering?.outerHTML.slice(0, 240), dialog: !!document.querySelector('dialog[open]') };
+  })()`);
+  throw new Error(`Navigation target is not visibly clickable: ${selector} ${JSON.stringify(obstruction)}`);
+}
+
+async function workspacePointer(harness, selector) {
+  await settle(harness);
+  await harness.evaluate(`(() => {
+    const control = document.querySelector(${JSON.stringify(selector)});
+    if (!control || control.closest('[inert]') || control.matches(':disabled')) {
+      throw new Error('The requested workspace control is unavailable.');
+    }
+    control.scrollIntoView({ block: 'center', inline: 'nearest' });
+  })()`);
+  await settle(harness);
+  await navigationPointer(harness, selector);
+}
+
+async function runWorkspaceComposition(harness, reporter) {
+  const riskOnly = process.argv.includes('--workspace-risk-only');
+  const measurements = [];
+  const capture = async (name, fieldId) => {
+    await harness.evaluate("document.getElementById('run-dossier').scrollTop = 0");
+    await settle(harness);
+    const measurement = await harness.evaluate(`(() => {
+      const action = document.querySelector('#wizard-action-bar .wizard-primary');
+      const field = document.getElementById(${JSON.stringify(fieldId ?? '')});
+      const form = field?.closest('form');
+      const advanced = document.querySelector('.configure-advanced');
+      const box = n => { const r = n?.getBoundingClientRect(); return r ? {top:r.top,bottom:r.bottom,width:r.width,height:r.height} : null; };
+      const main = document.getElementById('run-dossier');
+      return {
+        viewport: {width:innerWidth,height:innerHeight},
+        heading: document.querySelector('#wizard-step-title')?.textContent,
+        headingCount: main.querySelectorAll('h1').length,
+        column: box(document.querySelector('.recipe-wizard')),
+        field: box(field), action: box(action),
+        actionInForm: !!form && form.contains(action),
+        actionPosition: getComputedStyle(document.getElementById('wizard-action-bar')).position,
+        advancedAfterAction: !!advanced && !!(action.compareDocumentPosition(advanced) & Node.DOCUMENT_POSITION_FOLLOWING),
+        advancedOpen: advanced?.open === true,
+        target: document.querySelector('.task-target-exact')?.textContent ?? '',
+        context: document.querySelector('.task-target')?.textContent ?? '',
+        initialErrors: main.querySelectorAll('.configure-field-error,.configure-field-needed').length,
+        overflow: main.scrollWidth > main.clientWidth + 1 || document.documentElement.scrollWidth > innerWidth,
+        fields: [...main.querySelectorAll('[data-parameter-path]')].map(n=>({path:n.dataset.parameterPath,type:n.querySelector('input,select,textarea')?.type})),
+      };
+    })()`);
+    measurements.push({ name, ...measurement });
+    const { data } = await harness.page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    await writeFile(resolve(ARTIFACT_DIRECTORY, `${name}.png`), Buffer.from(data, 'base64'));
+    reporter.check(`${name}: one bounded task heading without horizontal overflow`,
+      measurement.headingCount === 1 && measurement.column.width <= 737 && !measurement.overflow, JSON.stringify(measurement));
+    return measurement;
+  };
+  try {
+    for (const viewport of riskOnly ? [] : [{width:1440,height:900},{width:660,height:800},{width:390,height:844}]) {
+      await harness.setViewport({ ...viewport, mobile: viewport.width === 390 });
+      await navigateToRecipe(harness, 'azure-context-check', 'account-target', { previewOnly: true });
+      const azure = await capture(`workspace-azure-${viewport.width}`, 'f-hub-subscriptionId');
+      reporter.check(`${viewport.width}: Azure field and action share one form, without untouched errors`,
+        azure.actionInForm && azure.actionPosition === 'static' && azure.initialErrors === 0 &&
+        azure.field.width <= 449 && azure.action.top - azure.field.bottom < 160, JSON.stringify(azure));
+      await navigateToRecipe(harness, 'weather-tools-call');
+      await setValues(harness, { 'hub.gatewayUrl':'https://gateway.example.test', 'gatewayAccess.apiKey':SECRET });
+      await capture(`workspace-weather-connection-${viewport.width}`, 'f-gatewayAccess-apiKey');
+      await clickContinue(harness);
+      const weather = await capture(`workspace-weather-call-${viewport.width}`, 'f-samples-weather-tools-call-city');
+      reporter.check(`${viewport.width}: default City is immediate and Advanced follows the real action`,
+        weather.actionInForm && weather.advancedAfterAction && !weather.advancedOpen &&
+        weather.action.top - weather.field.bottom < 130 &&
+        weather.target === 'https://gateway.example.test/mcp/weather-tool-mcp/mcp' &&
+        /Key present in memory/.test(weather.context) && /authorization is unverified/.test(weather.context), JSON.stringify(weather));
+      await workspacePointer(harness, '.configure-advanced > summary');
+      await workspacePointer(harness, '#f-samples-weather-tools-call-toolName');
+      await navigationKey(harness, 'Tab', 9);
+      reporter.check(`${viewport.width}: optional field keyboard navigation stays inside the open form`,
+        await harness.evaluate("document.querySelector('.configure-advanced').open && document.querySelector('#dossier-inputs').contains(document.activeElement)"));
+    }
+    if (!riskOnly) {
+      await harness.setViewport({width:1440,height:900,mobile:false});
+      await navigateToRecipe(harness, 'publish-assets');
+      await capture('workspace-publish-1440', 'f-hub-location');
+      await harness.setViewport({width:390,height:844,mobile:true});
+      await capture('workspace-publish-390', 'f-hub-location');
+    }
+    await harness.setViewport({width:390,height:844,mobile:true});
+    await navigateToRecipe(harness, 'cleanup');
+    await prepareCleanupReview(harness);
+    await workspacePointer(harness, '#wizard-action-bar .wizard-primary');
+    await settle(harness);
+    const destructive = await harness.evaluate(`(() => {
+      const dialog=document.getElementById('destructive-run-dialog');
+      const scroll=dialog.querySelector('.destructive-confirmation-scroll');
+      scroll.scrollTop=0;
+      return {open:dialog.open,text:scroll.innerText,focusInside:dialog.contains(document.activeElement)};
+    })()`);
+    const { data } = await harness.page.send('Page.captureScreenshot', {format:'png',captureBeyondViewport:false});
+    await writeFile(resolve(ARTIFACT_DIRECTORY,'workspace-cleanup-dialog-390.png'),Buffer.from(data,'base64'));
+    reporter.check('Cleanup native dialog initially exposes target and identity before acknowledgement',
+      destructive.open && destructive.focusInside && /apim-wizard-acceptance/.test(destructive.text) &&
+      /acceptance@example.test/.test(destructive.text), JSON.stringify(destructive));
+    await navigationKey(harness,'Escape',27);
+    await harness.setViewport({width:1440,height:900,mobile:false});
+    await hostedGatewaySnapshot(harness);
+    await capture('workspace-hosted-1440');
+    await workspacePointer(harness,'.execution-context-disclosure > summary');
+    const hosted = await harness.evaluate("document.querySelector('.execution-context-body').innerText");
+    reporter.check('Hosted details retain each distinct authority hop', /Entra caller/.test(hosted) && /Playground identity/.test(hosted) &&
+      /Relay identity/.test(hosted) && /Key Vault \/ key/.test(hosted));
+    const hostedImage=await harness.page.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+    await writeFile(resolve(ARTIFACT_DIRECTORY,'workspace-hosted-details-1440.png'),Buffer.from(hostedImage.data,'base64'));
+  } finally {
+    await writeFile(resolve(ARTIFACT_DIRECTORY, 'workspace-measurements.json'), JSON.stringify({measurements,checks:reporter.results},null,2));
+  }
 }
 
 async function navigationTabTo(harness, selector) {
@@ -2672,6 +2780,13 @@ async function main() {
     await waitForWizard(harness, 'azure-context-check');
     guard = await installRequestGuard(harness);
 
+    await runWorkspaceComposition(harness, reporter);
+    if (process.argv.includes('--workspace-only')) {
+      reportIssues(reporter, 'workspace attempted no live request', nonLoopbackRequestIssues(guard.requests, harness.baseUrl));
+      reporter.check('workspace has no browser errors', harness.pageErrors.length === 0, harness.pageErrors.join('; '));
+      if (!reporter.finish().ok) process.exitCode = 1;
+      return;
+    }
     await navigateToRecipe(harness, 'publish-assets');
     const validation = await validationFocusSnapshot(harness);
     reporter.check(
@@ -2706,9 +2821,8 @@ async function main() {
 
     const simpleRecipe = await simpleRecipeScrollSnapshot(harness);
     reporter.check(
-      'a simple desktop recipe has no unnecessary workspace scrollbar',
-      /(auto|scroll)/.test(simpleRecipe.overflowY) &&
-        simpleRecipe.scrollHeight <= simpleRecipe.clientHeight + 1,
+      'a simple desktop recipe retains one scroll workspace for its secondary details',
+      /(auto|scroll)/.test(simpleRecipe.overflowY) && simpleRecipe.clientHeight > 600,
       JSON.stringify(simpleRecipe),
     );
 
@@ -2865,13 +2979,13 @@ async function main() {
         typing.active &&
         typing.identityPreserved &&
         typing.selectionStart === 29 &&
-        typing.value === 'https://gateway.example.test/very/long/operator/path',
+        typing.value === 'x-gateway-operator-acceptance-header',
       JSON.stringify(typing),
     );
 
     const gatewayKeyNavigation = await gatewayKeyNavigationSnapshot(harness);
     reporter.check(
-      'Manage gateway key returns to Gateway connection and focuses the masked control',
+      'Edit connection returns to Gateway connection and focuses the masked control',
       gatewayKeyNavigation.readyToRun &&
         gatewayKeyNavigation.clicked &&
         gatewayKeyNavigation.step === 'account-target' &&

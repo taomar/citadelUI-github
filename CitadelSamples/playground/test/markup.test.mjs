@@ -79,7 +79,7 @@ test('the shell renderer owns labelled masthead, navigation, main, context, and 
 
 test('the wizard replaces top-level workflow tabs and derives honest step progress', () => {
   assert.doesNotMatch(html, /role="tablist"|role="tabpanel"|tab-(guide|code|request|response)/);
-  assert.match(shell, /`Step \$\{currentIndex \+ 1\} of \$\{Math\.max\(steps\.length, 1\)\}`/);
+  assert.match(main, /`Step \$\{steps\.findIndex[\s\S]*?of \$\{steps\.length\}`/);
   assert.match(main, /WIZARD_STEP_DEFINITIONS/);
   assert.match(main, /filter\(\(step\) => step\.id !== 'account-target' \|\| identityKind\)/);
   assert.match(main, /filter\(\(step\) => step\.id !== 'required-inputs' \|\| required\.groups\.length > 0\)/);
@@ -89,10 +89,12 @@ test('the wizard replaces top-level workflow tabs and derives honest step progre
   assert.match(output, /Artifacts/);
 });
 
-test('future wizard steps are disabled and one footer owns the page primary action', () => {
+test('future wizard steps are disabled and one form action owns the primary action', () => {
   assert.match(main, /disabled: step\.enabled === false/);
   assert.match(main, /id: 'wizard-action-bar'/);
   assert.match(main, /class: 'btn btn-primary wizard-primary'/);
+  assert.match(main, /action: actionHost/);
+  assert.match(configure, /el\('form',[\s\S]*?'aria-label': 'Recipe inputs'/);
   assert.doesNotMatch(configure, /configure-missing-action[\s\S]*?btn-primary/);
 });
 
@@ -121,7 +123,8 @@ test('system-browser account controls are capability-gated without exposing a te
 });
 
 test('field help is concise by default and technical data stays behind disclosure', () => {
-  assert.match(configure, /text: `Needed because /);
+  assert.match(configure, /FIELD_PRESENTATION\[field\.path\]\?\.help \?\? field\.requirementReason/);
+  assert.doesNotMatch(configure, /chip\(field\.status\.label/);
   assert.match(configure, /text: 'Enter manually'/);
   assert.match(configure, /text: 'Show CLI command'/);
   assert.match(configure, /text: 'Technical details'/);
@@ -153,16 +156,13 @@ test('native top-layer dialogs own source, diagnostics, provenance, and destruct
   assert.match(responsiveCss, /dialog:not\(\[open\]\)\s*\{[\s\S]*?display: none/);
 });
 
-test('the responsive contract uses a rail, centered task surface, compact selector, and safe-area footer', () => {
+test('the responsive contract uses one rail, a bounded task column and inline progress and actions', () => {
   assert.match(responsiveCss, /grid-template-columns: 15rem minmax\(0, 1fr\)/);
-  assert.match(responsiveCss, /\.recipe-wizard\s*\{[\s\S]*?grid-template-columns: 12rem minmax\(0, 1fr\)/);
-  assert.match(responsiveCss, /\.wizard-step-nav ol\s*\{[\s\S]*?position: sticky/);
-  assert.match(responsiveCss, /@media \(max-width: 62rem\)[\s\S]*?\.wizard-step-nav\s*\{[\s\S]*?display: none/);
-  assert.match(responsiveCss, /@media \(max-width: 62rem\)[\s\S]*?\.dossier-stage-progress select\s*\{[\s\S]*?display: block/);
-  assert.match(responsiveCss, /\.wizard-action-bar\s*\{[\s\S]*?position: sticky/);
-  assert.match(shellCss, /\.dossier-action-host\s*\{[^}]*grid-area: actions/);
-  assert.match(shell, /class: 'dossier-action-host'/);
-  assert.match(responsiveCss, /'content'\s*'actions'/);
+  assert.match(responsiveCss, /\.recipe-wizard\s*\{[\s\S]*?inline-size: min\(100%, 46rem\)/);
+  assert.match(responsiveCss, /\.wizard-step-nav ol\s*\{[\s\S]*?display: flex/);
+  assert.match(responsiveCss, /\.wizard-action-bar\s*\{[\s\S]*?position: static/);
+  assert.doesNotMatch(shell, /class: 'dossier-action-host'/);
+  assert.doesNotMatch(responsiveCss, /'content'\s*'actions'/);
   assert.match(responsiveCss, /env\(safe-area-inset-bottom\)/);
 });
 

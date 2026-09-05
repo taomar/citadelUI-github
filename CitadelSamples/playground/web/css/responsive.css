@@ -2,9 +2,7 @@
 
 :root {
   --dossier-control-size: 2.5rem;
-  --dossier-dock-size: 3.5rem;
   --dossier-masthead-size: 3rem;
-  --dossier-context-size: 3.75rem;
   color-scheme: light;
 }
 
@@ -47,12 +45,10 @@ body {
   display: grid;
   grid-template-areas:
     'masthead masthead'
-    'context context'
     'drawer workspace'
-    'drawer content'
-    'drawer actions';
+    'drawer content';
   grid-template-columns: 15rem minmax(0, 1fr);
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-inline-size: 0;
   block-size: 100dvh;
   min-block-size: 0;
@@ -71,42 +67,14 @@ body {
     max(var(--gutter), env(safe-area-inset-right));
 }
 
-.execution-context-bar {
-  grid-area: context;
-  position: sticky;
-  inset-block-start: var(--dossier-masthead-size);
-  z-index: 40;
-  min-inline-size: 0;
-}
-
 .dossier-workspace-bar {
   grid-area: workspace;
-  position: sticky;
-  inset-block-start: calc(var(--dossier-masthead-size) + var(--dossier-context-size));
-  z-index: 35;
+  position: static;
   min-inline-size: 0;
 }
 
-.dossier-stage-progress {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  min-inline-size: 0;
+.dossier-masthead-status {
   margin-inline-start: auto;
-  color: var(--ink-2);
-  font-size: var(--t-small);
-  font-weight: 700;
-}
-
-.dossier-stage-progress select {
-  display: none;
-  min-inline-size: min(20rem, 45vw);
-  min-block-size: var(--dossier-control-size);
-  border: 1px solid var(--control-stroke);
-  border-radius: var(--r-2);
-  background: var(--sheet);
-  color: var(--ink-1);
-  font: inherit;
 }
 
 #recipe-drawer {
@@ -132,25 +100,27 @@ body {
   min-block-size: 0;
   inline-size: 100%;
   padding:
-    var(--sp-7)
-    max(var(--sp-7), env(safe-area-inset-right))
-    var(--sp-10)
-    max(var(--sp-7), env(safe-area-inset-left));
+    var(--sp-8)
+    max(var(--sp-9), env(safe-area-inset-right))
+    max(var(--sp-9), env(safe-area-inset-bottom))
+    max(var(--sp-9), env(safe-area-inset-left));
   overflow: hidden auto;
   overscroll-behavior-block: contain;
   background: var(--sheet);
   scroll-padding-block:
     var(--sp-7)
     var(--sp-7);
-  scrollbar-width: thin;
 }
 
 .recipe-wizard {
-  display: grid;
-  grid-template-columns: 12rem minmax(0, 1fr);
-  gap: var(--sp-7);
-  inline-size: min(100%, 72rem);
-  margin-inline: auto;
+  --t-body: 1rem;
+  --t-small: 0.875rem;
+  --t-micro: 0.875rem;
+  --ctl-h: 2.75rem;
+  --w-id: 28rem;
+  --w-long: 34rem;
+  inline-size: min(100%, 46rem);
+  font-size: var(--t-body);
 }
 
 .wizard-step-nav {
@@ -158,22 +128,21 @@ body {
 }
 
 .wizard-step-nav ol {
-  position: sticky;
-  inset-block-start: var(--sp-7);
-  display: grid;
-  gap: 0;
-  border-inline-end: 1px solid var(--rule);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-6);
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .wizard-step-link {
-  display: grid;
-  grid-template-columns: 1.5rem minmax(0, 1fr);
-  gap: var(--sp-3);
-  align-items: start;
-  inline-size: 100%;
-  padding: var(--sp-4);
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  padding: var(--sp-4) 0;
   border: 0;
-  border-inline-end: 2px solid transparent;
+  border-block-end: 2px solid transparent;
   border-radius: 0;
   background: transparent;
   color: var(--ink-2);
@@ -183,20 +152,35 @@ body {
 }
 
 .wizard-step-link[aria-current='step'] {
-  border-inline-end-color: var(--brand);
-  background: var(--brand-wash);
+  border-block-end-color: var(--brand);
   color: var(--brand);
   font-weight: 700;
 }
 
 .wizard-step-link:disabled {
   color: var(--ink-3);
-  opacity: 0.62;
+  opacity: 1;
 }
 
 .wizard-step-index {
-  font-family: var(--mono);
-  text-align: end;
+  display: grid;
+  place-items: center;
+  inline-size: 1.25rem;
+  block-size: 1.25rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: 50%;
+  font-size: 0.75rem;
+}
+
+.wizard-step-link[aria-current='step'] .wizard-step-index {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: var(--on-brand);
+}
+
+.wizard-step-link:not(:disabled):hover {
+  color: var(--brand-hover);
+  border-block-end-color: var(--brand-hover);
 }
 
 .wizard-main {
@@ -207,13 +191,12 @@ body {
 
 .wizard-heading {
   display: grid;
-  gap: var(--sp-3);
-  padding-block-end: var(--sp-5);
-  border-block-end: 1px solid var(--rule-strong);
+  gap: var(--sp-4);
 }
 
 .wizard-heading h1 {
-  font-size: var(--t-h1);
+  font-size: 1.75rem;
+  text-wrap: balance;
 }
 
 .wizard-step-summary {
@@ -222,11 +205,9 @@ body {
 }
 
 .wizard-step-content {
+  display: grid;
+  gap: var(--sp-7);
   min-inline-size: 0;
-}
-
-.wizard-step-content .configure-header {
-  display: none;
 }
 
 #dossier-context,
@@ -239,33 +220,147 @@ body {
 }
 
 .wizard-action-bar {
-  position: sticky;
-  inset-block-end: 0;
-  z-index: 30;
+  position: static;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
-  gap: var(--sp-3);
-  inline-size: min(100%, 62rem);
-  min-block-size: var(--dossier-dock-size);
-  margin-inline: auto;
-  padding:
-    var(--sp-3)
-    max(var(--sp-5), env(safe-area-inset-right))
-    calc(var(--sp-3) + env(safe-area-inset-bottom))
-    max(var(--sp-5), env(safe-area-inset-left));
-  border: 1px solid var(--rule-strong);
-  border-radius: var(--r-3) var(--r-3) 0 0;
-  background: var(--sheet);
-  box-shadow: 0 -0.25rem 1rem rgb(15 18 22 / 0.08);
+  justify-content: flex-start;
+  gap: var(--sp-4) var(--sp-6);
+  padding-block-end: env(safe-area-inset-bottom);
 }
 
 .wizard-primary {
-  min-inline-size: min(12rem, 100%);
+  min-inline-size: 7rem;
   max-inline-size: 100%;
   overflow-wrap: anywhere;
   line-height: 1.25;
   white-space: normal;
+}
+
+.wizard-action-bar .wizard-action-reason,
+.wizard-action-bar .wizard-action-gate {
+  flex: 1 1 16rem;
+  margin: 0;
+  font-size: var(--t-small);
+  text-align: start;
+}
+
+.task-identity,
+.task-target {
+  display: grid;
+  gap: var(--sp-4);
+  min-inline-size: 0;
+  padding: var(--sp-6);
+  border: 1px solid var(--rule);
+  background: var(--band);
+}
+
+.task-identity-intro,
+.task-target-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--sp-6);
+  min-inline-size: 0;
+}
+
+.task-identity-intro > div,
+.task-active-subscription {
+  display: grid;
+  gap: var(--sp-2);
+  min-inline-size: 0;
+}
+
+.task-identity h2 {
+  font-size: 1rem;
+}
+
+.task-identity p,
+.task-target p,
+.task-target-heading {
+  color: var(--ink-3);
+  font-size: var(--t-small);
+  overflow-wrap: anywhere;
+}
+
+.task-identity .dossier-identity-action {
+  min-block-size: 2.75rem;
+  font-size: var(--t-small);
+}
+
+.recipe-wizard .btn-primary:disabled,
+.task-identity .dossier-identity-action-primary:disabled {
+  border-color: var(--rule);
+  background: var(--band);
+  color: var(--ink-3);
+  opacity: 1;
+}
+
+.task-identity .dossier-identity-warning {
+  margin-block: var(--sp-4) 0;
+}
+
+.task-account-controls:not([open]) {
+  display: block;
+}
+
+.task-identity-intro > button {
+  flex: none;
+}
+
+.task-identity .dossier-identity-status {
+  margin: 0;
+}
+
+.task-account-controls > summary,
+.task-context-edit {
+  color: var(--brand);
+  font-size: var(--t-small);
+  cursor: pointer;
+}
+
+.task-context-edit {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font-weight: 600;
+}
+
+.task-context-edit:hover {
+  color: var(--brand-hover);
+  text-decoration: underline;
+}
+
+.task-subscription-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--sp-4);
+  margin-block: var(--sp-4);
+}
+
+.task-subscription-controls label {
+  flex: 1 1 18rem;
+}
+
+.task-target-exact {
+  display: block;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.task-support {
+  border-block: 1px solid var(--rule);
+}
+
+.task-support > summary {
+  padding-block: var(--sp-5);
+  cursor: pointer;
+  font-size: var(--t-small);
+}
+
+.task-support .configure-actions {
+  margin-block-end: var(--sp-6);
 }
 
 #run-dossier form,
@@ -427,57 +522,13 @@ dialog :focus-visible {
   #dossier-shell {
     grid-template-areas:
       'masthead'
-      'context'
       'workspace'
-      'content'
-      'actions';
+      'content';
     grid-template-columns: minmax(0, 1fr);
   }
 
-  @media (max-width: 62rem) {
-    .recipe-wizard {
-      display: block;
-      inline-size: min(100%, 50rem);
-    }
-
-    .wizard-step-nav {
-      display: none;
-    }
-
-    .dossier-stage-progress select {
-      display: block;
-    }
-
-  }
-
-  .execution-context-grid {
-    display: flex;
-    min-inline-size: 0;
-    overflow-x: auto;
-    overscroll-behavior-inline: contain;
-    scrollbar-width: thin;
-  }
-
-  .execution-context-item {
-    flex: 0 0 min(15rem, 75vw);
-    min-block-size: var(--dossier-context-size);
-    border-block-end: 0;
-  }
-
-  @media (max-width: 62rem) {
-    .execution-context-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      overflow-x: visible;
-    }
-
-    .execution-context-item {
-      flex: none;
-    }
-
-    .execution-context-item:last-child {
-      grid-column: 1 / -1;
-    }
+  .recipe-wizard {
+    margin-inline: auto;
   }
 
   #recipe-drawer {
@@ -495,22 +546,6 @@ dialog :focus-visible {
       env(safe-area-inset-bottom);
   }
 
-  .wizard-action-bar {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-3);
-    inline-size: 100%;
-    min-block-size: calc(var(--dossier-dock-size) + env(safe-area-inset-bottom));
-    margin: 0;
-    padding:
-      var(--sp-3)
-      max(var(--sp-5), env(safe-area-inset-right))
-      calc(var(--sp-3) + env(safe-area-inset-bottom))
-      max(var(--sp-5), env(safe-area-inset-left));
-    border-inline: 0;
-    border-block-end: 0;
-    border-radius: 0;
-  }
 }
 
 @media (max-width: 47.999rem) {
@@ -545,31 +580,24 @@ dialog :focus-visible {
     align-items: stretch;
   }
 
-  .dossier-stage-progress {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    width: 100%;
-    margin-inline-start: 0;
+  #run-dossier {
+    padding: var(--sp-7) 1.25rem max(var(--sp-8), env(safe-area-inset-bottom));
   }
 
-  .dossier-stage-progress select {
-    display: block;
-    min-inline-size: 0;
+  .wizard-heading h1 {
+    font-size: 1.5rem;
+  }
+
+  .task-identity-intro {
+    flex-wrap: wrap;
+  }
+
+  .task-identity-intro > button {
     inline-size: 100%;
   }
 
-  .execution-context-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    overflow-x: visible;
-  }
-
-  .execution-context-item {
-    flex: none;
-  }
-
-  .execution-context-item:last-child {
-    grid-column: 1 / -1;
+  .wizard-primary {
+    flex: 1 1 auto;
   }
 
   #recipe-drawer .recipe-directory {
@@ -615,10 +643,6 @@ dialog :focus-visible {
     display: none;
   }
 
-  .execution-context-detail {
-    display: none;
-  }
-
   .wizard-action-bar {
     flex-wrap: wrap;
   }
@@ -626,46 +650,14 @@ dialog :focus-visible {
 }
 
 @media (max-height: 29.999rem) {
-  :root {
-    --dossier-context-size: 2.5rem;
-  }
-
-  .execution-context-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .execution-context-item {
-    min-block-size: var(--dossier-context-size);
-    padding-block: var(--sp-1);
-  }
-
-  .execution-context-item:last-child {
-    grid-column: auto;
-  }
-
   .dossier-workspace-bar {
-    grid-template-columns: minmax(0, 1fr) minmax(9rem, 45vw);
+    grid-template-columns: minmax(0, 1fr);
     align-items: center;
     padding-block: var(--sp-1);
   }
 
-  .dossier-directory-toggle-current,
-  .dossier-stage-progress > span {
+  .dossier-directory-toggle-current {
     display: none;
-  }
-
-  .dossier-stage-progress {
-    display: flex;
-    width: auto;
-  }
-
-  .dossier-stage-progress select {
-    width: 100%;
-  }
-
-  .wizard-action-bar {
-    padding-block-start: var(--sp-2);
-    padding-block-end: calc(var(--sp-2) + env(safe-area-inset-bottom));
   }
 }
 

@@ -255,9 +255,9 @@ export function renderReview(container, model, callbacks = {}) {
   const review = el('article', {
     class: 'dossier-review',
     'data-risk': present(risk.level, 'unknown'),
-    'aria-labelledby': `${DOSSIER_IDS.review}-title`,
+    'aria-labelledby': callbacks.compact ? 'wizard-step-title' : `${DOSSIER_IDS.review}-title`,
   }, [
-    el('header', { class: 'review-heading' }, [
+    !callbacks.compact ? el('header', { class: 'review-heading' }, [
       el('div', {}, [
         el('h2', {
           id: `${DOSSIER_IDS.review}-title`,
@@ -279,11 +279,13 @@ export function renderReview(container, model, callbacks = {}) {
               ? 'Ready to Attempt'
               : 'Not Ready',
       }),
-    ]),
+    ]) : null,
     el('div', { class: 'review-context-grid' }, [
       compactSection('Run Context', [
+        ['Human / account', identity.human],
         ['Runs as', identity.execution],
-        ['Target', target.exact],
+        ['Active subscription', identity.subscription],
+        ['Target', callbacks.exactTarget ?? target.exact],
         ['Authorization', `${authorization.label}. ${authorization.summary}`],
       ], authorization.proven ? 'review-authorization-proven' : ''),
     ]),
@@ -299,6 +301,7 @@ export function renderReview(container, model, callbacks = {}) {
       { note: present(risk.level, 'unknown') },
     ),
     section('Acknowledgement', [renderAcknowledgement(model, callbacks)]),
+    callbacks.action ?? null,
     exactOperationDetails(operation),
     technicalDetails(model, operation, deviations, placeholders),
   ]);

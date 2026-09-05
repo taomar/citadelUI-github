@@ -94,15 +94,6 @@ function localAuthContext(identity) {
     || identity.authAdapter === 'local';
 }
 
-function identitySummary(identity) {
-  if (identity.kind === 'gateway-key') return 'Gateway key';
-  if (identity.account?.label) return identity.account.label;
-  if (identity.account?.name) return identity.account.name;
-  if (localAuthContext(identity)) return systemLaunchAvailable(identity) ? 'Microsoft account' : 'Local identity';
-  if (identity.kind === 'hosted-relay') return 'Account details';
-  return 'Identity unavailable';
-}
-
 function identityFact(label, value, { mono = false } = {}) {
   return el('div', { class: 'dossier-identity-fact' }, [
     el('span', { class: 'dossier-identity-label', text: label }),
@@ -125,41 +116,63 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
   const signedIn = identity.state === 'ready' || Boolean(identity.account);
   const loginBusy = ['starting', 'waiting-system-ui', 'verifying', 'cancel-requested'].includes(identity.state);
   const busy = loginBusy || identity.subscriptionBusy === true;
+  const showStatus = busy || identity.statusImportant === true
+    || !['ready', 'signed-out', 'unknown', 'unavailable'].includes(identity.state);
 
-  let body;
-  if (kind === 'gateway-key') {
-    body = [
-      identityFact('Credential', identity.keyPresent ? 'Present in memory' : 'Missing'),
-      identityFact('Header', identity.headerName, { mono: true }),
-      el('button', {
-        type: 'button',
-        class: 'dossier-identity-action',
-        disabled: identity.canManage === false || typeof callbacks.onIdentity !== 'function',
-        text: 'Manage gateway key',
-        onclick: () => callbacks.onIdentity?.(),
-      }),
-    ];
-  } else if (launchAvailable) {
-    body = [
-      identityFact('Account', identity.account?.name ?? identity.account?.label),
+  if (!localAuthContext(identity)) return null;
+  return el('section', {
+    id: DOSSIER_IDS.globalIdentity,
+    class: 'task-identity',
+    'aria-label': 'Azure account for this launch',
+    'data-identity-kind': kind,
+    'data-launch-capability': launchAvailable ? identity.launchCapability ?? 'system-browser' : 'unavailable',
+  }, [
+    el('div', { class: 'task-identity-intro' }, [
+      el('div', {}, [
+        el('h2', { text: signedIn ? 'Azure account' : 'Sign in to this launch' }),
+        el('p', {
+          text: signedIn
+            ? identity.account?.name ?? identity.account?.label
+            : launchAvailable
+              ? 'Use the system browser to sign in to this launch-private Azure CLI session.'
+              : identity.terminalFallback?.message
+                ?? 'System sign-in is disabled. This private Azure CLI session is not exposed to terminals.',
+        }),
+      ]),
       el('button', {
         type: 'button',
         class: 'dossier-identity-action dossier-identity-action-primary',
-        disabled:
-          identity.canSignIn === false
-          || busy
-          || typeof (callbacks.onIdentitySignIn ?? callbacks.onIdentity) !== 'function',
-        'aria-busy': busy ? 'true' : undefined,
+        disabled: !launchAvailable || identity.canSignIn === false || busy
+          || typeof callbacks.onIdentitySignIn !== 'function',
+        'aria-busy': loginBusy ? 'true' : undefined,
         text: signedIn ? 'Switch Azure account' : 'Sign in with Microsoft',
-        onclick: () => (callbacks.onIdentitySignIn ?? callbacks.onIdentity)?.(),
+        onclick: () => callbacks.onIdentitySignIn?.(),
       }),
-      identity.message
-        ? el('p', {
-            class: 'dossier-identity-status',
-            role: 'status',
-            text: identity.message,
-          })
+    ]),
+    showStatus && identity.message
+      ? el('p', { class: 'dossier-identity-status', role: 'status', text: identity.message })
+      : null,
+    loginBusy && identity.canCancel === true
+      ? el('button', {
+          type: 'button',
+          class: 'dossier-identity-action',
+          disabled: typeof callbacks.onIdentityCancel !== 'function',
+          text: 'Cancel sign-in',
+          onclick: () => callbacks.onIdentityCancel?.(),
+        })
+      : null,
+    signedIn || subscriptions.length
+      ? el('div', { class: 'task-active-subscription' }, [
+          identityFact('Active subscription', identity.activeSubscription?.label ?? identity.activeSubscription?.id, { mono: true }),
+          el('p', { text: 'The active CLI subscription is separate from the intended recipe target.' }),
+        ])
+      : null,
+    el('details', { class: 'task-account-controls', 'data-disclosure-key': 'account-controls' }, [
+      el('summary', { text: signedIn ? 'Account / subscription' : 'Azure CLI status' }),
+      !showStatus && identity.message
+        ? el('p', { class: 'dossier-identity-status', text: identity.message })
         : null,
+      signedIn || subscriptions.length ? el('div', { class: 'task-subscription-controls' }, [
       el('label', {
         class: 'dossier-identity-field',
         for: 'dossier-account-subscription',
@@ -191,18 +204,6 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
             : [el('option', { value: '', text: 'No subscriptions reported' })],
         ),
       ]),
-      el('div', { class: 'dossier-identity-actions' }, [
-        el('button', {
-          type: 'button',
-          class: 'dossier-identity-action',
-          disabled:
-            identity.canVerify !== true
-            || identity.verifying === true
-            || typeof callbacks.onIdentityVerify !== 'function',
-          'aria-busy': identity.verifying === true ? 'true' : undefined,
-          text: 'Refresh Azure CLI Status',
-          onclick: () => callbacks.onIdentityVerify?.(),
-        }),
         el('button', {
           type: 'button',
           class: 'dossier-identity-action',
@@ -213,60 +214,21 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
           text: 'Set Active',
           onclick: () => callbacks.onIdentitySetActive?.(selectedId),
         }),
-        loginBusy && identity.canCancel === true
-          ? el('button', {
-              type: 'button',
-              class: 'dossier-identity-action',
-              disabled: typeof callbacks.onIdentityCancel !== 'function',
-              text: 'Cancel sign-in',
-              onclick: () => callbacks.onIdentityCancel?.(),
-            })
-          : null,
-      ]),
-      el('p', {
-        class: 'dossier-identity-warning',
-        text: 'Set Active changes only this Citadel playground launch.',
-      }),
-    ];
-  } else if (localAuthContext(identity)) {
-    body = [
-      identityFact('System sign-in', 'Disabled for this launch'),
-      el('p', {
-        class: 'dossier-terminal-fallback-note',
-        text: identity.terminalFallback?.message
-          ?? 'This private Azure CLI session is not exposed to terminals. Restart with system sign-in enabled.',
-      }),
+      ]) : null,
       el('button', {
         type: 'button',
         class: 'dossier-identity-action',
-        disabled: identity.canVerify !== true || typeof callbacks.onIdentityVerify !== 'function',
+        disabled: identity.canVerify !== true || identity.verifying === true
+          || typeof callbacks.onIdentityVerify !== 'function',
+        'aria-busy': identity.verifying === true ? 'true' : undefined,
         text: 'Refresh Azure CLI Status',
         onclick: () => callbacks.onIdentityVerify?.(),
       }),
-    ];
-  } else {
-    body = [
-      identityFact('Account', identity.account?.name ?? identity.account?.label),
-      identityFact('Active subscription', identity.activeSubscription?.label ?? identity.activeSubscription?.id, {
-        mono: true,
-      }),
-    ];
-  }
-
-  return el('details', {
-    id: DOSSIER_IDS.globalIdentity,
-    class: 'dossier-identity-surface',
-    'data-identity-kind': kind,
-    'data-launch-capability': launchAvailable ? identity.launchCapability ?? 'system-browser' : 'unavailable',
-    ontoggle: (event) => callbacks.onIdentityToggle?.(event.currentTarget.open),
-  }, [
-    el('summary', {
-      class: 'dossier-identity-summary',
-      'aria-label': identitySummary(identity),
-      'data-compact-label': identity.kind === 'gateway-key' ? 'Gateway key' : 'Identity',
-      text: identitySummary(identity),
-    }),
-    el('div', { class: 'dossier-identity-panel' }, body),
+      signedIn ? el('p', {
+        class: 'dossier-identity-warning',
+        text: 'Set Active changes only this Citadel playground launch.',
+      }) : null,
+    ]),
   ]);
 }
 
@@ -289,7 +251,7 @@ function hostedIdentityPath(execution = {}) {
   );
 }
 
-function renderContextBar(execution = {}, identity = {}, { collapsed = false } = {}) {
+function renderContextBar(execution = {}, identity = {}, { runner = {}, notebook = {}, operatorAuthorization = {} } = {}) {
   const authorization = authorizationContext(execution.authorization);
   const gateway = identity.kind === 'gateway-key';
   const runsAs = gateway ? 'Gateway caller' : modelValue(execution.runsAs);
@@ -299,6 +261,13 @@ function renderContextBar(execution = {}, identity = {}, { collapsed = false } =
   const activeSubscription = execution.activeSubscription ?? identity.activeSubscription ?? {};
 
   const body = el('div', { class: 'execution-context-body' }, [
+    contextItem('Runner', runner.label ?? 'Preview only'),
+    contextItem('Protected source', notebook.verified === true ? 'Notebook verified' : 'Notebook not verified'),
+    operatorAuthorization.required === true
+      ? contextItem('Hosted operator access',
+          operatorAuthorization.authorized === true ? 'Authorized to operate' : 'Not authorized to operate',
+          operatorAuthorization.signedIn === true ? 'Signed in' : 'Not signed in')
+      : null,
     el('div', { class: 'execution-context-grid' }, [
       contextItem(
         'Human / account',
@@ -335,19 +304,10 @@ function renderContextBar(execution = {}, identity = {}, { collapsed = false } =
   }, [
     el('details', {
       class: 'execution-context-disclosure',
-      open: collapsed ? undefined : true,
+      'data-disclosure-key': 'execution-details',
     }, [
       el('summary', { class: 'execution-context-summary' }, [
         el('span', { class: 'execution-context-summary-label', text: 'Execution Details' }),
-        el('span', {
-          class: 'execution-context-summary-target',
-          text: modelValue(execution.target) || runsAs || 'Not configured',
-        }),
-        el('span', {
-          class: 'execution-context-summary-state',
-          'data-context-state': authorization.state,
-          text: authorization.label,
-        }),
       ]),
       body,
     ]),
@@ -392,35 +352,6 @@ function trapModalFocus(event, container, onClose) {
     event.preventDefault();
     first.focus();
   }
-}
-
-function stageProgress(wizard = {}, onStageChange) {
-  const steps = Array.isArray(wizard.steps) ? wizard.steps : [];
-  const currentIndex = Math.max(0, steps.findIndex((step) => step.id === wizard.currentStep));
-  return el('label', {
-    class: 'dossier-stage-progress',
-    'data-dossier-stage-progress': 'true',
-  }, [
-    el('span', {
-      text: `Step ${currentIndex + 1} of ${Math.max(steps.length, 1)}`,
-    }),
-    el(
-      'select',
-      {
-        name: 'wizard-step',
-        'aria-label': 'Current wizard step',
-        onchange: (event) => onStageChange?.(event.target.value),
-      },
-      steps.map((step, index) =>
-        el('option', {
-          value: step.id,
-          selected: step.id === wizard.currentStep,
-          disabled: step.enabled === false,
-          text: `${index + 1}. ${step.title}`,
-        }),
-      ),
-    ),
-  ]);
 }
 
 function scrollWorkspaceByKey(event) {
@@ -483,7 +414,6 @@ export function renderShell({
     : Number.isFinite(model.directory?.total)
       ? model.directory.total
       : 0;
-  const wizard = model.wizard ?? {};
   const ownerDocument = container.ownerDocument ?? globalThis.document;
   const priorActive = ownerDocument?.activeElement ?? null;
   const priorDirectoryFocused = priorActive?.closest?.(`#${DOSSIER_IDS.recipeDrawer}`) != null;
@@ -542,10 +472,6 @@ export function renderShell({
     inert: inertWhenDirectoryOpen,
     onkeydown: scrollWorkspaceByKey,
   });
-  const actions = el('div', {
-    class: 'dossier-action-host',
-    inert: inertWhenDirectoryOpen,
-  });
 
   const mobileActions = el('details', { class: 'dossier-mobile-actions' }, [
     el('summary', {
@@ -584,31 +510,11 @@ export function renderShell({
       el('span', { class: 'dossier-brand-name', text: 'Citadel' }),
       el('span', { class: 'dossier-brand-product', text: 'Publish Playground' }),
     ]),
-    el('div', { class: 'dossier-current-recipe' }, [
-      el('span', { class: 'dossier-current-label', text: 'Current recipe' }),
-      el('span', { class: 'dossier-current-title', text: recipe.title ?? 'Select a recipe' }),
+    el('div', { class: 'dossier-current-recipe visually-hidden' }, [
       recipe.id ? identifier(recipe.id, 'dossier-current-id') : null,
     ]),
     el('div', { class: 'dossier-masthead-status' }, [
       badge(runner.label ?? 'Preview only', runner.tone),
-      operatorAuthorization.required === true
-        ? badge(
-            operatorAuthorization.signedIn === true ? 'Signed in' : 'Not signed in',
-            operatorAuthorization.signedIn === true ? 'success' : 'warning',
-          )
-        : null,
-      operatorAuthorization.required === true
-        ? badge(
-            operatorAuthorization.authorized === true
-              ? 'Authorized to operate'
-              : 'Not authorized to operate',
-            operatorAuthorization.authorized === true ? 'success' : 'danger',
-          )
-        : null,
-      badge(
-        notebook.verified === true ? 'Notebook verified' : 'Notebook not verified',
-        notebook.verified === true ? 'success' : 'warning',
-      ),
     ]),
     el('div', { class: 'dossier-masthead-actions' }, [
       el('button', {
@@ -630,11 +536,10 @@ export function renderShell({
         onclick: () => onOpenDiagnostics?.(),
       }),
       mobileActions,
-      renderIdentitySurface(identity, identityCallbacks),
     ]),
   ]);
-  const contextBar = renderContextBar(model.execution, identity, { collapsed: directoryModal });
-  if (directoryOpen && directoryModal) contextBar.setAttribute('inert', '');
+  const contextBar = renderContextBar(model.execution, identity, { runner, notebook, operatorAuthorization });
+  const identitySurface = renderIdentitySurface(identity, identityCallbacks);
   const workspaceBar = el('div', {
     class: 'dossier-workspace-bar',
     inert: inertWhenDirectoryOpen,
@@ -671,7 +576,6 @@ export function renderShell({
           })
         : null,
     ]),
-    stageProgress(wizard, onStageChange),
   ]);
 
   const root = el('div', {
@@ -687,11 +591,9 @@ export function renderShell({
     },
   }, [
     masthead,
-    contextBar,
     workspaceBar,
     drawer,
     dossier,
-    actions,
     el('p', {
       id: DOSSIER_IDS.liveRegion,
       class: 'visually-hidden',
@@ -740,5 +642,5 @@ export function renderShell({
     });
   }
 
-  return Object.freeze({ root, dossier, actions, directory, drawer });
+  return Object.freeze({ root, dossier, contextBar, identitySurface, directory, drawer });
 }

@@ -133,8 +133,8 @@ test('viewport helper enforces the breakpoint-specific dossier shape', () => {
         mainScrollHeight: 1100,
         mainHorizontalOverflow: false,
         bodyOverflowY: 'hidden',
-        contextDisclosureOpen: true,
-        contextSummaryVisible: false,
+        contextDisclosureOpen: false,
+        contextSummaryVisible: true,
         contextSummaryTargetVisible: true,
         directoryOverflowY: 'auto',
         directoryClientHeight: 700,
@@ -151,7 +151,8 @@ test('viewport helper enforces the breakpoint-specific dossier shape', () => {
         stepNavVisible: true,
         stepSelectorVisible: false,
         stepSelectorTop: 0,
-        actionBarPosition: 'sticky',
+        actionBarPosition: 'static',
+        actionInWorkspace: true,
         primaryActionCount: 1,
         minimumControlHeight: 40,
       },
@@ -189,7 +190,8 @@ test('viewport helper enforces the breakpoint-specific dossier shape', () => {
       stepNavVisible: true,
       stepSelectorVisible: false,
       stepSelectorTop: 50,
-      actionBarPosition: 'static',
+      actionBarPosition: 'fixed',
+      actionInWorkspace: false,
       primaryActionCount: 2,
       safeAreaRule: false,
       minimumControlHeight: 36,
@@ -201,15 +203,13 @@ test('viewport helper enforces the breakpoint-specific dossier shape', () => {
 
 test('responsive CSS encodes the desktop, tablet, phone, zoom, and high-contrast contract', () => {
   assert.match(css, /grid-template-columns: 15rem minmax\(0, 1fr\)/);
-  assert.match(css, /\.recipe-wizard[\s\S]*?grid-template-columns: 12rem minmax\(0, 1fr\)/);
+  assert.match(css, /\.recipe-wizard[\s\S]*?inline-size: min\(100%, 46rem\)/);
   assert.match(css, /@media \(max-width: 74\.999rem\)/);
-  assert.match(css, /@media \(max-width: 62rem\)/);
   assert.match(css, /@media \(max-width: 47\.999rem\)/);
-  assert.match(css, /\.wizard-step-nav[\s\S]*?position: sticky/);
+  assert.match(css, /\.wizard-step-nav ol[\s\S]*?display: flex/);
   assert.match(css, /#dossier-shell[\s\S]*?block-size: 100dvh/);
   assert.match(css, /#run-dossier[\s\S]*?overflow: hidden auto/);
-  assert.match(css, /\.dossier-stage-progress select[\s\S]*?display: block/);
-  assert.match(css, /--dossier-dock-size: 3\.5rem/);
+  assert.match(css, /\.wizard-action-bar[\s\S]*?position: static/);
   assert.match(css, /env\(safe-area-inset-bottom\)/);
   assert.match(css, /@media \(pointer: coarse\)[\s\S]*?--dossier-control-size: 2\.75rem/);
   assert.match(css, /@media \(pointer: fine\)[\s\S]*?--dossier-control-size: 2\.5rem/);
@@ -217,7 +217,7 @@ test('responsive CSS encodes the desktop, tablet, phone, zoom, and high-contrast
   assert.match(css, /@media \(prefers-contrast: more\)/);
   assert.match(css, /@media \(forced-colors: active\)/);
   assert.match(css, /#source-inspector[\s\S]*?position: fixed/);
-  assert.match(css, /overscroll-behavior-inline: contain/);
+  assert.match(css, /overscroll-behavior-block: contain/);
   assert.match(css, /overflow-wrap: anywhere/);
   assert.doesNotMatch(css, /(?:linear|radial|conic)-gradient|backdrop-filter|filter:\s*blur/i);
 });

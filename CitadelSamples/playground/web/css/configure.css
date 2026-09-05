@@ -224,28 +224,19 @@
 }
 
 .configure-fields {
-  gap: var(--sp-5);
+  gap: var(--sp-7);
 }
 
 .configure-field {
   display: grid;
-  gap: var(--sp-3);
+  gap: var(--sp-4);
   min-width: 0;
-  padding: var(--sp-5);
-  border-left: 2px solid var(--rule-strong);
   background: var(--sheet);
 }
 
-.configure-field[data-requirement='mandatory'] {
-  border-left-color: var(--brand);
-}
-
-.configure-field[data-requirement='conditional'] {
-  border-left-color: var(--cloud);
-}
-
-.configure-field[data-requirement='secret'] {
-  border-left-color: var(--danger);
+.dossier-configure:not(.dossier-configure-all) .configure-group:not(details) {
+  padding: 0;
+  border: 0;
 }
 
 .configure-field-head,
@@ -282,8 +273,20 @@
 }
 
 .configure-field-control {
-  width: 100%;
+  width: min(100%, var(--w-id));
   max-width: 100%;
+}
+
+.configure-field[data-field-width='long'] .configure-field-control {
+  width: min(100%, var(--w-long));
+}
+
+.configure-field[data-field-width='short'] .configure-field-control {
+  width: min(100%, 18rem);
+}
+
+.configure-field[data-field-width='num'] .configure-field-control {
+  width: min(100%, 8rem);
 }
 
 textarea.configure-field-control {
@@ -342,20 +345,37 @@ textarea.configure-field-control {
   border-top: 1px solid var(--rule-soft);
 }
 
+.configure-field-help {
+  border: 0;
+}
+
 .configure-field-help > summary,
 .configure-advanced > summary,
 .configure-exports > summary,
 .source-integrity > summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-4);
+  display: list-item;
   min-height: var(--ctl-h);
-  padding: var(--sp-3) 0;
+  padding: var(--sp-4) 0;
   color: var(--brand);
   cursor: pointer;
   font-size: var(--t-small);
   font-weight: 600;
+}
+
+.configure-field-help > summary {
+  display: block;
+  width: fit-content;
+}
+
+.configure-advanced > summary,
+.configure-exports > summary {
+  padding-block: var(--sp-5);
+  color: var(--ink-2);
+  font-weight: 400;
+}
+
+.configure-advanced-body {
+  padding-block: var(--sp-6);
 }
 
 .configure-field-help-body,

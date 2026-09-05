@@ -94,8 +94,16 @@ secrets. Protected source, guide content, provenance, diagnostics, and exact
 operations are secondary disclosures: they remain attributable and immutable,
 but they never displace an actionable blocker.
 
-The trust boundary remains available through **Execution Details**, which is
-expanded on wide screens and collapsed on constrained screens. Risky confirmation
+The workspace uses one bounded task column with compact inline step progress.
+The recipe heading, relevant account or connection, declared inputs and primary
+action share one reading path. The action stays in normal form flow before
+optional disclosures, rather than in a detached bottom dock. The default Weather
+City field is immediate; its remaining options follow the action.
+
+The trust boundary remains available through collapsed **Execution Details**.
+Applicable sign-in and active-account controls sit beside the target fields;
+gateway calls show the exact endpoint, key presence and unverified authorization
+before Run. Risky confirmation
 summarizes the execution identity, exact target, authorization state, effect,
 blast radius, and recovery without rendering empty facts. Authorization uses
 **Ready to Attempt** when the known gates pass; it never claims that Azure or the
@@ -160,7 +168,8 @@ as a synonym for simulated or offline.
   declared requirements. Preserve entered values between steps, validate before
   advancing, and allow direct navigation only to the current or completed steps.
   Source and guide content open as inspectors rather than workflow tabs.
-- Keep one global execution-context surface. Gateway-key recipes show key
+- Keep one contextual execution surface, with full details available on every
+  step. Gateway-key recipes show key
   presence and never offer Azure sign-in. Hosted relay recipes show the Entra
   caller, playground identity, relay managed identity, Key Vault mapping, and
   target as separate authority hops.
