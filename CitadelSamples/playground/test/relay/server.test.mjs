@@ -14,6 +14,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { request as httpRequest } from 'node:http';
 import { connect as netConnect } from 'node:net';
 
 import { buildSamplePlan, CATALOGUE, getSample, requirementsFor } from '../../src/catalogue/index.mjs';
@@ -509,6 +510,25 @@ test('the same run-deadline signal reaches tenant-policy resolution, secret reso
   const { status, body } = await handleExecuteRequest(weatherPayload(), deps);
   assert.equal(status, 200);
   assert.equal(body.state, 'completed');
+});
+
+test('an already-armed request deadline suppresses the pure handler timer instead of duplicating the run budget', async () => {
+  const bundle = makeBundle();
+  const controller = new AbortController();
+  const deps = baseDeps({
+    deadlineSignal: controller.signal,
+    runTimeoutMs: 5,
+    tenantPolicy: {
+      resolve: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return bundle;
+      },
+    },
+  });
+  const { status, body } = await handleExecuteRequest(weatherPayload(), deps);
+  assert.equal(status, 200);
+  assert.equal(body.state, 'completed');
+  assert.equal(controller.signal.aborted, false);
 });
 
 test('an already-disconnected caller (`externalSignal` already aborted) ends the run with the same controlled run-timeout response, before tenant-policy resolution runs at all', async () => {
@@ -1135,6 +1155,76 @@ test('the real relay server admits no more than the configured global number of 
   );
 });
 
+test('the admission deadline closes a partial upload, releases the sole slot, and admits the next real socket request', { timeout: 5_000 }, async () => {
+  await withServer(
+    serverDeps({
+      authenticator: createSharedSecretAuthenticator({ token: RELAY_TOKEN, tenant: TENANT_A, principal: CALLER_A }),
+      maxConcurrentRequests: 1,
+      runTimeoutMs: 200,
+    }),
+    async (base) => {
+      const stalled = httpRequest(new URL('/execute', base), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': 1024,
+          Authorization: ['Bearer', RELAY_TOKEN].join(' '),
+        },
+      });
+      const stalledClosed = new Promise((resolve) => stalled.once('close', resolve));
+      const timeoutResponsePromise = new Promise((resolve, reject) => {
+        stalled.once('response', resolve);
+        stalled.once('error', reject);
+      });
+      stalled.write('{');
+
+      const timeoutResponse = await timeoutResponsePromise;
+      const chunks = [];
+      for await (const chunk of timeoutResponse) chunks.push(chunk);
+      assert.equal(timeoutResponse.statusCode, 504);
+      assert.equal(timeoutResponse.headers.connection, 'close');
+      assert.equal(JSON.parse(Buffer.concat(chunks).toString('utf-8')).code, 'run-timeout');
+
+      const admitted = await fetch(`${base}/execute`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: ['Bearer', RELAY_TOKEN].join(' ') },
+        body: JSON.stringify(weatherPayload({ acknowledgement: weatherAcknowledgement({ nonce: 'post-upload-timeout-nonce' }) })),
+      });
+      assert.equal(admitted.status, 200, await admitted.clone().text());
+      await stalledClosed;
+    },
+  );
+});
+
+test('the admission deadline bounds a stalled authenticator, releases the sole slot, and admits the next request', { timeout: 5_000 }, async () => {
+  const authenticator = {
+    async authenticate(request) {
+      if (request.headers['x-test-stall-auth'] === 'true') return neverSettles();
+      return { ok: true, principal: CALLER_A, tenant: TENANT_A, roles: [] };
+    },
+  };
+  await withServer(
+    serverDeps({ authenticator, maxConcurrentRequests: 1, runTimeoutMs: 200 }),
+    async (base) => {
+      const timedOut = await fetch(`${base}/execute`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-test-stall-auth': 'true' },
+        body: JSON.stringify(weatherPayload({ acknowledgement: weatherAcknowledgement({ nonce: 'stalled-auth-nonce' }) })),
+      });
+      assert.equal(timedOut.status, 504);
+      assert.equal(timedOut.headers.get('connection'), 'close');
+      assert.equal((await timedOut.json()).code, 'run-timeout');
+
+      const admitted = await fetch(`${base}/execute`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: '******' },
+        body: JSON.stringify(weatherPayload({ acknowledgement: weatherAcknowledgement({ nonce: 'post-auth-timeout-nonce' }) })),
+      });
+      assert.equal(admitted.status, 200, await admitted.clone().text());
+    },
+  );
+});
+
 test('a normally completed relay request does not treat request-body completion as cancellation', async () => {
   const bundle = makeBundle();
   const executor = bundle.httpExecutor;
@@ -1266,6 +1356,61 @@ test('a body over the configured limit is refused with 413', async () => {
         body: JSON.stringify(weatherPayload({ inputs: { padding: 'x'.repeat(1000) } })),
       });
       assert.equal(response.status, 413);
+    },
+  );
+});
+
+test('an oversized partial managed-run upload returns 413 and closes its real socket', { timeout: 5_000 }, async () => {
+  const unusedRuns = {
+    async idempotency() {
+      throw new Error('must not reach managed-run admission');
+    },
+    async create() {
+      throw new Error('must not create a managed run');
+    },
+    async status() {
+      return null;
+    },
+    async cancel() {
+      return null;
+    },
+    async recover() {
+      return 0;
+    },
+    async startRecovery() {
+      return 0;
+    },
+    stopRecovery() {},
+  };
+  await withServer(
+    serverDeps({
+      authenticator: createSharedSecretAuthenticator({ token: RELAY_TOKEN, tenant: TENANT_A, principal: CALLER_A }),
+      runOrchestrator: unusedRuns,
+      bodyLimitBytes: 64,
+    }),
+    async (base) => {
+      const stalled = httpRequest(new URL('/runs', base), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': 1024,
+          Authorization: ['Bearer', RELAY_TOKEN].join(' '),
+          'Idempotency-Key': 'oversized-managed-upload',
+        },
+      });
+      const stalledClosed = new Promise((resolve) => stalled.once('close', resolve));
+      const responsePromise = new Promise((resolve, reject) => {
+        stalled.once('response', resolve);
+        stalled.once('error', reject);
+      });
+      stalled.write('x'.repeat(65));
+
+      const response = await responsePromise;
+      const chunks = [];
+      for await (const chunk of response) chunks.push(chunk);
+      assert.equal(response.statusCode, 413);
+      assert.equal(response.headers.connection, 'close');
+      await stalledClosed;
     },
   );
 });

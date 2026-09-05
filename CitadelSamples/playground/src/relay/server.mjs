@@ -66,11 +66,12 @@
  * token fetch failing, a Key Vault outage, a misbehaving injected
  * dependency) always produces a controlled, redacted JSON response instead
  * of an unhandled promise rejection or a socket left open with nothing ever
- * written to it. A single run-level deadline, started right after
- * authentication — before tenant-policy resolution, not only around the
- * http executor — bounds the ENTIRE request, and its `AbortSignal` is
- * threaded through every one of those boundaries so none of them, even one
- * reached before the http executor ever starts, can hang past that budget.
+ * written to it. A single run-level deadline, started immediately after
+ * global admission — before authentication or the request body — bounds the
+ * ENTIRE request, and its `AbortSignal` is used across authentication, the
+ * bounded body read, tenant-policy resolution, acknowledgement, secret
+ * resolution, execution, and the response so none of those phases can hold
+ * an admission slot past that budget.
  *
  * Passing `signal` down is not, by itself, sufficient: an injected
  * dependency that ignores its `signal` argument entirely (never listens for
@@ -94,7 +95,7 @@ import { rebuildRelayPlan, validateExecuteRequest } from './requestSchema.mjs';
 import { authenticatePrincipal } from './principalAuth.mjs';
 import { createNonceStore } from './nonceStore.mjs';
 import { canonicalInputDigest, planDestinationOrigins, planRequestUrls, verifyAcknowledgement } from './acknowledgement.mjs';
-import { raceDeadline, DEADLINE_EXCEEDED } from './deadline.mjs';
+import { abortError, raceDeadline, DEADLINE_EXCEEDED } from './deadline.mjs';
 import { DEFAULT_RELAY_SERVER_LIMITS, validateRelayServerLimits } from './limits.mjs';
 
 /** Acknowledgement-binding failure codes that are a client-fixable request problem, not a policy refusal. */
@@ -178,34 +179,101 @@ function blockedResult(sampleId, summary, detail = '') {
   return { state: 'blocked', sampleId, summary, detail, steps: [], assertions: [], configurationUpdates: {}, secretUpdates: {}, meta: {} };
 }
 
-async function readBody(request, limitBytes) {
-  const chunks = [];
-  let total = 0;
-  for await (const chunk of request) {
-    total += chunk.length;
-    if (total > limitBytes) throw new RequestRefused(`The request body is larger than the ${limitBytes}-byte limit.`, { status: 413 });
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks).toString('utf-8');
+function readBody(request, limitBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    let settled = false;
+    const cleanup = () => {
+      request.off('data', onData);
+      request.off('end', onEnd);
+      request.off('aborted', onAborted);
+      request.off('error', onError);
+    };
+    const settle = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback(value);
+    };
+    const onData = (chunk) => {
+      total += chunk.length;
+      if (total > limitBytes) {
+        request.pause();
+        settle(
+          reject,
+          new RequestRefused(`The request body is larger than the ${limitBytes}-byte limit.`, { status: 413 }),
+        );
+        return;
+      }
+      chunks.push(chunk);
+    };
+    const onEnd = () => settle(resolve, Buffer.concat(chunks).toString('utf-8'));
+    const onAborted = () => settle(reject, abortError('The request body upload was aborted.'));
+    const onError = (error) => settle(reject, error);
+
+    request.on('data', onData);
+    request.once('end', onEnd);
+    request.once('aborted', onAborted);
+    request.once('error', onError);
+    if (request.aborted || request.destroyed) onAborted();
+  });
 }
 
-function monitorClientDisconnect(request, response) {
+function writeBodyReadError(request, response, error) {
+  if (response.destroyed || response.writableEnded) return;
+  const status = error instanceof RequestRefused ? error.status : 400;
+  const headers = error instanceof RequestRefused
+    ? { ...securityHeaders(), Connection: 'close' }
+    : securityHeaders();
+  if (error instanceof RequestRefused) response.once('finish', () => request.destroy());
+  response.writeHead(status, headers);
+  response.end(JSON.stringify({ state: 'blocked', summary: error?.message ?? 'Malformed request body.' }));
+}
+
+function monitorClientDisconnect(request, response, { timeoutMs } = {}) {
   const controller = new AbortController();
+  let timedOut = false;
   const abort = () => {
     if (!response.writableEnded) controller.abort();
   };
+  const timer = timeoutMs == null
+    ? null
+    : setTimeout(() => {
+        timedOut = true;
+        abort();
+      }, timeoutMs);
   request.once('aborted', abort);
   response.once('close', abort);
   request.socket?.once('close', abort);
   if (request.aborted || response.destroyed || request.socket?.destroyed) controller.abort();
   return {
     signal: controller.signal,
+    get timedOut() {
+      return timedOut;
+    },
     dispose() {
+      if (timer) clearTimeout(timer);
       request.off('aborted', abort);
       response.off('close', abort);
       request.socket?.off('close', abort);
     },
   };
+}
+
+function finishStoppedExecuteRequest(request, response, lifetime) {
+  if (!lifetime.signal.aborted) return false;
+  if (lifetime.timedOut && !response.destroyed && !response.writableEnded) {
+    if (response.headersSent) {
+      response.destroy();
+    } else {
+      const timeout = runTimeoutResponse();
+      response.once('finish', () => request.destroy());
+      response.writeHead(timeout.status, { ...securityHeaders(), Connection: 'close' });
+      response.end(JSON.stringify(timeout.body));
+    }
+  }
+  return true;
 }
 
 /**
@@ -226,21 +294,21 @@ function monitorClientDisconnect(request, response) {
  * @param {object} deps.nonceStore        from `createNonceStore`
  * @param {number} [deps.runTimeoutMs]
  * @param {() => number} [deps.now]     injectable for tests (acknowledgement expiry)
+ * @param {AbortSignal} [deps.deadlineSignal] optional already-armed full-request deadline
+ *        supplied by `createRelayServer` immediately after admission. When
+ *        present, this function does not start a second run timer.
  * @param {AbortSignal} [deps.externalSignal]  optional caller-disconnect signal
- *        (see `createRelayServer`, which combines request abort, response
- *        close, and socket close for the full request lifecycle) — firing it
+ *        for callers that do not already own `deadlineSignal` — firing it
  *        ends the run exactly like the deadline below firing.
  *
- * The one run-level deadline (`runTimeoutMs`) starts here, BEFORE tenant
- * policy resolution or any secret is resolved — not only around the http
- * executor — and its `signal` is threaded through every external boundary
- * this function crosses that can itself hang: `tenantPolicy.resolve`,
- * `secretProvider.resolve` (which bounds its own managed-identity and Key
- * Vault calls — see `managedIdentity.mjs` / `secretProvider.mjs`), and
- * `httpExecutor.execute`. A directory outage or an unreachable Key
- * Vault/IMDS endpoint before the http executor even starts must not be able
- * to hang this request past its budget any more than a slow destination
- * fetch can.
+ * When the HTTP listener has already armed `deadlineSignal`, this function
+ * continues that exact budget instead of starting another timer. Other
+ * callers get one run-level deadline here, before tenant policy or secrets.
+ * The resulting signal is threaded through every external boundary this
+ * function crosses: `tenantPolicy.resolve`, `secretProvider.resolve` (which
+ * bounds its own managed-identity and Key Vault calls — see
+ * `managedIdentity.mjs` / `secretProvider.mjs`), and
+ * `httpExecutor.execute`.
  *
  * @returns {Promise<{status:number, body:object}>}
  */
@@ -252,6 +320,7 @@ export async function handleExecuteRequest(payload, deps) {
     nonceStore,
     runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS,
     now = () => Date.now(),
+    deadlineSignal,
     externalSignal,
     admitted = false,
   } = deps;
@@ -263,21 +332,17 @@ export async function handleExecuteRequest(payload, deps) {
     };
   }
 
-  // The one run-level deadline for this whole request, started here —
-  // before tenant policy resolution, before any secret is resolved, not
-  // only around the http executor at the very end. `signal` is threaded
-  // through every external boundary below that can itself hang: tenant
-  // policy resolution, secret resolution (which bounds its own
-  // managed-identity/Key Vault calls internally too — see
-  // `secretProvider.mjs`), and the http executor. `externalSignal`, when
-  // supplied (see `createRelayServer`, wired to the underlying request's
-  // own disconnect), ends the run exactly the same way.
+  // The HTTP listener supplies an already-armed deadline immediately after
+  // admission. Pure/managed callers that do not supply one get exactly one
+  // timer here. Additional cancellation signals join the same controller
+  // without creating another deadline.
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), runTimeoutMs);
-  const onExternalAbort = () => controller.abort();
-  if (externalSignal) {
-    if (externalSignal.aborted) controller.abort();
-    else externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  const timer = deadlineSignal ? null : setTimeout(() => controller.abort(), runTimeoutMs);
+  const onAbort = () => controller.abort();
+  const abortSources = [...new Set([deadlineSignal, externalSignal].filter(Boolean))];
+  for (const source of abortSources) {
+    if (source.aborted) controller.abort();
+    else source.addEventListener('abort', onAbort, { once: true });
   }
   try {
     return await handleAuthenticatedExecuteRequest(payload, {
@@ -290,8 +355,8 @@ export async function handleExecuteRequest(payload, deps) {
       admitted,
     });
   } finally {
-    clearTimeout(timer);
-    externalSignal?.removeEventListener('abort', onExternalAbort);
+    if (timer) clearTimeout(timer);
+    for (const source of abortSources) source.removeEventListener('abort', onAbort);
   }
 }
 
@@ -421,6 +486,7 @@ async function handleAuthenticatedExecuteRequest(payload, deps) {
   // the caller merely asserts about them. A mismatch here means the
   // acknowledgement, however genuine, was not granted for this specific
   // caller, tenant, or run.
+  if (signal.aborted) return runTimeoutResponse();
   if (!admitted) {
     const verification = verifyAcknowledgement(
     acknowledgement,
@@ -444,6 +510,8 @@ async function handleAuthenticatedExecuteRequest(payload, deps) {
       return { status, body: { state: 'blocked', summary: verification.message, code: verification.code } };
     }
 
+    if (signal.aborted) return runTimeoutResponse();
+
     // Only once every structural/binding check above has passed do we spend
     // the nonce: a second delivery of the same nonce — even of an otherwise
     // valid request — is either a retry or a captured replay. The nonce is
@@ -460,6 +528,7 @@ async function handleAuthenticatedExecuteRequest(payload, deps) {
 
   const secrets = {};
   for (const ref of secretRefs) {
+    if (signal.aborted) return runTimeoutResponse();
     // The injected secret provider is the managed-identity/Key Vault
     // boundary. A network failure, a throttled request, an authentication
     // failure, or the run's own deadline firing mid-resolution must all
@@ -493,9 +562,11 @@ async function handleAuthenticatedExecuteRequest(payload, deps) {
     secrets[ref] = value;
   }
 
+  if (signal.aborted) return runTimeoutResponse();
   try {
     const outcome = await raceDeadline(bundle.httpExecutor.execute(plan, { secrets, signal }), signal);
     if (outcome === DEADLINE_EXCEEDED) return runTimeoutResponse();
+    if (signal.aborted) return runTimeoutResponse();
     const result = outcome;
     if (!EXECUTION_STATES.includes(result.state)) {
       return { status: 502, body: blockedResult(sample.id, 'The relay produced an unrecognised result state.') };
@@ -703,9 +774,7 @@ async function handleManagedRunCreate(request, response, deps) {
   try {
     payload = JSON.parse(await readBody(request, deps.bodyLimitBytes));
   } catch (error) {
-    const status = error instanceof RequestRefused ? error.status : 400;
-    response.writeHead(status, securityHeaders());
-    response.end(JSON.stringify({ state: 'blocked', summary: error?.message ?? 'Malformed request body.' }));
+    writeBodyReadError(request, response, error);
     return;
   }
 
@@ -953,10 +1022,20 @@ export function createRelayServer({
 
       let client;
       try {
-        client = monitorClientDisconnect(request, response);
-        const auth = await authenticatePrincipal(request, { isLoopbackHost, host, authenticator });
+        client = monitorClientDisconnect(request, response, { timeoutMs: serverLimits.runTimeoutMs });
+        if (finishStoppedExecuteRequest(request, response, client)) return;
+
+        const authOutcome = await raceDeadline(
+          authenticatePrincipal(request, { isLoopbackHost, host, authenticator }),
+          client.signal,
+        );
+        if (authOutcome === DEADLINE_EXCEEDED) {
+          finishStoppedExecuteRequest(request, response, client);
+          return;
+        }
+        if (finishStoppedExecuteRequest(request, response, client)) return;
+        const auth = authOutcome;
         if (!auth.ok) {
-          if (client.signal.aborted && response.destroyed) return;
           response.writeHead(401, securityHeaders());
           response.end(JSON.stringify({ state: 'blocked', summary: 'Not run — the caller could not be authenticated.', code: 'unauthenticated' }));
           return;
@@ -964,17 +1043,22 @@ export function createRelayServer({
 
         let payload;
         try {
-          payload = JSON.parse(await readBody(request, serverLimits.bodyLimitBytes));
+          const bodyOutcome = await raceDeadline(readBody(request, serverLimits.bodyLimitBytes), client.signal);
+          if (bodyOutcome === DEADLINE_EXCEEDED) {
+            finishStoppedExecuteRequest(request, response, client);
+            return;
+          }
+          if (finishStoppedExecuteRequest(request, response, client)) return;
+          payload = JSON.parse(bodyOutcome);
         } catch (error) {
-          if (client.signal.aborted && response.destroyed) return;
-          const status = error instanceof RequestRefused ? error.status : 400;
-          response.writeHead(status, securityHeaders());
-          response.end(JSON.stringify({ state: 'blocked', summary: error?.message ?? 'Malformed request body.' }));
+          if (finishStoppedExecuteRequest(request, response, client)) return;
+          writeBodyReadError(request, response, error);
           return;
         }
+        if (finishStoppedExecuteRequest(request, response, client)) return;
 
-        // A caller that disconnects at any point in the request lifecycle
-        // ends the run through the same signal as the fixed deadline.
+        // Continue the exact deadline armed immediately after admission. The
+        // pure handler must not start a second run timer for this HTTP request.
         const { status, body } = await handleExecuteRequest(payload, {
           catalogue,
           tenantPolicy,
@@ -982,9 +1066,9 @@ export function createRelayServer({
           nonceStore: nonces,
           runTimeoutMs: serverLimits.runTimeoutMs,
           now,
-          externalSignal: client.signal,
+          deadlineSignal: client.signal,
         });
-        if (client.signal.aborted && response.destroyed) return;
+        if (finishStoppedExecuteRequest(request, response, client)) return;
         response.writeHead(status, securityHeaders());
         response.end(JSON.stringify(body));
       } finally {
