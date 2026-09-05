@@ -1117,7 +1117,9 @@ function renderWizardActions(container, models, steps) {
     models.dossier.reviewDecision.acknowledgement?.required === true;
   const next = steps[currentIndex + 1];
   if (current.id === 'review-approve') {
-    const destructive = models.dossier.reviewDecision.risk?.level === 'destructive';
+    const destructive =
+      requiresConfirmation
+      && models.dossier.reviewDecision.risk?.level === 'destructive';
     const acknowledgement = models.dossier.reviewDecision.acknowledgement ?? {};
     const acknowledgementMissing =
       !destructive && acknowledgement.required === true && acknowledgement.satisfied !== true;
@@ -2016,7 +2018,10 @@ async function startRun({ confirmed = false } = {}) {
   const models = currentModels();
   const { ledger, reviewDecision } = models.dossier;
   if (state.progress?.state === 'running') return;
-  if (reviewDecision.risk?.level === 'destructive' && !confirmed) return;
+  const requiresDestructiveConfirmation =
+    reviewDecision.acknowledgement?.required === true
+    && reviewDecision.risk?.level === 'destructive';
+  if (requiresDestructiveConfirmation && !confirmed) return;
   if (confirmed) playgroundState.setAcknowledged(state.sample.id, true);
   const acknowledged = playgroundState.isAcknowledged(state.sample.id);
   const runSample = state.sample;
@@ -2031,7 +2036,7 @@ async function startRun({ confirmed = false } = {}) {
   const { plan, validation } = buildSamplePlan(runSample, readCurrentValue);
   if (!plan || !ledger.canRun) return;
   if (
-    reviewDecision.risk?.requiresAcknowledgement !== true
+    acknowledgement.required !== true
     && ['account-target', 'required-inputs', 'credentials-options'].includes(state.wizardStep)
     && fieldsForWizardStep(models.configure, state.wizardStep).satisfied
   ) {
@@ -2286,12 +2291,10 @@ window.addEventListener('beforeunload', (event) => {
 
 window.addEventListener('resize', () => {
   const directoryModal = window.innerWidth < 1200;
-  const shouldOpen = !directoryModal;
-  if (directoryModal !== state.directoryModal || shouldOpen !== state.directoryOpen) {
-    state.directoryModal = directoryModal;
-    state.directoryOpen = shouldOpen;
-    render();
-  }
+  if (directoryModal === state.directoryModal) return;
+  state.directoryModal = directoryModal;
+  state.directoryOpen = !directoryModal;
+  render();
 });
 
 boot().catch((error) => {

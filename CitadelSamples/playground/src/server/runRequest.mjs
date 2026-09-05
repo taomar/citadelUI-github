@@ -202,31 +202,34 @@ function checkedIdentityString(value, name, limit) {
 function checkedValue(entry, value) {
   if (value === null || value === undefined) return '';
   if (entry.type === 'string-list') {
-    if (typeof value === 'string') return checkedString(entry, value);
+    if (typeof value === 'string') return coerceValue(entry, checkedString(entry, value));
     if (!Array.isArray(value)) {
       throw new RequestRefused(`The value for "${entry.path}" must be a string or a list of strings.`);
     }
     if (value.length > MAX_LIST_ITEMS) {
       throw new RequestRefused(`The list for "${entry.path}" holds ${value.length} items; the limit is ${MAX_LIST_ITEMS}.`);
     }
-    return value.map((item) => {
+    const checked = value.map((item) => {
       if (typeof item !== 'string') throw new RequestRefused(`"${entry.path}" must be a list of strings.`);
       return checkedString(entry, item, { item: true });
     });
+    return coerceValue(entry, checked);
   }
   if (entry.type === 'boolean') {
-    if (typeof value === 'boolean' || value === 'true' || value === 'false') return value;
+    if (typeof value === 'boolean') return value;
+    if (value === 'true' || value === 1) return true;
+    if (value === 'false' || value === 0) return false;
     throw new RequestRefused(`The value for "${entry.path}" must be a boolean.`);
   }
   if (entry.type === 'integer') {
     if (typeof value === 'number') {
-      if (Number.isFinite(value)) return value;
+      if (Number.isFinite(value)) return coerceValue(entry, value);
       throw new RequestRefused(`The value for "${entry.path}" is not a finite number.`);
     }
-    if (typeof value === 'string') return checkedString(entry, value);
+    if (typeof value === 'string') return coerceValue(entry, checkedString(entry, value));
     throw new RequestRefused(`The value for "${entry.path}" must be an integer.`);
   }
-  return checkedString(entry, value);
+  return coerceValue(entry, checkedString(entry, value));
 }
 
 function checkedString(entry, value, { credential = false, item = false } = {}) {

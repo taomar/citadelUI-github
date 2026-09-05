@@ -877,7 +877,13 @@ export function buildConfigureModel({ sample, read, hasSecret, issues, isTouched
     fields: group.entries.map(toField),
   }));
 
-  const exportBundle = buildExportBundle({ sample, manifest, plan, capability });
+  const exportBundle = buildExportBundle({
+    sample,
+    manifest,
+    plan,
+    capability,
+    acknowledgementRequired: acknowledgementFor(sample, false, read).required,
+  });
 
   return {
     sampleId: sample.id,
@@ -904,7 +910,7 @@ function contractLine(manifest) {
 }
 
 /** The copyable/downloadable configuration, built once per render. */
-function buildExportBundle({ sample, manifest, plan, capability }) {
+function buildExportBundle({ sample, manifest, plan, capability, acknowledgementRequired }) {
   const names = configurationFileNames(sample.id);
   const document = buildConfigurationDocument({
     sample,
@@ -912,6 +918,7 @@ function buildExportBundle({ sample, manifest, plan, capability }) {
     plan,
     capability,
     notebook: CATALOGUE.sourceNotebook,
+    acknowledgementRequired,
     // The view model never reads a live secret. The document is structurally
     // presence-only, and clipboard/download actions apply their own live guard.
     secrets: {},

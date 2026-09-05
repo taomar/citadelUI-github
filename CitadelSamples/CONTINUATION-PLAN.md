@@ -26,7 +26,7 @@ specific Windows username, drive, or local checkout path.
 | Hosted relay | HTTP/assertion-only; no process, Python, Azure CLI, or artifact execution |
 | Future hosted process execution | Fresh per-run no-ingress isolated jobs only |
 | Verified integration reference | `03ffac8` |
-| Automated baseline | 147 modules, 0 dependencies/out-of-scope; 992/992 Node tests; 23/23 wizard smoke; 139/139 wizard browser acceptance |
+| Automated baseline | 147 modules, 0 dependencies/out-of-scope; 994/994 Node tests; 23/23 wizard smoke; 145/145 wizard browser acceptance; 18 screenshots |
 | Live Azure validation | Not performed |
 
 ### Decision inputs

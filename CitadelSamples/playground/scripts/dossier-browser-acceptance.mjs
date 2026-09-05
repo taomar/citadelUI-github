@@ -155,6 +155,41 @@ export const DOSSIER_ACCEPTANCE_SCENARIOS = Object.freeze([
   }),
   Object.freeze({
     order: 13,
+    name: 'cleanup-confirmation-desktop',
+    recipeId: 'cleanup',
+    width: 1440,
+    height: 900,
+    mobile: false,
+    breakpoint: 'desktop',
+    review: true,
+    openDestructiveConfirmation: true,
+    visualOnly: true,
+  }),
+  Object.freeze({
+    order: 14,
+    name: 'cleanup-confirmation-mobile',
+    recipeId: 'cleanup',
+    width: 390,
+    height: 844,
+    mobile: true,
+    breakpoint: 'phone',
+    review: true,
+    openDestructiveConfirmation: true,
+    visualOnly: true,
+  }),
+  Object.freeze({
+    order: 15,
+    name: 'recipe-picker-mobile',
+    recipeId: 'publish-assets',
+    width: 390,
+    height: 844,
+    mobile: true,
+    breakpoint: 'phone',
+    openDirectory: true,
+    visualOnly: true,
+  }),
+  Object.freeze({
+    order: 16,
     name: 'offline-diagnostics',
     recipeId: 'azure-context-check',
     width: 820,
@@ -164,7 +199,7 @@ export const DOSSIER_ACCEPTANCE_SCENARIOS = Object.freeze([
     openDiagnostics: true,
   }),
   Object.freeze({
-    order: 14,
+    order: 17,
     name: 'reduced-motion',
     recipeId: 'publish-assets',
     width: 820,
@@ -174,7 +209,7 @@ export const DOSSIER_ACCEPTANCE_SCENARIOS = Object.freeze([
     reducedMotion: true,
   }),
   Object.freeze({
-    order: 15,
+    order: 18,
     name: 'forced-colors',
     recipeId: 'publish-assets',
     width: 820,
@@ -1341,6 +1376,109 @@ async function destructiveDialogSnapshot(harness) {
   };
 }
 
+async function openDestructiveConfirmationForScreenshot(harness) {
+  const opened = await harness.evaluate(`(() => {
+    const button = [...document.querySelectorAll('#wizard-action-bar button')]
+      .find((candidate) => /^Run Sample/.test(candidate.textContent.trim()));
+    button?.click();
+    return Boolean(button && !button.disabled);
+  })()`);
+  if (!opened) return { opened: false };
+  await harness.waitFor("document.getElementById('destructive-run-dialog')?.open === true", {
+    label: 'destructive confirmation screenshot',
+  });
+  await settle(harness);
+  return harness.evaluate(`(() => {
+    const dialog = document.getElementById('destructive-run-dialog');
+    const footer = dialog?.querySelector('.destructive-confirmation-actions');
+    const dialogRect = dialog?.getBoundingClientRect();
+    const footerRect = footer?.getBoundingClientRect();
+    return {
+      opened: dialog?.open === true,
+      focusInside: dialog?.contains(document.activeElement) === true,
+      footerVisible: Boolean(
+        dialogRect
+        && footerRect
+        && footerRect.top >= dialogRect.top - 1
+        && footerRect.bottom <= dialogRect.bottom + 1
+        && footerRect.bottom <= innerHeight + 1
+      ),
+    };
+  })()`);
+}
+
+async function openDirectoryForScreenshot(harness) {
+  const clicked = await harness.evaluate(`(() => {
+    const button = document.querySelector('.dossier-directory-toggle');
+    button?.click();
+    return Boolean(button);
+  })()`);
+  if (!clicked) return { opened: false };
+  await harness.waitFor(
+    "document.getElementById('recipe-drawer')?.dataset.open === 'true'",
+    { label: 'recipe picker screenshot' },
+  );
+  await settle(harness);
+  return harness.evaluate(`(() => {
+    const drawer = document.getElementById('recipe-drawer');
+    return {
+      opened: drawer?.dataset.open === 'true',
+      modal: drawer?.getAttribute('aria-modal') === 'true',
+      focusInside: drawer?.contains(document.activeElement) === true,
+      dossierInert: document.getElementById('run-dossier')?.hasAttribute('inert') === true,
+    };
+  })()`);
+}
+
+async function cleanupNoDeleteRunSnapshot(harness) {
+  await navigateToRecipe(harness, 'cleanup');
+  await setValues(harness, {
+    'hub.resourceGroupName': 'rg-wizard-acceptance',
+    'hub.apimName': 'apim-wizard-acceptance',
+  });
+  const ready = await advanceToReadOnlyRun(harness);
+  const before = await harness.evaluate(`(() => {
+    const action = document.querySelector('#wizard-action-bar .btn-primary');
+    return {
+      step: document.querySelector('[data-wizard-step]')?.dataset.wizardStep ?? '',
+      hasReviewStep: [...document.querySelectorAll('.dossier-stage-progress option')]
+        .some((option) => option.value === 'review-approve'),
+      operationPreview: [...document.querySelectorAll('.review-operation-details > summary')]
+        .some((summary) => summary.textContent.trim() === 'Preview Exact Operation'),
+      action: action?.textContent.trim() ?? '',
+      enabled: Boolean(action && !action.disabled),
+    };
+  })()`);
+  if (!ready || !before.enabled) return { ready, before };
+  await harness.evaluate("document.querySelector('#wizard-action-bar .btn-primary')?.click()");
+  await harness.waitFor(
+    "document.querySelector('[data-wizard-step]')?.dataset.wizardStep === 'run-result' && document.body.textContent.includes('Loopback wizard acceptance completed.')",
+    { label: 'cleanup no-delete result' },
+  );
+  const result = await harness.evaluate(`(() => ({
+    step: document.querySelector('[data-wizard-step]')?.dataset.wizardStep ?? '',
+    output: document.getElementById('dossier-output')?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
+  }))()`);
+  await harness.evaluate(`(() => {
+    const back = [...document.querySelectorAll('#wizard-action-bar button')]
+      .find((button) => button.textContent.trim() === 'Back');
+    back?.click();
+    return Boolean(back);
+  })()`);
+  await harness.waitFor(
+    "document.querySelector('[data-wizard-step]')?.dataset.wizardStep !== 'run-result'",
+    { label: 'cleanup no-delete Back action' },
+  );
+  return {
+    ready,
+    before,
+    result,
+    backStep: await harness.evaluate(
+      "document.querySelector('[data-wizard-step]')?.dataset.wizardStep ?? ''",
+    ),
+  };
+}
+
 async function secretSnapshot(harness) {
   await navigateToRecipe(harness, 'weather-mcp-discovery');
   await setValues(harness, { 'hub.gatewayUrl': 'https://gateway.example.test' });
@@ -1600,7 +1738,7 @@ async function runScenario(harness, reporter, scenario) {
   }
   await settle(harness);
 
-  if (!scenario.openSource && !scenario.openDiagnostics) {
+  if (!scenario.visualOnly && !scenario.openSource && !scenario.openDiagnostics) {
     const wizard = await wizardSnapshot(harness);
     reportIssues(reporter, `${scenario.name}: dynamic wizard contract`, wizardStepIssues(wizard));
     reportIssues(
@@ -1630,7 +1768,7 @@ async function runScenario(harness, reporter, scenario) {
     }
   }
 
-  if (!scenario.openSource && !scenario.openDiagnostics) {
+  if (!scenario.visualOnly && !scenario.openSource && !scenario.openDiagnostics) {
     reportIssues(
       reporter,
       `${scenario.name}: responsive wizard contract`,
@@ -1754,6 +1892,24 @@ async function runScenario(harness, reporter, scenario) {
     if (contrast.supported) {
       reporter.check(`${scenario.name}: focus remains visible`, contrast.focusVisible);
     }
+  }
+
+  if (scenario.openDestructiveConfirmation) {
+    const confirmation = await openDestructiveConfirmationForScreenshot(harness);
+    reporter.check(
+      `${scenario.name}: destructive confirmation is fully visible`,
+      confirmation.opened && confirmation.focusInside && confirmation.footerVisible,
+      JSON.stringify(confirmation),
+    );
+  }
+
+  if (scenario.openDirectory) {
+    const directory = await openDirectoryForScreenshot(harness);
+    reporter.check(
+      `${scenario.name}: constrained recipe picker is modal and contains focus`,
+      directory.opened && directory.modal && directory.focusInside && directory.dossierInert,
+      JSON.stringify(directory),
+    );
   }
 
   await captureScreenshot(harness, scenario);
@@ -2240,6 +2396,19 @@ async function main() {
       'browser history restores the completed step for a previously visited recipe',
       history.step === 'review-approve' && history.href === history.expectedHref,
       JSON.stringify(history),
+    );
+
+    const cleanupNoDelete = await cleanupNoDeleteRunSnapshot(harness);
+    reporter.check(
+      'cleanup with every deletion switch off skips review, runs, and returns Back to setup',
+      cleanupNoDelete.ready &&
+        cleanupNoDelete.before?.hasReviewStep === false &&
+        cleanupNoDelete.before?.operationPreview === true &&
+        cleanupNoDelete.before?.action === 'Run Check' &&
+        cleanupNoDelete.result?.step === 'run-result' &&
+        cleanupNoDelete.result?.output.includes('Loopback wizard acceptance completed.') &&
+        ['account-target', 'required-inputs', 'credentials-options'].includes(cleanupNoDelete.backStep),
+      JSON.stringify(cleanupNoDelete),
     );
 
     await navigateToRecipe(harness, 'cleanup');

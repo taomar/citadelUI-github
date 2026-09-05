@@ -492,17 +492,18 @@ mistake, they have not arrived.
 ## Tests
 
 ```
-npm test                 992/992 pass, node --test, no dependencies
+npm test                 994/994 pass, node --test, no dependencies
 npm run check            147 modules, 0 dependencies, nothing outside scope
 npm run smoke            23/23 headless-browser interaction checks
-npm run acceptance:dossier  139/139 browser checks, 15 screenshots
+npm run acceptance:dossier  145/145 browser checks, 18 screenshots
 npm run verify           all three, in order
 ```
 
 These totals were verified for the per-recipe wizard. The browser acceptance
 matrix covers desktop, tablet, 390px, 320x480, true 200% zoom, reduced motion,
 forced colors, protected source, concise acquisition help, approval invalidation,
-and exact active-run isolation. The Impeccable detector returned no findings.
+exact active-run isolation, compact destructive confirmation, and the constrained
+recipe picker. The Impeccable detector returned no findings.
 
 | File | Covers |
 | --- | --- |

@@ -37,9 +37,18 @@ export function configurationFileNames(sampleId) {
  * @param {object} [options.plan]     the generated plan, when one exists
  * @param {object} [options.capability] per-sample runtime capability
  * @param {object} [options.notebook]  `CATALOGUE.sourceNotebook`
+ * @param {boolean} [options.acknowledgementRequired] acknowledgement for this exact configuration
  * @param {Record<string,string>} [options.secrets] live values, for the guard only
  */
-export function buildConfigurationDocument({ sample, manifest, plan = null, capability = null, notebook, secrets = {} }) {
+export function buildConfigurationDocument({
+  sample,
+  manifest,
+  plan = null,
+  capability = null,
+  notebook,
+  acknowledgementRequired = Boolean(sample.risk.requiresAcknowledgement),
+  secrets = {},
+}) {
   const document = {
     documentVersion: 1,
     protocolVersion: EXECUTION_PROTOCOL_VERSION,
@@ -100,7 +109,7 @@ export function buildConfigurationDocument({ sample, manifest, plan = null, capa
       effect: sample.risk.effect,
       blastRadius: sample.risk.blastRadius,
       reversibility: sample.risk.reversibility,
-      acknowledgementRequired: Boolean(sample.risk.requiresAcknowledgement),
+      acknowledgementRequired,
       acknowledgementPrompt: sample.risk.acknowledgementPrompt ?? '',
     },
     missing: manifest.blocking.map((entry) => ({

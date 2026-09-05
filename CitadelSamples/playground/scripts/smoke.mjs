@@ -200,6 +200,13 @@ async function main() {
       });
     })`);
     await harness.evaluate("document.querySelector('.dossier-directory-toggle')?.click()");
+    await harness.setViewport({ width: 390, height: 700, mobile: true });
+    await settle(harness);
+    drawerKeyboard.sameModeResize = await harness.evaluate(`(() => ({
+      open: document.querySelector('.dossier-directory-toggle')?.getAttribute('aria-expanded') === 'true',
+      modal: document.getElementById('recipe-drawer')?.getAttribute('aria-modal') === 'true',
+      focusInside: document.getElementById('recipe-drawer')?.contains(document.activeElement) === true,
+    }))()`);
     await harness.setViewport({ width: 1300, height: 800, mobile: false });
     await settle(harness);
     drawerKeyboard.desktopTransition = await harness.evaluate(`(() => ({
@@ -214,6 +221,9 @@ async function main() {
         && drawerKeyboard.wrapsBackward
         && drawerKeyboard.closed
         && drawerKeyboard.focusReturned
+        && drawerKeyboard.sameModeResize.open
+        && drawerKeyboard.sameModeResize.modal
+        && drawerKeyboard.sameModeResize.focusInside
         && drawerKeyboard.desktopTransition.directoryVisible
         && !drawerKeyboard.desktopTransition.modal
         && !drawerKeyboard.desktopTransition.dossierInert,

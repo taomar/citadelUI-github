@@ -1553,7 +1553,17 @@ test('NUL and malformed Unicode stay refused in lists and secrets', () => {
   );
 });
 
-test('a risky sample is refused without a fresh acknowledgement naming it', () => {
+test('cleanup acknowledgement is required only when a deletion is selected', () => {
+  assert.doesNotThrow(() =>
+    validateRunRequest(
+      {
+        protocolVersion: EXECUTION_PROTOCOL_VERSION,
+        sampleId: 'cleanup',
+        inputs: {},
+      },
+      CATALOGUE,
+    ),
+  );
   const payload = {
     protocolVersion: EXECUTION_PROTOCOL_VERSION,
     sampleId: 'cleanup',
@@ -1567,6 +1577,78 @@ test('a risky sample is refused without a fresh acknowledgement naming it', () =
   assert.doesNotThrow(() =>
     validateRunRequest({ ...payload, acknowledgement: { accepted: true, sampleId: 'cleanup' } }, CATALOGUE),
   );
+});
+
+test('cleanup boolean wire forms are normalized before acknowledgement, guard, and plan checks', () => {
+  const sample = getSample('cleanup');
+  const deletionSteps = new Map([
+    ['samples.cleanup.deleteAccessContract', 'delete-product'],
+    ['samples.cleanup.deletePublishedAssets', 'delete-api-1'],
+    ['samples.cleanup.deleteWeatherSourceApi', 'delete-source-api'],
+  ]);
+  const baseInputs = inputsFor(sample, {
+    'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'],
+    'hub.resourceGroupName': 'rg-test',
+    'hub.apimName': 'apim-test',
+  });
+
+  for (const [path, expectedStep] of deletionSteps) {
+    for (const [enabled, confirmed] of [[true, true], ['true', 'true'], [1, 1]]) {
+      const validated = validateRunRequest(
+        {
+          protocolVersion: EXECUTION_PROTOCOL_VERSION,
+          sampleId: sample.id,
+          inputs: {
+            ...baseInputs,
+            [path]: enabled,
+            'samples.cleanup.confirmNonProduction': confirmed,
+          },
+          acknowledgement: { accepted: true, sampleId: sample.id },
+        },
+        CATALOGUE,
+      );
+      assert.equal(validated.inputs[path], true, `${path} ${String(enabled)} was not normalized`);
+      assert.equal(validated.inputs['samples.cleanup.confirmNonProduction'], true);
+      const { plan } = rebuildPlan(validated, CATALOGUE, { buildSamplePlan, requirementsFor });
+      assert.ok(plan.steps.some((step) => step.id === expectedStep), `${path} did not produce ${expectedStep}`);
+    }
+  }
+
+  for (const disabled of [false, 'false', 0]) {
+    const validated = validateRunRequest(
+      {
+        protocolVersion: EXECUTION_PROTOCOL_VERSION,
+        sampleId: sample.id,
+        inputs: {
+          ...baseInputs,
+          'samples.cleanup.deleteAccessContract': disabled,
+          'samples.cleanup.deletePublishedAssets': disabled,
+          'samples.cleanup.deleteWeatherSourceApi': disabled,
+        },
+      },
+      CATALOGUE,
+    );
+    const { plan } = rebuildPlan(validated, CATALOGUE, { buildSamplePlan, requirementsFor });
+    assert.equal(plan.steps.some((step) => step.type === 'azure-cli'), false);
+  }
+
+  for (const path of [...deletionSteps.keys(), 'samples.cleanup.confirmNonProduction']) {
+    for (const malformed of [2, -1, '1', '0', 'TRUE', 'yes', [], {}]) {
+      assert.throws(
+        () =>
+          validateRunRequest(
+            {
+              protocolVersion: EXECUTION_PROTOCOL_VERSION,
+              sampleId: sample.id,
+              inputs: { ...baseInputs, [path]: malformed },
+            },
+            CATALOGUE,
+          ),
+        /must be a boolean/,
+        `${path} accepted malformed boolean ${JSON.stringify(malformed)}`,
+      );
+    }
+  }
 });
 
 test('the server rebuilds the plan from its own catalogue and refuses an incomplete configuration', () => {

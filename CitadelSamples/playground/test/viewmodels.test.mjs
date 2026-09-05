@@ -693,6 +693,23 @@ test('the export is deterministic and names the values still missing', () => {
   assert.equal(document.generates.available, false);
 });
 
+test('the cleanup export reports acknowledgement for the selected deletion state', () => {
+  const sample = getSample('cleanup');
+  const withoutDeletion = buildConfigureModel({
+    sample,
+    read: makeEmptyReader(),
+    hasSecret: () => false,
+  });
+  const withDeletion = buildConfigureModel({
+    sample,
+    read: makeEmptyReader({ 'samples.cleanup.deleteWeatherSourceApi': true }),
+    hasSecret: () => false,
+  });
+
+  assert.equal(JSON.parse(withoutDeletion.exports.json).risk.acknowledgementRequired, false);
+  assert.equal(JSON.parse(withDeletion.exports.json).risk.acknowledgementRequired, true);
+});
+
 /* ------------------------------------------------------------- request */
 
 test('an incomplete configuration reports why no plan exists rather than showing a blank tab', () => {

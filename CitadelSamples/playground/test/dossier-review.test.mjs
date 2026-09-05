@@ -414,7 +414,7 @@ test('destructive confirmation requires the exact typed APIM phrase before callb
     assert.equal(controller.open(trigger), true);
     assert.equal(dialog.open, true);
     assert.equal(dialog.showModalCalls, 1);
-    assert.equal(document.activeElement, input);
+    assert.equal(document.activeElement, dialog.querySelector('h2'));
     assert.equal(confirmed, 0);
 
     input.value = 'DELETE another-apim';

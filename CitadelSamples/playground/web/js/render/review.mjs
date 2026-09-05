@@ -523,6 +523,7 @@ export function createDestructiveConfirmationController(container, initialCallba
   let typedInput = null;
   let confirmButton = null;
   let validation = null;
+  let initialFocus = null;
   let activeModel = null;
   let activeCallbacks = initialCallbacks;
   let fingerprint = '';
@@ -579,6 +580,11 @@ export function createDestructiveConfirmationController(container, initialCallba
     requiredText = typedRequirement(model);
     const titleId = `${DOSSIER_IDS.destructiveDialog}-title`;
     const descriptionId = `${DOSSIER_IDS.destructiveDialog}-description`;
+    initialFocus = el('h2', {
+      id: titleId,
+      tabindex: '-1',
+      text: 'Confirm destructive run',
+    });
 
     typedInput = requiredText
       ? el('input', {
@@ -614,7 +620,7 @@ export function createDestructiveConfirmationController(container, initialCallba
       [
         el('header', { class: 'destructive-confirmation-heading' }, [
           el('p', { class: 'review-eyebrow', text: 'Final destructive check' }),
-          el('h2', { id: titleId, text: 'Confirm destructive run' }),
+          initialFocus,
           el('p', {
             id: descriptionId,
             class: 'destructive-confirmation-description',
@@ -700,6 +706,7 @@ export function createDestructiveConfirmationController(container, initialCallba
     typedInput = null;
     confirmButton = null;
     validation = null;
+    initialFocus = null;
     requiredText = '';
   }
 
@@ -727,7 +734,7 @@ export function createDestructiveConfirmationController(container, initialCallba
     returnFocus = trigger?.focus ? trigger : null;
     resetEntry();
     dialog.showModal();
-    (typedInput ?? confirmButton)?.focus?.();
+    initialFocus?.focus?.();
     return true;
   }
 

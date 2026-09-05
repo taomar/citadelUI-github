@@ -217,67 +217,89 @@ test('the manager refuses an incomplete configuration before anything is spawned
 test('the manager refuses a risky sample without a fresh acknowledgement, and spawns nothing', async () => {
   const spawn = fakeSpawn([{ match: () => true, result: { code: 0, stdout: '{}' } }]);
   const { instance } = manager({ spawn });
-  await assert.rejects(
-    () =>
-      instance.start(
-        request('cleanup', {
-          'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'],
-          'hub.resourceGroupName': 'rg-test',
-          'hub.apimName': 'apim-test',
-          'samples.cleanup.confirmNonProduction': true,
-          'samples.cleanup.deleteWeatherSourceApi': true,
-        }),
-      ),
-    (error) => error instanceof RequestRefused && error.code === 'acknowledgement-required',
-  );
+  for (const path of [
+    'samples.cleanup.deleteAccessContract',
+    'samples.cleanup.deletePublishedAssets',
+    'samples.cleanup.deleteWeatherSourceApi',
+  ]) {
+    for (const value of [true, 'true', 1]) {
+      await assert.rejects(
+        () =>
+          instance.start(
+            request('cleanup', {
+              'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'],
+              'hub.resourceGroupName': 'rg-test',
+              'hub.apimName': 'apim-test',
+              'samples.cleanup.confirmNonProduction': true,
+              [path]: value,
+            }),
+          ),
+        (error) => error instanceof RequestRefused && error.code === 'acknowledgement-required',
+      );
+    }
+  }
   assert.equal(spawn.calls.length, 0);
 });
 
 test('cleanup with every deletion switch off needs no acknowledgement and only reports residue', async () => {
-  const spawn = fakeSpawn([{ match: () => true, result: { code: 0, stdout: '{}' } }]);
-  const { instance } = manager({ spawn });
-  const result = await instance.start(
-    request(
-      'cleanup',
-      {
-        'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'],
-        'hub.resourceGroupName': 'rg-test',
-        'hub.apimName': 'apim-test',
-        'samples.cleanup.confirmNonProduction': true,
-      },
-    ),
-  );
-  assert.equal(spawn.calls.length, 0, 'no deletion may be attempted with both switches off');
-  assert.equal(result.state, 'completed');
-  const residue = result.assertions.find((assertion) => assertion.id === 'report-residue');
-  assert.equal(residue.status, 'passed');
-  assert.match(residue.detail, /residual item/);
+  for (const value of [false, 'false', 0]) {
+    const spawn = fakeSpawn([{ match: () => true, result: { code: 0, stdout: '{}' } }]);
+    const { instance } = manager({ spawn });
+    const result = await instance.start(
+      request(
+        'cleanup',
+        {
+          'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'],
+          'hub.resourceGroupName': 'rg-test',
+          'hub.apimName': 'apim-test',
+          'samples.cleanup.deleteAccessContract': value,
+          'samples.cleanup.deletePublishedAssets': value,
+          'samples.cleanup.deleteWeatherSourceApi': value,
+        },
+      ),
+    );
+    assert.equal(spawn.calls.length, 0, 'no deletion may be attempted with every switch off');
+    assert.equal(result.state, 'completed');
+    const residue = result.assertions.find((assertion) => assertion.id === 'report-residue');
+    assert.equal(residue.status, 'passed');
+    assert.match(residue.detail, /residual item/);
+  }
 });
 
 test('the non-production confirmation is a hard precondition the server re-checks', async () => {
-  const { instance } = manager();
-  await assert.rejects(
-    () =>
-      instance.start(
-        request(
-          'cleanup',
-          {
-            'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'],
-            'hub.resourceGroupName': 'rg-test',
-            'hub.apimName': 'apim-test',
-            'samples.cleanup.confirmNonProduction': false,
-            'samples.cleanup.deleteWeatherSourceApi': true,
-          },
-          { acknowledgement: { accepted: true, sampleId: 'cleanup' } },
-        ),
-      ),
-    // The browser's acknowledgement is not enough: the requirement manifest
-    // rejects the unsatisfied guard before any plan or executor is reached.
-    (error) =>
-      error instanceof RequestRefused &&
-      error.code === 'incomplete-configuration' &&
-      /This gateway is not production/i.test(error.message),
-  );
+  for (const path of [
+    'samples.cleanup.deleteAccessContract',
+    'samples.cleanup.deletePublishedAssets',
+    'samples.cleanup.deleteWeatherSourceApi',
+  ]) {
+    for (const value of [false, 'false', 0]) {
+      const spawn = fakeSpawn([{ match: () => true, result: { code: 0, stdout: '{}' } }]);
+      const { instance } = manager({ spawn });
+      await assert.rejects(
+        () =>
+          instance.start(
+            request(
+              'cleanup',
+              {
+                'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'],
+                'hub.resourceGroupName': 'rg-test',
+                'hub.apimName': 'apim-test',
+                'samples.cleanup.confirmNonProduction': value,
+                [path]: true,
+              },
+              { acknowledgement: { accepted: true, sampleId: 'cleanup' } },
+            ),
+          ),
+        // The browser's acknowledgement is not enough: the requirement manifest
+        // rejects the unsatisfied guard before any plan or executor is reached.
+        (error) =>
+          error instanceof RequestRefused &&
+          error.code === 'incomplete-configuration' &&
+          /This gateway is not production/i.test(error.message),
+      );
+      assert.equal(spawn.calls.length, 0);
+    }
+  }
 });
 
 test('concurrency is bounded and the limit is reported rather than queued silently', async () => {

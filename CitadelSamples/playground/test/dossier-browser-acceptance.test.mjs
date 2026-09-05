@@ -31,9 +31,12 @@ test('dossier acceptance scenarios and screenshot names are deterministic', () =
       '10-publish-assets-source-mobile-390x844.png',
       '11-cleanup-review-desktop-1440x900.png',
       '12-cleanup-review-mobile-390x844.png',
-      '13-offline-diagnostics-820x800.png',
-      '14-reduced-motion-820x800.png',
-      '15-forced-colors-820x800.png',
+      '13-cleanup-confirmation-desktop-1440x900.png',
+      '14-cleanup-confirmation-mobile-390x844.png',
+      '15-recipe-picker-mobile-390x844.png',
+      '16-offline-diagnostics-820x800.png',
+      '17-reduced-motion-820x800.png',
+      '18-forced-colors-820x800.png',
     ],
   );
   assert.equal(dossierBreakpoint(1200), 'desktop');

@@ -105,6 +105,7 @@ export const LIFECYCLE_SAMPLES = [
       'Confirm the target gateway is not production.',
       'Optionally delete the APIM subscription, then the product, revoking the minted key.',
       'Optionally delete each published API, and the backends belonging to remote MCP and A2A assets.',
+      'Optionally delete the `weather-api` source API that the notebook otherwise leaves behind.',
       'Report every deletion outcome independently.',
       'List everything that was not removed, with the command that would remove it.',
     ],
@@ -301,7 +302,7 @@ export const LIFECYCLE_SAMPLES = [
       {
         id: 'defaults-delete-nothing',
         title: 'Default settings delete nothing',
-        assertion: 'With both switches off, this recipe performs no deletion and simply reports state.',
+        assertion: 'With every deletion switch off, this recipe performs no deletion and simply reports state.',
         evidence: 'The generated plan holds no delete step.',
         whenNotRun: 'Not run.',
       },
@@ -313,7 +314,7 @@ export const LIFECYCLE_SAMPLES = [
       'The notebook does not remove the Foundry role assignment, the agent`s A2A enablement, the Key Vault secrets, the generated files, the telemetry or the deployment history, and does not mention them. This recipe lists all of them with removal commands.',
     ],
     notes: [
-      'With both deletion switches off — the default — the generated plan contains no delete step at all. It still reports the residue, which is the part most worth reading.',
+      'With every deletion switch off — the default — the generated plan contains no delete step at all. It still reports the residue, which is the part most worth reading.',
       'The residue list is static metadata, so it is accurate even when nothing has been run and no executor is attached.',
     ],
     build(ctx) {
@@ -498,7 +499,7 @@ export const LIFECYCLE_SAMPLES = [
                 ? steps
                     .filter((planStep) => planStep.type === 'azure-cli')
                     .map((planStep) => `${planStep.title}: reported on its own.`)
-                : ['Both deletion switches are off, so no deletion is attempted and none is claimed.'],
+                : ['All deletion switches are off, so no deletion is attempted and none is claimed.'],
           },
           produces: ['deletionReport'],
         }),
