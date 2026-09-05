@@ -390,17 +390,17 @@ export function createInMemoryManagedRunStore({
         dispatchLeaseExpiresAt: now() + leaseMs,
         dispatchGeneration: Number.isSafeInteger(current.dispatchGeneration) ? current.dispatchGeneration + 1 : 1,
         launchCommittedAt: null,
+        launchInvocationCommittedAt: null,
         launchToken: null,
       };
       runs.set(runId, copy(claimed));
       return { outcome: 'claimed', record: copy(claimed) };
     },
     /**
-     * The final atomic launch fence. Cancellation and this claim are ordered by
-     * the durable store: if cancellation wins first, no dispatcher receives
-     * launch permission; if this claim wins first, cancellation knows a
-     * platform launch is already committed and capacity remains reserved until
-     * that exact job is proven inactive.
+     * Claims the generation token that will fence the platform launch. The
+     * orchestrator performs one final atomic `update` immediately before
+     * invoking the launcher; `launchInvocationCommittedAt` distinguishes a
+     * token that was only prepared from one whose invocation was committed.
      */
     async claimLaunch(runId, dispatcherId, launchToken) {
       const current = runs.get(runId);
@@ -424,7 +424,9 @@ export function createInMemoryManagedRunStore({
       if (!ACTIVE_STATES.has(current.state)) {
         return { outcome: 'not-runnable', record: copy(current) };
       }
-      if (!current.launchCommittedAt) return { outcome: 'not-dispatched', record: copy(current) };
+      if (!current.launchCommittedAt || !current.launchInvocationCommittedAt) {
+        return { outcome: 'not-dispatched', record: copy(current) };
+      }
       if (typeof launchToken !== 'string' || launchToken !== current.launchToken) {
         return { outcome: 'launch-token-mismatch', record: copy(current) };
       }
@@ -539,6 +541,14 @@ export function createInMemoryManagedRunStore({
  * redispatch was in flight), releasing its capacity reservation is safe only
  * when no external job launched by any process could still be running for
  * it: see the `not-runnable` handling in `launch()` below.
+ *
+ * `startRecovery()` runs one immediate recovery pass and then keeps exactly one
+ * bounded timer scheduled. Passes are single-flight: a timer tick, a manual
+ * `recover()`, and a repeated `startRecovery()` all share the same in-progress
+ * promise rather than overlapping store reads or dispatch attempts. The timer
+ * wakes at least every `recoveryIntervalMs`, and sooner when a terminal launch
+ * commitment has a nearer lease expiry. `stopRecovery()` clears that timer and
+ * prevents an in-progress pass from scheduling another one during shutdown.
  */
 export function createManagedRunOrchestrator({
   store,
@@ -549,10 +559,12 @@ export function createManagedRunOrchestrator({
   clearTimeoutFn = clearTimeout,
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
-  onError = ({ runId, operation }) => console.error(`Managed run ${runId} could not ${operation}.`),
+  onError = ({ runId, operation }) =>
+    console.error(runId ? `Managed run ${runId} could not ${operation}.` : `Managed run recovery could not ${operation}.`),
   limits = {},
   dispatchLeaseMs = DEFAULT_DISPATCH_LEASE_MS,
   dispatchHeartbeatMs = Math.max(1, Math.floor(dispatchLeaseMs / 3)),
+  recoveryIntervalMs = Math.max(1, Math.floor(dispatchLeaseMs / 2)),
 } = {}) {
   if (
     !store ||
@@ -577,6 +589,7 @@ export function createManagedRunOrchestrator({
   if (typeof onError !== 'function') throw new TypeError('Managed run orchestration requires an onError function.');
   requirePositiveInteger(dispatchLeaseMs, 'dispatchLeaseMs');
   requirePositiveInteger(dispatchHeartbeatMs, 'dispatchHeartbeatMs');
+  requirePositiveInteger(recoveryIntervalMs, 'recoveryIntervalMs');
   if (dispatchHeartbeatMs >= dispatchLeaseMs) {
     throw new TypeError('dispatchHeartbeatMs must be less than dispatchLeaseMs so a live dispatcher always renews before its lease can expire.');
   }
@@ -591,8 +604,16 @@ export function createManagedRunOrchestrator({
   const controllers = new Map();
   const jobs = new Map();
   const cancelledJobs = new Set();
-  const recoveryRetryTimers = new Map();
   const dispatcherId = `dispatcher_${randomBytes(16).toString('base64url')}`;
+  let recoveryTimer = null;
+  let recoveryTimerDueAt = null;
+  let recoveryPromise = null;
+  let recoverySchedulerStarted = false;
+  let recoveryGeneration = 0;
+
+  function recoveryIsCurrent(generation) {
+    return generation === null || generation === recoveryGeneration;
+  }
 
   function makeRunId() {
     const token = random();
@@ -623,16 +644,26 @@ export function createManagedRunOrchestrator({
     });
   }
 
-  async function finish(runId, result, { aborted, timedOut }) {
+  function ownsDispatch(current, fence) {
+    if (!fence) return true;
+    if (current.dispatcherId !== fence.dispatcherId || current.dispatchGeneration !== fence.dispatchGeneration) return false;
+    return fence.launchToken === null || current.launchToken === fence.launchToken;
+  }
+
+  async function finish(runId, result, { aborted, timedOut, fence = null }) {
     return store.update(runId, (current) => {
+      if (!ownsDispatch(current, fence)) return current;
       if (TERMINAL_STATES.has(current.state)) return current;
       const state = timedOut ? 'inconclusive' : aborted ? 'cancelled' : terminalState(result);
       return { ...current, state, finishedAt: now(), steps: safeSteps(result?.steps ?? current.steps) };
     });
   }
 
-  async function releaseCapacity(runId) {
-    return store.update(runId, (current) => (current.capacityReserved === false ? current : { ...current, capacityReserved: false }));
+  async function releaseCapacity(runId, fence = null) {
+    return store.update(runId, (current) => {
+      if (!ownsDispatch(current, fence) || current.capacityReserved === false) return current;
+      return { ...current, capacityReserved: false };
+    });
   }
 
   async function releaseRecoveredCapacity(runId) {
@@ -643,7 +674,30 @@ export function createManagedRunOrchestrator({
     }
   }
 
-  async function launch(record) {
+  async function abandonUnlaunchedDispatch(runId, launchToken = null) {
+    try {
+      await store.update(runId, (current) => {
+        if (current.dispatcherId !== dispatcherId) return current;
+        if (launchToken !== null && current.launchToken !== launchToken) return current;
+        if (current.workerLease) return current;
+        const abandoned = {
+          ...current,
+          dispatchLeaseExpiresAt: now(),
+          launchCommittedAt: null,
+          launchInvocationCommittedAt: null,
+          launchToken: null,
+        };
+        return TERMINAL_STATES.has(current.state) && current.capacityReserved !== false
+          ? { ...abandoned, capacityReserved: false }
+          : abandoned;
+      });
+    } catch {
+      onError({ runId, operation: 'reconcile its unlaunched dispatch commitment' });
+    }
+  }
+
+  async function launch(record, { recoveryFence = null } = {}) {
+    if (!recoveryIsCurrent(recoveryFence)) return;
     // This orchestrator already has a live controller/job tracked locally
     // for this exact run — whether it is the SAME `launch()` call that
     // originally dispatched it, or an earlier call whose cleanup has not
@@ -662,10 +716,12 @@ export function createManagedRunOrchestrator({
     let timer;
     let dispatchHeartbeat;
     let timedOut = false;
-    let executionLaunched = false;
+    let launcherInvoked = false;
+    let executionTracked = false;
     let executionSettled = false;
     let cleanupWhenSettled = false;
     let cleaned = false;
+    let dispatchFence = null;
     const stopDispatchHeartbeat = () => {
       if (dispatchHeartbeat) {
         clearIntervalFn(dispatchHeartbeat);
@@ -690,6 +746,10 @@ export function createManagedRunOrchestrator({
       // runs always wins; this call then simply returns without launching a
       // duplicate job on top of it.
       const dispatchClaim = await store.claimDispatch(record.runId, dispatcherId, dispatchLeaseMs);
+      if (!recoveryIsCurrent(recoveryFence)) {
+        if (dispatchClaim.outcome === 'claimed') await abandonUnlaunchedDispatch(record.runId);
+        return;
+      }
       if (dispatchClaim.outcome === 'not-runnable') {
         // The run reached a terminal state before this dispatcher could
         // claim it (for example, cancelled while a redispatch was in
@@ -698,13 +758,12 @@ export function createManagedRunOrchestrator({
         // whether any process's `launch()` ever actually started external
         // work for it:
         //
-        //  - If it never reached `startedAt`, no process's `launch()` ever
-        //    invoked `jobLauncher.launch` for it — no external work can
-        //    possibly still be running, so releasing is always safe, exactly
-        //    as the pending->running transition below would have if it had
-        //    reached this run first.
-        //  - If `startedAt` IS set, some process's `launch()` really did
-        //    start a platform job for it. That job may be a different,
+        //  - If it never reached `startedAt`, or its durable
+        //    `launchInvocationCommittedAt` is explicitly null, no process
+        //    committed to invoke `jobLauncher.launch` for this generation.
+        //    No external work can still be running, so releasing is safe.
+        //  - If the invocation commitment IS set, some process may have
+        //    started a platform job for it. That job may be a different,
         //    still-live dispatcher's job, or this run may have been
         //    cancelled while its job keeps running out from under it (see
         //    `raceAbortSignal` in deadline.mjs: cancellation makes a
@@ -720,7 +779,7 @@ export function createManagedRunOrchestrator({
         //    work. This is a release decision only — it never calls
         //    `jobLauncher.launch` here, since redispatch already stopped the
         //    moment `claimDispatch` returned `not-runnable`.
-        if (!dispatchClaim.record.startedAt) {
+        if (!dispatchClaim.record.startedAt || dispatchClaim.record.launchInvocationCommittedAt === null) {
           await releaseCapacity(record.runId);
           return;
         }
@@ -732,11 +791,17 @@ export function createManagedRunOrchestrator({
             onError({ runId: record.runId, operation: 'verify whether its hosted job is still active before releasing stale capacity' });
             return;
           }
+          if (!recoveryIsCurrent(recoveryFence)) return;
           if (stillActive === false) await releaseRecoveredCapacity(record.runId);
         }
         return;
       }
       if (dispatchClaim.outcome !== 'claimed') return;
+      dispatchFence = {
+        dispatcherId,
+        dispatchGeneration: dispatchClaim.record.dispatchGeneration,
+        launchToken: null,
+      };
 
       // A one-shot dispatch lease only proves ownership at the instant it
       // was acquired. `dispatchLeaseMs` is deliberately far shorter than
@@ -776,6 +841,10 @@ export function createManagedRunOrchestrator({
       const started = await store.update(record.runId, (current) =>
         TERMINAL_STATES.has(current.state) ? current : { ...current, state: 'running', startedAt: now() },
       );
+      if (!recoveryIsCurrent(recoveryFence)) {
+        await abandonUnlaunchedDispatch(record.runId);
+        return;
+      }
       if (TERMINAL_STATES.has(started.state)) {
         // Cancellation can win while the asynchronous store writes the
         // pending->running transition. No platform job has launched in that
@@ -786,14 +855,16 @@ export function createManagedRunOrchestrator({
       }
 
       // The running write is not launch permission: its response can be stale
-      // by the time it reaches this process. `claimLaunch` atomically orders
-      // the final launch commitment against cancellation in the durable store.
+      // by the time it reaches this process. `claimLaunch` prepares this
+      // generation's token; the following atomic update is the final ordering
+      // point against cancellation.
       const launchToken = randomBytes(24).toString('hex');
       const launchClaim = await store.claimLaunch(record.runId, dispatcherId, launchToken);
-      const launchLeaseExpired =
-        launchClaim.outcome === 'claimed' &&
-        (!Number.isFinite(launchClaim.record.dispatchLeaseExpiresAt) || launchClaim.record.dispatchLeaseExpiresAt <= now());
-      if (launchClaim.outcome !== 'claimed' || controller.signal.aborted || launchLeaseExpired) {
+      if (!recoveryIsCurrent(recoveryFence)) {
+        if (launchClaim.outcome === 'claimed') await abandonUnlaunchedDispatch(record.runId, launchToken);
+        return;
+      }
+      if (launchClaim.outcome !== 'claimed') {
         stopDispatchHeartbeat();
         if (
           launchClaim.record &&
@@ -805,27 +876,59 @@ export function createManagedRunOrchestrator({
         }
         return;
       }
+      dispatchFence = { ...dispatchFence, launchToken };
+
+      // This is the last asynchronous boundary before the synchronous launcher
+      // call. The store update atomically orders cancellation against the
+      // launch invocation commitment: cancellation that wins first prevents
+      // the commitment; cancellation that wins afterward preserves capacity
+      // because this dispatcher must now invoke the launcher exactly once.
+      const invocationCommittedAt = now();
+      const beforeLaunch = await store.update(record.runId, (current) => {
+        if (
+          !ACTIVE_STATES.has(current.state) ||
+          current.dispatcherId !== dispatcherId ||
+          current.launchToken !== launchToken ||
+          current.launchInvocationCommittedAt !== null ||
+          !Number.isFinite(current.dispatchLeaseExpiresAt) ||
+          current.dispatchLeaseExpiresAt <= now()
+        ) {
+          return current;
+        }
+        return { ...current, launchInvocationCommittedAt: invocationCommittedAt };
+      });
+      const invocationCommitted =
+        beforeLaunch &&
+        beforeLaunch.dispatcherId === dispatcherId &&
+        beforeLaunch.launchToken === launchToken &&
+        beforeLaunch.launchInvocationCommittedAt === invocationCommittedAt;
+      if (!invocationCommitted || controller.signal.aborted || !recoveryIsCurrent(recoveryFence)) {
+        stopDispatchHeartbeat();
+        await abandonUnlaunchedDispatch(record.runId, launchToken);
+        return;
+      }
 
       timer = setTimeoutFn(() => {
         timedOut = true;
         abortJob(record.runId);
       }, bounds.runTimeoutMs);
+      launcherInvoked = true;
       const launched = jobLauncher.launch({
-        run: publicRecord(record),
-        work: copy(record.work),
+        run: publicRecord(beforeLaunch),
+        work: copy(beforeLaunch.work),
         signal: controller.signal,
         reportPartial: (steps) => reportPartial(record.runId, steps),
         fence: Object.freeze({
           token: launchToken,
-          generation: launchClaim.record.dispatchGeneration,
-          expiresAt: launchClaim.record.dispatchLeaseExpiresAt,
+          generation: beforeLaunch.dispatchGeneration,
+          expiresAt: beforeLaunch.dispatchLeaseExpiresAt,
         }),
       });
       const isJobHandle = launched && typeof launched === 'object' && 'result' in launched;
       if (isJobHandle && typeof launched.cancel === 'function') jobs.set(record.runId, launched.cancel);
       if (controller.signal.aborted) abortJob(record.runId);
       const execution = isJobHandle ? launched.result : launched;
-      executionLaunched = true;
+      executionTracked = true;
       // A timeout bounds the public run state, but it does not prove an
       // uncooperative platform job stopped. Keep its capacity reservation
       // until its promise actually settles so repeated timeouts cannot evade
@@ -833,7 +936,9 @@ export function createManagedRunOrchestrator({
       const executionPromise = Promise.resolve(execution);
       const onExecutionSettled = () => {
         executionSettled = true;
-        void releaseCapacity(record.runId).catch(() => onError({ runId: record.runId, operation: 'release its capacity reservation' }));
+        void releaseCapacity(record.runId, dispatchFence).catch(() =>
+          onError({ runId: record.runId, operation: 'release its capacity reservation' }),
+        );
         if (cleanupWhenSettled) cleanup();
       };
       executionPromise.then(onExecutionSettled, onExecutionSettled);
@@ -844,53 +949,48 @@ export function createManagedRunOrchestrator({
         controller.signal,
         'The managed run exceeded its time budget or was cancelled.',
       );
-      await finish(record.runId, result, { aborted: controller.signal.aborted, timedOut });
-      await releaseCapacity(record.runId);
+      await finish(record.runId, result, { aborted: controller.signal.aborted, timedOut, fence: dispatchFence });
+      await releaseCapacity(record.runId, dispatchFence);
     } catch {
-      // A start or store failure is still terminal; release the reservation
-      // only when no launched job remains. A store that cannot record this is
-      // an infrastructure failure and its own durable implementation must
-      // surface it to its operator.
-      if (executionLaunched) {
+      // Before this process has a returned ownership fence, it cannot safely
+      // mutate the record: the claim may have committed and then been replaced
+      // while its response failed. Leave state and capacity untouched for
+      // recovery rather than risk overwriting that replacement.
+      if (!dispatchFence) {
+        onError({ runId: record.runId, operation: 'establish durable dispatch ownership' });
+        return;
+      }
+      // Once ownership is known, a start or store failure is terminal for only
+      // this exact dispatch generation. A launched job retains capacity until
+      // it settles; an unlaunched one can release its own fenced reservation.
+      if (launcherInvoked) {
         abortJob(record.runId);
         stopDispatchHeartbeat();
-        cleanupWhenSettled = !executionSettled;
+        cleanupWhenSettled = executionTracked && !executionSettled;
       }
-      await finish(record.runId, null, { aborted: controller.signal.aborted, timedOut }).catch(() =>
+      await finish(record.runId, null, { aborted: controller.signal.aborted, timedOut, fence: dispatchFence }).catch(() =>
         onError({ runId: record.runId, operation: 'record its terminal state' }),
       );
-      if (!executionLaunched) {
-        await releaseCapacity(record.runId).catch(() => onError({ runId: record.runId, operation: 'release its capacity reservation' }));
+      if (!launcherInvoked) {
+        await releaseCapacity(record.runId, dispatchFence).catch(() =>
+          onError({ runId: record.runId, operation: 'release its capacity reservation' }),
+        );
       }
     } finally {
       if (!cleanupWhenSettled) cleanup();
     }
   }
 
-  function deferTerminalRecovery(record) {
-    if (
-      !record.launchCommittedAt ||
-      !Number.isFinite(record.dispatchLeaseExpiresAt) ||
-      record.dispatchLeaseExpiresAt <= now()
-    ) {
-      return false;
-    }
-    if (recoveryRetryTimers.has(record.runId)) return true;
-    const retry = setTimeoutFn(() => {
-      recoveryRetryTimers.delete(record.runId);
-      void recoverRuns().catch(() => onError({ runId: record.runId, operation: 'retry its terminal capacity recovery' }));
-    }, Math.max(1, record.dispatchLeaseExpiresAt - now()));
-    recoveryRetryTimers.set(record.runId, retry);
-    return true;
-  }
-
-  async function recoverRuns() {
+  async function recoverPass(recoveryFence) {
     if (typeof store.listRecoverable !== 'function') {
       throw new TypeError('Managed run recovery requires a store with listRecoverable.');
     }
     const recoverable = await store.listRecoverable();
+    if (!recoveryIsCurrent(recoveryFence)) return { relaunched: 0, nextLeaseExpiry: null };
     let relaunched = 0;
+    let nextLeaseExpiry = null;
     for (const record of recoverable) {
+      if (!recoveryIsCurrent(recoveryFence)) break;
       // This orchestrator itself may still hold a live controller/job for
       // this run even though its dispatch lease lapsed in the store (for
       // example, its own renewing heartbeat missed enough ticks under a
@@ -908,15 +1008,22 @@ export function createManagedRunOrchestrator({
           await releaseRecoveredCapacity(record.runId);
           continue;
         }
-        // Once the atomic launch fence commits, its owning dispatcher may
-        // still be between durable permission and the synchronous platform
-        // launch call. Preserve capacity until that renewable ownership lease
-        // expires, then retry recovery in this same restarted process.
-        if (deferTerminalRecovery(record)) continue;
-        const retry = recoveryRetryTimers.get(record.runId);
-        if (retry) {
-          clearTimeoutFn(retry);
-          recoveryRetryTimers.delete(record.runId);
+        if (record.launchInvocationCommittedAt === null) {
+          await releaseRecoveredCapacity(record.runId);
+          continue;
+        }
+        // Once launch invocation commits, its owning dispatcher may still be
+        // between durable permission and the synchronous platform launch call.
+        // Preserve capacity until that renewable ownership lease expires. The
+        // single scheduler wakes at the nearest such expiry.
+        if (
+          record.launchCommittedAt &&
+          Number.isFinite(record.dispatchLeaseExpiresAt) &&
+          record.dispatchLeaseExpiresAt > now()
+        ) {
+          nextLeaseExpiry =
+            nextLeaseExpiry === null ? record.dispatchLeaseExpiresAt : Math.min(nextLeaseExpiry, record.dispatchLeaseExpiresAt);
+          continue;
         }
         if (typeof jobLauncher.isActive !== 'function') continue;
         let stillActive;
@@ -926,6 +1033,7 @@ export function createManagedRunOrchestrator({
           onError({ runId: record.runId, operation: 'verify whether its terminal hosted job is still active' });
           continue;
         }
+        if (!recoveryIsCurrent(recoveryFence)) break;
         if (stillActive === false) await releaseRecoveredCapacity(record.runId);
         continue;
       }
@@ -954,12 +1062,67 @@ export function createManagedRunOrchestrator({
           onError({ runId: record.runId, operation: 'verify whether its hosted job is still active' });
           continue;
         }
+        if (!recoveryIsCurrent(recoveryFence)) break;
         if (stillActive !== false) continue;
       }
+      if (!recoveryIsCurrent(recoveryFence)) break;
       relaunched += 1;
-      void launch(record);
+      void launch(record, { recoveryFence });
     }
-    return relaunched;
+    return { relaunched, nextLeaseExpiry };
+  }
+
+  function clearRecoveryTimer() {
+    if (!recoveryTimer) return;
+    clearTimeoutFn(recoveryTimer);
+    recoveryTimer = null;
+    recoveryTimerDueAt = null;
+  }
+
+  function scheduleRecovery(nextLeaseExpiry = null) {
+    if (!recoverySchedulerStarted) return;
+    const periodicDueAt = now() + recoveryIntervalMs;
+    const dueAt =
+      Number.isFinite(nextLeaseExpiry) && nextLeaseExpiry > now()
+        ? Math.min(periodicDueAt, nextLeaseExpiry)
+        : periodicDueAt;
+    if (recoveryTimer && recoveryTimerDueAt <= dueAt) return;
+    clearRecoveryTimer();
+    recoveryTimerDueAt = dueAt;
+    recoveryTimer = setTimeoutFn(() => {
+      recoveryTimer = null;
+      recoveryTimerDueAt = null;
+      if (!recoverySchedulerStarted) return;
+      void recoverRuns().catch(() => onError({ operation: 'complete its scheduled pass' }));
+    }, Math.max(1, dueAt - now()));
+  }
+
+  function recoverRuns() {
+    if (recoveryPromise) return recoveryPromise;
+    clearRecoveryTimer();
+    const recoveryFence = recoveryGeneration;
+    let nextLeaseExpiry = null;
+    const pass = recoverPass(recoveryFence).then((result) => {
+      nextLeaseExpiry = result.nextLeaseExpiry;
+      return result.relaunched;
+    });
+    recoveryPromise = pass.finally(() => {
+      recoveryPromise = null;
+      scheduleRecovery(nextLeaseExpiry);
+    });
+    return recoveryPromise;
+  }
+
+  function startRecovery() {
+    if (recoverySchedulerStarted) return recoveryPromise ?? Promise.resolve(0);
+    recoverySchedulerStarted = true;
+    return recoverRuns();
+  }
+
+  function stopRecovery() {
+    recoverySchedulerStarted = false;
+    recoveryGeneration += 1;
+    clearRecoveryTimer();
   }
 
   return Object.freeze({
@@ -1009,6 +1172,7 @@ export function createManagedRunOrchestrator({
         work: copy(work),
         state: 'pending',
         capacityReserved: true,
+        launchInvocationCommittedAt: null,
         createdAt: now(),
         steps: [],
       };
@@ -1040,5 +1204,7 @@ export function createManagedRunOrchestrator({
       return publicRecord(cancelled);
     },
     recover: recoverRuns,
+    startRecovery,
+    stopRecovery,
   });
 }

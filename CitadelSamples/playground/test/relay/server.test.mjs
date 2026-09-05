@@ -988,6 +988,45 @@ test('createRelayServer requires a tenantPolicy and an authenticator', () => {
   );
 });
 
+test('the relay server starts managed recovery only while listening and stops it on close', async () => {
+  let starts = 0;
+  let stops = 0;
+  const runOrchestrator = {
+    async idempotency() {
+      return { outcome: 'missing' };
+    },
+    async create() {
+      return { outcome: 'limit', scope: 'global' };
+    },
+    async status() {
+      return null;
+    },
+    async cancel() {
+      return null;
+    },
+    async recover() {
+      return 0;
+    },
+    async startRecovery() {
+      starts += 1;
+      return 0;
+    },
+    stopRecovery() {
+      stops += 1;
+    },
+  };
+  const server = createRelayServer(serverDeps({ runOrchestrator }));
+  assert.equal(starts, 0, 'constructing a server must not start background recovery');
+
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  assert.equal(starts, 1);
+
+  server.close();
+  await once(server, 'close');
+  assert.equal(stops, 1);
+});
+
 async function withServer(deps, fn) {
   const server = createRelayServer(deps);
   server.listen(0, '127.0.0.1');

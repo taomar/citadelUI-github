@@ -839,10 +839,12 @@ export function createRelayServer({
     typeof managedRuns.create !== 'function' ||
     typeof managedRuns.status !== 'function' ||
     typeof managedRuns.cancel !== 'function' ||
-    typeof managedRuns.recover !== 'function'
+    typeof managedRuns.recover !== 'function' ||
+    typeof managedRuns.startRecovery !== 'function' ||
+    typeof managedRuns.stopRecovery !== 'function'
     )
   ) {
-    throw new TypeError('runOrchestrator must provide create, status, and cancel methods.');
+    throw new TypeError('runOrchestrator must provide create, status, cancel, and recovery lifecycle methods.');
   }
 
   const server = createServer(async (request, response) => {
@@ -973,11 +975,25 @@ export function createRelayServer({
   server.tenantPolicy = tenantPolicy;
   server.nonceStore = nonces;
   server.runOrchestrator = managedRuns;
-  // A durable orchestrator re-enqueues records that were accepted before a
-  // prior relay process exited. Its own store/job adapter reports any recovery
-  // failure to the hosting environment without exposing internal details.
+  // Recovery belongs to the listening server's lifecycle: construction alone
+  // does not start background work, and close always clears the scheduler.
   if (managedRuns) {
-    void managedRuns.recover().catch(() => console.error('Managed run recovery failed.'));
+    let recoveryStarted = false;
+    const stopManagedRecovery = () => {
+      if (!recoveryStarted) return;
+      recoveryStarted = false;
+      managedRuns.stopRecovery();
+    };
+    server.on('listening', () => {
+      recoveryStarted = true;
+      void managedRuns.startRecovery().catch(() => console.error('Managed run recovery failed.'));
+    });
+    server.on('close', stopManagedRecovery);
+    const close = server.close.bind(server);
+    server.close = (callback) => {
+      stopManagedRecovery();
+      return close(callback);
+    };
   }
   return server;
 }
