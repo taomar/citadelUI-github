@@ -105,7 +105,7 @@ export function readHostedConfig(env = process.env) {
     issues.push('Optional relay is disabled in hosted BFF mode; an all-HTTPS credential transport needs separate configuration and review.');
   }
   return Object.freeze({
-    origin, callback: `${origin}/auth/callback`, cloud, tenantId, clientId, clientSecret, policy,
+    origin, callback: `${origin}/auth/callback`, logoutRedirect: `${origin}/`, cloud, tenantId, clientId, clientSecret, policy,
     authIssues: Object.freeze(authIssues), issues: Object.freeze(issues),
     subscriptionIds, gatewayPolicy,
     idleMs: integer(env, 'CITADEL_SESSION_IDLE_SECONDS', 1800, 1800) * 1000,

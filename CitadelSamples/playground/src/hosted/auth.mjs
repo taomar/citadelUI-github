@@ -5,6 +5,9 @@ import { createHttpsTransport } from './httpsTransport.mjs';
 import { GUID, httpsOrigin } from './config.mjs';
 
 export function createMicrosoftAuth(config, { fetchImpl = createHttpsTransport(), verifyKey } = {}) {
+  if (config.logoutRedirect !== undefined && config.logoutRedirect !== `${config.origin}/`) {
+    throw new TypeError('The sign-out return must be the fixed application root.');
+  }
   const authority = `${config.cloud.loginEndpoint}/${config.tenantId}`;
   const issuer = `${config.cloud.tokenIssuerBase}/${config.tenantId}/v2.0`;
   const armScope = `${config.cloud.resourceManager.replace(/\/?$/, '/')}.default`;
@@ -92,6 +95,6 @@ export function createMicrosoftAuth(config, { fetchImpl = createHttpsTransport()
         || result.expiresOn.getTime() <= Date.now()) reconnect();
       return result.accessToken;
     },
-    logoutUrl: `${authority}/oauth2/v2.0/logout?post_logout_redirect_uri=${encodeURIComponent(config.origin + '/')}`,
+    logoutUrl: `${authority}/oauth2/v2.0/logout?post_logout_redirect_uri=${encodeURIComponent(config.logoutRedirect ?? config.origin + '/')}`,
   });
 }

@@ -1,6 +1,19 @@
 import { createExecutionPlan, step } from './plan.mjs';
 
 export const HOSTED_ARM_SAMPLES = Object.freeze(['azure-context-check', 'apim-discovery']);
+const GATEWAY_SAMPLES = ['weather-mcp-discovery', 'learn-mcp-discovery', 'a2a-agent-card', 'a2a-message-send', 'weather-tools-call'];
+export const isHostedSampleSupported = (id) => HOSTED_ARM_SAMPLES.includes(id) || GATEWAY_SAMPLES.includes(id);
+
+export function hostedPresentation(sample, plan) {
+  if (HOSTED_ARM_SAMPLES.includes(sample.id)) return hostedManagementPresentation(sample, plan);
+  if (GATEWAY_SAMPLES.includes(sample.id)) return sample;
+  return { ...sample, hostedUnsupported: true, summary: 'No executable Docker adapter is available for this recipe. Application sign-in does not supply an execution credential.',
+    purpose: 'Inspect the protected reference and declared inputs; execution requires a separately approved Docker adapter.',
+    explanation: ['The signed-in application operator is distinct from the unavailable execution identity.'],
+    prerequisites: [{ id: 'adapter', title: 'Protected Docker adapter required', detail: 'This recipe cannot run in this Docker phase.' }],
+    flow: [], runtime: { dependencies: [], note: 'No execution credential or process is available.' },
+    expectedResults: [], notes: ['The original notebook source is nonexecuted provenance, not a Docker operation.'] };
+}
 
 export function hostedManagementPresentation(sample, plan) {
   const summary = plan?.summary ?? 'Read Azure through this application session\'s delegated user credential.';

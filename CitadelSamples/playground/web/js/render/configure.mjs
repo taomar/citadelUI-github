@@ -179,15 +179,17 @@ export function captureFocus(container) {
   };
 }
 
-export function restoreFocus(container, snapshot) {
+export function restoreFocus(container, snapshot, { readSecret = () => undefined } = {}) {
   if (!snapshot) return;
   const target = container.ownerDocument?.getElementById(snapshot.id);
-  if (!target || !container.contains(target)) return;
-  if (snapshot.value !== null && target.type === 'password') target.value = snapshot.value;
+  if (!target || !container.contains(target) || target.disabled || target.closest?.('[inert], [hidden]')) return false;
+  const currentValue = target.type !== 'password' || snapshot.value === null || readSecret(target.name) === snapshot.value;
+  if (snapshot.value !== null && target.type === 'password' && currentValue) target.value = snapshot.value;
   target.focus({ preventScroll: true });
-  if (snapshot.selection && typeof target.selectionStart === 'number' && typeof target.setSelectionRange === 'function') {
+  if (currentValue && snapshot.selection && typeof target.selectionStart === 'number' && typeof target.setSelectionRange === 'function') {
     target.setSelectionRange(snapshot.selection.start, snapshot.selection.end, snapshot.selection.direction);
   }
+  return container.ownerDocument.activeElement === target;
 }
 
 function heading(level, id, value, className) {
@@ -376,6 +378,7 @@ function renderAcquisitionHelp(field, callbacks, label = 'Get this value') {
             field.fallback ? el('p', { class: 'configure-help-copy', text: `If left blank: ${field.fallback}` }) : null,
             field.secretNote ? el('p', { class: 'configure-help-copy', text: field.secretNote }) : null,
             technical.length ? definitionList(technical.map(([label, value]) => [label, value, { mono: true }])) : null,
+            field.hosted && list(field.links).length ? el('p', { text: 'Original notebook documentation (nonexecuted provenance in this Docker application).' }) : null,
             linkList(field.links),
           ])
         : null,

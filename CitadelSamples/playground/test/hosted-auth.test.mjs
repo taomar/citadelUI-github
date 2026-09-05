@@ -163,8 +163,9 @@ test('HTTPS browser entry, correlation callback, CSRF, entitlement and restart r
     'Content-Type': 'application/json', 'X-Citadel-CSRF': caps.json().auth.csrf };
   const start = await httpsTestRequest(server, tls, { path: '/api/auth/start', method: 'POST', headers, body: { purpose: 'signin' } });
   assert.equal(start.status, 200);
-  assert.match(start.headers['set-cookie'][0], /SameSite=Lax/);
-  const correlation = start.headers['set-cookie'][0].split(';')[0];
+  const correlationCookie = start.headers['set-cookie'].find((value) => value.startsWith('__Host-citadel-login='));
+  assert.match(correlationCookie, /SameSite=Lax/);
+  const correlation = correlationCookie.split(';')[0];
   const callback = await httpsTestRequest(server, tls, {
     path: `/auth/callback?state=${fakeAuth.request.state}&code=synthetic-code`, headers: { Cookie: correlation },
   });

@@ -1,7 +1,7 @@
 import { createServer } from 'node:https';
 import { readFile, realpath } from 'node:fs/promises';
 import { resolve, sep, extname } from 'node:path';
-import { createSessions, cookieValue, sessionCookie, SESSION_COOKIE, CORRELATION_COOKIE, sameToken } from './sessions.mjs';
+import { createSessions, cookieValue, sessionCookie, SESSION_COOKIE, CORRELATION_COOKIE, PREAUTH_COOKIE, sameToken, randomToken } from './sessions.mjs';
 import { createMicrosoftAuth } from './auth.mjs';
 import { createHostedRuntime } from './runtime.mjs';
 import { CATALOGUE } from '../catalogue/index.mjs';
@@ -42,7 +42,8 @@ function exact(value, keys) {
   if (Object.keys(value).some((key) => !keys.includes(key))) fail('Unexpected request fields.');
 }
 
-export function hostedCapabilities(config, sessions, session, runtime) {
+export function hostedCapabilities(config, sessions, session, runtime, csrf = null) {
+  session ??= { claims: null, csrf, contextVersion: 0 };
   const authorized = sessions.authorized(session) && !session.authPending;
   const reason = config.authIssues.length ? 'Deployment owner must complete Microsoft sign-in configuration.'
     : !session.claims ? 'Sign in with Microsoft in this application.'
@@ -88,66 +89,75 @@ export function createHostedServer({ config, tls, root, auth: injectedAuth, fetc
       const path = url.pathname;
       if (path === '/auth/callback') {
         if (request.method !== 'GET' || !auth) fail('Sign-in is not configured.', 400);
-        let prior, next;
+        let prior, next, tx;
         try {
           for (const key of url.searchParams.keys()) if (url.searchParams.getAll(key).length !== 1) fail('Duplicate authentication response fields.');
-          const tx = sessions.consume(url.searchParams.get('state'), cookieValue(request, CORRELATION_COOKIE));
+          tx = sessions.consume(url.searchParams.get('state'), cookieValue(request, CORRELATION_COOKIE));
           prior = sessions.get(tx.sessionId);
           if (url.searchParams.has('error')) fail('Microsoft sign-in was cancelled or denied.');
           const code = url.searchParams.get('code');
           if (!code || code.length > 10000) fail('Missing or invalid authorization code.');
           const verified = await auth.finish(tx, code);
           if (!sessions.get(tx.sessionId, { touch: false })) fail('Sign-in session expired.');
-          next = sessions.create();
-          Object.assign(next, verified);
+          next = sessions.finish(prior, verified, tx);
         } catch {
-          sessions.revoke(prior);
+          const current = sessions.hasTransaction(tx);
+          const retained = sessions.authorized(prior);
+          if (current && retained) sessions.endAuth(prior, tx);
+          else if (current) sessions.revoke(prior);
           send(response, 303, null, { Location: '/?signin=failed', 'Set-Cookie': [
-            ...(prior ? [sessionCookie('', { clear: true }), sessionCookie('', { correlation: true, clear: true })] : []),
+            ...(prior && current ? [sessionCookie(retained ? prior.id : '', { clear: !retained }), sessionCookie('', { correlation: true, clear: true })] : []),
           ] });
           return;
         }
-        sessions.revoke(prior);
         send(response, 303, null, { Location: '/', 'Set-Cookie': [
-          sessionCookie(next.id), sessionCookie('', { correlation: true, clear: true }),
+          sessionCookie(next.id), sessionCookie('', { correlation: true, clear: true }), sessionCookie('', { preauth: true, clear: true }),
         ] });
         return;
       }
       if (path === '/api/live' && request.method === 'GET') { send(response, 200, { status: 'ok' }); return; }
       let session = sessions.get(cookieValue(request, SESSION_COOKIE));
       if (path === '/api/capabilities' && request.method === 'GET') {
-        const fresh = !session;
-        session ??= sessions.create();
-        send(response, 200, hostedCapabilities(config, sessions, session, runtime),
-          fresh ? { 'Set-Cookie': sessionCookie(session.id) } : {});
+        const crossSite = request.headers['sec-fetch-site'] === 'cross-site'
+          || (request.headers.origin && request.headers.origin !== config.origin);
+        const existing = cookieValue(request, PREAUTH_COOKIE);
+        const csrf = session?.csrf ?? (!crossSite ? sameToken(existing, existing) ? existing : randomToken() : null);
+        send(response, 200, hostedCapabilities(config, sessions, crossSite ? null : session, runtime, crossSite ? null : csrf),
+          !session && !crossSite ? { 'Set-Cookie': sessionCookie(csrf, { preauth: true }) } : {});
         return;
       }
       if (request.method === 'POST') {
         if (request.headers.origin !== config.origin || !['same-origin', undefined].includes(request.headers['sec-fetch-site'])) fail('Same-origin request required.', 403);
-        if (!session || !sameToken(request.headers['x-citadel-csrf'], session.csrf)) fail('Session expired or CSRF check failed. Reload to sign in.', 401, 'session-required');
+        const csrf = session?.csrf ?? (path === '/api/auth/start' ? cookieValue(request, PREAUTH_COOKIE) : null);
+        if (!sameToken(request.headers['x-citadel-csrf'], csrf)) fail('Session expired or CSRF check failed. Reload to sign in.', 401, 'session-required');
         const payload = await body(request);
         if (path === '/api/auth/start') {
           exact(payload, ['purpose']);
           if (!auth || !['signin', 'azure'].includes(payload.purpose)) fail('Sign-in configuration is incomplete.');
           if (payload.purpose === 'azure' && !sessions.authorized(session)) fail('Operator sign-in required.', 403);
           if (payload.purpose === 'azure' && !config.subscriptionIds.length) fail('The deployment owner must configure permitted subscriptions before Azure consent.', 403);
-          const tx = sessions.begin(session, payload.purpose, auth.client());
+          const tx = sessions.begin(session, payload.purpose, auth.client(), request.socket.remoteAddress);
+          session = sessions.get(tx.sessionId);
           sessions.invalidateContext(session);
           session.authPending = true;
           try {
             const location = await auth.start(tx, session);
-            send(response, 200, { url: location }, { 'Set-Cookie': sessionCookie(tx.correlation, { correlation: true }) });
+            if (!sessions.hasTransaction(tx)) fail('Sign-in start was cancelled or expired.', 409);
+            send(response, 200, { url: location }, { 'Set-Cookie': [sessionCookie(session.id), sessionCookie(tx.correlation, { correlation: true })] });
           } catch {
-            sessions.revoke(session);
+            if (sessions.authorized(session)) sessions.endAuth(session, tx);
+            else sessions.revoke(session);
             fail('Microsoft sign-in could not start. Reload and retry; contact the deployment owner if it persists.', 503, 'signin-unavailable');
           }
           return;
         }
         if (path === '/api/auth/logout' || path === '/api/auth/cancel') {
           exact(payload, []);
-          sessions.revoke(session);
+          const retained = path.endsWith('cancel') && sessions.authorized(session);
+          if (retained) sessions.endAuth(session);
+          else sessions.revoke(session);
           send(response, 200, { url: path.endsWith('logout') && auth ? auth.logoutUrl : '/' }, {
-            'Set-Cookie': [sessionCookie('', { clear: true }), sessionCookie('', { correlation: true, clear: true })],
+            'Set-Cookie': [sessionCookie(retained ? session.id : '', { clear: !retained }), sessionCookie('', { correlation: true, clear: true })],
           });
           return;
         }

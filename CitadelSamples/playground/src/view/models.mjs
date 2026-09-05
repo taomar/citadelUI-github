@@ -22,7 +22,7 @@ import { buildConfigurationDocument, buildEnvExample, configurationFileNames, se
 import { describeSampleCapability } from '../core/capability.mjs';
 import { sampleExecutionContext } from '../core/executionContext.mjs';
 import { EXECUTION_PROTOCOL_VERSION } from '../core/types.mjs';
-import { HOSTED_ARM_SAMPLES, hostedManagementPlan, hostedManagementPresentation } from '../core/hostedPlan.mjs';
+import { HOSTED_ARM_SAMPLES, hostedManagementPlan, hostedPresentation, isHostedSampleSupported } from '../core/hostedPlan.mjs';
 
 const RISK_TONE = Object.freeze({
   'read-only': { tone: 'neutral', label: 'Read-only' },
@@ -848,6 +848,9 @@ export function buildConfigureModel({ sample, read, hasSecret, issues, isTouched
     // user has edited, or one holding a value that does not validate, is an
     // error.
     const pending = !touched && unanswered && errors.length > 0;
+    const hosted = capability?.executionKind === 'hosted-bff';
+    const hostedHelp = (copy) => hosted && /\bCLI\b|\bazd?\s|\bPython\b/i.test(copy ?? '')
+      ? 'Enter the declared value from your deployment configuration. The protected notebook reference is not executed by this Docker adapter.' : copy;
     return {
       path: entry.path,
       hosted: capability?.executionKind === 'hosted-bff',
@@ -856,18 +859,20 @@ export function buildConfigureModel({ sample, read, hasSecret, issues, isTouched
       type: field.type,
       classification: field.classification,
       requirement: entry.requirement,
-      requirementReason: entry.reason,
+      requirementReason: hosted && entry.path === 'hub.subscriptionId'
+        ? 'The intended subscription must match the explicitly selected delegated-user target.' : hostedHelp(entry.reason),
       condition: entry.condition,
       conditionActive: entry.conditionActive,
-      fallback: entry.fallback,
+      fallback: hosted && entry.path === 'samples.apim-discovery.apimNameOverride'
+        ? 'Blank requires exactly one service in the selected resource group; otherwise specify the intended name.' : hostedHelp(entry.fallback),
       producedBy: entry.producedBy,
       blocking: entry.blocking,
       supplied: entry.supplied,
       owner: entry.owner,
       ownerLabel: ownerLabel(entry.owner, sample),
       width: field.width ?? 'id',
-      help: field.help,
-      howToObtain: field.howToObtain,
+      help: hostedHelp(field.help),
+      howToObtain: hostedHelp(field.howToObtain),
       links: field.links ?? [],
       notebookRef: field.notebookRef,
       derivedFrom: field.derivedFrom,
@@ -959,6 +964,8 @@ export function buildRequestModel({ sample, read, acknowledged = false, secrets 
   const built = buildSamplePlan(sample, read);
   const validation = built.validation;
   const hostedArm = hosted && HOSTED_ARM_SAMPLES.includes(sample.id);
+  const provenancePrefix = hosted && !isHostedSampleSupported(sample.id)
+    ? '# Nonexecuted notebook reference only. This recipe has no Docker execution adapter.\n\n' : '';
   const missingCloud = hostedArm && typeof hosted.resourceManager !== 'string';
   const plan = missingCloud ? null : built.plan && hostedArm
     ? hostedManagementPlan(sample, read, hosted) : built.plan;
@@ -977,8 +984,8 @@ export function buildRequestModel({ sample, read, acknowledged = false, secrets 
     sampleId: sample.id,
     available: true,
     plan,
-    steps: previewSteps(plan, { secrets }),
-    fullText: previewPlan(plan, { secrets }),
+    steps: previewSteps(plan, { secrets }).map((item) => ({ ...item, text: provenancePrefix + item.text })),
+    fullText: provenancePrefix + previewPlan(plan, { secrets }),
     secretRefs: plan.secretRefs,
     requiredStepTypes: plan.requiredStepTypes,
     deviations: plan.deviations,
@@ -1006,12 +1013,12 @@ export function buildResponseModel({ sample, result, capability, running = false
     runId,
     isSuccessShaped: state === 'completed',
     summary:
-      result?.summary ??
+      result?.summary ?? (sample.hostedUnsupported ? 'Not run. This recipe has no Docker execution adapter or credential.' :
       (running
         ? 'Running. Each step reports as it finishes.'
         : capability?.canExecute
           ? 'Not run yet. Complete the configuration, acknowledge any risk, then run it.'
-          : 'Not run. No execution runtime is attached, so nothing has been attempted.'),
+          : 'Not run. No execution runtime is attached, so nothing has been attempted.')),
     detail: result?.detail ?? capability?.reason ?? '',
     steps,
     artifacts: result?.meta?.artifacts ?? [],
@@ -1080,8 +1087,7 @@ export function buildWorkbenchModel({
 }) {
   const validation = validateSample(sample, read);
   const request = buildRequestModel({ sample, read, acknowledged, secrets, hosted: runtimeProbe.hosted });
-  const presentedSample = runtimeProbe.hosted && HOSTED_ARM_SAMPLES.includes(sample.id)
-    ? hostedManagementPresentation(sample, request.plan) : sample;
+  const presentedSample = runtimeProbe.hosted ? hostedPresentation(sample, request.plan) : sample;
   const sampleCapability = describeEffectiveExecutionCapability({
     sample,
     requiredStepTypes: request.requiredStepTypes ?? [],
@@ -1117,7 +1123,7 @@ export function buildWorkbenchModel({
       id: sample.id,
       title: sample.title,
       shortTitle: sample.shortTitle ?? sample.title,
-      summary: runtimeProbe.hosted && HOSTED_ARM_SAMPLES.includes(sample.id) ? request.plan?.summary ?? 'Sign in and select an Azure subscription in this application.' : sample.summary,
+      summary: presentedSample.summary,
       group: sample.group,
       groupTitle: sample.groupTitle,
       risk: { ...(runtimeProbe.hosted && request.plan ? request.plan.risk : sample.risk), badge: riskBadge(sample.risk.level) },

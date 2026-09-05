@@ -251,6 +251,8 @@ export async function launchBrowserHarness({
   let page;
   const pageErrors = [];
   const runtimeErrors = [];
+  const nativeEvents = [], dialogs = [];
+  let expectedBeforeUnload = false, unexpectedDialog = null;
 
   async function setViewport({ width, height, mobile = false, deviceScaleFactor = 1 }) {
     await page.send('Emulation.setDeviceMetricsOverride', {
@@ -261,9 +263,50 @@ export async function launchBrowserHarness({
     });
   }
 
-  async function pressKey(key) {
-    await page.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key });
-    await page.send('Input.dispatchKeyEvent', { type: 'keyUp', key });
+  async function pressKey(key, { shift = false, control = false } = {}) {
+    const codes = { Enter: 13, Tab: 9, Escape: 27, Backspace: 8, End: 35, Home: 36, ArrowDown: 40, ArrowUp: 38 };
+    const modifiers = (shift ? 8 : 0) | (control ? 2 : 0);
+    const params = { key, code: key.length === 1 ? `Key${key.toUpperCase()}` : key,
+      windowsVirtualKeyCode: codes[key] ?? key.toUpperCase().charCodeAt(0), modifiers };
+    await page.send('Input.dispatchKeyEvent', { type: key === 'Enter' ? 'keyDown' : 'rawKeyDown', ...params,
+      ...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) });
+    await page.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params });
+  }
+
+  async function nativeClick(selector) {
+    if (unexpectedDialog) throw unexpectedDialog;
+    const point = await evaluate(page, `(() => {
+      const target = document.querySelector(${JSON.stringify(selector)});
+      if (!target || target.disabled || target.closest('[inert], [hidden]')) throw new Error('Native target unavailable');
+      target.scrollIntoView({block:'center',inline:'nearest'});
+      const rect = target.getBoundingClientRect(), style = getComputedStyle(target);
+      const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+      if (!rect.width || !rect.height || style.visibility !== 'visible' || !target.contains(document.elementFromPoint(x,y))) throw new Error('Native target is not visible/hit-testable');
+      return {x,y};
+    })()`);
+    for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+      await page.send('Input.dispatchMouseEvent', { type, ...point, button: type === 'mouseMoved' ? 'none' : 'left', clickCount: 1 });
+    }
+  }
+  async function nativeInput(selector, value) {
+    await nativeClick(selector);
+    if (await evaluate(page, `document.querySelector(${JSON.stringify(selector)}).tagName === 'SELECT'`)) {
+      await pressKey('End');
+      await pressKey('Enter');
+    } else {
+      await pressKey('a', { control: true });
+      await pressKey('Backspace');
+      await page.send('Input.insertText', { text: value });
+    }
+    await pressKey('Tab');
+  }
+  async function navigate(url, { discardChanges = false } = {}) {
+    if (new URL(url).protocol !== 'https:') throw new Error('Native navigation requires HTTPS.');
+    expectedBeforeUnload = discardChanges;
+    try {
+      await page.send('Page.navigate', { url });
+      if (unexpectedDialog) throw unexpectedDialog;
+    } finally { expectedBeforeUnload = false; }
   }
 
   async function close() {
@@ -284,6 +327,16 @@ export async function launchBrowserHarness({
     const { targetId } = await browserClient.send('Target.createTarget', { url: 'about:blank' });
     const { sessionId } = await browserClient.send('Target.attachToTarget', { targetId, flatten: true });
     page = browserClient.session(sessionId);
+    page.on('Page.javascriptDialogOpening', ({ type }) => {
+      dialogs.push({ type, expected: type === 'beforeunload' && expectedBeforeUnload });
+      const accept = type === 'beforeunload' && expectedBeforeUnload;
+      expectedBeforeUnload = false;
+      if (!accept) unexpectedDialog = new Error(`Unexpected native browser dialog: ${type}`);
+      void page.send('Page.handleJavaScriptDialog', { accept });
+    });
+    page.on('Runtime.bindingCalled', ({ name, payload }) => {
+      if (name === '__citadelNativeEvent') nativeEvents.push(JSON.parse(payload));
+    });
     page.on('Runtime.exceptionThrown', ({ exceptionDetails }) => {
       const message = exceptionDetails?.exception?.description ?? exceptionDetails?.text ?? 'Uncaught page error';
       pageErrors.push(message);
@@ -294,6 +347,12 @@ export async function launchBrowserHarness({
     });
     await page.send('Page.enable');
     await page.send('Runtime.enable');
+    await page.send('Runtime.addBinding', { name: '__citadelNativeEvent' });
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+      for (const type of ['click','keydown','keypress','focusin','focusout','beforeunload']) addEventListener(type, event => {
+        __citadelNativeEvent(JSON.stringify({type, time:performance.now(), trusted:event.isTrusted, id:event.target?.id || '',
+          key:['Enter','Tab','Escape'].includes(event.key) ? event.key : undefined}));
+      }, true);` });
     await page.send('Log.enable');
     await setViewport(viewport);
     const launchUrl = new URL(path, baseUrl);
@@ -310,10 +369,15 @@ export async function launchBrowserHarness({
     page,
     pageErrors,
     runtimeErrors,
+    nativeEvents, dialogs,
     evaluate: (expression) => evaluate(page, expression),
-    waitFor: (expression, options) => waitFor(page, expression, options),
+    waitFor: (expression, options) => {
+      if (unexpectedDialog) throw unexpectedDialog;
+      return waitFor(page, expression, options);
+    },
     setViewport,
     pressKey,
+    nativeClick, nativeInput, navigate,
     async openTestPage(url, { freshContext = false } = {}) {
       if (new URL(url).protocol !== 'https:') throw new Error('Browser test pages require HTTPS.');
       const context = freshContext ? await browserClient.send('Target.createBrowserContext') : {};

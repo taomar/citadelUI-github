@@ -12,8 +12,8 @@ test('production Docker image boots HTTPS with read-only secret mounts and encry
   timeout: 120000,
 }, async () => {
   const tls = testTls();
-  const name = 'citadel-auth-test-8ea0cc0f-app';
-  const image = 'citadel-auth-test-8ea0cc0f:app';
+  const name = 'citadel-auth-v4-8ea0cc0f-app';
+  const image = 'citadel-auth-v4-8ea0cc0f:app';
   const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
   const docker = (...args) => {
     const result = spawnSync('docker', args, { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 30000 });

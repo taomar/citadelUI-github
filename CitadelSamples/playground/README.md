@@ -58,7 +58,7 @@ The browser remains zero-build and receives no auth SDK, token or client secret.
 | `CITADEL_PLAYGROUND_PUBLIC_ORIGIN` | Exact stable HTTPS origin, without path or trailing slash |
 | `CITADEL_PLAYGROUND_AZURE_CLOUD` | Explicit `AzureCloud`, `AzureUSGovernment` or `AzureChinaCloud` |
 | `CITADEL_PLAYGROUND_ENTRA_TENANT_ID`, `CITADEL_PLAYGROUND_ENTRA_CLIENT_ID` | Owner-approved tenant and confidential Web application GUIDs |
-| Web redirect URI | Exactly the public origin plus `/auth/callback`; code flow, no implicit grant |
+| Registered Web redirect URIs | Register **both** the exact public origin plus `/auth/callback` (sign-in) and the exact public origin plus `/` (post-logout return); code flow, no implicit grant |
 | `CITADEL_ENTRA_CLIENT_SECRET_FILE` | Absolute read-only regular-file mount containing the confidential client credential; never an image layer, JS value or user-entered form |
 | `CITADEL_PLAYGROUND_OPERATOR_REQUIRED_APP_ROLE` | `Citadel.Operator`, assigned to intended operators on this app registration |
 | `CITADEL_PLAYGROUND_OPERATOR_ALLOWED_PRINCIPAL_IDS`, `CITADEL_PLAYGROUND_OPERATOR_ALLOWED_GROUP_IDS` | Optional explicit JSON allowlists; role OR configured principal/group is required, never tenant membership alone |
@@ -73,6 +73,13 @@ Azure RBAC. There is no Graph permission requirement merely to sign in. A client
 secret is the implemented confidential-credential mechanism; certificate client
 authentication is not claimed. Rotate the secret through the owner's secret
 store and restart the single replica before expiration.
+
+The post-logout return is fixed, not a user-supplied destination. Entra requires
+it to match a registered redirect URI; see [Send a sign-out request](https://learn.microsoft.com/entra/identity-platform/v2-protocols-oidc#send-a-sign-out-request).
+Group-only allowlists fail closed when Entra emits group-claim overage indicators
+instead of a `groups` array. Prefer an assigned `Citadel.Operator` application
+role or explicit principal allowlist for these operators. No Graph permission,
+overage URL retrieval or group lookup is implemented.
 
 Gateway policy uses the existing relay's exact request-policy schema, but the
 new adapter accepts only declared ephemeral keys and does not alter the relay
@@ -123,6 +130,30 @@ Entra role removal is not instantaneous: reauthentication/ID-token expiry or the
 absolute session bound refreshes claims; current deployment entitlement policy
 is checked on every privileged request and dispatch.
 
+Public capability reads allocate no server session. A short-lived HttpOnly
+pre-auth cookie and matching response CSRF value bind a same-origin start;
+only an admitted authentication attempt allocates separately bounded pending
+state. The operator-session pool is populated after verified operator sign-in,
+never by anonymous discovery or unentitled tenant members. Rejected duplicate
+starts do not spend login allowance. Anonymous starts are limited to three per
+minute and two outstanding transactions per direct socket address; verified
+operators use a separate principal-bound client budget. Starts are limited to
+thirty globally per minute; the client-rate map is capped at
+1024 entries and expires after one minute. Forwarded IP headers are not trusted.
+Shared NAT/proxy addresses share that limit; distributed denial of service still
+requires deployment ingress controls. Pending auth is capped independently by
+the configured transaction limit. Rotation replaces an existing operator slot
+atomically without evicting other operators.
+
+Declining, cancelling or failing Azure consent retains a still-valid application
+operator and its previously verified cache, but cancels owned work and invalidates
+the reviewed/selected target. Unverified identities/caches never replace it.
+An unsuccessful account switch likewise retains a valid prior operator; successful
+switching rotates the session. Explicit Sign out always revokes it.
+Consumed callbacks still occupy their admission slot while token validation is
+in flight. Cancellation/expiry prevents a late result from committing, clearing a
+newer correlation cookie, or cancelling a subsequent consent attempt.
+
 `CITADEL_SESSION_IDLE_SECONDS`, `CITADEL_SESSION_ABSOLUTE_SECONDS` and
 `CITADEL_AUTH_TRANSACTION_SECONDS` may reduce, not increase, those time bounds.
 Default limits are 500 sessions, 100 auth transactions, 8 concurrent runs and
@@ -156,24 +187,30 @@ release gates remain open.
 Run focused Node cases from this directory:
 
 ```powershell
-node --test test\hosted-auth.test.mjs test\hosted-runtime.test.mjs test\hosted-boundaries.test.mjs
+node --test test\hosted-auth.test.mjs test\hosted-runtime.test.mjs test\hosted-boundaries.test.mjs test\hosted-corrections.test.mjs
 ```
 
 The existing CDP-pipe browser harness is reused by
 `scripts/hosted-browser-acceptance.mjs`. Its pinned Chromium container installs
 only a synthetic CA inside that disposable container's NSS database, then runs
 with `--network none`, no published ports and no host browser/profile mount.
-The fixture uses real MSAL orchestration and JOSE-signed tokens with synthetic
-identity/ARM/gateway data, not live service evidence. From `CitadelSamples`:
+Native pointer hit-testing, text entry, Tab/ShiftTab and Enter drive the UI;
+trusted keypress/click/focus events and beforeunload dialogs are recorded.
+Unexpected dialogs are rejected, not blanket-accepted. Real MSAL/JOSE requests
+cross certificate-verified HTTPS metadata/token/JWKS services on a distinct
+test identity hostname. The explicit test-only connector pins that hostname to
+loopback with its private CA; it does not exercise external DNS/egress. Production
+DNS/IP/TLS defaults are unchanged. ARM/gateway resource responses remain labelled
+in-process synthetic fixtures, not live service/RBAC evidence. From `CitadelSamples`:
 
 ```powershell
-docker build --file playground\test\Dockerfile.hosted-browser --tag citadel-auth-test-8ea0cc0f:browser .
-docker run --rm --network none --name citadel-auth-test-8ea0cc0f-browser --shm-size 256m citadel-auth-test-8ea0cc0f:browser
+docker build --file playground\test\Dockerfile.hosted-browser --tag citadel-auth-v4-8ea0cc0f:browser .
+docker run --rm --network none --name citadel-auth-v4-8ea0cc0f-browser --shm-size 256m citadel-auth-v4-8ea0cc0f:browser
 ```
 
 The actual application image has a separate opt-in
 `test/hosted-container.test.mjs`, requiring a locally built
-`citadel-auth-test-8ea0cc0f:app` image and
+`citadel-auth-v4-8ea0cc0f:app` image and
 `CITADEL_RUN_HOSTED_CONTAINER_TEST=1`. It uses read-only synthetic secret mounts,
 the non-root production entrypoint, certificate-verified health checks and a
 restart, then removes its container. No certificate-validation bypass or shared

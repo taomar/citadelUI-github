@@ -105,6 +105,17 @@ const state = {
 state.completedWizardStepsByRecipe.set(state.sample.id, state.completedWizardSteps);
 
 let appReady = false;
+let busyFocus = null;
+function rememberBusyFocus() {
+  const focused = captureFocus(app);
+  if (focused) busyFocus = { id: focused.id, recipe: state.sample.id, step: state.wizardStep };
+}
+document.addEventListener('focusin', (event) => {
+  if (busyFocus && event.target.id !== busyFocus.id) busyFocus = null;
+});
+document.addEventListener('pointerdown', (event) => {
+  if (busyFocus && event.target.closest?.('[id]')?.id !== busyFocus.id) busyFocus = null;
+});
 let dialogReturnFocus = null;
 let azureLoginPollTimer = null;
 let azureLoginController = null;
@@ -431,7 +442,12 @@ function currentModels() {
     sourceState: state.sourceBundle,
     sourceValidationState: state.sourceValidation,
     contextState: context,
-    accountControlState: accountControlState(context),
+    accountControlState: state.capabilities?.auth?.mode === 'bff' ? {
+      state: state.capabilities.auth.signedIn ? 'ready' : 'unavailable',
+      activeAccountId: state.capabilities.auth.account?.objectId,
+      accounts: state.capabilities.auth.account ? [{ id: state.capabilities.auth.account.objectId,
+        name: state.capabilities.auth.account.name, username: state.capabilities.auth.account.name }] : [],
+    } : accountControlState(context),
     stage: state.stage,
     selectedSourceCellIndex: state.sourceCellIndex,
   });
@@ -908,6 +924,10 @@ function fieldsForWizardStep(configure, stepId) {
 }
 
 function wizardIdentityKind() {
+  if (state.capabilities?.auth?.mode === 'bff') {
+    if (['azure-context-check', 'apim-discovery'].includes(state.sample.id)) return 'azure';
+    return state.capabilities.hosted.supportedSampleIds.includes(state.sample.id) ? 'gateway' : 'hosted';
+  }
   const liveKind = effectiveContext()?.context?.kind;
   if (liveKind === 'hosted-relay') return 'hosted';
   if (liveKind === 'offline-python') return null;
@@ -961,6 +981,10 @@ function wizardSteps(models) {
 
 function wizardDescription(stepId) {
   if (stepId === 'account-target') {
+    if (state.capabilities?.auth?.mode === 'bff') return wizardIdentityKind() === 'azure'
+      ? 'Connect Azure and explicitly select the intended subscription. HTTPS requests use this operator account through delegated ARM authorization.'
+      : wizardIdentityKind() === 'gateway' ? 'Operator sign-in authorizes the application; the entered gateway key separately authorizes data-plane requests. No ARM consent is needed.'
+        : 'Application operator sign-in is available, but this recipe has no Docker execution adapter or credential.';
     return {
       azure: 'Verify the local Azure CLI account, active subscription, intended target, and execution credential path.',
       gateway: 'Confirm the gateway endpoint, header, and memory-only API Management key. Azure login is not used.',
@@ -1009,12 +1033,13 @@ function renderWizardHeading(container, steps) {
   const current = steps[currentIndex] ?? steps[0];
   container.append(
     node('header', { class: 'wizard-heading' }, [
-      node('h1', { id: 'wizard-step-title', tabindex: '-1', text: state.sample.shortTitle }),
+      node('h1', { id: 'wizard-step-title', tabindex: '-1', text: state.sample.shortTitle,
+        'aria-label': `${current.title}: ${state.sample.shortTitle}` }),
       node('p', {
         class: 'wizard-step-summary',
         text: ['review-approve', 'run-result'].includes(current.id)
           ? wizardDescription(current.id)
-          : state.sample.summary,
+          : currentModels().dossier.sample.summary,
       }),
     ]),
   );
@@ -1340,8 +1365,9 @@ function render() {
     ? [...priorWorkspace.querySelectorAll('details[open][data-disclosure-key]')].map((item) => item.dataset.disclosureKey)
     : []);
   // A delayed blur must not override a control the user has focused since then.
-  const focusSnapshot = captureFocus(app) ?? (document.activeElement === document.body && state.pendingFocusId
-    ? { id: state.pendingFocusId, value: null, selection: null }
+  if (busyFocus && (busyFocus.recipe !== state.sample.id || busyFocus.step !== state.wizardStep)) busyFocus = null;
+  const focusSnapshot = captureFocus(app) ?? (document.activeElement === document.body && (state.pendingFocusId || busyFocus?.id)
+    ? { id: state.pendingFocusId || busyFocus.id, value: null, selection: null }
     : null);
   state.pendingFocusId = '';
   const models = currentModels();
@@ -1537,10 +1563,14 @@ function render() {
 
   if (focusSnapshot) {
     const target = document.getElementById(focusSnapshot.id);
+    if (state.capabilities?.auth?.mode === 'bff' && preserveWorkspace && target?.disabled && !busyFocus) {
+      busyFocus = { id: focusSnapshot.id, recipe: state.sample.id, step: state.wizardStep };
+    }
     if (target && !target.closest('#recipe-directory')
       && (document.activeElement === document.body || document.activeElement === target)) {
       // Restore before a second same-step render can capture an unfocused body.
-      restoreFocus(app, focusSnapshot);
+      const restored = restoreFocus(app, focusSnapshot, { readSecret: (path) => playgroundState.read(path) });
+      if (restored && busyFocus?.id === focusSnapshot.id) busyFocus = null;
       if (shell.dossier.contains(target) && !preserveWorkspace) scrollTargetIntoWorkspace(target);
     }
   }
@@ -2202,6 +2232,7 @@ async function startRun({ confirmed = false } = {}) {
   writeWizardUrl();
   render();
   scrollTargetIntoWorkspace(document.getElementById('dossier-output'), { block: 'start' });
+  document.getElementById('wizard-step-title')?.focus({ preventScroll: true });
   announce(`Running ${runSample.shortTitle}.`);
   try {
     const result = await runPlan(state.executor, plan, {
@@ -2386,7 +2417,7 @@ async function boot() {
     try { resumed = consumeHostedResume({ storage: window.sessionStorage, catalogue: CATALOGUE }); }
     catch (error) { state.hostedMessage = safeMessage(error, 'The non-secret draft could not be restored.'); }
     if (resumed) initial.recipeId = resumed.recipeId;
-    if (signinFailed) state.hostedMessage = 'Microsoft sign-in was cancelled, denied or expired. Try again from this application.';
+    if (signinFailed) state.hostedMessage = 'Microsoft sign-in was cancelled, denied or expired. Any previously authorized application account is retained; retry the required connection here.';
   }
   await selectSample(initial.recipeId);
   if (resumed) {
@@ -2408,6 +2439,7 @@ async function boot() {
 
 async function hostedAction(operation) {
   if (state.hostedBusy) return;
+  rememberBusyFocus();
   state.hostedBusy = true;
   state.hostedMessage = '';
   invalidateApproval({ returnToReview: true });
@@ -2457,7 +2489,9 @@ async function cancelHostedSignIn() {
     await hostedPost('/api/auth/cancel', {});
     await fetchCapabilities();
     await refreshExecutionContext();
-    state.hostedMessage = 'Pending sign-in cancelled. Sign in again from this application.';
+    state.hostedMessage = state.capabilities.auth?.authorized
+      ? 'Pending authentication cancelled. Your application sign-in is unchanged; reconnect Azure or switch accounts when needed.'
+      : 'Pending sign-in cancelled. Sign in again from this application.';
   });
 }
 

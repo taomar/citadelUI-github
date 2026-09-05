@@ -81,8 +81,9 @@ export function createHostedRuntime(config, sessions, auth, { fetchImpl = create
     const management = ARM_RECIPES.includes(request.sampleId);
     const supported = HOSTED_RECIPES.includes(request.sampleId);
     const enabled = allowed.includes(request.sampleId);
-    const matches = session.subscription?.id === request.configuredSubscriptionId;
-    const ready = enabled && (management ? session.azure && matches : request.gateway?.keyPresent === true);
+    const matches = GUID.test(session.subscription?.id ?? '') && GUID.test(request.configuredSubscriptionId ?? '')
+      && session.subscription.id === request.configuredSubscriptionId;
+    const ready = enabled && (management ? session.azure === true && matches : request.gateway?.keyPresent === true);
     const reason = !supported ? 'This recipe is not enabled in this Docker phase. A protected execution adapter is still required.'
       : !enabled ? 'The deployment owner must configure the permitted targets for this Docker adapter.'
       : management && !session.azure ? 'Connect Azure in this application. No CLI login is used.'
@@ -95,6 +96,7 @@ export function createHostedRuntime(config, sessions, auth, { fetchImpl = create
       label: !supported ? 'Protected Docker adapter required' : management ? 'Application-owned Azure user session' : 'Gateway access-contract key',
       state: ready ? 'ready-to-attempt' : 'unavailable', summary: reason, canExecute: ready,
       code: ready ? null : 'hosted-context-unavailable',
+      applicationOperator: { name: text(session.claims.preferred_username) || session.claims.oid, tenantId: session.claims.tid },
       signedInAccount: management ? { state: 'signed-in', principalName: text(session.claims.preferred_username) || session.claims.oid,
         principalType: 'user', tenantId: session.claims.tid, objectId: session.claims.oid } : null,
       executionCredential: { type: !supported ? 'none' : management ? 'delegated-user' : 'apim-subscription-key', source: !supported ? 'none' : management ? 'server-owned-msal-cache' : 'transient-entered-key' },

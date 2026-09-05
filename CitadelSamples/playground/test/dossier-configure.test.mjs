@@ -60,6 +60,22 @@ test('logical button focus does not invent text selection or expose an ordinary 
   assert.equal(documentRef.activeElement, button);
 });
 
+test('logical focus never restores disabled controls or stale secret values over the current model', () => {
+  const documentRef = { activeElement: null };
+  const container = { ownerDocument: documentRef, contains: () => true };
+  const target = { id: 'secret-field', name: 'gatewayAccess.apiKey', type: 'password', value: '', disabled: true,
+    focus() { documentRef.activeElement = this; } };
+  documentRef.getElementById = () => target;
+  const snapshot = { id: target.id, value: 'SYNTHETIC-OLD-KEY', selection: null };
+  assert.equal(restoreFocus(container, snapshot), false);
+  assert.equal(documentRef.activeElement, null);
+  target.disabled = false;
+  assert.equal(restoreFocus(container, snapshot, { readSecret: () => '' }), true);
+  assert.equal(target.value, '', 'cleared model values cannot be resurrected by focus restoration');
+  restoreFocus(container, snapshot, { readSecret: () => 'SYNTHETIC-OLD-KEY' });
+  assert.equal(target.value, 'SYNTHETIC-OLD-KEY');
+});
+
 test('the integration surface exports the configure document and source inspector', () => {
   assert.equal(typeof renderConfigure, 'function');
   assert.equal(typeof renderSourceInspector, 'function');

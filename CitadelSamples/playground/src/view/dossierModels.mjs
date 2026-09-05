@@ -109,12 +109,14 @@ function credentialLabel(context) {
   if (!context) return 'Not Reported';
   if (context.kind === 'gateway-key') return 'Memory-Only APIM Key';
   if (context.kind === 'hosted-delegated-user') return 'Server-Owned Delegated Azure User Token';
+  if (context.kind === 'hosted-unavailable') return 'Unavailable; No Docker Execution Credential';
   if (context.kind === 'hosted-relay') return 'Managed Identity + Key Vault Mapping';
   if (context.kind === 'offline-python') return 'Local Parser; No Cloud Credential';
   return 'Citadel Private Azure CLI Session';
 }
 
 function humanLabel(context, account) {
+  if (context?.applicationOperator) return context.applicationOperator.name;
   if (context?.kind === 'gateway-key') return 'Browser Session';
   if (context?.kind === 'hosted-relay') return 'Entra Caller';
   return (
@@ -128,6 +130,7 @@ function humanLabel(context, account) {
 
 function runsAsLabel(context) {
   if (!context) return 'Not Reported';
+  if (context.kind === 'hosted-unavailable') return 'Unavailable; Protected Adapter Required';
   if (context.kind === 'gateway-key') return 'Gateway Caller';
   if (context.kind === 'hosted-relay') return 'Tenant-Scoped Managed Identity';
   if (context.kind === 'offline-python') return 'Local Python Parser';

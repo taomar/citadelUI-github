@@ -7,7 +7,7 @@ import { request } from 'node:https';
 // Synthetic one-day certificates, generated only in a disposable test directory.
 // Trust is supplied to each test client, never installed in the operating system.
 export function testTls({ expired = false } = {}) {
-  const directory = mkdtempSync(join(tmpdir(), 'citadel-auth-test-8ea0cc0f-'));
+  const directory = mkdtempSync(join(tmpdir(), 'citadel-auth-v4-8ea0cc0f-'));
   const run = (...args) => {
     const result = spawnSync('openssl', args, { cwd: directory, encoding: 'utf8', windowsHide: true });
     if (result.status !== 0) {
@@ -18,7 +18,7 @@ export function testTls({ expired = false } = {}) {
   run('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'ca.key', '-out', 'ca.pem',
     '-subj', '/CN=Citadel TEST ONLY root', '-days', '1');
   run('req', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'server.key', '-out', 'server.csr', '-subj', '/CN=localhost');
-  writeFileSync(join(directory, 'extensions.cnf'), 'subjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n');
+  writeFileSync(join(directory, 'extensions.cnf'), 'subjectAltName=DNS:localhost,DNS:identity.localhost\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n');
   if (expired) {
     writeFileSync(join(directory, 'index.txt'), '');
     writeFileSync(join(directory, 'serial'), '1000\n');

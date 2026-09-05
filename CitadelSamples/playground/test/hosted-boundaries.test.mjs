@@ -79,9 +79,9 @@ test('a plaintext request cannot reach the HTTPS application listener; expired T
 test('unentitled members, forged headers, stale CSRF, wrong Host and encoded source traversal fail closed', async (t) => {
   const server = await listen(createHostedServer({ config: hostedConfig({ authIssues: ['not configured'] }), tls, root }), t);
   const caps = await httpsTestRequest(server, tls, { path: '/api/capabilities' });
-  const session = server.sessions.get(caps.headers['set-cookie'][0].split(';')[0].split('=')[1]);
+  const session = server.sessions.create();
   session.claims = { ...operatorClaims(), roles: [] };
-  const headers = { Cookie: caps.headers['set-cookie'][0].split(';')[0], Origin: 'https://localhost',
+  const headers = { Cookie: `__Host-citadel=${session.id}`, Origin: 'https://localhost',
     'Sec-Fetch-Site': 'same-origin', 'Content-Type': 'application/json', 'X-Citadel-CSRF': session.csrf,
     'X-Ms-Client-Principal': 'forged-platform-principal' };
   const post = (extra = {}) => httpsTestRequest(server, tls, { path: '/api/hosted/run', method: 'POST',
