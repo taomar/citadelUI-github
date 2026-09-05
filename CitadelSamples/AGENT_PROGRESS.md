@@ -74,9 +74,9 @@ inputs. Do not introduce a general-purpose editable notebook.
 - The protected Code view renders exact server-selected cited cells and
   server-owned declared parameter zones without accepting source from the
   browser.
-- Code is the default workspace. Its sticky task pane leads with the selected
-  sample's execution identity and target, then renders the one canonical set of
-  required, conditional, secret, defaulted, and generated inputs.
+- Each recipe is a dynamic Configure -> Review -> Run/Result wizard. It derives
+  only the account, gateway, hosted-context, input, credential, and option steps
+  that recipe needs; protected source and guidance remain secondary inspectors.
 - Azure management, Python management, and Foundry samples identify the local
   Azure CLI principal, tenant, and active/configured subscription match before
   execution. Per-launch system sign-in is disabled by default, invokes only
@@ -84,7 +84,12 @@ inputs. Do not introduce a general-purpose editable notebook.
   returns tokens or raw CLI output to the browser. Subscription switching is
   fixed-command, principal/tenant-bound, and readback-verified. The wizard
   exposes switching only when the server advertises that launch-gated
-  capability; otherwise it fails closed to an explicit terminal handoff.
+  capability. Otherwise it fails closed; the private profile path is never
+  exposed for terminal authentication.
+- Every loopback execute launch owns a random restrictive Azure CLI profile.
+  Login, account context, registered `az` operations, and Python
+  `AzureCliCredential` wrappers all use that profile, so another terminal cannot
+  change the reviewed identity or subscription mid-run.
 - Gateway samples identify the memory-only APIM subscription-key context without
   exposing the key. Offline validation and hosted relay samples use separately
   labelled local-parser and managed-identity contexts.
@@ -133,9 +138,9 @@ inputs. Do not introduce a general-purpose editable notebook.
 
 `npm run verify` for the wizard exited 0:
 
-- `npm run check` — 136 modules, 0 dependencies, nothing outside
+- `npm run check` — 141 modules, 0 dependencies, nothing outside
   `CitadelSamples`;
-- `node --test` — 903/903 passing;
+- `node --test` — 922/922 passing;
 - `npm run smoke` — 22/22 passing.
 
 The wizard browser acceptance passed 136/136 checks and regenerated 15 responsive
