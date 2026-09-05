@@ -37,7 +37,7 @@ export function createRunManager({
   fs,
 } = {}) {
   const active = new Map();
-  let reservations = 0;
+  const reservations = new Set();
   let sequence = 0;
   const identity =
     executionContextManager ??
@@ -50,28 +50,41 @@ export function createRunManager({
 
   async function start(payload, { onStart, onProgress, signal } = {}) {
     throwIfStartAborted(signal);
-    const inFlight = active.size + reservations;
+    const inFlight = active.size + reservations.size;
     if (inFlight >= maxConcurrentRuns) {
       throw new RequestRefused(
         `${inFlight} run(s) are already in flight and the limit is ${maxConcurrentRuns}. Wait for one to finish or cancel it.`,
         { status: 429, code: 'too-many-runs' },
       );
     }
-    reservations += 1;
+    const controller = new AbortController();
+    let resolveDone;
+    const done = new Promise((resolve) => {
+      resolveDone = resolve;
+    });
+    const reservation = { runId: null, sampleId: null, controller, workspace: null, done };
+    const abortFromCaller = () => abort(controller, signal?.reason);
+    signal?.addEventListener('abort', abortFromCaller, { once: true });
+    if (signal?.aborted) abortFromCaller();
+    reservations.add(reservation);
+
     let request;
     let plan;
     let resolvedInputs;
     let executionContext;
     let runId;
     let workspace;
-    let controller;
     let executor;
     let contract;
     let activeRun;
-    let abortExecution;
+    let executionStarted = false;
     try {
+      throwIfStartAborted(controller.signal);
       request = validateRunRequest(payload, catalogue);
+      reservation.sampleId = request.sample.id;
+      throwIfStartAborted(controller.signal);
       ({ plan, resolvedInputs } = rebuildPlan(request, catalogue, { buildSamplePlan, requirementsFor }));
+      throwIfStartAborted(controller.signal);
       executionContext = await identity.forRun(
         {
           sampleId: request.sample.id,
@@ -84,17 +97,18 @@ export function createRunManager({
                 }
               : null,
         },
-        { signal },
+        { signal: controller.signal },
       );
-      throwIfStartAborted(signal);
+      throwIfStartAborted(controller.signal);
 
       sequence += 1;
       runId = makeRunId(request.sample.id, sequence);
+      reservation.runId = runId;
       workspace = createRunWorkspace({ playgroundRoot, runId, ...(fs ? { fs } : {}) });
-      await workspace.ensureRoot();
-      throwIfStartAborted(signal);
+      reservation.workspace = workspace;
+      await workspace.ensureRoot({ signal: controller.signal });
+      throwIfStartAborted(controller.signal);
 
-      controller = new AbortController();
       executor = createLocalExecutor({
         transports,
         workspace,
@@ -106,55 +120,68 @@ export function createRunManager({
       // The access-contract fallback needs the same subscription name the
       // contract produced, which only the catalogue's own classifier knows.
       contract = contractFor(request.sample.id, resolvedInputs);
+      throwIfStartAborted(controller.signal);
 
-      activeRun = { runId, sampleId: request.sample.id, controller, startedAt: Date.now(), promise: null };
+      activeRun = { runId, sampleId: request.sample.id, controller, startedAt: Date.now(), promise: null, done };
+      reservations.delete(reservation);
       active.set(runId, activeRun);
-      abortExecution = () => controller.abort();
-      signal?.addEventListener('abort', abortExecution, { once: true });
-    } finally {
-      reservations -= 1;
-    }
-    try {
       onStart?.({
         runId,
         sampleId: request.sample.id,
         workspace: workspace.describe(workspace.root) || '.',
         executionContext,
       });
+      executionStarted = true;
+      const promise = executor
+        .execute(plan, {
+          sampleId: request.sample.id,
+          inputs: resolvedInputs,
+          secrets: request.secrets,
+          acknowledgement: request.acknowledgement,
+          contract,
+          signal: controller.signal,
+          onProgress,
+        })
+        .catch((error) => ({
+          state: 'failed',
+          sampleId: request.sample.id,
+          summary: 'The run stopped before it could report a result.',
+          detail: String(error?.message ?? error),
+          steps: [],
+          assertions: [],
+          configurationUpdates: {},
+          secretUpdates: {},
+          meta: { executor: 'local' },
+        }))
+        .finally(() => {
+          active.delete(runId);
+        });
+      activeRun.promise = promise;
+      const result = await promise;
+      return { runId, workspace: workspace.describe(workspace.root) || '.', executionContext, ...result };
     } catch (error) {
-      active.delete(runId);
-      signal?.removeEventListener('abort', abortExecution);
-      controller.abort();
-      throw error;
-    }
-    const promise = executor
-      .execute(plan, {
-        sampleId: request.sample.id,
-        inputs: resolvedInputs,
-        secrets: request.secrets,
-        acknowledgement: request.acknowledgement,
-        contract,
-        signal: controller.signal,
-        onProgress,
-      })
-      .catch((error) => ({
-        state: 'failed',
-        sampleId: request.sample.id,
-        summary: 'The run stopped before it could report a result.',
-        detail: String(error?.message ?? error),
-        steps: [],
-        assertions: [],
-        configurationUpdates: {},
-        secretUpdates: {},
-        meta: { executor: 'local' },
-      }))
-      .finally(() => {
+      const cancelled = controller.signal.aborted;
+      if (activeRun) {
         active.delete(runId);
-        signal?.removeEventListener('abort', abortExecution);
-      });
-    activeRun.promise = promise;
-    const result = await promise;
-    return { runId, workspace: workspace.describe(workspace.root) || '.', executionContext, ...result };
+        abort(controller);
+      }
+      if (cancelled && !executionStarted && workspace) {
+        try {
+          await workspace.removeRoot();
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            'The run could not start and its reserved workspace could not be removed.',
+          );
+        }
+      }
+      if (cancelled) throw cancelledBeforeStart();
+      throw error;
+    } finally {
+      reservations.delete(reservation);
+      signal?.removeEventListener('abort', abortFromCaller);
+      resolveDone();
+    }
   }
 
   function sampleUsesGatewayKey(sample) {
@@ -163,21 +190,20 @@ export function createRunManager({
 
   function throwIfStartAborted(signal) {
     if (!signal?.aborted) return;
-    throw new RequestRefused('The run request was cancelled before execution started.', {
-      status: 409,
-      code: 'run-cancelled',
-    });
+    throw cancelledBeforeStart();
   }
 
   function cancel(runId) {
-    const run = active.get(runId);
+    const run = active.get(runId) ?? [...reservations].find((candidate) => candidate.runId === runId);
     if (!run) return { cancelled: false, reason: 'That run is not in flight.' };
-    run.controller.abort();
+    abort(run.controller);
     return { cancelled: true, runId, sampleId: run.sampleId };
   }
 
   function cancelAll() {
-    for (const run of active.values()) run.controller.abort();
+    const runs = [...reservations, ...active.values()];
+    for (const run of runs) abort(run.controller);
+    return Promise.all(runs.map((run) => run.done)).then(() => undefined);
   }
 
   return {
@@ -185,12 +211,23 @@ export function createRunManager({
     cancel,
     cancelAll,
     get activeCount() {
-      return active.size + reservations;
+      return active.size + reservations.size;
     },
     listActive() {
       return [...active.values()].map((run) => ({ runId: run.runId, sampleId: run.sampleId, startedAt: run.startedAt }));
     },
   };
+}
+
+function abort(controller, reason) {
+  if (!controller.signal.aborted) controller.abort(reason);
+}
+
+function cancelledBeforeStart() {
+  return new RequestRefused('The run request was cancelled before execution started.', {
+    status: 409,
+    code: 'run-cancelled',
+  });
 }
 
 /** Only the access-contract fallback needs the derived contract identity. */

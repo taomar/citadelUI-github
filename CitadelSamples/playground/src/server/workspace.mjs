@@ -18,7 +18,7 @@
  * carrying a NUL is refused outright rather than sanitised.
  */
 
-import { mkdir, readdir, copyFile, stat } from 'node:fs/promises';
+import { mkdir, readdir, copyFile, rm, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 
 import { ACCELERATOR_ROOT, RUN_WORKSPACE_ROOT } from '../core/types.mjs';
@@ -66,10 +66,11 @@ export function mapPlanPath(declared) {
  * A run workspace bound to one directory. `resolve()` is the only way in, and
  * it re-checks containment after resolution rather than trusting the mapping.
  */
-export function createRunWorkspace({ playgroundRoot, runId, fs = { mkdir, readdir, copyFile, stat } }) {
+export function createRunWorkspace({ playgroundRoot, runId, fs = {} }) {
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(String(runId))) {
     throw new PathRefused(runId, 'a run id must be short kebab-case');
   }
+  const io = { mkdir, readdir, copyFile, rm, stat, ...fs };
   const root = resolve(playgroundRoot, RUN_WORKSPACE_ROOT, runId);
   const acceleratorSource = resolve(playgroundRoot, ACCELERATOR_ROOT);
   let staged = false;
@@ -94,20 +95,31 @@ export function createRunWorkspace({ playgroundRoot, runId, fs = { mkdir, readdi
       const mapped = mapPlanPath(declared);
       return { ...mapped, absolute: resolveInside(mapped.relative) };
     },
-    async ensureDirFor(absolutePath) {
-      await fs.mkdir(dirname(absolutePath), { recursive: true });
+    async ensureDirFor(absolutePath, { signal } = {}) {
+      throwIfAborted(signal);
+      await io.mkdir(dirname(absolutePath), { recursive: true });
+      throwIfAborted(signal);
     },
-    async ensureRoot() {
-      await fs.mkdir(root, { recursive: true });
+    async ensureRoot({ signal } = {}) {
+      throwIfAborted(signal);
+      await io.mkdir(root, { recursive: true });
+      throwIfAborted(signal);
+    },
+    async removeRoot() {
+      await io.rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+      staged = false;
     },
     /**
      * Copy the vendored accelerator bundle into the workspace, once per run and
      * only when a step actually names it.
      */
-    async stageAccelerator() {
+    async stageAccelerator({ signal } = {}) {
+      throwIfAborted(signal);
       if (staged) return { staged: true, alreadyStaged: true, files: 0 };
-      await fs.mkdir(root, { recursive: true });
-      const copied = await copyTree(acceleratorSource, root, fs);
+      await io.mkdir(root, { recursive: true });
+      throwIfAborted(signal);
+      const copied = await copyTree(acceleratorSource, root, io, signal);
+      throwIfAborted(signal);
       staged = true;
       return { staged: true, alreadyStaged: false, files: copied };
     },
@@ -117,7 +129,8 @@ export function createRunWorkspace({ playgroundRoot, runId, fs = { mkdir, readdi
   };
 }
 
-async function copyTree(from, to, fs) {
+async function copyTree(from, to, fs, signal) {
+  throwIfAborted(signal);
   let count = 0;
   let entries;
   try {
@@ -127,19 +140,30 @@ async function copyTree(from, to, fs) {
       `The vendored accelerator bundle is missing at ${from}. This playground never reads templates from outside CitadelSamples, so the sample cannot run.`,
     );
   }
+  throwIfAborted(signal);
   for (const entry of entries) {
+    throwIfAborted(signal);
     const source = join(from, entry.name);
     const target = join(to, entry.name);
     if (entry.isDirectory()) {
       await fs.mkdir(target, { recursive: true });
-      count += await copyTree(source, target, fs);
+      count += await copyTree(source, target, fs, signal);
     } else if (entry.isFile()) {
       await fs.mkdir(dirname(target), { recursive: true });
+      throwIfAborted(signal);
       await fs.copyFile(source, target);
+      throwIfAborted(signal);
       count += 1;
     }
   }
   return count;
+}
+
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = new Error('The workspace operation was aborted.');
+  error.name = 'AbortError';
+  throw error;
 }
 
 /** Deterministic, filesystem-safe run id. */

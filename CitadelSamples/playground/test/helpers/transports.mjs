@@ -110,6 +110,15 @@ export function fakeFileSystem({ realReadRoots = [] } = {}) {
         if (files.has(String(path))) return { isFile: () => true };
         throw new Error(`ENOENT: ${path}`);
       },
+      async rm(path) {
+        const root = String(path);
+        for (const key of [...files.keys()]) {
+          if (key === root || key.startsWith(`${root}\\`) || key.startsWith(`${root}/`)) files.delete(key);
+        }
+        for (const key of [...dirs]) {
+          if (key === root || key.startsWith(`${root}\\`) || key.startsWith(`${root}/`)) dirs.delete(key);
+        }
+      },
     },
     writeFile: async (path, content) => {
       files.set(String(path), String(content));

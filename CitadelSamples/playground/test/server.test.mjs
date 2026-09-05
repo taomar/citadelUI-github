@@ -23,6 +23,7 @@ import {
   capabilitiesPayload,
   checkStateChangingRequest,
   createPlaygroundServer,
+  createSignalShutdownHandler,
   isLoopbackHost,
   probeRuntimes,
   resolveServedPath,
@@ -49,7 +50,7 @@ async function withServer(options, body) {
   try {
     return await body({ call, port, server });
   } finally {
-    await new Promise((done) => server.close(done));
+    if (server.listening) await new Promise((done) => server.close(done));
   }
 }
 
@@ -199,7 +200,7 @@ test('disconnecting during delayed execution-context admission aborts the probe 
     try {
       const pending = fetch(`http://127.0.0.1:${port}/api/run`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Connection: 'close' },
         body,
         signal: controller.signal,
       }).then(
@@ -220,6 +221,338 @@ test('disconnecting during delayed execution-context admission aborts the probe 
       server.closeAllConnections?.();
     }
   });
+});
+
+test('server.close aborts delayed admission and waits for the reservation to drain without starting work', { timeout: 5_000 }, async () => {
+  let markAdmissionStarted;
+  const admissionStarted = new Promise((resolveStarted) => {
+    markAdmissionStarted = resolveStarted;
+  });
+  let abortEvents = 0;
+  const executionContextManager = {
+    async forRun({ sampleId }, { signal } = {}) {
+      markAdmissionStarted();
+      if (!signal.aborted) {
+        await new Promise((resolveAbort) => {
+          signal.addEventListener(
+            'abort',
+            () => {
+              abortEvents += 1;
+              resolveAbort();
+            },
+            { once: true },
+          );
+        });
+      }
+      return { kind: 'test', state: 'ready', canExecute: true, sampleId };
+    },
+  };
+  const filesystem = fakeFileSystem();
+  let executionCalls = 0;
+  const manager = createRunManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    executionContextManager,
+    fs: filesystem.fs,
+    transports: {
+      spawn: async () => {
+        executionCalls += 1;
+        return { code: 0, stdout: '{}', stderr: '', timedOut: false, aborted: false };
+      },
+      fetch: async () => {
+        executionCalls += 1;
+        return { status: 200, headers: {}, text: async () => '{}' };
+      },
+      writeFile: filesystem.writeFile,
+      access: filesystem.access,
+    },
+  });
+  const server = createPlaygroundServer({ mode: 'execute', runManager: manager });
+  await new Promise((done) => server.listen(0, '127.0.0.1', done));
+  const { port } = server.address();
+  const pending = fetch(`http://127.0.0.1:${port}/api/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Connection: 'close' },
+    body: JSON.stringify({
+      protocolVersion: EXECUTION_PROTOCOL_VERSION,
+      sampleId: 'azure-context-check',
+      inputs: { 'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'] },
+    }),
+  });
+  await admissionStarted;
+
+  const closed = new Promise((resolveClosed, rejectClosed) => {
+    server.close((error) => (error ? rejectClosed(error) : resolveClosed()));
+  });
+  const response = await pending;
+  await closed;
+
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, 'run-cancelled');
+  assert.equal(abortEvents, 1);
+  assert.equal(executionCalls, 0);
+  assert.equal(manager.activeCount, 0);
+  assert.equal(filesystem.dirs.size, 0);
+});
+
+test('server.close fences a request that was accepted before its body finished', { timeout: 5_000 }, async () => {
+  let startCalls = 0;
+  let cancelAllCalls = 0;
+  const manager = {
+    async start() {
+      startCalls += 1;
+      return { runId: 'too-late-0001', state: 'completed', summary: 'should not start', steps: [], assertions: [] };
+    },
+    cancel: (runId) => ({ cancelled: false, runId }),
+    cancelAll() {
+      cancelAllCalls += 1;
+    },
+    activeCount: 0,
+    listActive: () => [],
+  };
+  const server = createPlaygroundServer({ mode: 'execute', runManager: manager });
+  await new Promise((done) => server.listen(0, '127.0.0.1', done));
+  const { port } = server.address();
+  let markAccepted;
+  const accepted = new Promise((resolveAccepted) => {
+    markAccepted = resolveAccepted;
+  });
+  server.once('request', markAccepted);
+  const body = JSON.stringify({
+    protocolVersion: EXECUTION_PROTOCOL_VERSION,
+    sampleId: 'azure-context-check',
+    inputs: { 'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'] },
+  });
+  let pendingRequest;
+  let remainingBody;
+  const response = new Promise((resolveResponse, rejectResponse) => {
+    pendingRequest = httpRequest(
+      {
+        host: '127.0.0.1',
+        port,
+        path: '/api/run',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          Connection: 'close',
+        },
+      },
+      (incoming) => {
+        const chunks = [];
+        incoming.on('data', (chunk) => chunks.push(chunk));
+        incoming.on('end', () => {
+          resolveResponse({
+            status: incoming.statusCode,
+            body: Buffer.concat(chunks).toString('utf8'),
+          });
+        });
+      },
+    );
+    pendingRequest.on('error', rejectResponse);
+    const split = Math.floor(body.length / 2);
+    remainingBody = body.slice(split);
+    pendingRequest.write(body.slice(0, split));
+  });
+  await accepted;
+
+  const closed = new Promise((resolveClosed, rejectClosed) => {
+    server.close((error) => (error ? rejectClosed(error) : resolveClosed()));
+  });
+  pendingRequest.end(remainingBody);
+  const result = await response;
+  await closed;
+
+  assert.equal(result.status, 409);
+  assert.equal(JSON.parse(result.body).code, 'run-cancelled');
+  assert.equal(startCalls, 0);
+  assert.equal(cancelAllCalls, 1);
+});
+
+test('the shared SIGINT/SIGTERM shutdown handler is idempotent while admission is draining', { timeout: 5_000 }, async () => {
+  let markAdmissionStarted;
+  const admissionStarted = new Promise((resolveStarted) => {
+    markAdmissionStarted = resolveStarted;
+  });
+  let abortEvents = 0;
+  const executionContextManager = {
+    async forRun({ sampleId }, { signal } = {}) {
+      markAdmissionStarted();
+      if (!signal.aborted) {
+        await new Promise((resolveAbort) => {
+          signal.addEventListener(
+            'abort',
+            () => {
+              abortEvents += 1;
+              resolveAbort();
+            },
+            { once: true },
+          );
+        });
+      }
+      return { kind: 'test', state: 'ready', canExecute: true, sampleId };
+    },
+  };
+  const filesystem = fakeFileSystem();
+  let executionCalls = 0;
+  const manager = createRunManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    executionContextManager,
+    fs: filesystem.fs,
+    transports: {
+      spawn: async () => {
+        executionCalls += 1;
+        return { code: 0, stdout: '{}', stderr: '', timedOut: false, aborted: false };
+      },
+      fetch: async () => {
+        executionCalls += 1;
+        return { status: 200, headers: {}, text: async () => '{}' };
+      },
+      writeFile: filesystem.writeFile,
+      access: filesystem.access,
+    },
+  });
+  let cancelAllCalls = 0;
+  const cancelAll = manager.cancelAll.bind(manager);
+  manager.cancelAll = () => {
+    cancelAllCalls += 1;
+    return cancelAll();
+  };
+  const server = createPlaygroundServer({ mode: 'execute', runManager: manager });
+  await new Promise((done) => server.listen(0, '127.0.0.1', done));
+  const { port } = server.address();
+  const pending = fetch(`http://127.0.0.1:${port}/api/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Connection: 'close' },
+    body: JSON.stringify({
+      protocolVersion: EXECUTION_PROTOCOL_VERSION,
+      sampleId: 'azure-context-check',
+      inputs: { 'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'] },
+    }),
+  });
+  await admissionStarted;
+
+  const exitCodes = [];
+  let markExited;
+  const exited = new Promise((resolveExited) => {
+    markExited = resolveExited;
+  });
+  const shutdown = createSignalShutdownHandler(server, {
+    exit(code) {
+      exitCodes.push(code);
+      markExited();
+    },
+  });
+  shutdown();
+  shutdown();
+  const response = await pending;
+  await exited;
+
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, 'run-cancelled');
+  assert.deepEqual(exitCodes, [0]);
+  assert.equal(cancelAllCalls, 1);
+  assert.equal(abortEvents, 1);
+  assert.equal(executionCalls, 0);
+  assert.equal(manager.activeCount, 0);
+  assert.equal(filesystem.dirs.size, 0);
+});
+
+test('signal shutdown waits for a disconnected admission reservation to finish cleanup before exit', { timeout: 5_000 }, async () => {
+  let markAdmissionStarted;
+  const admissionStarted = new Promise((resolveStarted) => {
+    markAdmissionStarted = resolveStarted;
+  });
+  let markAdmissionAborted;
+  const admissionAborted = new Promise((resolveAborted) => {
+    markAdmissionAborted = resolveAborted;
+  });
+  let releaseAdmission;
+  const admissionCleanup = new Promise((resolveCleanup) => {
+    releaseAdmission = resolveCleanup;
+  });
+  let abortEvents = 0;
+  const executionContextManager = {
+    async forRun({ sampleId }, { signal } = {}) {
+      markAdmissionStarted();
+      if (!signal.aborted) {
+        await new Promise((resolveAbort) => {
+          signal.addEventListener(
+            'abort',
+            () => {
+              abortEvents += 1;
+              resolveAbort();
+            },
+            { once: true },
+          );
+        });
+      }
+      markAdmissionAborted();
+      await admissionCleanup;
+      return { kind: 'test', state: 'ready', canExecute: true, sampleId };
+    },
+  };
+  const filesystem = fakeFileSystem();
+  let executionCalls = 0;
+  const manager = createRunManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    executionContextManager,
+    fs: filesystem.fs,
+    transports: {
+      spawn: async () => {
+        executionCalls += 1;
+        return { code: 0, stdout: '{}', stderr: '', timedOut: false, aborted: false };
+      },
+      fetch: async () => {
+        executionCalls += 1;
+        return { status: 200, headers: {}, text: async () => '{}' };
+      },
+      writeFile: filesystem.writeFile,
+      access: filesystem.access,
+    },
+  });
+  const server = createPlaygroundServer({ mode: 'execute', runManager: manager });
+  await new Promise((done) => server.listen(0, '127.0.0.1', done));
+  const { port } = server.address();
+  const controller = new AbortController();
+  const pending = fetch(`http://127.0.0.1:${port}/api/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Connection: 'close' },
+    body: JSON.stringify({
+      protocolVersion: EXECUTION_PROTOCOL_VERSION,
+      sampleId: 'azure-context-check',
+      inputs: { 'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'] },
+    }),
+    signal: controller.signal,
+  }).catch((error) => error);
+  await admissionStarted;
+  controller.abort();
+  await admissionAborted;
+
+  const exitCodes = [];
+  let markExited;
+  const exited = new Promise((resolveExited) => {
+    markExited = resolveExited;
+  });
+  const shutdown = createSignalShutdownHandler(server, {
+    exit(code) {
+      exitCodes.push(code);
+      markExited();
+    },
+  });
+  shutdown();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(exitCodes, [], 'process exit must wait for the admission reservation to drain');
+  assert.equal(manager.activeCount, 1);
+
+  releaseAdmission();
+  await pending;
+  await exited;
+
+  assert.deepEqual(exitCodes, [0]);
+  assert.equal(abortEvents, 1);
+  assert.equal(executionCalls, 0);
+  assert.equal(manager.activeCount, 0);
+  assert.equal(filesystem.dirs.size, 0);
 });
 
 test('the relay endpoint applies the same-origin JSON guard before forwarding', async () => {

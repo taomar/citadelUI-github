@@ -397,7 +397,7 @@ async function readBody(request, limitBytes = 256 * 1024) {
   return Buffer.concat(chunks).toString('utf-8');
 }
 
-function monitorClientDisconnect(request, response) {
+function monitorClientDisconnect(request, response, { signal } = {}) {
   const controller = new AbortController();
   const abort = () => {
     if (!response.writableEnded) controller.abort();
@@ -405,13 +405,15 @@ function monitorClientDisconnect(request, response) {
   request.once('aborted', abort);
   response.once('close', abort);
   request.socket?.once('close', abort);
-  if (request.aborted || response.destroyed || request.socket?.destroyed) controller.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  if (request.aborted || response.destroyed || request.socket?.destroyed || signal?.aborted) controller.abort();
   return {
     signal: controller.signal,
     dispose() {
       request.off('aborted', abort);
       response.off('close', abort);
       request.socket?.off('close', abort);
+      signal?.removeEventListener('abort', abort);
     },
   };
 }
@@ -671,7 +673,7 @@ async function handleStatic(request, response) {
   }
 }
 
-async function handleRun(request, response, { mode, manager, port, host }) {
+async function handleRun(request, response, { mode, manager, port, host, shutdownSignal }) {
   if (mode !== 'execute' || !manager) {
     sendJson(response, 501, {
       state: 'blocked',
@@ -686,7 +688,7 @@ async function handleRun(request, response, { mode, manager, port, host }) {
     sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
     return;
   }
-  const disconnect = monitorClientDisconnect(request, response);
+  const disconnect = monitorClientDisconnect(request, response, { signal: shutdownSignal });
   try {
     let payload;
     try {
@@ -704,6 +706,12 @@ async function handleRun(request, response, { mode, manager, port, host }) {
         response.write(`${JSON.stringify(event)}\n`);
       }
     };
+    if (disconnect.signal.aborted) {
+      throw new RequestRefused('The run request was cancelled before execution started.', {
+        status: 409,
+        code: 'run-cancelled',
+      });
+    }
     const result = await manager.start(payload, {
       onStart: ({ runId, sampleId, workspace, executionContext }) => {
         response.writeHead(200, {
@@ -1079,6 +1087,7 @@ export function createPlaygroundServer({
       ? (codeValidationManager ?? createCodeValidationManager({ playgroundRoot: ROOT, pythonExecutable: PYTHON }))
       : codeValidationManager;
   let runtimeProbe = probe;
+  const shutdownController = new AbortController();
 
   const server = createServer(async (request, response) => {
     try {
@@ -1107,7 +1116,13 @@ export function createPlaygroundServer({
           sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
           return;
         }
-        await handleRun(request, response, { mode, manager, port, host });
+        await handleRun(request, response, {
+          mode,
+          manager,
+          port,
+          host,
+          shutdownSignal: shutdownController.signal,
+        });
         return;
       }
 
@@ -1220,10 +1235,53 @@ export function createPlaygroundServer({
   server.runManager = manager;
   server.codeValidationManager = validationManager;
   server.executionContextManager = identityManager;
+  const close = server.close.bind(server);
+  let shutdown = null;
+  server.close = (callback) => {
+    if (!shutdown) {
+      shutdownController.abort();
+      let shutdownError = null;
+      const recordShutdownError = (error) => {
+        if (!shutdownError) shutdownError = error;
+      };
+      const drains = [
+        cancelAndDrain(manager),
+        cancelAndDrain(validationManager),
+        cancelAndDrain(identityManager),
+      ].map((drain) => drain.catch(recordShutdownError));
+      const serverClosed = new Promise((resolveClosed) => {
+        close((error) => {
+          if (error) recordShutdownError(error);
+          resolveClosed();
+        });
+      });
+      shutdown = Promise.all([serverClosed, ...drains]).then(() => shutdownError);
+    }
+    if (typeof callback === 'function') shutdown.then((error) => callback(error));
+    return server;
+  };
   return server;
 }
 
 /* ------------------------------------------------------------------- boot */
+
+function cancelAndDrain(manager) {
+  if (typeof manager?.cancelAll !== 'function') return Promise.resolve();
+  try {
+    return Promise.resolve(manager.cancelAll());
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+
+export function createSignalShutdownHandler(server, { exit = (code) => process.exit(code) } = {}) {
+  let stopping = false;
+  return () => {
+    if (stopping) return;
+    stopping = true;
+    server.close((error) => exit(error ? 1 : 0));
+  };
+}
 
 const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 
@@ -1256,13 +1314,9 @@ if (invokedDirectly) {
       process.stdout.write(`Execution relay: ${DEFAULT_RELAY_CONFIG.url}\n`);
     }
   });
+  const shutdown = createSignalShutdownHandler(server);
   for (const signal of ['SIGINT', 'SIGTERM']) {
-    process.on(signal, () => {
-      server.runManager?.cancelAll();
-      server.codeValidationManager?.cancelAll();
-      server.executionContextManager?.cancelAll();
-      server.close(() => process.exit(0));
-    });
+    process.on(signal, shutdown);
   }
 }
 

@@ -270,16 +270,18 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
     }
   }
 
-  async function runArtifact(step, { outputs, secrets, redactor }) {
+  async function runArtifact(step, { outputs, secrets, redactor, signal }) {
     const artifact = step.artifact ?? {};
     const target = workspace.resolve(artifact.path);
-    if (target.staged) await workspace.stageAccelerator();
-    await workspace.ensureDirFor(target.absolute);
+    if (target.staged) await workspace.stageAccelerator({ signal });
+    await workspace.ensureDirFor(target.absolute, { signal });
     const content = String(resolveValue(artifact.content, outputs, secrets) ?? '');
     if (Buffer.byteLength(content, 'utf-8') > bounds.maxArtifactBytes) {
       throw new Error(`The generated file exceeds the ${bounds.maxArtifactBytes}-byte artifact limit.`);
     }
+    throwIfAborted(signal);
     await transports.writeFile(target.absolute, content, 'utf-8');
+    throwIfAborted(signal);
     for (const produced of step.produces ?? []) outputs.set(`${step.id}.${produced}`, target.relative);
     return {
       id: step.id,
@@ -307,7 +309,7 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
     validateResolvedAzArguments(sampleId, step.id, args);
     // A path argument is executed against the run workspace, not against
     // whatever the plan text says.
-    const mapped = await mapPathArguments(args, entry);
+    const mapped = await mapPathArguments(args, entry, signal);
     const result = await runProcess(command.executable, mapped, { signal, deadlineAt });
     const stdout = clip(result.stdout, bounds.maxOutputBytes);
     const stderr = clip(result.stderr, bounds.maxOutputBytes);
@@ -532,7 +534,7 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
     for (const key of wrapper.workspacePaths ?? []) {
       if (!params[key]) continue;
       const target = workspace.resolve(params[key]);
-      if (target.staged) await workspace.stageAccelerator();
+      if (target.staged) await workspace.stageAccelerator({ signal });
       params[key] = target.absolute;
     }
     if (Object.prototype.hasOwnProperty.call(params, 'agentUrl') && params.agentUrl) {
@@ -610,18 +612,26 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
   /* --------------------------------------------------------------- plumbing */
 
   /** A path argument is rewritten to its run-workspace location. */
-  async function mapPathArguments(args, entry) {
+  async function mapPathArguments(args, entry, signal) {
     const out = [];
     for (const [index, arg] of args.entries()) {
+      throwIfAborted(signal);
       if (entry.shape?.[index]?.workspacePath === true) {
         const target = workspace.resolve(arg);
-        if (target.staged) await workspace.stageAccelerator();
+        if (target.staged) await workspace.stageAccelerator({ signal });
         out.push(target.absolute);
       } else {
         out.push(arg);
       }
     }
     return out;
+  }
+
+  function throwIfAborted(signal) {
+    if (!signal?.aborted) return;
+    const error = new Error('The run was cancelled.');
+    error.name = 'AbortError';
+    throw error;
   }
 
   async function runProcess(executable, args, { signal, deadlineAt, stdin, env = {} }) {

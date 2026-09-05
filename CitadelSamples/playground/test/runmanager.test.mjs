@@ -21,9 +21,9 @@ import { fakeFetch, fakeFileSystem, fakeSpawn } from './helpers/transports.mjs';
 const PLAYGROUND_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const ACCELERATOR_ROOT = resolve(PLAYGROUND_ROOT, 'runtime', 'accelerator');
 
-function manager({ spawn, fetch, maxConcurrentRuns = 2, fs } = {}) {
+function manager({ spawn, fetch, maxConcurrentRuns = 2, fs, executionContextManager } = {}) {
   const filesystem = fakeFileSystem({ realReadRoots: [ACCELERATOR_ROOT] });
-  const executionContextManager = {
+  const identity = executionContextManager ?? {
     forRun: async ({ sampleId }) => ({
       kind: 'test-context',
       label: 'Fake execution context',
@@ -47,7 +47,7 @@ function manager({ spawn, fetch, maxConcurrentRuns = 2, fs } = {}) {
       fs: fs ?? filesystem.fs,
       pythonExecutable: 'python',
       maxConcurrentRuns,
-      executionContextManager,
+      executionContextManager: identity,
     }),
   };
 }
@@ -291,6 +291,112 @@ test('workspace creation reserves concurrency before its first await completes',
     releaseWorkspace();
   }
   await first;
+  assert.equal(instance.activeCount, 0);
+});
+
+test('cancelAll aborts delayed admission reservations once and releases their capacity', async () => {
+  let markAdmissionStarted;
+  const admissionStarted = new Promise((resolveStarted) => {
+    markAdmissionStarted = resolveStarted;
+  });
+  let admissionCalls = 0;
+  let abortEvents = 0;
+  let observedSignal;
+  const executionContextManager = {
+    async forRun({ sampleId }, { signal } = {}) {
+      admissionCalls += 1;
+      if (admissionCalls === 1) {
+        observedSignal = signal;
+        markAdmissionStarted();
+        if (!signal.aborted) {
+          await new Promise((resolveAbort) => {
+            signal.addEventListener(
+              'abort',
+              () => {
+                abortEvents += 1;
+                resolveAbort();
+              },
+              { once: true },
+            );
+          });
+        }
+      }
+      return { kind: 'test-context', state: 'ready', canExecute: true, sampleId };
+    },
+  };
+  const spawn = fakeSpawn([
+    {
+      match: () => true,
+      result: { code: 0, stdout: JSON.stringify({ id: FIXTURE_VALUES['hub.subscriptionId'] }) },
+    },
+  ]);
+  const { instance, filesystem } = manager({ spawn, maxConcurrentRuns: 1, executionContextManager });
+  const inputs = { 'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'] };
+  const pending = instance.start(request('azure-context-check', inputs));
+  await admissionStarted;
+
+  assert.equal(instance.activeCount, 1);
+  assert.deepEqual(instance.listActive(), [], 'an admission reservation is not published as a started run');
+  instance.cancelAll();
+  instance.cancelAll();
+
+  await assert.rejects(
+    pending,
+    (error) => error instanceof RequestRefused && error.code === 'run-cancelled',
+  );
+  assert.equal(observedSignal.aborted, true);
+  assert.equal(abortEvents, 1, 'repeated shutdown cancellation must not emit duplicate aborts');
+  assert.equal(spawn.calls.length, 0, 'execution must not begin after cancelled admission returns');
+  assert.equal(filesystem.dirs.size, 0);
+  assert.equal(instance.activeCount, 0);
+
+  const next = await instance.start(request('azure-context-check', inputs));
+  assert.equal(next.state, 'completed', 'the cancelled reservation must release the concurrency slot');
+  assert.equal(instance.activeCount, 0);
+});
+
+test('cancellation during workspace setup removes the reserved workspace and never starts execution', async () => {
+  const filesystem = fakeFileSystem();
+  let markWorkspaceStarted;
+  const workspaceStarted = new Promise((resolveStarted) => {
+    markWorkspaceStarted = resolveStarted;
+  });
+  let releaseWorkspace;
+  const workspaceHeld = new Promise((resolveHeld) => {
+    releaseWorkspace = resolveHeld;
+  });
+  let holdFirstMkdir = true;
+  const fs = {
+    ...filesystem.fs,
+    async mkdir(path, options) {
+      await filesystem.fs.mkdir(path, options);
+      if (!holdFirstMkdir) return;
+      holdFirstMkdir = false;
+      markWorkspaceStarted();
+      await workspaceHeld;
+    },
+  };
+  const spawn = fakeSpawn([
+    {
+      match: () => true,
+      result: { code: 0, stdout: JSON.stringify({ id: FIXTURE_VALUES['hub.subscriptionId'] }) },
+    },
+  ]);
+  const { instance } = manager({ spawn, maxConcurrentRuns: 1, fs });
+  const inputs = { 'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'] };
+  const pending = instance.start(request('azure-context-check', inputs));
+  await workspaceStarted;
+
+  instance.cancelAll();
+  instance.cancelAll();
+  releaseWorkspace();
+
+  await assert.rejects(
+    pending,
+    (error) => error instanceof RequestRefused && error.code === 'run-cancelled',
+  );
+  assert.equal(spawn.calls.length, 0);
+  assert.equal(filesystem.dirs.size, 0, 'an admission-only workspace must be removed during cancellation');
   assert.equal(instance.activeCount, 0);
 });
 
