@@ -409,7 +409,10 @@ test('the documented key fallback runs only when the deployment returned no key'
   // The wrapper was told which subscription to read, derived server-side.
   const wrapperCall = spawn.calls.find((call) => String(call.args[0]).endsWith('apim_subscription_key.py'));
   const params = JSON.parse(wrapperCall.stdin);
-  assert.equal(params.subscriptionName, 'MULTI-Governance-PublishedAssets-DEV-SUB-01');
+  assert.equal(
+    params.subscriptionName,
+    'MULTI-go-pu-d-2f89awnkqzdrl-SUB-01',
+  );
 });
 
 test('generated artifacts land in the run workspace and are named in the result', async () => {

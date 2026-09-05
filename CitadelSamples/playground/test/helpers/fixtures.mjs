@@ -32,10 +32,10 @@ export const FIXTURE_VALUES = Object.freeze({
   'keyVault.name': 'kv-citadel-test',
   'keyVault.keySecretName': 'MULTI-Governance-PublishedAssets-DEV-PUBLISHED-ASSETS-KEY',
   'keyVault.endpointSecretNames': [
-    'MULTI-Governance-PublishedAssets-DEV-universal-llm-api-endpoint',
-    'MULTI-Governance-PublishedAssets-DEV-weather-tool-endpoint',
-    'MULTI-Governance-PublishedAssets-DEV-ms-learn-tool-endpoint',
-    'MULTI-Governance-PublishedAssets-DEV-hr-chat-agent-endpoint',
+    'multi-go-pu-d-2f89awnkqzdrl-universal-llm-api-endpoint',
+    'multi-go-pu-d-2f89awnkqzdrl-weather-tool-endpoint',
+    'multi-go-pu-d-2f89awnkqzdrl-ms-learn-tool-endpoint',
+    'multi-go-pu-d-2f89awnkqzdrl-hr-chat-agent-endpoint',
   ],
 
   'samples.access-contract-deploy.existingLlmApis': ['universal-llm-api'],

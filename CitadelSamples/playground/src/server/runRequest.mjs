@@ -16,7 +16,8 @@
  */
 
 import { EXECUTION_PROTOCOL_VERSION } from '../core/types.mjs';
-import { coerceValue } from '../core/validation.mjs';
+import { coerceValue, isBlank } from '../core/validation.mjs';
+import { isWellFormedUnicode } from '../core/identifiers.mjs';
 
 export const MAX_INPUT_KEYS = 80;
 export const MAX_STRING_LENGTH = 4096;
@@ -114,16 +115,16 @@ export function validateRunRequest(payload, catalogue) {
   if (typeof rawSecrets !== 'object' || Array.isArray(rawSecrets)) {
     throw new RequestRefused('`secrets` must be an object keyed by catalogue field path.');
   }
-  const allowedSecrets = new Set(sample.configurationEntries.filter((entry) => entry.secret).map((entry) => entry.path));
+  const allowedSecrets = new Map(
+    sample.configurationEntries.filter((entry) => entry.secret).map((entry) => [entry.path, entry]),
+  );
   const secrets = {};
   for (const [path, value] of Object.entries(rawSecrets)) {
-    if (!allowedSecrets.has(path)) {
+    const entry = allowedSecrets.get(path);
+    if (!entry) {
       throw new RequestRefused(`"${path}" is not a secret this sample uses.`, { code: 'unknown-secret' });
     }
-    if (typeof value !== 'string' || value.length === 0 || value.length > MAX_STRING_LENGTH) {
-      throw new RequestRefused(`The value for "${path}" is not a plausible credential string.`);
-    }
-    secrets[path] = value;
+    secrets[path] = checkedString(entry, value, { credential: true });
   }
 
   const acknowledgement = payload.acknowledgement ?? null;
@@ -141,30 +142,56 @@ export function validateRunRequest(payload, catalogue) {
 
 function checkedValue(entry, value) {
   if (value === null || value === undefined) return '';
-  if (typeof value === 'string') {
-    if (value.length > MAX_STRING_LENGTH) {
-      throw new RequestRefused(`The value for "${entry.path}" exceeds ${MAX_STRING_LENGTH} characters.`);
+  if (entry.type === 'string-list') {
+    if (typeof value === 'string') return checkedString(entry, value);
+    if (!Array.isArray(value)) {
+      throw new RequestRefused(`The value for "${entry.path}" must be a string or a list of strings.`);
     }
-    if (value.includes('\0')) throw new RequestRefused(`The value for "${entry.path}" contains a NUL byte.`);
-    return value;
-  }
-  if (typeof value === 'boolean' || typeof value === 'number') {
-    if (typeof value === 'number' && !Number.isFinite(value)) {
-      throw new RequestRefused(`The value for "${entry.path}" is not a finite number.`);
-    }
-    return value;
-  }
-  if (Array.isArray(value)) {
     if (value.length > MAX_LIST_ITEMS) {
       throw new RequestRefused(`The list for "${entry.path}" holds ${value.length} items; the limit is ${MAX_LIST_ITEMS}.`);
     }
     return value.map((item) => {
       if (typeof item !== 'string') throw new RequestRefused(`"${entry.path}" must be a list of strings.`);
-      if (item.length > MAX_STRING_LENGTH) throw new RequestRefused(`An item in "${entry.path}" is too long.`);
-      return item;
+      return checkedString(entry, item, { item: true });
     });
   }
-  throw new RequestRefused(`The value for "${entry.path}" has an unsupported type.`);
+  if (entry.type === 'boolean') {
+    if (typeof value === 'boolean' || value === 'true' || value === 'false') return value;
+    throw new RequestRefused(`The value for "${entry.path}" must be a boolean.`);
+  }
+  if (entry.type === 'integer') {
+    if (typeof value === 'number') {
+      if (Number.isFinite(value)) return value;
+      throw new RequestRefused(`The value for "${entry.path}" is not a finite number.`);
+    }
+    if (typeof value === 'string') return checkedString(entry, value);
+    throw new RequestRefused(`The value for "${entry.path}" must be an integer.`);
+  }
+  return checkedString(entry, value);
+}
+
+function checkedString(entry, value, { credential = false, item = false } = {}) {
+  if (typeof value !== 'string' || (credential && value.length === 0)) {
+    if (credential) throw new RequestRefused(`The value for "${entry.path}" is not a plausible credential string.`);
+    throw new RequestRefused(`The value for "${entry.path}" must be a string.`);
+  }
+  if (value.length > MAX_STRING_LENGTH) {
+    if (credential) throw new RequestRefused(`The value for "${entry.path}" is not a plausible credential string.`);
+    throw new RequestRefused(
+      item
+        ? `An item in "${entry.path}" is too long.`
+        : `The value for "${entry.path}" exceeds ${MAX_STRING_LENGTH} characters.`,
+    );
+  }
+  if (!isWellFormedUnicode(value)) {
+    throw new RequestRefused(
+      `${item ? 'An item' : 'The value'} for "${entry.path}" must contain well-formed Unicode text.`,
+    );
+  }
+  if (value.includes('\0') && entry.allowNul !== true) {
+    throw new RequestRefused(`${item ? 'An item' : 'The value'} for "${entry.path}" contains a NUL byte.`);
+  }
+  return value;
 }
 
 /**
@@ -219,9 +246,10 @@ export function rebuildPlan(
   const resolvedInputs = {};
   for (const entry of sample.configurationEntries) {
     if (entry.secret) continue;
-    const field = { type: entry.type };
-    const value = coerceValue(field, read(entry.path));
-    resolvedInputs[entry.path] = value === undefined || value === '' ? catalogue.defaultValues[entry.path] : value;
+    const value = coerceValue(entry, read(entry.path));
+    const unset =
+      value === undefined || value === '' || (entry.preserveWhitespace === true && isBlank(value));
+    resolvedInputs[entry.path] = unset ? catalogue.defaultValues[entry.path] : value;
   }
   return { plan, manifest, resolvedInputs };
 }

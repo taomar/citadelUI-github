@@ -7,12 +7,20 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { SAMPLES, buildSamplePlan, getSample } from '../src/catalogue/index.mjs';
+import { contractIdentifierSegments } from '../src/core/identifiers.mjs';
 import { STEP_TYPES } from '../src/core/types.mjs';
 import { serializePlan } from '../src/core/plan.mjs';
 import { previewPlan, previewSteps } from '../src/core/preview.mjs';
 import { FIXTURE_SECRETS, makeFixtureReader } from './helpers/fixtures.mjs';
 
 const read = makeFixtureReader();
+const DEFAULT_IDENTIFIERS = contractIdentifierSegments({
+  businessUnit: 'Governance',
+  useCaseName: 'PublishedAssets',
+  environment: 'DEV',
+});
+const DEFAULT_CONTRACT_POSTFIX =
+  `${DEFAULT_IDENTIFIERS.businessUnitId}-${DEFAULT_IDENTIFIERS.useCaseId}-${DEFAULT_IDENTIFIERS.environmentId}`;
 
 function planFor(id, overrides = {}) {
   const sample = getSample(id);
@@ -183,7 +191,7 @@ test('golden: the access contract classifies a mixed contract and generates both
   const classify = plan.steps.find((step) => step.id === 'classify');
   const text = classify.assertion.expectations.join('\n');
   assert.match(text, /Contract code: MULTI/);
-  assert.match(text, /product id: MULTI-Governance-PublishedAssets-DEV/);
+  assert.match(text, new RegExp(`product id: MULTI-${DEFAULT_CONTRACT_POSTFIX}`));
   assert.match(text, /Forwarded source APIs added to the product: weather-api/);
 
   const policy = plan.steps.find((step) => step.id === 'write-policy');
@@ -196,6 +204,16 @@ test('golden: the access contract classifies a mixed contract and generates both
   assert.match(param.artifact.content, /MULTI: \['universal-llm-api', 'weather-tool', 'ms-learn-tool', 'hr-chat-agent', 'weather-api'\]/);
   assert.match(param.artifact.content, /foundryApiName: 'universal-llm-api'/);
   assert.match(param.artifact.content, /useTargetAzureKeyVault = true/);
+  assert.match(param.artifact.content, new RegExp(`businessUnit: '${DEFAULT_IDENTIFIERS.businessUnitId}'`));
+  assert.match(param.artifact.content, new RegExp(`useCaseName: '${DEFAULT_IDENTIFIERS.useCaseId}'`));
+  assert.match(param.artifact.content, new RegExp(`environment: '${DEFAULT_IDENTIFIERS.environmentId}'`));
+  assert.match(param.artifact.content, /businessUnitLabel: 'Governance'/);
+  assert.match(param.artifact.content, /useCaseLabel: 'PublishedAssets'/);
+  assert.match(param.artifact.content, /environmentLabel: 'DEV'/);
+  assert.equal(
+    param.artifact.path,
+    `runtime/accelerator/citadel-access-contracts/contracts/${DEFAULT_IDENTIFIERS.businessUnitId}-${DEFAULT_IDENTIFIERS.useCaseId}/${DEFAULT_IDENTIFIERS.environmentId}/main.bicepparam`,
+  );
 });
 
 test('golden: with no LLM API present the contract code degrades correctly', () => {
@@ -209,7 +227,78 @@ test('golden: with no LLM API present the contract code degrades correctly', () 
   });
   const agentlessText = agentless.steps.find((step) => step.id === 'classify').assertion.expectations.join('\n');
   assert.match(agentlessText, /Contract code: TOOL/);
-  assert.match(agentlessText, /product id: TOOL-Governance-PublishedAssets-DEV/);
+  assert.match(agentlessText, new RegExp(`product id: TOOL-${DEFAULT_CONTRACT_POSTFIX}`));
+});
+
+test('golden: product terms use the faithful Bicep serializer for arbitrary text', () => {
+  const productTerms = "\n  Owner's terms\nKeep ${this} literal\\and deterministic\t\u2603  \n";
+  const first = planFor('access-contract-deploy', { 'samples.access-contract-deploy.productTerms': productTerms });
+  const second = planFor('access-contract-deploy', { 'samples.access-contract-deploy.productTerms': productTerms });
+  const content = first.steps.find((step) => step.id === 'write-param').artifact.content;
+  assert.ok(
+    content.includes("param productTerms = '\\n  Owner\\'s terms\\nKeep \\${this} literal\\\\and deterministic\\t\u2603  \\n'"),
+  );
+  assert.equal(serializePlan(first), serializePlan(second));
+});
+
+test('human labels produce deterministic safe, distinct contract ids and paths', () => {
+  const labels = {
+    'policy.businessUnit': 'Platform Engineering',
+    'policy.useCaseName': 'Revenue / Growth',
+    'policy.environment': 'QA West',
+  };
+  const plan = planFor('access-contract-deploy', labels);
+  const classify = plan.steps.find((step) => step.id === 'classify');
+  const productId = classify.assertion.outputValues.productId;
+  const parameterPath = plan.steps.find((step) => step.id === 'write-param').artifact.path;
+  const identifiers = contractIdentifierSegments({
+    businessUnit: 'Platform Engineering',
+    useCaseName: 'Revenue / Growth',
+    environment: 'QA West',
+  });
+  assert.equal(productId, `MULTI-${identifiers.businessUnitId}-${identifiers.useCaseId}-${identifiers.environmentId}`);
+  assert.equal(
+    parameterPath,
+    `runtime/accelerator/citadel-access-contracts/contracts/${identifiers.businessUnitId}-${identifiers.useCaseId}/${identifiers.environmentId}/main.bicepparam`,
+  );
+  assert.match(productId, /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/);
+  assert.ok(!/[\\?#\s]/.test(parameterPath));
+  assert.ok(!parameterPath.split('/').includes('..'));
+
+  const collisionA = planFor('access-contract-deploy', { 'policy.businessUnit': 'A B' });
+  const collisionB = planFor('access-contract-deploy', { 'policy.businessUnit': 'A-B' });
+  assert.notEqual(
+    collisionA.steps.find((step) => step.id === 'classify').assertion.outputValues.productId,
+    collisionB.steps.find((step) => step.id === 'classify').assertion.outputValues.productId,
+  );
+});
+
+test('identifier segments contain no traversal, option or Unicode syntax and never collapse to empty', () => {
+  const cases = ['../Finance', '--subscription', '研发平台', '!!!', 'C:\\contracts\\team'];
+  const identifiers = cases.map((businessUnit) =>
+    contractIdentifierSegments({ businessUnit, useCaseName: 'Use Case', environment: 'DEV' }),
+  );
+  for (const identity of identifiers) {
+    for (const identifier of Object.values(identity)) {
+      assert.match(identifier, /^[a-z0-9][a-z0-9-]*$/);
+      assert.ok(!identifier.includes('..'));
+      assert.ok(!identifier.startsWith('-'));
+    }
+    assert.ok(`Hub-${identity.businessUnitId}-${identity.useCaseId}-${identity.environmentId}-MULTI`.length <= 33);
+  }
+  assert.equal(new Set(identifiers.map((identity) => Object.values(identity).join('-'))).size, identifiers.length);
+  assert.throws(
+    () => contractIdentifierSegments({ businessUnit: '   ', useCaseName: 'Use Case', environment: 'DEV' }),
+    /must not be blank/,
+  );
+  assert.throws(
+    () => contractIdentifierSegments({ businessUnit: 'team\u0007name', useCaseName: 'Use Case', environment: 'DEV' }),
+    /control characters/,
+  );
+  assert.throws(
+    () => contractIdentifierSegments({ businessUnit: '\ud800', useCaseName: 'Use Case', environment: 'DEV' }),
+    /well-formed Unicode/,
+  );
 });
 
 test('golden: Key Vault parameter overrides use shared blank-value semantics', () => {

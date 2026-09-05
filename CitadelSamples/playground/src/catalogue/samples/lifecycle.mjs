@@ -226,19 +226,19 @@ export const LIFECYCLE_SAMPLES = [
       ),
       conditional(
         'policy.businessUnit',
-        'First segment of the product id being deleted.',
+        'Human-readable business unit whose deterministic safe identifier is part of the product id being deleted.',
         'Delete the access contract is on.',
         WHEN_DELETING_CONTRACT,
       ),
       conditional(
         'policy.useCaseName',
-        'Second segment of the product id being deleted.',
+        'Human-readable use case whose deterministic safe identifier is part of the product id being deleted.',
         'Delete the access contract is on.',
         WHEN_DELETING_CONTRACT,
       ),
       conditional(
         'policy.environment',
-        'Third segment of the product id being deleted.',
+        'Human-readable environment whose deterministic safe identifier is part of the product id being deleted.',
         'Delete the access contract is on.',
         WHEN_DELETING_CONTRACT,
       ),

@@ -160,6 +160,53 @@ test('Foundry account names cannot alter the credentialed PATCH origin', () => {
   }
 });
 
+test('contract display labels reject controls before a plan or path is generated', () => {
+  for (const path of ['policy.businessUnit', 'policy.useCaseName', 'policy.environment']) {
+    const sample = getSample('access-contract-deploy');
+    const { plan, validation } = buildSamplePlan(sample, makeFixtureReader({ [path]: 'visible\u0007hidden' }));
+    assert.equal(plan, null);
+    assert.ok(
+      errorsOf(validation.issues).some((issue) => issue.path === path && /control characters/.test(issue.message)),
+      `${path} should report a clear control-character error`,
+    );
+  }
+});
+
+test('malformed Unicode is rejected before Bicep serialization or identifier hashing', () => {
+  for (const path of [
+    'policy.businessUnit',
+    'policy.useCaseName',
+    'policy.environment',
+    'samples.access-contract-deploy.productTerms',
+  ]) {
+    const sample = getSample('access-contract-deploy');
+    const { plan, validation } = buildSamplePlan(sample, makeFixtureReader({ [path]: '\ud800' }));
+    assert.equal(plan, null);
+    assert.ok(
+      errorsOf(validation.issues).some((issue) => issue.path === path && /well-formed Unicode/.test(issue.message)),
+      `${path} should reject an unpaired surrogate`,
+    );
+  }
+});
+
+test('string-list validation rejects malformed Unicode and NUL items before planning', () => {
+  const sample = getSample('access-contract-deploy');
+  for (const value of ['bad\ud800name', 'bad\0name']) {
+    const { plan, validation } = buildSamplePlan(
+      sample,
+      makeFixtureReader({ 'policy.candidateLlmApis': [value] }),
+    );
+    assert.equal(plan, null);
+    assert.ok(
+      errorsOf(validation.issues).some(
+        (issue) =>
+          issue.path === 'policy.candidateLlmApis' &&
+          /well-formed Unicode|NUL bytes/.test(issue.message),
+      ),
+    );
+  }
+});
+
 test('a blank derived value warns rather than blocking', () => {
   const sample = getSample('access-contract-kv-verify');
   const read = makeFixtureReader({ 'keyVault.keySecretName': '', 'keyVault.endpointSecretNames': [] });

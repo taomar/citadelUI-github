@@ -21,7 +21,7 @@ import { EXERCISE_SAMPLES } from './samples/exercise.mjs';
 import { OBSERVE_SAMPLES } from './samples/observe.mjs';
 import { POLICY_SAMPLES } from './samples/policy.mjs';
 import { CLEANUP_RESIDUE, LIFECYCLE_SAMPLES } from './samples/lifecycle.mjs';
-import { checkAcknowledgement, coerceValue, hasErrors, validateFields } from '../core/validation.mjs';
+import { checkAcknowledgement, coerceValue, hasErrors, isBlank, validateFields } from '../core/validation.mjs';
 
 const RAW_SAMPLES = [
   ...DISCOVER_SAMPLES,
@@ -266,7 +266,8 @@ function makeBuildContext(sample, read) {
     const field = FIELD_BY_PATH.get(path);
     const value = field ? coerceValue(field, read(path)) : read(path);
     // `false` and `0` are supplied values, so only these three count as unset.
-    const unset = value === undefined || value === null || value === '';
+    const unset =
+      value === undefined || value === null || value === '' || (field?.preserveWhitespace === true && isBlank(value));
     if (!unset) return value;
     if (field && Object.prototype.hasOwnProperty.call(field, 'default')) return field.default;
     return field?.type === 'string-list' ? [] : '';

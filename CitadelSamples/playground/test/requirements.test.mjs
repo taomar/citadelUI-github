@@ -199,6 +199,15 @@ test('a blank mandatory value blocks; a blank optional or generated value does n
   assert.equal(optionalBlank.satisfied, true, 'a blank optional value must not block execution');
 });
 
+test('whitespace-preserving fields keep their exact value in manifests and exports', () => {
+  const productTerms = "\n  Owner's terms  \n";
+  const manifest = requirementsFor(
+    getSample('access-contract-deploy'),
+    makeFixtureReader({ 'samples.access-contract-deploy.productTerms': productTerms }),
+  );
+  assert.equal(manifest.byPath.get('samples.access-contract-deploy.productTerms').preview, productTerms);
+});
+
 test('a conditional entry blocks only while its condition holds', () => {
   const sample = getSample('access-contract-deploy');
   const withKv = requirementsFor(sample, makeFixtureReader({ 'keyVault.name': '' }));

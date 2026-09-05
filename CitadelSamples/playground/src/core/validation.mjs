@@ -10,6 +10,7 @@
  */
 
 import { ACKNOWLEDGED_RISK_LEVELS } from './types.mjs';
+import { isWellFormedUnicode } from './identifiers.mjs';
 
 /** @returns {boolean} true when a value counts as "not supplied". */
 export function isBlank(value) {
@@ -84,13 +85,32 @@ export function coerceValue(field, raw) {
       return [];
     }
     default:
-      return typeof raw === 'string' ? raw.trim() : raw;
+      return typeof raw === 'string' ? (field.preserveWhitespace ? raw : raw.trim()) : raw;
   }
 }
 
 function validateOne(field, value, path) {
   const issues = [];
   const push = (severity, message) => issues.push({ path, field: field.name, severity, message });
+
+  if (typeof value === 'string' && !isWellFormedUnicode(value)) {
+    push('error', `${field.label} must contain well-formed Unicode text.`);
+    return issues;
+  }
+  if (typeof value === 'string' && value.includes('\0') && field.allowNul !== true) {
+    push('error', `${field.label} cannot contain NUL bytes.`);
+    return issues;
+  }
+  if (Array.isArray(value)) {
+    if (value.some((item) => typeof item === 'string' && !isWellFormedUnicode(item))) {
+      push('error', `${field.label} must contain well-formed Unicode text.`);
+      return issues;
+    }
+    if (value.some((item) => typeof item === 'string' && item.includes('\0'))) {
+      push('error', `${field.label} cannot contain NUL bytes.`);
+      return issues;
+    }
+  }
 
   if (field.type === 'integer') {
     if (Number.isNaN(value)) {

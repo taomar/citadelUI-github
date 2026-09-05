@@ -926,7 +926,107 @@ test('an oversized value, an overlong list and a NUL byte are refused', () => {
   assert.throws(() => validateRunRequest(request({ 'hub.resourceGroupName': 'a\0b' }), CATALOGUE), /NUL byte/);
   assert.throws(
     () => validateRunRequest(request({ 'hub.resourceGroupName': { nested: true } }), CATALOGUE),
-    /unsupported type/,
+    /must be a string/,
+  );
+});
+
+test('a Bicep-string field preserves boundary whitespace and safely accepts NUL', () => {
+  const sample = getSample('access-contract-deploy');
+  const path = 'samples.access-contract-deploy.productTerms';
+  const productTerms = "\n  Owner's terms\0remain literal  \n";
+  const validated = validateRunRequest(
+    {
+      protocolVersion: EXECUTION_PROTOCOL_VERSION,
+      sampleId: sample.id,
+      inputs: inputsFor(sample, { [path]: productTerms }),
+      acknowledgement: { accepted: true, sampleId: sample.id },
+    },
+    CATALOGUE,
+  );
+  const rebuilt = rebuildPlan(validated, CATALOGUE, { buildSamplePlan, requirementsFor });
+  assert.equal(rebuilt.resolvedInputs[path], productTerms);
+  assert.ok(
+    rebuilt.plan.steps
+      .find((step) => step.id === 'write-param')
+      .artifact.content.includes("param productTerms = '\\n  Owner\\'s terms\\u{0}remain literal  \\n'"),
+  );
+});
+
+test('a whitespace-only Bicep-string field uses its declared default', () => {
+  const sample = getSample('access-contract-deploy');
+  const path = 'samples.access-contract-deploy.productTerms';
+  const validated = validateRunRequest(
+    {
+      protocolVersion: EXECUTION_PROTOCOL_VERSION,
+      sampleId: sample.id,
+      inputs: inputsFor(sample, { [path]: ' \n ' }),
+      acknowledgement: { accepted: true, sampleId: sample.id },
+    },
+    CATALOGUE,
+  );
+  const rebuilt = rebuildPlan(validated, CATALOGUE, { buildSamplePlan, requirementsFor });
+  assert.equal(rebuilt.resolvedInputs[path], CATALOGUE.defaultValues[path]);
+  assert.ok(
+    rebuilt.plan.steps
+      .find((step) => step.id === 'write-param')
+      .artifact.content.includes(
+        "param productTerms = 'Citadel Access Contract (mixed asset types) for publish-contract validation'",
+      ),
+  );
+});
+
+test('a Bicep-string field refuses non-string wire values', () => {
+  const sample = getSample('access-contract-deploy');
+  const path = 'samples.access-contract-deploy.productTerms';
+  const request = {
+    protocolVersion: EXECUTION_PROTOCOL_VERSION,
+    sampleId: sample.id,
+    inputs: inputsFor(sample),
+    acknowledgement: { accepted: true, sampleId: sample.id },
+  };
+  for (const value of [['terms'], 1, true, { terms: 'value' }]) {
+    assert.throws(
+      () => validateRunRequest({ ...request, inputs: { ...request.inputs, [path]: value } }, CATALOGUE),
+      /must be a string/,
+    );
+  }
+});
+
+test('NUL and malformed Unicode stay refused in lists and secrets', () => {
+  const access = getSample('access-contract-deploy');
+  const accessRequest = {
+    protocolVersion: EXECUTION_PROTOCOL_VERSION,
+    sampleId: access.id,
+    inputs: inputsFor(access),
+    acknowledgement: { accepted: true, sampleId: access.id },
+  };
+  for (const value of ['bad\0name', 'bad\ud800name']) {
+    assert.throws(
+      () =>
+        validateRunRequest(
+          {
+            ...accessRequest,
+            inputs: { ...accessRequest.inputs, 'policy.candidateLlmApis': [value] },
+          },
+          CATALOGUE,
+        ),
+      /NUL byte|well-formed Unicode/,
+    );
+  }
+
+  const gateway = getSample('weather-mcp-discovery');
+  assert.throws(
+    () =>
+      validateRunRequest(
+        {
+          protocolVersion: EXECUTION_PROTOCOL_VERSION,
+          sampleId: gateway.id,
+          inputs: inputsFor(gateway),
+          secrets: { 'gatewayAccess.apiKey': 'bad\0key' },
+        },
+        CATALOGUE,
+      ),
+    /NUL byte/,
   );
 });
 
@@ -1137,9 +1237,9 @@ test('registered operations accept valid customized catalogue values without wid
     {
       sampleId: 'cleanup',
       overrides: {
-        'policy.businessUnit': 'Research',
-        'policy.useCaseName': 'Forecasting',
-        'policy.environment': 'QA',
+        'policy.businessUnit': 'Platform Engineering',
+        'policy.useCaseName': 'Forecasting / Insights',
+        'policy.environment': 'QA West',
         'samples.publish-assets.weatherToolName': 'forecast-tool',
         'samples.publish-assets.learnToolName': 'docs-tool',
         'samples.publish-assets.agentAssetName': 'forecast-agent',

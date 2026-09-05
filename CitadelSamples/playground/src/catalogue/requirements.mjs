@@ -80,6 +80,8 @@ export function normaliseConfiguration(sample, lookupField) {
       type: field.type,
       classification: field.classification,
       ...(Object.prototype.hasOwnProperty.call(field, 'mustEqual') ? { mustEqual: field.mustEqual } : {}),
+      preserveWhitespace: field.preserveWhitespace === true,
+      allowNul: field.allowNul === true,
       // Where the field lives: a shared profile id, this sample, or another
       // recipe whose configuration this one legitimately reads.
       owner: describeOwner(sample.id, path),
@@ -117,7 +119,7 @@ export function buildRequirementManifest(sample, read, { hasSecret } = {}) {
   const lookup = new Map();
   const entries = sample.configurationEntries.map((entry) => {
     const raw = read(entry.path);
-    const value = entry.type ? coerceValue({ type: entry.type }, raw) : raw;
+    const value = entry.type ? coerceValue(entry, raw) : raw;
     const supplied = entry.secret
       ? Boolean(hasSecret ? hasSecret(entry.path) : !isBlank(value))
       : Object.prototype.hasOwnProperty.call(entry, 'mustEqual')

@@ -7,6 +7,7 @@
 
 import { step, createExecutionPlan } from '../../core/plan.mjs';
 import { bicepValue } from '../../core/bicep.mjs';
+import { contractIdentifierSegments } from '../../core/identifiers.mjs';
 import { secretRef } from '../../core/secrets.mjs';
 import {
   foundryAgentCardBackendUrl,
@@ -194,7 +195,13 @@ export function classifyContract(ctx, assets) {
   const businessUnit = ctx.get('policy.businessUnit');
   const useCaseName = ctx.get('policy.useCaseName');
   const environment = ctx.get('policy.environment');
-  const productId = `${contractCode}-${businessUnit}-${useCaseName}-${environment}`;
+  const { businessUnitId, useCaseId, environmentId } = contractIdentifierSegments({
+    businessUnit,
+    useCaseName,
+    environment,
+  });
+  const productPostfix = `${businessUnitId}-${useCaseId}-${environmentId}`;
+  const productId = `${contractCode}-${productPostfix}`;
   const foundryApiName = llmApis.includes('universal-llm-api')
     ? 'universal-llm-api'
     : llmApis[0] ?? grantedApis[0] ?? '';
@@ -208,10 +215,15 @@ export function classifyContract(ctx, assets) {
     contractCode,
     productId,
     subscriptionName: `${productId}-SUB-01`,
+    productPostfix,
     foundryApiName,
     businessUnit,
     useCaseName,
     environment,
+    businessUnitId,
+    useCaseId,
+    environmentId,
+    contractPath: `${businessUnitId}-${useCaseId}/${environmentId}`,
   };
 }
 
@@ -271,9 +283,12 @@ param keyVault = {
 }
 param useTargetAzureKeyVault = ${useKv ? 'true' : 'false'}
 param useCase = {
-  businessUnit: '${contract.businessUnit}'
-  useCaseName: '${contract.useCaseName}'
-  environment: '${contract.environment}'
+  businessUnit: ${bicepValue(contract.businessUnitId)}
+  useCaseName: ${bicepValue(contract.useCaseId)}
+  environment: ${bicepValue(contract.environmentId)}
+  businessUnitLabel: ${bicepValue(contract.businessUnit)}
+  useCaseLabel: ${bicepValue(contract.useCaseName)}
+  environmentLabel: ${bicepValue(contract.environment)}
 }
 param apiNameMapping = {
   ${contract.contractCode}: ${apiList}
@@ -289,7 +304,7 @@ ${endpoints}
     policyXml: loadTextContent('ai-product-policy.xml')
   }
 ]
-param productTerms = '${ctx.self('productTerms')}'
+param productTerms = ${bicepValue(ctx.self('productTerms'))}
 param useTargetFoundry = false
 `;
 }
@@ -713,7 +728,7 @@ export const PUBLISH_SAMPLES = [
       'Publishing does not grant access. This recipe deploys a real Citadel Access Contract that adds the LLM APIs, both MCP tools and the A2A agent to one product, applies different throttling to each asset kind, and mints the single `api-key` every later recipe presents.',
     explanation: [
       'The product policy branches on an `assetKind` variable set by the `set-asset-kind` fragment. The LLM branch applies model RBAC and `llm-token-limit`; the Tool branch and the Agent branch each apply a request-based `rate-limit-by-key` plus a `quota-by-key`, with different counters and different call ceilings. That branching is the thing the Policy group later proves by tripping the limits.',
-      'The contract code is computed, not chosen. One asset type present gives `LLM-`, `TOOL-` or `AGENT-`; more than one gives `MULTI-`. Because the LLM set depends on which inference APIs actually exist on the gateway, the product id itself is a discovered value — the same inputs on a different gateway can legitimately produce a different product id, and therefore different Key Vault secret names.',
+      'The contract code is computed, not chosen. One asset type present gives `LLM-`, `TOOL-` or `AGENT-`; more than one gives `MULTI-`. Human-readable business unit, use case and environment labels remain catalogue values and are preserved separately in the generated parameter object; compact deterministic identifiers derived from the exact label tuple are supplied to the pinned template for product names and contract paths, so spaces, punctuation and Unicode cannot become path or CLI syntax and normalization collisions remain distinct. Because the LLM set depends on which inference APIs actually exist on the gateway, the product id itself is a discovered value — the same inputs on a different gateway can legitimately produce a different product id, and therefore different Key Vault secret names.',
       'The product also has to include the source APIs behind any forwarding `mcp-from-api` tool. Without `weather-api` in the same product, the key that authorises the MCP tool would not authorise the internal hop to the protected source API, and `tools/call` would fail with 401 after a successful `tools/list`.',
       'When Key Vault publishing is on, the contract writes one shared api-key secret plus one endpoint secret per granted asset, each using the default auto-generated name `<code>-<bu>-<useCase>-<env>-<apiName>-endpoint`. Giving two LLM front doors the same secret name would silently collide, which is why the names are per-API rather than per-contract.',
     ],
@@ -721,7 +736,7 @@ export const PUBLISH_SAMPLES = [
       'List the APIs on the gateway and record which candidate LLM APIs exist.',
       'Classify the granted set into LLM, Tool, Agent and forwarded source APIs, and compute the contract code and product id.',
       'Write `ai-product-policy.xml` with the asset-type-aware branches.',
-      'Write `contracts/<bu>-<usecase>/<env>/main.bicepparam` referencing that policy.',
+      'Write `contracts/<business-unit-id>-<use-case-id>/<environment-id>/main.bicepparam` referencing that policy.',
       'Deploy the access contract at subscription scope.',
       'Read the minted api-key and the Key Vault secret names from the outputs, falling back to the APIM subscription secrets.',
     ],
@@ -796,6 +811,8 @@ export const PUBLISH_SAMPLES = [
         classification: 'sample-default',
         width: 'long',
         default: 'Citadel Access Contract (mixed asset types) for publish-contract validation',
+        preserveWhitespace: true,
+        allowNul: true,
         help: 'Terms text attached to the generated product.',
         howToObtain: 'Fixed by the notebook (cell 17 `productTerms`).',
         links: [LINKS.apimProduct],
@@ -818,9 +835,21 @@ export const PUBLISH_SAMPLES = [
         'The APIs the contract looks for on the gateway; only the ones that exist are granted.',
         'Falls back to the notebook`s three candidates.',
       ),
-      optional('policy.businessUnit', 'First segment of the product id.', 'Falls back to `Governance`.'),
-      optional('policy.useCaseName', 'Second segment of the product id.', 'Falls back to `PublishedAssets`.'),
-      optional('policy.environment', 'Third segment of the product id and the contract folder.', 'Falls back to `DEV`.'),
+      optional(
+        'policy.businessUnit',
+        'Human-readable product label; a safe collision-resistant identifier segment is derived for resource names and paths.',
+        'Falls back to `Governance`.',
+      ),
+      optional(
+        'policy.useCaseName',
+        'Human-readable product label; a safe collision-resistant identifier segment is derived for resource names and paths.',
+        'Falls back to `PublishedAssets`.',
+      ),
+      optional(
+        'policy.environment',
+        'Human-readable product label; a safe collision-resistant identifier segment is derived for resource names and the contract folder.',
+        'Falls back to `DEV`.',
+      ),
       optional('policy.toolCallsPerMinute', 'Written into the Tool branch of the generated product policy.', 'Falls back to 20, low enough for the burst recipe to trip it.'),
       optional('policy.agentCallsPerMinute', 'Written into the Agent branch of the generated product policy.', 'Falls back to 10.'),
       optional('policy.allowedModels', 'Written into the LLM branch as the model RBAC list.', 'Falls back to the notebook`s two models.'),
@@ -917,6 +946,7 @@ export const PUBLISH_SAMPLES = [
       'The notebook names the deployment with a wall-clock timestamp, so the same run is never reproducible. This recipe uses an explicit suffix so the generated plan is deterministic.',
       'The notebook discovers the existing LLM APIs inside the same cell that writes the parameter file. This recipe surfaces the discovered list as an input so the generated file is concrete and reviewable before anything is deployed.',
       'The notebook falls back to `client.subscription.list_secrets` silently. This recipe keeps the fallback but reports which of the two paths produced the key.',
+      'The notebook reuses display labels directly as product ids and filesystem segments. This recipe preserves those labels for display and derives bounded collision-resistant identifiers for every resource and path segment.',
     ],
     notes: [
       'The minted key is a secret. It is never written into the generated plan, the preview, or anything copied from this page; it is referenced by name only.',
@@ -925,7 +955,7 @@ export const PUBLISH_SAMPLES = [
     build(ctx) {
       const assets = buildPublishAssets(ctx);
       const contract = classifyContract(ctx, assets);
-      const dir = `${ctx.self('accessBicepDir')}/contracts/${contract.businessUnit.toLowerCase()}-${contract.useCaseName.toLowerCase()}/${contract.environment.toLowerCase()}`;
+      const dir = `${ctx.self('accessBicepDir')}/contracts/${contract.contractPath}`;
       const policyPath = `${dir}/ai-product-policy.xml`;
       const paramPath = `${dir}/main.bicepparam`;
       const deploymentName = `publish-access-contract-${ctx.self('deploymentNameSuffix')}`;
@@ -972,6 +1002,9 @@ export const PUBLISH_SAMPLES = [
               outputValues: {
                 productId: contract.productId,
                 contractCode: contract.contractCode,
+                businessUnitId: contract.businessUnitId,
+                useCaseId: contract.useCaseId,
+                environmentId: contract.environmentId,
               },
               expectations: [
                 `LLM APIs: ${contract.llmApis.join(', ') || '(none found on this gateway)'}`,
@@ -979,6 +1012,7 @@ export const PUBLISH_SAMPLES = [
                 `Agents: ${contract.agentApis.join(', ') || '(none — A2A asset disabled)'}`,
                 `Forwarded source APIs added to the product: ${contract.sourceApis.join(', ') || '(none)'}`,
                 `Contract code: ${contract.contractCode}; product id: ${contract.productId}`,
+                `Display labels: ${contract.businessUnit} / ${contract.useCaseName} / ${contract.environment}. Safe identifiers: ${contract.businessUnitId} / ${contract.useCaseId} / ${contract.environmentId}.`,
                 `Foundry front door: ${contract.foundryApiName || '(none)'}`,
               ],
             },
