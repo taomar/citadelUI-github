@@ -387,10 +387,15 @@ The external relay is a separate, narrow hosted boundary. It rebuilds only
 eligible allowlisted plans and executes HTTP and assertion steps. Its image and
 import graph deliberately omit Python, Azure CLI, process transports, arbitrary
 files, workspaces, and artifact writers. It must remain HTTP/assertion-only.
-Its managed admission and run state use owner-bound nonce/idempotency,
-distributed concurrency and active-job capacity, dispatcher lease recovery,
-polling, cancellation, and timeouts so multiple replicas do not admit the same
-work independently. These controls are proved offline, not by a live deployment.
+The deployed direct `/execute` path uses process-local atomic nonce consumption
+and request admission, so each active revision is fixed at one replica and
+horizontal scale-out is prohibited until one shared atomic adapter backs both
+controls. Revision transitions and restarts replace that local replay history, so
+operators must drain the acknowledgement validity window before rollout.
+Separate managed run primitives use owner-bound nonce/idempotency, distributed
+concurrency and active-job capacity, dispatcher lease recovery, polling,
+cancellation, and timeouts when a durable shared store is injected. That managed
+path is proved offline but is not wired by the hosted entrypoint or Bicep.
 
 Future hosted process execution is a different capability, not a relay feature.
 One run must create one fresh immutable, no-ingress isolated job with no compute

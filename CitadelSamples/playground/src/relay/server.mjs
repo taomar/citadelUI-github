@@ -10,47 +10,49 @@
  * allow-listed `https` request and evaluate an assertion over the response.
  *
  * Every request goes through, in order:
- *   1. principal authentication (the caller must present a credential the
+ *   1. global process admission — direct `/execute` is refused with 429 when
+ *      the configured concurrent-request cap is already occupied
+ *   2. principal authentication (the caller must present a credential the
  *      relay's authenticator accepts — see `principalAuth.mjs`) resolving a
  *      full `{ principal, tenant, roles }` context, never discarded — a
  *      non-loopback caller with no non-empty principal AND tenant is refused
  *      here, before anything else runs
- *   2. a body-size limit
- *   3. tenant-policy resolution (`tenantPolicy.mjs`) — the authenticated
+ *   3. a body-size limit
+ *   4. tenant-policy resolution (`tenantPolicy.mjs`) — the authenticated
  *      `{ tenant, principal, roles }` is mapped, server-side, to the exact
  *      bundle of resources THIS tenant may use: its own allowed sample ids,
  *      its own destination-origin allowlist/http executor pair, and its own
  *      logical secret provider. An unknown tenant, or one whose roles do not
  *      satisfy the bundle's gate, is refused here — before schema
  *      validation, before secret access, before any network call
- *   4. exact-schema validation against THIS tenant's own allow-list
+ *   5. exact-schema validation against THIS tenant's own allow-list
  *      (`requestSchema.mjs`)
- *   5. plan reconstruction from the relay's OWN catalogue copy
- *   6. a proactive destination check: every literal destination origin the
+ *   6. plan reconstruction from the relay's OWN catalogue copy
+ *   7. a proactive destination check: every literal destination origin the
  *      rebuilt plan would contact must already be in THIS tenant's own
  *      origin allowlist — checked here, before any secret is resolved,
  *      so a request for an out-of-tenant destination never reaches the
  *      secret provider or the network at all
- *   7. a per-sample/per-step request-policy check (`requestPolicy.mjs`) —
+ *   8. a per-sample/per-step request-policy check (`requestPolicy.mjs`) —
  *      origin-only authorization cannot tell a tenant-approved route from a
  *      caller-controlled path/header on the SAME allowed origin, so every
  *      literal request URL and every secret-bearing header NAME the rebuilt
  *      plan carries must also match THIS tenant's own, server-selected
  *      per-sample/per-step policy — checked here, still before any secret
  *      is resolved
- *   8. acknowledgement binding verification — the acknowledgement must name
+ *   9. acknowledgement binding verification — the acknowledgement must name
  *      THIS sample, THIS exact request URL set (the same one the request
  *      policy above just approved), THIS authenticated caller and tenant,
  *      and a canonical digest of THESE inputs, and must not have expired
  *      (`acknowledgement.mjs`) — checked against the relay's own rebuilt
  *      view and its own resolved authentication, never against anything the
  *      caller merely asserts
- *   9. single-use nonce consumption (replay/freshness — `nonceStore.mjs`),
+ *  10. single-use nonce consumption (replay/freshness — `nonceStore.mjs`),
  *      only once the binding above has already passed, so a malformed or
  *      mismatched request never spends a nonce it was not entitled to use
- *  10. secret resolution through the tenant's own injected provider (never
+ *  11. secret resolution through the tenant's own injected provider (never
  *      the caller's choice of vault/secret name)
- *  11. execution through the tenant's own http/assertion-only core
+ *  12. execution through the tenant's own http/assertion-only core
  *      (`httpExecutor.mjs`), which re-checks every URL AND every
  *      secret-bearing header name — including ones discovered via
  *      `{{steps.x.y}}` bindings — against that same destination allowlist
@@ -93,12 +95,13 @@ import { authenticatePrincipal } from './principalAuth.mjs';
 import { createNonceStore } from './nonceStore.mjs';
 import { canonicalInputDigest, planDestinationOrigins, planRequestUrls, verifyAcknowledgement } from './acknowledgement.mjs';
 import { raceDeadline, DEADLINE_EXCEEDED } from './deadline.mjs';
+import { DEFAULT_RELAY_SERVER_LIMITS, validateRelayServerLimits } from './limits.mjs';
 
 /** Acknowledgement-binding failure codes that are a client-fixable request problem, not a policy refusal. */
 const ACKNOWLEDGEMENT_BAD_REQUEST_CODES = new Set(['acknowledgement-required', 'nonce-required', 'acknowledgement-malformed', 'acknowledgement-not-yet-valid']);
 
-const DEFAULT_BODY_LIMIT_BYTES = 256 * 1024;
-const DEFAULT_RUN_TIMEOUT_MS = 60_000;
+const DEFAULT_BODY_LIMIT_BYTES = DEFAULT_RELAY_SERVER_LIMITS.bodyLimitBytes;
+const DEFAULT_RUN_TIMEOUT_MS = DEFAULT_RELAY_SERVER_LIMITS.runTimeoutMs;
 
 function securityHeaders() {
   return {
@@ -803,6 +806,7 @@ export async function executeManagedRunWork(work, {
  * @param {object} [options.runOrchestrator]          REQUIRED to enable `/runs`: a hosted, shared durable state/job adapter
  * @param {number} [options.bodyLimitBytes]
  * @param {number} [options.runTimeoutMs]
+ * @param {number} [options.maxConcurrentRequests]     global direct `/execute` admission cap
  * @param {(host:string)=>boolean} [options.isLoopbackHost]  loopback bypass for local dev/testing
  * @param {string} [options.host]                     the host this server is told it is bound to
  * @param {() => number} [options.now]                 injectable for tests (acknowledgement expiry)
@@ -817,6 +821,7 @@ export function createRelayServer({
   runOrchestrator,
   bodyLimitBytes = DEFAULT_BODY_LIMIT_BYTES,
   runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS,
+  maxConcurrentRequests = DEFAULT_RELAY_SERVER_LIMITS.maxConcurrentRequests,
   isLoopbackHost = () => false,
   host = '0.0.0.0',
   now = () => Date.now(),
@@ -830,8 +835,21 @@ export function createRelayServer({
   if (typeof runsPath !== 'string' || !/^\/[A-Za-z0-9._-]+$/.test(runsPath)) {
     throw new TypeError('runsPath must be one URL path segment beginning with "/".');
   }
+  const serverLimits = validateRelayServerLimits({ bodyLimitBytes, runTimeoutMs, maxConcurrentRequests });
   const nonces = nonceStore ?? createNonceStore();
   const managedRuns = runOrchestrator ?? null;
+  let activeExecuteRequests = 0;
+
+  function admitExecuteRequest() {
+    if (activeExecuteRequests >= serverLimits.maxConcurrentRequests) return null;
+    activeExecuteRequests += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      activeExecuteRequests -= 1;
+    };
+  }
   if (
     managedRuns &&
     (
@@ -873,8 +891,8 @@ export function createRelayServer({
           tenantPolicy,
           authenticator,
           runOrchestrator: managedRuns,
-          bodyLimitBytes,
-          runTimeoutMs,
+          bodyLimitBytes: serverLimits.bodyLimitBytes,
+          runTimeoutMs: serverLimits.runTimeoutMs,
           isLoopbackHost,
           host,
           now,
@@ -910,8 +928,22 @@ export function createRelayServer({
         return;
       }
 
-      const client = monitorClientDisconnect(request, response);
+      const releaseAdmission = admitExecuteRequest();
+      if (!releaseAdmission) {
+        response.writeHead(429, securityHeaders());
+        response.end(
+          JSON.stringify({
+            state: 'blocked',
+            summary: 'Not run — the relay is already serving the maximum number of concurrent requests.',
+            code: 'relay-concurrency-limit',
+          }),
+        );
+        return;
+      }
+
+      let client;
       try {
+        client = monitorClientDisconnect(request, response);
         const auth = await authenticatePrincipal(request, { isLoopbackHost, host, authenticator });
         if (!auth.ok) {
           if (client.signal.aborted && response.destroyed) return;
@@ -922,7 +954,7 @@ export function createRelayServer({
 
         let payload;
         try {
-          payload = JSON.parse(await readBody(request, bodyLimitBytes));
+          payload = JSON.parse(await readBody(request, serverLimits.bodyLimitBytes));
         } catch (error) {
           if (client.signal.aborted && response.destroyed) return;
           const status = error instanceof RequestRefused ? error.status : 400;
@@ -938,7 +970,7 @@ export function createRelayServer({
           tenantPolicy,
           auth: { principal: auth.principal, tenant: auth.tenant, roles: auth.roles ?? [] },
           nonceStore: nonces,
-          runTimeoutMs,
+          runTimeoutMs: serverLimits.runTimeoutMs,
           now,
           externalSignal: client.signal,
         });
@@ -946,7 +978,8 @@ export function createRelayServer({
         response.writeHead(status, securityHeaders());
         response.end(JSON.stringify(body));
       } finally {
-        client.dispose();
+        client?.dispose();
+        releaseAdmission();
       }
     } catch (error) {
       // The final backstop. `handleExecuteRequest` already catches the
@@ -975,6 +1008,7 @@ export function createRelayServer({
   server.tenantPolicy = tenantPolicy;
   server.nonceStore = nonces;
   server.runOrchestrator = managedRuns;
+  server.limits = serverLimits;
   // Recovery belongs to the listening server's lifecycle: construction alone
   // does not start background work, and close always clears the scheduler.
   if (managedRuns) {

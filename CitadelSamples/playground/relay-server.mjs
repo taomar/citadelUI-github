@@ -15,6 +15,11 @@ import { createKeyVaultSecretProvider } from './src/relay/secretProvider.mjs';
 import { createContainerAppsEntraAuthenticator } from './src/relay/principalAuth.mjs';
 import { createRelayTenantBundle, createStaticTenantPolicy } from './src/relay/tenantPolicy.mjs';
 import { createRelayServer } from './src/relay/server.mjs';
+import {
+  readHostedRelayLimits,
+  relayExecutorLimitsFromHosted,
+  relayServerLimitsFromHosted,
+} from './src/relay/limits.mjs';
 
 function required(env, name) {
   const value = env[name];
@@ -53,6 +58,7 @@ export function buildHostedRelay(env = process.env) {
   const allowedSampleIds = json(env, 'CITADEL_RELAY_ALLOWED_SAMPLE_IDS');
   const allowedOrigins = json(env, 'CITADEL_RELAY_ALLOWED_ORIGINS');
   const requestPolicy = json(env, 'CITADEL_RELAY_REQUEST_POLICY');
+  const hostedLimits = readHostedRelayLimits(env);
   const structuralAllowedSampleIds = computeRelayAllowedSampleIds(CATALOGUE, { buildSamplePlan, requirementsFor });
   const bundle = createRelayTenantBundle({
     allowedSampleIds,
@@ -63,11 +69,7 @@ export function buildHostedRelay(env = process.env) {
       clientId: required(env, 'CITADEL_RELAY_MANAGED_IDENTITY_CLIENT_ID'),
       environment: env,
     }),
-    limits: {
-      maxConcurrentRequests: Number(env.CITADEL_RELAY_MAX_CONCURRENT_REQUESTS ?? 4),
-      maxRequestsPerRun: Number(env.CITADEL_RELAY_MAX_REQUESTS_PER_RUN ?? 12),
-      requestTimeoutMs: Number(env.CITADEL_RELAY_HTTP_TIMEOUT_MS ?? 10_000),
-    },
+    limits: relayExecutorLimitsFromHosted(hostedLimits),
   });
   const tenantPolicy = createStaticTenantPolicy(
     {
@@ -82,7 +84,7 @@ export function buildHostedRelay(env = process.env) {
     tenantPolicy,
     authenticator: createContainerAppsEntraAuthenticator({ tenantId }),
     host: env.CITADEL_RELAY_HOST ?? '0.0.0.0',
-    runTimeoutMs: Number(env.CITADEL_RELAY_RUN_TIMEOUT_MS ?? 60_000),
+    ...relayServerLimitsFromHosted(hostedLimits),
   });
 }
 

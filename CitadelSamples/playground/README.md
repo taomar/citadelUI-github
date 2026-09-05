@@ -171,10 +171,17 @@ Each Container App acquires tokens only through its own platform-injected
 `IDENTITY_ENDPOINT` and `IDENTITY_HEADER`, with the deployment-owned
 user-assigned client ID. Partial or malformed injection fails closed; the secret
 identity header is never forwarded to the other app, VM IMDS, or Key Vault.
-Its owner-bound admission and managed run state are replica-safe for
+The deployed direct `/execute` path uses process-local atomic nonce consumption
+and request admission, so each active Container Apps revision is fixed at one
+replica and horizontal scale-out is prohibited until one actually shared atomic
+adapter backs both controls. Revision transitions and process restarts replace
+that local state; operators must drain the acknowledgement validity window before
+a rollout, and cross-restart replay protection remains unproven without the shared
+adapter. The separate managed-run primitives support replica-safe
 nonce/idempotency, distributed concurrency, dispatcher lease recovery, polling,
-cancellation, and timeouts. That claim is based on offline tests only; the relay
-has not been deployed or integration-tested.
+cancellation, and timeouts when a durable shared store is injected, but that path
+is not wired by the hosted entrypoint or Bicep. These claims are based on offline
+tests only; the relay has not been deployed or integration-tested.
 
 Future hosted process execution is a different capability. It may be enabled
 only as one immutable, no-ingress, per-run isolated job with no compute or

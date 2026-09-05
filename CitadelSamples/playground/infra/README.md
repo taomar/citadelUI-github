@@ -46,6 +46,22 @@ The Bicep is the deployment authority. The hosted relay rejects startup unless
 | `CITADEL_RELAY_ALLOWED_SAMPLE_IDS` | `relayAllowedSampleIds` JSON |
 | `CITADEL_RELAY_REQUEST_POLICY` | `relayRequestPolicy` JSON |
 | `CITADEL_RELAY_SECRET_MAPPINGS` | `relaySecretMappings` JSON |
+| `CITADEL_RELAY_BODY_LIMIT_BYTES` | `relayBodyLimitBytes` |
+| `CITADEL_RELAY_RUN_TIMEOUT_MS` | `relayRunTimeoutMs` |
+| `CITADEL_RELAY_HTTP_TIMEOUT_MS` | `relayRequestTimeoutMs` |
+| `CITADEL_RELAY_MAX_REQUESTS_PER_RUN` | `relayMaxRequestsPerRun` |
+| `CITADEL_RELAY_MAX_CONCURRENT_REQUESTS` | `relayMaxConcurrentRequests` |
+
+The relay accepts only the exact hosted limit keys represented above. Startup
+rejects malformed integers, unknown programmatic limit keys, values outside the
+Bicep ranges, or a manually supplied request timeout longer than the run timeout.
+Bicep caps the effective request timeout at the configured run timeout so an
+otherwise valid parameter pair cannot create a crash-looping revision. The
+request-count ceiling covers both ordinary HTTP steps and bounded bursts; a step
+that would cross the remaining budget fails before it sends another request. The
+concurrency value limits both burst workers and globally admitted `/execute`
+requests; excess requests fail closed with HTTP 429 before authentication, body
+parsing, secret resolution, or network execution.
 
 The playground receives the private relay URL and token audience from Bicep,
 plus `CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED=true`, the same tenant ID, and
@@ -73,8 +89,15 @@ tested here. A future platform-local shape requires an explicit code-level
 validator override; deployment environment values cannot broaden the default to
 an arbitrary remote URL.
 
-Both apps use 0.5 CPU, 1 GiB memory, 1--2 replicas, and HTTP probes. The
-playground serves `/api/health`; the relay serves `/healthz` and `/readyz`.
+Both apps use 0.5 CPU, 1 GiB memory and HTTP probes. The playground uses 1--2
+replicas. The relay scale block fixes each active revision at exactly one replica
+because direct `/execute` nonce consumption and admission are process-local.
+Horizontal scale-out is prohibited until one actually shared atomic adapter backs
+both controls; configuring two independent in-memory stores is not shared
+durability. Revision transitions and process restarts replace that local state,
+so rollout operators must drain the acknowledgement validity window and treat
+cross-restart replay protection as unproven until the same shared adapter exists.
+The playground serves `/api/health`; the relay serves `/healthz` and `/readyz`.
 
 ## Offline validation
 

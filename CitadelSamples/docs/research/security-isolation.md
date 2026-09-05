@@ -61,12 +61,17 @@ values and public output, but a future durable adapter must classify, protect,
 expire, and delete that record rather than relying on a claim that no request or
 acknowledgement data is stored.
 
-The current relay limit environment values are not a hosted admission control.
-`buildHostedRelay` passes `maxConcurrentRequests` and `maxRequestsPerRun`, while
-the HTTP executor consumes `maxConcurrency` and `maxBurstRequests`. The direct
-`/execute` path also has no global or per-principal run admission. Until those
-names and layers are aligned and tested, the deployment parameters must not be
-treated as effective run quotas.
+The hosted limit contract is now exact and startup-validated. It explicitly maps
+`maxConcurrentRequests` to both direct `/execute` admission and burst
+`maxConcurrency`, maps `maxRequestsPerRun` to the executor's total and per-burst
+request ceilings, and maps `requestTimeoutMs` to `stepTimeoutMs`. Body size and
+run duration use the same validated object. Excess direct requests fail closed
+with HTTP 429. That admission and the direct nonce store remain process-local, so
+the Bicep fixes each active revision at one replica and horizontal scale-out is
+prohibited until one actually shared atomic adapter backs both controls. Revision
+transitions and restarts replace the process-local replay history; operators must
+drain the acknowledgement validity window before rollout, and cross-restart replay
+protection remains an explicit limitation until the shared adapter exists.
 
 ## Assets, actors, and security objectives
 

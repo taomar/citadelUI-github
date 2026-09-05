@@ -33,3 +33,8 @@ param relayRequestPolicy = {
 param relayLogicalRefMappings = {
   'gatewayAccess.apiKey': '<key-vault-secret-name>'
 }
+param relayBodyLimitBytes = 262144
+param relayRunTimeoutMs = 60000
+param relayRequestTimeoutMs = 10000
+param relayMaxConcurrentRequests = 4
+param relayMaxRequestsPerRun = 12

@@ -102,10 +102,13 @@ exclusive tabs as the final information architecture.
   their process-free boundary.
 - An explicitly enabled loopback-only operator mode executes catalogue-owned
   Azure CLI, HTTPS, generated-artifact, assertion, and registered Python steps.
-- The existing hosted relay remains HTTP/assertion-only. Its managed run
-  admission is replica-safe for ownership, nonce/idempotency, distributed
-  concurrency, dispatcher leases, polling, cancellation, and timeouts, as
-  proved by offline tests only.
+- The existing hosted relay remains HTTP/assertion-only. Its deployed direct path
+  is fixed at one replica per active revision because nonce and admission state
+  are process-local; horizontal scale-out requires one shared atomic adapter, and
+  rollouts must drain the acknowledgement validity window because process-local
+  replay history is replaced. Its separate managed-run state machine is replica-
+  safe with a durable shared store, as proved offline, but is not wired by the
+  hosted entrypoint or Bicep.
 - Any future hosted process execution must use a fresh, no-ingress, per-run
   isolated job rather than the public playground or long-lived relay process.
 

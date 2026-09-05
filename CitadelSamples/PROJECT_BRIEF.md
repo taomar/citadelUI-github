@@ -109,9 +109,12 @@ kernel or terminal.
 - No browser-supplied command, URL, executable, header set, script, or path can reach the executor.
 - Local runs expose bounded progress before completion, cancel only the exact
   active run, and keep declared artifacts inside the run workspace.
-- The hosted relay remains structurally HTTP/assertion-only, with replica-safe
-  owner-bound admission, nonce/idempotency, distributed concurrency, lease
-  recovery, polling, cancellation, and timeout behavior covered offline.
+- The hosted relay remains structurally HTTP/assertion-only. Its deployed direct
+  path is fixed at one replica per active revision because nonce and admission
+  state are process-local; horizontal scale-out requires one shared atomic
+  adapter, and rollouts must drain the acknowledgement validity window. Replica-
+  safe managed-run behavior is covered offline but is not wired by the hosted
+  entrypoint or Bicep.
 - Hosted process execution remains disabled unless every per-run isolation,
   identity, egress, quota, cancellation, cleanup, artifact, supply-chain, and
   independent-review gate passes.

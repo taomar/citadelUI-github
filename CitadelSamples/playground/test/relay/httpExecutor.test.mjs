@@ -548,9 +548,38 @@ test('a step that never resolves is aborted at its configured timeout', async ()
 });
 
 test('the default limits export sane, non-zero bounds for every dimension', () => {
-  for (const key of ['stepTimeoutMs', 'runTimeoutMs', 'maxOutputBytes', 'maxResponseBytes', 'maxBurstRequests', 'maxConcurrency']) {
+  for (const key of [
+    'stepTimeoutMs',
+    'runTimeoutMs',
+    'maxOutputBytes',
+    'maxResponseBytes',
+    'maxBurstRequests',
+    'maxRequestsPerRun',
+    'maxConcurrency',
+  ]) {
     assert.ok(Number.isFinite(DEFAULT_RELAY_LIMITS[key]) && DEFAULT_RELAY_LIMITS[key] > 0, `${key} must be a positive finite bound`);
   }
+});
+
+test('executor limit overrides reject unknown and out-of-range values instead of being ignored', () => {
+  assert.throws(
+    () => createRelayHttpExecutor({
+      fetchImpl: async () => ({ status: 200, headers: {}, text: async () => '' }),
+      allowlist: allowlist(),
+      requestPolicy: allowAllRequestPolicy(),
+      limits: { maxConcurrentRequests: 2 },
+    }),
+    /Unknown relay executor limit key/,
+  );
+  assert.throws(
+    () => createRelayHttpExecutor({
+      fetchImpl: async () => ({ status: 200, headers: {}, text: async () => '' }),
+      allowlist: allowlist(),
+      requestPolicy: allowAllRequestPolicy(),
+      limits: { maxConcurrency: 0 },
+    }),
+    /between 1 and 32/,
+  );
 });
 
 /* ------------------------------------------------------- unsupported steps */
@@ -661,7 +690,7 @@ test('a repeat/burst request respects the configured concurrency and count caps'
   assert.deepEqual(result.steps[0].evidence, { method: 'POST', requested: 6, concurrency: 2 });
 });
 
-test('a burst request count is capped at the configured maximum, even if the plan asks for more', async () => {
+test('a burst request over the configured maximum fails before any request is sent', async () => {
   let calls = 0;
   const fetch = async () => {
     calls += 1;
@@ -684,8 +713,46 @@ test('a burst request count is capped at the configured maximum, even if the pla
     requestPolicy: allowAllRequestPolicy(),
     limits: { maxBurstRequests: 10, maxConcurrency: 2 },
   });
-  await executor.execute(plan, { secrets: {} });
-  assert.equal(calls, 10);
+  const result = await executor.execute(plan, { secrets: {} });
+  assert.equal(result.state, 'failed');
+  assert.equal(calls, 0);
+  assert.match(result.steps[0].detail, /exceeds the per-step request limit/);
+});
+
+test('the per-run request budget fails closed before a burst that would exceed the remaining allowance', async () => {
+  let calls = 0;
+  const fetch = async () => {
+    calls += 1;
+    return { status: 200, headers: {}, text: async () => '' };
+  };
+  const plan = minimalPlan({
+    steps: [
+      step.http({
+        id: 'first',
+        title: 'First request',
+        detail: 'Consumes one request.',
+        request: { method: 'GET', url: `${GATEWAY_ORIGIN}/first` },
+        produces: [],
+      }),
+      step.http({
+        id: 'burst',
+        title: 'Remaining burst',
+        detail: 'May use only the remaining request budget.',
+        request: { method: 'POST', url: `${GATEWAY_ORIGIN}/burst`, repeat: { count: 5, concurrency: 3, timeoutSeconds: 5 } },
+        produces: ['statusCodes', 'errors'],
+      }),
+    ],
+  });
+  const executor = createRelayHttpExecutor({
+    fetchImpl: fetch,
+    allowlist: allowlist(),
+    requestPolicy: allowAllRequestPolicy(),
+    limits: { maxRequestsPerRun: 3, maxBurstRequests: 5, maxConcurrency: 3 },
+  });
+  const result = await executor.execute(plan, { secrets: {} });
+  assert.equal(result.state, 'failed');
+  assert.equal(calls, 1);
+  assert.match(result.steps[1].detail, /would exceed the run request budget/);
 });
 
 /* --------------------------------------------------------------- reporting */

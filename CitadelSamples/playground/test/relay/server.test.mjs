@@ -986,6 +986,7 @@ test('createRelayServer requires a tenantPolicy and an authenticator', () => {
       authenticator: createDenyAllAuthenticator(),
     }),
   );
+  assert.throws(() => createRelayServer(serverDeps({ maxConcurrentRequests: 0 })), /between 1 and 32/);
 });
 
 test('the relay server starts managed recovery only while listening and stops it on close', async () => {
@@ -1065,6 +1066,71 @@ test('a valid shared-secret credential is accepted end to end over a real socket
       assert.equal(response.status, 200);
       const body = await response.json();
       assert.equal(body.state, 'completed');
+    },
+  );
+});
+
+test('the real relay server admits no more than the configured global number of concurrent execute requests', async () => {
+  const bundle = makeBundle();
+  let markStarted;
+  let releaseFirst;
+  const started = new Promise((resolve) => {
+    markStarted = resolve;
+  });
+  const released = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  bundle.httpExecutor = {
+    requestPolicy: bundle.requestPolicy,
+    async execute(plan) {
+      markStarted();
+      await released;
+      return {
+        state: 'completed',
+        sampleId: plan.sampleId,
+        summary: 'Completed.',
+        detail: '',
+        steps: [],
+        assertions: [],
+        configurationUpdates: {},
+        secretUpdates: {},
+        meta: {},
+      };
+    },
+  };
+
+  await withServer(
+    serverDeps({
+      tenantPolicy: createStaticTenantPolicy({ [TENANT_A]: bundle }),
+      authenticator: createSharedSecretAuthenticator({ token: RELAY_TOKEN, tenant: TENANT_A, principal: CALLER_A }),
+      maxConcurrentRequests: 1,
+    }),
+    async (base) => {
+      const headers = { 'content-type': 'application/json', authorization: 'Bearer relay-service-token' };
+      const first = fetch(`${base}/execute`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(weatherPayload({ acknowledgement: weatherAcknowledgement({ nonce: 'admission-first-nonce' }) })),
+      });
+      await started;
+
+      const refused = await fetch(`${base}/execute`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(weatherPayload({ acknowledgement: weatherAcknowledgement({ nonce: 'admission-second-nonce' }) })),
+      });
+      assert.equal(refused.status, 429);
+      assert.equal((await refused.json()).code, 'relay-concurrency-limit');
+
+      releaseFirst();
+      assert.equal((await first).status, 200);
+
+      const afterRelease = await fetch(`${base}/execute`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(weatherPayload({ acknowledgement: weatherAcknowledgement({ nonce: 'admission-third-nonce' }) })),
+      });
+      assert.equal(afterRelease.status, 200);
     },
   );
 });

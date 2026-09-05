@@ -47,6 +47,11 @@ test('deployment passes managed-identity service authentication and exact relay 
     'CITADEL_RELAY_REQUEST_POLICY',
     'CITADEL_RELAY_SECRET_MAPPINGS',
     'CITADEL_RELAY_MANAGED_IDENTITY_CLIENT_ID',
+    'CITADEL_RELAY_BODY_LIMIT_BYTES',
+    'CITADEL_RELAY_RUN_TIMEOUT_MS',
+    'CITADEL_RELAY_HTTP_TIMEOUT_MS',
+    'CITADEL_RELAY_MAX_REQUESTS_PER_RUN',
+    'CITADEL_RELAY_MAX_CONCURRENT_REQUESTS',
   ]) {
     assert.match(bicep, new RegExp(name));
   }
@@ -77,8 +82,24 @@ test('Container Apps probes match implemented health endpoints and constrain res
   assert.match(relay, /requestPath === '\/healthz' \|\| requestPath === '\/readyz'/);
   assert.match(bicep, /cpu: json\('0\.5'\)/);
   assert.match(bicep, /memory: '1Gi'/);
-  assert.match(bicep, /minReplicas: 1/);
-  assert.match(bicep, /maxReplicas: 2/);
+  const relayResource = bicep.match(/resource relay 'Microsoft\.App\/containerApps[\s\S]*?resource relayAuth/)[0];
+  const playgroundResource = bicep.match(/resource playground 'Microsoft\.App\/containerApps[\s\S]*?resource playgroundAuth/)[0];
+  assert.match(relayResource, /(?:^|\n)\s*minReplicas: 1\s*(?:\n|$)/);
+  assert.match(relayResource, /(?:^|\n)\s*maxReplicas: 1\s*(?:\n|$)/);
+  assert.match(playgroundResource, /(?:^|\n)\s*minReplicas: 1\s*(?:\n|$)/);
+  assert.match(playgroundResource, /(?:^|\n)\s*maxReplicas: 2\s*(?:\n|$)/);
+  assert.match(bicep, /relayEffectiveRequestTimeoutMs = min\(relayRequestTimeoutMs, relayRunTimeoutMs\)/);
+  assert.match(bicep, /CITADEL_RELAY_HTTP_TIMEOUT_MS', value: string\(relayEffectiveRequestTimeoutMs\)/);
+});
+
+test('hosted relay documentation prohibits scale-out until nonce and admission state are actually shared', async () => {
+  const [deploymentGuide, readme] = await Promise.all([read('infra/README.md'), read('README.md')]);
+  assert.match(deploymentGuide, /each active revision at exactly one replica/i);
+  assert.match(deploymentGuide, /scale-out is prohibited[\s\S]*shared atomic\s+adapter/i);
+  assert.match(deploymentGuide, /Revision\s+transitions\s+and\s+process\s+restarts\s+replace\s+that\s+local\s+state/i);
+  assert.match(readme, /direct `\/execute` path uses process-local atomic nonce consumption/i);
+  assert.match(readme, /horizontal scale-out is prohibited[\s\S]*shared atomic\s+adapter/i);
+  assert.match(readme, /Revision\s+transitions\s+and\s+process\s+restarts\s+replace\s+that\s+local\s+state/i);
 });
 
 test('relay image is non-root, zero-dependency, and excludes local process execution', async () => {

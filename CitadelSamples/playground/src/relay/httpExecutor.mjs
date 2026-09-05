@@ -23,15 +23,9 @@ import { evaluateAssertion } from '../server/assertions.mjs';
 import { clip, createRedactor } from '../server/redaction.mjs';
 import { RELAY_SUPPORTED_STEP_TYPES } from './requestSchema.mjs';
 import { publicAssertionDetail, publicRunSummary, sanitizeAssertionEvidence } from './publicResult.mjs';
+import { DEFAULT_RELAY_EXECUTOR_LIMITS, validateRelayExecutorLimits } from './limits.mjs';
 
-export const DEFAULT_RELAY_LIMITS = Object.freeze({
-  stepTimeoutMs: 30_000,
-  runTimeoutMs: 60_000,
-  maxOutputBytes: 256 * 1024,
-  maxResponseBytes: 512 * 1024,
-  maxBurstRequests: 20,
-  maxConcurrency: 4,
-});
+export const DEFAULT_RELAY_LIMITS = DEFAULT_RELAY_EXECUTOR_LIMITS;
 
 const BINDING = /\{\{steps\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_.-]+)\}\}/g;
 
@@ -169,7 +163,7 @@ export function createRelayHttpExecutor({ fetchImpl, allowlist, requestPolicy, l
       'createRelayHttpExecutor requires a requestPolicy (see createSampleRequestPolicy / deriveDefaultSampleRequestPolicy) carrying authorizeRequestUrl/authorizeHeaderNames — every runtime-bound request is re-checked against it immediately before it is sent, and that check must never be able to silently no-op.',
     );
   }
-  const bounds = { ...DEFAULT_RELAY_LIMITS, ...limits };
+  const bounds = validateRelayExecutorLimits(limits);
   const doFetch = fetchImpl ?? (typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null);
   if (!doFetch) {
     throw new TypeError('createRelayHttpExecutor requires a fetch implementation.');
@@ -270,7 +264,7 @@ export function createRelayHttpExecutor({ fetchImpl, allowlist, requestPolicy, l
     }
   }
 
-  async function runHttp(step, { sampleId, outputs, secrets, redactor, signal }) {
+  async function runHttp(step, { sampleId, outputs, secrets, redactor, signal, reserveRequests }) {
     const request = step.request ?? {};
     const rawUrl = resolveValue(request.url, outputs, secrets);
     const url = assertUrlAllowed(step, rawUrl);
@@ -293,9 +287,21 @@ export function createRelayHttpExecutor({ fetchImpl, allowlist, requestPolicy, l
     const timeoutMs = Math.min((request.timeoutSeconds ?? 30) * 1000, bounds.stepTimeoutMs);
 
     if (request.repeat) {
-      return runBurst(step, { url, headers, body, request, outputs, redactor, signal, sampleId, secretHeaderNames });
+      return runBurst(step, {
+        url,
+        headers,
+        body,
+        request,
+        outputs,
+        redactor,
+        signal,
+        sampleId,
+        secretHeaderNames,
+        reserveRequests,
+      });
     }
 
+    reserveRequests(1);
     const response = await fetchOnce({ url, method: request.method ?? 'GET', headers, body, timeoutMs, signal });
     if (response.error) {
       return {
@@ -361,8 +367,15 @@ export function createRelayHttpExecutor({ fetchImpl, allowlist, requestPolicy, l
     };
   }
 
-  async function runBurst(step, { url, headers, body, request, outputs, redactor, signal, sampleId, secretHeaderNames }) {
-    const count = Math.min(Number(request.repeat.count) || 1, bounds.maxBurstRequests);
+  async function runBurst(
+    step,
+    { url, headers, body, request, outputs, redactor, signal, sampleId, secretHeaderNames, reserveRequests },
+  ) {
+    const requestedCount = Number(request.repeat.count) || 1;
+    if (!Number.isInteger(requestedCount) || requestedCount < 1 || requestedCount > bounds.maxBurstRequests) {
+      throw new Error('The requested HTTP burst exceeds the per-step request limit.');
+    }
+    const count = reserveRequests(requestedCount);
     const concurrency = Math.max(1, Math.min(Number(request.repeat.concurrency) || 1, bounds.maxConcurrency));
     const timeoutMs = Math.min((request.repeat.timeoutSeconds ?? 30) * 1000, bounds.stepTimeoutMs);
     const statusCodes = new Array(count).fill(0);
@@ -471,6 +484,15 @@ export function createRelayHttpExecutor({ fetchImpl, allowlist, requestPolicy, l
     const configurationUpdates = {};
     const secretUpdates = {};
     const startedAt = Date.now();
+    let requestsRemaining = bounds.maxRequestsPerRun;
+
+    function reserveRequests(requested) {
+      if (requested > requestsRemaining) {
+        throw new Error('The requested HTTP step would exceed the run request budget.');
+      }
+      requestsRemaining -= requested;
+      return requested;
+    }
 
     for (const step of plan.steps) {
       if (signal?.aborted) {
@@ -493,7 +515,7 @@ export function createRelayHttpExecutor({ fetchImpl, allowlist, requestPolicy, l
       let record;
       try {
         if (step.type === 'http') {
-          record = await runHttp(step, { sampleId: plan.sampleId, outputs, secrets, redactor, signal });
+          record = await runHttp(step, { sampleId: plan.sampleId, outputs, secrets, redactor, signal, reserveRequests });
         } else if (step.type === 'assertion') {
           record = await runAssertion(step, { assertion: step.assertion, step, outputs, stepResults, redactor });
         } else {

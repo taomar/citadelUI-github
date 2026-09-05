@@ -53,11 +53,27 @@ param relayLogicalRefMappings object
 @maxValue(32)
 param relayMaxConcurrentRequests int = 4
 
-@description('Maximum HTTP requests that one relay run may make.')
+@description('Maximum HTTP requests that one relay run may make, including a bounded burst.')
 @minValue(1)
 @maxValue(64)
 param relayMaxRequestsPerRun int = 12
 
+@description('Maximum accepted relay request body size in bytes.')
+@minValue(1024)
+@maxValue(1048576)
+param relayBodyLimitBytes int = 262144
+
+@description('Maximum total relay run time in milliseconds.')
+@minValue(1000)
+@maxValue(300000)
+param relayRunTimeoutMs int = 60000
+
+@description('Requested maximum duration of one outbound HTTP request in milliseconds. The effective value is capped at relayRunTimeoutMs.')
+@minValue(100)
+@maxValue(60000)
+param relayRequestTimeoutMs int = 10000
+
+var relayEffectiveRequestTimeoutMs = min(relayRequestTimeoutMs, relayRunTimeoutMs)
 var acrPullRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
 var keyVaultSecretsUserRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
 
@@ -182,14 +198,19 @@ resource relay 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'CITADEL_RELAY_ALLOWED_SAMPLE_IDS', value: string(relayAllowedSampleIds) }
             { name: 'CITADEL_RELAY_REQUEST_POLICY', value: string(relayRequestPolicy) }
             { name: 'CITADEL_RELAY_SECRET_MAPPINGS', value: string(relayLogicalRefMappings) }
+            { name: 'CITADEL_RELAY_BODY_LIMIT_BYTES', value: string(relayBodyLimitBytes) }
+            { name: 'CITADEL_RELAY_RUN_TIMEOUT_MS', value: string(relayRunTimeoutMs) }
+            { name: 'CITADEL_RELAY_HTTP_TIMEOUT_MS', value: string(relayEffectiveRequestTimeoutMs) }
             { name: 'CITADEL_RELAY_MAX_CONCURRENT_REQUESTS', value: string(relayMaxConcurrentRequests) }
             { name: 'CITADEL_RELAY_MAX_REQUESTS_PER_RUN', value: string(relayMaxRequestsPerRun) }
           ]
         }
       ]
       scale: {
+        // Direct /execute uses process-local atomic nonce and admission state.
+        // Scale-out is prohibited until both are backed by one shared adapter.
         minReplicas: 1
-        maxReplicas: 2
+        maxReplicas: 1
       }
     }
   }

@@ -57,10 +57,13 @@ inputs. Do not introduce a general-purpose editable notebook.
 - The existing hosted relay remains HTTP/assertion-only. Its structural absence
   of Python, Azure CLI, process transports, workspaces, and artifact writers is a
   security control, not a missing convenience.
-- Hosted relay admission and managed run state are replica-safe offline:
-  owner-bound nonce/idempotency, distributed concurrency and active-job capacity,
-  dispatcher lease recovery, polling, cancellation, and timeout behavior are
-  covered without claiming a live deployment.
+- Hosted direct `/execute` admission and nonce state are process-local, so the
+  Bicep fixes each active revision at one replica and prohibits horizontal
+  scale-out until one shared atomic adapter backs both controls. Revision changes
+  replace the local replay history, so rollouts must drain the acknowledgement
+  validity window. The separate managed-run state machine is replica-safe offline
+  when a durable shared store is injected, but it is not wired by the hosted
+  entrypoint or Bicep.
 - Future hosted process work may run only in a fresh immutable no-ingress job per
   run, with dedicated least-privilege identity, externally enforced egress,
   owner-bound durable state, platform quotas, verified termination, artifact
