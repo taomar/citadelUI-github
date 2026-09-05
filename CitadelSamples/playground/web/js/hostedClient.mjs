@@ -13,6 +13,18 @@ export async function hostedPost(path, payload) {
   if (!response.ok) throw Object.assign(new Error(data.summary || `Request failed (${response.status}).`), { status: response.status, code: data.code });
   return data;
 }
+export async function startStagedConsent(intent) {
+  const response = await sessionFetch('/api/capabilities');
+  if (!response.ok) throw new Error('Sign-in readiness could not be refreshed. Retry from this application.');
+  const current = await response.json();
+  if (current.auth?.mode !== 'bff' || !current.auth.authorized || current.auth.contextVersion !== intent.contextVersion) {
+    throw new Error('The account or target changed. Resolve this recipe again.');
+  }
+  setHostedCapabilities(current);
+  const { purpose, resolutionId, contextVersion, consentIntentId, targetDigest } = intent;
+  return hostedPost('/api/auth/start', { purpose, protocolVersion: 2, hostedFlowVersion: 1,
+    resolutionId, contextVersion, consentIntentId, targetDigest });
+}
 export function createHostedExecutorClient({ capability, contextVersion }) {
   return Object.freeze({
     id: 'hosted-bff',

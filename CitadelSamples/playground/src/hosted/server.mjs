@@ -7,6 +7,8 @@ import { createHostedRuntime } from './runtime.mjs';
 import { CATALOGUE } from '../catalogue/index.mjs';
 import { HOSTED_RECIPES } from './config.mjs';
 import { readSampleSource } from '../server/sourceView.mjs';
+import { createStagedRuntime } from './stagedRuntime.mjs';
+import { RESOURCE_PURPOSES, purposeStates } from './credentialPurposes.mjs';
 
 const headers = {
   'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
@@ -55,7 +57,8 @@ export function hostedCapabilities(config, sessions, session, runtime, csrf = nu
       authorized, pending: session.authPending === true, csrf: session.csrf, account: session.claims ? {
         name: session.claims.preferred_username || session.claims.oid, objectId: session.claims.oid, tenantId: session.claims.tid,
       } : null, azureConnected: session.azure === true, selectedSubscription: session.subscription,
-      contextVersion: session.contextVersion, issues: config.issues, resourceManager: config.cloud?.resourceManager },
+      contextVersion: session.contextVersion, issues: config.issues, resourceManager: config.cloud?.resourceManager,
+      resourceConsents: purposeStates(config, session) },
     sessionAuth: { required: true, state: authorized ? 'claimed' : 'unclaimed', claimEndpoint: null, message: reason },
     operatorAuthorization: { required: true, signedIn: Boolean(session.claims), authorized, message: reason },
     executor: { id: 'hosted-bff', kind: 'hosted-bff', canExecute: authorized && runtime.allowed.length > 0,
@@ -66,7 +69,9 @@ export function hostedCapabilities(config, sessions, session, runtime, csrf = nu
       perSample: CATALOGUE.samples.map((sample) => ({ id: sample.id, ready: authorized && runtime.allowed.includes(sample.id),
         state: runtime.allowed.includes(sample.id) ? 'ready' : 'partial', dependencies: [],
         reasons: runtime.allowed.includes(sample.id) ? [] : ['A configured, protected Docker adapter is not available for this recipe.'] })) },
-    hosted: { supportedSampleIds: HOSTED_RECIPES, allowedSampleIds: runtime.allowed, resourceManager: config.cloud?.resourceManager },
+    hosted: { supportedSampleIds: HOSTED_RECIPES, allowedSampleIds: runtime.allowed, resourceManager: config.cloud?.resourceManager,
+      staged: { enabled: Boolean(runtime.staged), hostedFlowVersion: 1, allowedSampleIds: runtime.staged?.ids ?? [],
+        reason: 'W1 foundation only. Additional production adapters and service contracts remain disabled.' } },
     executionContext: { endpoint: authorized ? '/api/execution-context' : null },
     selfTest: { available: false }, sourceValidation: { available: false },
     protectedSource: { available: true, editable: false, endpointTemplate: '/api/source/{sampleId}' },
@@ -74,11 +79,12 @@ export function hostedCapabilities(config, sessions, session, runtime, csrf = nu
   };
 }
 
-export function createHostedServer({ config, tls, root, auth: injectedAuth, fetchImpl, now } = {}) {
+export function createHostedServer({ config, tls, root, auth: injectedAuth, fetchImpl, now, testAdapters } = {}) {
   if (!tls?.cert || !tls?.key) throw new TypeError('Hosted serving requires mounted TLS certificate and key.');
   const sessions = createSessions(config, { ...(now ? { now } : {}) });
   const auth = injectedAuth ?? (config.authIssues.length ? null : createMicrosoftAuth(config, { fetchImpl }));
-  const runtime = createHostedRuntime(config, sessions, auth, { fetchImpl });
+  const staged = config.stagedEnabled ? createStagedRuntime(config, sessions, auth, { fetchImpl, testAdapters }) : null;
+  const runtime = createHostedRuntime(config, sessions, auth, { fetchImpl, staged });
   const expectedHost = new URL(config.origin).host;
   async function handler(request, response) {
     try {
@@ -132,13 +138,21 @@ export function createHostedServer({ config, tls, root, auth: injectedAuth, fetc
         if (!sameToken(request.headers['x-citadel-csrf'], csrf)) fail('Session expired or CSRF check failed. Reload to sign in.', 401, 'session-required');
         const payload = await body(request);
         if (path === '/api/auth/start') {
-          exact(payload, ['purpose']);
-          if (!auth || !['signin', 'azure'].includes(payload.purpose)) fail('Sign-in configuration is incomplete.');
+          let intent = null;
+          if (RESOURCE_PURPOSES.includes(payload.purpose)) {
+            if (!staged) fail('Staged resource consent is not enabled.', 403, 'service-contract-unverified');
+            intent = staged.consentIntent(session, payload);
+          } else {
+            exact(payload, ['purpose']);
+            if (!['signin', 'azure'].includes(payload.purpose)) fail('Sign-in configuration is incomplete.');
+          }
+          if (!auth) fail('Sign-in configuration is incomplete.');
           if (payload.purpose === 'azure' && !sessions.authorized(session)) fail('Operator sign-in required.', 403);
           if (payload.purpose === 'azure' && !config.subscriptionIds.length) fail('The deployment owner must configure permitted subscriptions before Azure consent.', 403);
-          const tx = sessions.begin(session, payload.purpose, auth.client(), request.socket.remoteAddress);
+          const tx = sessions.begin(session, payload.purpose, auth.client(), request.socket.remoteAddress, intent);
           session = sessions.get(tx.sessionId);
           sessions.invalidateContext(session);
+          sessions.bindPendingContext(tx, session);
           session.authPending = true;
           try {
             const location = await auth.start(tx, session);
@@ -162,6 +176,27 @@ export function createHostedServer({ config, tls, root, auth: injectedAuth, fetc
           return;
         }
         if (!sessions.authorized(session) || session.authPending) fail('This account is not authorized to operate.', 403, 'operator-required');
+        if (payload.hostedFlowVersion !== undefined || ['/api/hosted/resolve', '/api/hosted/status', '/api/hosted/reconcile', '/api/hosted/recoverable'].includes(path)) {
+          if (!staged) fail('Staged execution is disabled.', 403, 'staged-disabled');
+          if (path === '/api/execution-context') send(response, 200, { context: staged.context(session, payload) });
+          else if (path === '/api/hosted/resolve') send(response, 200, await staged.resolve(session, payload));
+          else if (path === '/api/hosted/review') send(response, 200, staged.review(session, payload));
+          else if (path === '/api/hosted/run') {
+            const disconnected = new AbortController();
+            let finished = false;
+            const abort = () => { if (!finished) disconnected.abort(); };
+            response.once('close', abort);
+            response.once('finish', () => { finished = true; response.off('close', abort); });
+            if (request.socket.destroyed) disconnected.abort();
+            try { send(response, 202, staged.run(session, payload, { signal: disconnected.signal })); }
+            catch (error) { disconnected.abort(); response.off('close', abort); throw error; }
+          } else if (path === '/api/hosted/status') send(response, 200, staged.status(session, payload));
+          else if (path === '/api/hosted/recoverable') send(response, 200, staged.recoverable(session, payload));
+          else if (path === '/api/hosted/cancel') send(response, 200, staged.cancel(session, payload));
+          else if (path === '/api/hosted/reconcile') send(response, 200, await staged.reconcile(session, payload));
+          else fail('No staged operation exists at this endpoint.', 404);
+          return;
+        }
         if (path === '/api/execution-context') {
           exact(payload, ['protocolVersion', 'sampleId', 'configuredSubscriptionId', 'gateway']);
           if (payload.protocolVersion !== 2) fail('Unsupported protocol.');
@@ -219,6 +254,11 @@ export function createHostedServer({ config, tls, root, auth: injectedAuth, fetc
   server.requestTimeout = 90000;
   server.headersTimeout = 10000;
   server.maxHeadersCount = 80;
-  server.on('close', () => sessions.close());
-  return Object.assign(server, { sessions, runtime });
+  let closingStaged;
+  const closeStaged = () => closingStaged ??= staged ? staged.close() : Promise.resolve();
+  server.on('close', () => {
+    sessions.close();
+    closeStaged().catch(() => { process.exitCode = 1; process.stderr.write('Staged storage could not close cleanly; owner recovery is required.\n'); });
+  });
+  return Object.assign(server, { sessions, runtime, closeStaged });
 }

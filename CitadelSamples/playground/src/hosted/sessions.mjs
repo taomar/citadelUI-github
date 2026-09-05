@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { AUTH_PURPOSES, RESOURCE_PURPOSES } from './credentialPurposes.mjs';
 
 export const SESSION_COOKIE = '__Host-citadel';
 export const CORRELATION_COOKIE = '__Host-citadel-login';
@@ -33,11 +34,19 @@ export function createSessions(config, { now = Date.now } = {}) {
   const pending = new Map();
   const transactions = new Map();
   const clients = new Map();
+  const invalidators = new Set();
   let loginWindow = 0;
   let logins = 0;
   function revoke(session) {
     if (!session) return;
     session.controller.abort();
+    session.run?.controller.abort();
+    for (const invalidate of invalidators) invalidate(session);
+    session.stagedResolution?.clearSecrets?.();
+    session.stagedResolution = null;
+    session.stagedReview = null;
+    session.consentIntents?.clear();
+    session.credentials = {};
     session.cache = null;
     session.account = null;
     sessions.delete(session.id);
@@ -59,8 +68,25 @@ export function createSessions(config, { now = Date.now } = {}) {
     for (const [id, client] of clients) if (time - client.start >= 60000) clients.delete(id);
   }
   const stored = (id) => sessions.get(id) ?? pending.get(id);
-  const newSession = () => ({ id: randomToken(), csrf: randomToken(), created: now(), touched: now(), claims: null,
-    account: null, cache: null, subscription: null, contextVersion: 0, controller: new AbortController(), run: null });
+  function invalidateContext(session) {
+    session.contextVersion++;
+    session.resolutionGeneration++;
+    session.review = null;
+    session.stagedReview = null;
+    session.stagedResolution?.clearSecrets?.();
+    session.stagedResolution = null;
+    session.consentIntents.clear();
+    session.run?.controller.abort();
+    session.subscription = null;
+    for (const invalidate of invalidators) invalidate(session);
+  }
+  function newSession() {
+    const session = { id: randomToken(), csrf: randomToken(), created: now(), touched: now(), claims: null,
+      account: null, cache: null, credentials: {}, subscription: null, contextVersion: 0, authGeneration: 0,
+      resolutionGeneration: 0, consentIntents: new Map(), controller: new AbortController(), run: null };
+    session.invalidateContext = () => invalidateContext(session);
+    return session;
+  }
   function create() {
     sweep();
     if (sessions.size >= config.maxSessions) throw Object.assign(new Error('Session capacity reached; retry later.'), { status: 429 });
@@ -69,7 +95,8 @@ export function createSessions(config, { now = Date.now } = {}) {
     return session;
   }
   return Object.freeze({
-    create, revoke, sweep, now,
+    create, revoke, sweep, now, invalidateContext,
+    onInvalidate(listener) { invalidators.add(listener); return () => invalidators.delete(listener); },
     get(id, { touch = true } = {}) {
       sweep();
       const session = stored(id);
@@ -81,8 +108,14 @@ export function createSessions(config, { now = Date.now } = {}) {
       return Boolean(session && sessions.get(session.id) === session && session.claims
         && session.claims.tid === config.tenantId && entitled(session.claims, config.policy));
     },
-    begin(session, purpose, client, clientId = 'internal-test-client') {
+    begin(session, purpose, client, clientId = 'internal-test-client', intent = null) {
       sweep();
+      if (!AUTH_PURPOSES.includes(purpose)) throw Object.assign(new Error('Unknown authentication purpose.'), { status: 400 });
+      if (RESOURCE_PURPOSES.includes(purpose) && (!intent || session?.consentIntents.get(intent.consentIntentId) !== intent
+        || intent.purpose !== purpose || intent.expiresAt <= now() || intent.contextVersion !== session.contextVersion
+        || intent.resolutionId !== session.stagedResolution?.id)) {
+        throw Object.assign(new Error('Resolve this recipe again before resource consent.'), { status: 409, code: 'consent-intent-stale' });
+      }
       if (session && stored(session.id) !== session) throw Object.assign(new Error('Session expired. Sign in again.'), { status: 401 });
       if (!session && purpose !== 'signin') throw Object.assign(new Error('Operator sign-in required.'), { status: 401 });
       for (const tx of transactions.values()) if (session && tx.sessionId === session.id) throw Object.assign(new Error('Sign-in is already pending.'), { status: 409 });
@@ -97,10 +130,13 @@ export function createSessions(config, { now = Date.now } = {}) {
       if (logins >= 30 || transactions.size >= config.maxTransactions
         || (!session && pending.size >= config.maxTransactions)) throw Object.assign(new Error('Sign-in capacity reached; retry shortly.'), { status: 429 });
       if (!session) { session = newSession(); pending.set(session.id, session); }
+      if (intent) session.consentIntents.delete(intent.consentIntentId);
       const state = randomToken();
       const tx = { state, correlation: randomToken(), nonce: randomToken(), verifier: randomToken(),
         expires: now() + config.transactionMs, sessionId: session.id, purpose, client, clientId,
-        expectedOid: purpose === 'azure' ? session.claims?.oid : null };
+        expectedOid: purpose !== 'signin' ? session.claims?.oid : null,
+        expectedTid: purpose !== 'signin' ? session.claims?.tid : null,
+        intent, authGeneration: ++session.authGeneration };
       transactions.set(state, tx);
       clients.set(clientId, { start: bucket?.start ?? now(), count: (bucket?.count ?? 0) + 1 });
       logins++;
@@ -115,17 +151,45 @@ export function createSessions(config, { now = Date.now } = {}) {
       return tx;
     },
     hasTransaction(tx) { return Boolean(tx && transactions.get(tx.state) === tx && tx.expires > now()); },
+    bindPendingContext(tx, session) {
+      if (transactions.get(tx.state) !== tx || tx.sessionId !== session.id) throw new Error('Authentication transaction is no longer current.');
+      tx.pendingContextVersion = session.contextVersion;
+    },
     finish(prior, verified, tx) {
       sweep();
       if (tx && (transactions.get(tx.state) !== tx || tx.sessionId !== prior?.id || !tx.consumed || tx.expires <= now())) {
         throw Object.assign(new Error('Sign-in transaction expired or was cancelled.'), { status: 409 });
       }
       if (stored(prior?.id) !== prior) throw Object.assign(new Error('Sign-in session expired.'), { status: 401 });
+      if (tx && (tx.authGeneration !== prior.authGeneration
+        || (tx.pendingContextVersion !== undefined && tx.pendingContextVersion !== prior.contextVersion))) {
+        throw Object.assign(new Error('Sign-in context changed or was cancelled.'), { status: 409 });
+      }
+      if (tx?.purpose !== 'signin' && tx && (verified.claims?.oid !== tx.expectedOid || verified.claims?.tid !== tx.expectedTid)) {
+        throw Object.assign(new Error('Resource consent must retain the same operator.'), { status: 403 });
+      }
       const operator = verified.claims?.tid === config.tenantId && entitled(verified.claims, config.policy);
       const destination = operator ? sessions : pending;
       const limit = operator ? config.maxSessions : config.maxTransactions;
       if (!destination.has(prior.id) && destination.size >= limit) throw Object.assign(new Error('Operator session capacity reached; retry later.'), { status: 429 });
       const next = Object.assign(newSession(), verified);
+      next.contextVersion = prior.contextVersion + 1;
+      const credentials = {};
+      const validAccount = (account) => account?.localAccountId === verified.claims?.oid && account?.tenantId === verified.claims?.tid
+        && (!account.homeAccountId || !verified.account?.homeAccountId || account.homeAccountId === verified.account.homeAccountId);
+      if (tx && tx.purpose !== 'signin') {
+        for (const [purpose, credential] of Object.entries(prior.credentials)) {
+          if (!validAccount(credential.account)) throw Object.assign(new Error('Cached resource identity changed.'), { status: 403 });
+          credentials[purpose] = credential;
+        }
+        if (!validAccount(verified.account)) throw Object.assign(new Error('Resource account did not match the operator.'), { status: 403 });
+        credentials[tx.purpose] = { cache: verified.cache, account: verified.account,
+          grantGeneration: (credentials[tx.purpose]?.grantGeneration ?? 0) + 1 };
+      }
+      next.credentials = credentials;
+      next.azure = Boolean(credentials.azure);
+      if (credentials.azure) next.cache = credentials.azure.cache;
+      next.invalidateContext = () => invalidateContext(next);
       revoke(prior);
       destination.set(next.id, next);
       return next;
@@ -135,12 +199,6 @@ export function createSessions(config, { now = Date.now } = {}) {
       if (tx && transactions.get(tx.state) !== tx) return;
       for (const [id, active] of transactions) if (active.sessionId === session.id && (!tx || active === tx)) transactions.delete(id);
       session.authPending = [...transactions.values()].some((active) => active.sessionId === session.id);
-    },
-    invalidateContext(session) {
-      session.contextVersion++;
-      session.review = null;
-      session.run?.controller.abort();
-      session.subscription = null;
     },
     close() { for (const session of [...sessions.values(), ...pending.values()]) revoke(session); transactions.clear(); clients.clear(); },
   });

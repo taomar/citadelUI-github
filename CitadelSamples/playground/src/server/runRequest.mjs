@@ -67,7 +67,8 @@ const FORBIDDEN_MEMBERS = Object.freeze([
  * @param {object} catalogue
  * @returns {{ sample, inputs, secrets, acknowledgement, reviewedIdentity }}
  */
-export function validateRunRequest(payload, catalogue) {
+export function validateRunRequest(payload, catalogue, { phase = 'effect' } = {}) {
+  if (!['effect', 'resolve'].includes(phase)) throw new TypeError('Invalid validation phase.');
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new RequestRefused('The request body must be a JSON object.');
   }
@@ -140,7 +141,7 @@ export function validateRunRequest(payload, catalogue) {
         : secrets[path]
     ),
   });
-  if (requiresAcknowledgement) {
+  if (requiresAcknowledgement && phase === 'effect') {
     if (!acknowledgement || acknowledgement.accepted !== true || acknowledgement.sampleId !== sample.id) {
       throw new RequestRefused(
         `"${sample.title}" requires a fresh acknowledgement naming this sample before it will run.`,
@@ -294,7 +295,7 @@ export function rebuildPlan(
     );
   }
 
-  const { plan, validation } = buildSamplePlan(sample, read);
+  const { plan, validation } = buildSamplePlan(sample, read, { hasSecret });
   if (!plan) {
     throw new RequestRefused(
       `The configuration did not validate: ${validation.issues

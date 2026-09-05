@@ -98,6 +98,27 @@ issues inside the application and execution fails closed. Public origin and TLS
 material are listener prerequisites: without valid matching material no listener
 starts. No anonymous endpoint can configure credentials, targets or operators.
 
+### Disabled staged foundation (W1)
+
+The default hosted mode still exposes the existing seven adapters and requires
+no new state volume. W1 adds a separately gated Resolve/Review/Run foundation,
+not the eleven remaining adapter implementations. Its production registry and
+new Foundry/Key Vault/Insights consent enablement lists are empty. Agent Framework
+remains separately blocked: the future scope is eighteen process-free adapters
+plus one excluded execution model, not nineteen completed scenarios.
+
+`CITADEL_HOSTED_STAGED_MODE=1` requires an existing, owner-only absolute
+`CITADEL_HOSTED_STATE_DIRECTORY` on a dedicated persistent **local Linux volume**.
+Do not enable this merely to obtain more recipes: none are added yet.
+SQLite state and target reservations survive restart; credentials do not.
+One instance owns the volume through an actual SQLite exclusive lock. There is
+no network-filesystem, multi-replica, Windows, tmpfs or writable-layer durability
+claim. Unknown outcomes require explicit owner readback, never automatic retry.
+
+The frozen [W1 staged interface contract](src/hosted/STAGED-CONTRACT.md) describes
+the strict payloads, credential slots, recovery boundary, synchronous-storage
+limits and interfaces reserved for later independently reviewed work.
+
 ### TLS and lifecycle
 
 The application listens only on HTTPS, port 8443 by default, with TLS 1.2 minimum.

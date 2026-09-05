@@ -202,13 +202,14 @@ export function profilesFor(sample) {
  * @param {object} sample
  * @param {(path: string) => unknown} read
  */
-export function validateSample(sample, read) {
+export function validateSample(sample, read, { hasSecret } = {}) {
   const issues = [];
   const missing = [];
 
   for (const entry of sample.configurationEntries) {
     const field = fieldByPath(entry.path);
     if (!field) continue;
+    if (entry.secret && isBlank(read(entry.path)) && hasSecret?.(entry.path)) continue;
     const result = validateFields([asRequiredBy(field, entry)], read);
     issues.push(...result.issues);
     missing.push(...result.missing);
@@ -302,8 +303,8 @@ function makeBuildContext(sample, read) {
  * Validation runs first: a plan is never produced for an invalid configuration,
  * because a preview of an incoherent operation is worse than no preview.
  */
-export function buildSamplePlan(sample, read, { requireValid = true } = {}) {
-  const validation = validateSample(sample, read);
+export function buildSamplePlan(sample, read, { requireValid = true, hasSecret } = {}) {
+  const validation = validateSample(sample, read, { hasSecret });
   if (requireValid && !validation.satisfied) {
     return { plan: null, validation };
   }

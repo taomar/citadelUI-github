@@ -84,12 +84,12 @@ export async function createIdentityFixture(config) {
   const codes = new Map();
   const calls = [];
   let lastClaims;
-  function authorize(location, { roles = ['Citadel.Operator'] } = {}) {
+  function authorize(location, { roles = ['Citadel.Operator'], objectId = oid } = {}) {
     const url = new URL(location);
     if (url.searchParams.get('redirect_uri') !== config.callback || url.searchParams.get('code_challenge_method') !== 'S256') throw new Error('Invalid fixture authorization');
     const code = randomUUID();
     codes.set(code, { nonce: url.searchParams.get('nonce'), challenge: url.searchParams.get('code_challenge'),
-      scope: url.searchParams.get('scope'), roles });
+      scope: url.searchParams.get('scope'), roles, objectId });
     const callback = new URL(config.callback);
     callback.searchParams.set('state', url.searchParams.get('state'));
     callback.searchParams.set('code', code);
@@ -113,14 +113,14 @@ export async function createIdentityFixture(config) {
       codes.delete(parameters.get('code'));
       if (!tx || createHash('sha256').update(parameters.get('code_verifier') ?? '').digest('base64url') !== tx.challenge
         || parameters.get('redirect_uri') !== config.callback) return Response.json({ error: 'invalid_grant' }, { status: 400 });
-      lastClaims = { ...operatorClaims(), roles: tx.roles, nonce: tx.nonce };
+      lastClaims = { ...operatorClaims(), oid: tx.objectId, roles: tx.roles, nonce: tx.nonce };
     } else if (parameters.get('grant_type') !== 'refresh_token') throw new Error('Unexpected fixture grant');
     const token = await new SignJWT(lastClaims).setProtectedHeader({ alg: 'RS256', kid: jwk.kid })
-      .setSubject(oid).setIssuer(issuer).setAudience(clientId).setIssuedAt().setNotBefore(Math.floor(Date.now() / 1000) - 1).sign(keys.privateKey);
+      .setSubject(lastClaims.oid).setIssuer(issuer).setAudience(clientId).setIssuedAt().setNotBefore(Math.floor(Date.now() / 1000) - 1).sign(keys.privateKey);
     return Response.json({ token_type: 'Bearer', scope: parameters.get('scope'),
       expires_in: 3600, ext_expires_in: 3600, access_token: 'synthetic-delegated-arm-token',
       refresh_token: 'synthetic-refresh-token', id_token: token,
-      client_info: Buffer.from(JSON.stringify({ uid: oid, utid: tenantId })).toString('base64url') });
+      client_info: Buffer.from(JSON.stringify({ uid: lastClaims.oid, utid: tenantId })).toString('base64url') });
   }
   return { authorize, fetchImpl, calls };
 }

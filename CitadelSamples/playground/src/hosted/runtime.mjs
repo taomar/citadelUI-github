@@ -14,7 +14,7 @@ import { createRedactor } from '../server/redaction.mjs';
 const refuse = (message, code = 'hosted-request-refused', status = 409) => { throw new RequestRefused(message, { code, status }); };
 const text = (value, limit = 256) => typeof value === 'string' && value.length <= limit && !/[\u0000-\u001f]/.test(value) ? value : '';
 
-export function createHostedRuntime(config, sessions, auth, { fetchImpl = createHttpsTransport() } = {}) {
+export function createHostedRuntime(config, sessions, auth, { fetchImpl = createHttpsTransport(), staged = null } = {}) {
   const gatewayPolicy = config.gatewayPolicy ? createSampleRequestPolicy(config.gatewayPolicy.samples) : null;
   const gatewayOptions = gatewayPolicy ? {
     requestPolicy: gatewayPolicy, allowlist: createOriginAllowlist(config.gatewayPolicy.origins),
@@ -183,7 +183,7 @@ export function createHostedRuntime(config, sessions, auth, { fetchImpl = create
       })), configurationUpdates, secretUpdates: {}, meta: {} };
   }
   return Object.freeze({
-    allowed, subscriptions, select, context, prepare,
+    allowed, subscriptions, select, context, prepare, staged,
     review(session, payload) {
       prepare(session, payload);
       session.review = { nonce: randomToken(), digest: digest(payload), expires: sessions.now() + 60000 };

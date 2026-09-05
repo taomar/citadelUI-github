@@ -60,6 +60,12 @@ function integer(env, name, fallback, max) {
 
 export function readHostedConfig(env = process.env) {
   const origin = httpsOrigin(env.CITADEL_PLAYGROUND_PUBLIC_ORIGIN);
+  if (!['0', '1', undefined].includes(env.CITADEL_HOSTED_STAGED_MODE)) throw new TypeError('CITADEL_HOSTED_STAGED_MODE must be 0 or 1.');
+  const stagedEnabled = env.CITADEL_HOSTED_STAGED_MODE === '1';
+  const stagedDirectory = stagedEnabled ? env.CITADEL_HOSTED_STATE_DIRECTORY : null;
+  if (stagedEnabled && (typeof stagedDirectory !== 'string' || !isAbsolute(stagedDirectory))) {
+    throw new TypeError('Explicit staged mode requires an absolute dedicated local state directory.');
+  }
   const issues = [];
   const read = (name, fn) => {
     try { return fn(); } catch { issues.push(`${name}: missing or invalid deployment configuration.`); return null; }
@@ -107,7 +113,8 @@ export function readHostedConfig(env = process.env) {
   return Object.freeze({
     origin, callback: `${origin}/auth/callback`, logoutRedirect: `${origin}/`, cloud, tenantId, clientId, clientSecret, policy,
     authIssues: Object.freeze(authIssues), issues: Object.freeze(issues),
-    subscriptionIds, gatewayPolicy,
+    subscriptionIds, gatewayPolicy, stagedEnabled, stagedDirectory,
+    resourcePurposes: Object.freeze([]),
     idleMs: integer(env, 'CITADEL_SESSION_IDLE_SECONDS', 1800, 1800) * 1000,
     absoluteMs: integer(env, 'CITADEL_SESSION_ABSOLUTE_SECONDS', 28800, 28800) * 1000,
     transactionMs: integer(env, 'CITADEL_AUTH_TRANSACTION_SECONDS', 300, 300) * 1000,
