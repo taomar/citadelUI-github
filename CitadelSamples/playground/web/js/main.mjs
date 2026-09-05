@@ -1115,11 +1115,13 @@ function renderWizardActions(container, models, steps) {
     bar.append(primary);
   } else if (current.id === 'run-result') {
     if (running) {
+      const canCancel = typeof state.executor?.cancel === 'function';
       bar.append(node('button', {
         type: 'button',
         class: 'btn wizard-primary',
-        text: 'Cancel run',
-        onclick: cancelRun,
+        disabled: !canCancel || state.cancelling,
+        text: state.cancelling ? 'Cancelling...' : canCancel ? 'Cancel run' : 'Cancellation unavailable',
+        onclick: canCancel ? cancelRun : undefined,
       }));
     } else {
       const recommended = models.directory.flat.find((sample) => sample.recommendedNext);
@@ -2031,7 +2033,14 @@ async function cancelRun() {
     if (typeof state.executor.cancel !== 'function') {
       throw new Error('This runner did not advertise cancellation.');
     }
-    await state.executor.cancel();
+    const result = await state.executor.cancel();
+    if (result?.cancelled !== true) {
+      state.cancelling = false;
+      announce(result?.reason || 'The active run could not be cancelled.');
+      render();
+      return;
+    }
+    announce('Cancelling the active run.');
   } catch (error) {
     state.cancelling = false;
     announce(safeMessage(error, 'The run could not be cancelled.'));

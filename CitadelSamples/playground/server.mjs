@@ -61,6 +61,7 @@ import {
 } from './src/relay/operatorAuthorization.mjs';
 import { parseRelayAllowedSampleIds, rebuildRelayPlan, validateExecuteRequest } from './src/relay/requestSchema.mjs';
 import { mintAcknowledgement, planRequestUrls } from './src/relay/acknowledgement.mjs';
+import { raceAbortSignal } from './src/relay/deadline.mjs';
 import {
   readRelayTokenContract,
   relayTokenConfigurationError,
@@ -79,6 +80,8 @@ const SERVED_ROOTS = ['web', 'src'].map((dir) => resolve(ROOT, dir));
 
 const HOST = process.env.CITADEL_PLAYGROUND_HOST ?? '127.0.0.1';
 const PYTHON = process.env.CITADEL_PLAYGROUND_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+const DEFAULT_PLAYGROUND_RELAY_TIMEOUT_MS = 75_000;
+const MAX_PLAYGROUND_RELAY_TIMEOUT_MS = 6 * 60_000;
 
 /** Only these hosts may attach the local executor. */
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
@@ -89,6 +92,24 @@ export function isLoopbackHost(host) {
 
 export function resolvePlaygroundPort(host, configuredPort) {
   return Number(configuredPort ?? (isLoopbackHost(host) ? 0 : 4173));
+}
+
+function validatePlaygroundRelayTimeoutMs(value = DEFAULT_PLAYGROUND_RELAY_TIMEOUT_MS) {
+  if (!Number.isInteger(value) || value < 1 || value > MAX_PLAYGROUND_RELAY_TIMEOUT_MS) {
+    throw new RangeError(
+      `Playground relay timeout must be an integer between 1 and ${MAX_PLAYGROUND_RELAY_TIMEOUT_MS}.`,
+    );
+  }
+  return value;
+}
+
+function readPlaygroundRelayTimeoutMs(env) {
+  const raw = env.CITADEL_PLAYGROUND_RELAY_TIMEOUT_MS;
+  if (raw === undefined) return DEFAULT_PLAYGROUND_RELAY_TIMEOUT_MS;
+  if (typeof raw !== 'string' || !/^(0|[1-9][0-9]*)$/.test(raw)) {
+    throw new TypeError('CITADEL_PLAYGROUND_RELAY_TIMEOUT_MS must be an unsigned base-10 integer.');
+  }
+  return validatePlaygroundRelayTimeoutMs(Number(raw));
 }
 
 const PORT = resolvePlaygroundPort(HOST, process.env.CITADEL_PLAYGROUND_PORT);
@@ -241,6 +262,7 @@ export function buildRelayConfig(env = process.env) {
     allowedSampleIds,
     callerPrincipal,
     tenant,
+    timeoutMs: readPlaygroundRelayTimeoutMs(env),
     hosted: trustedEntraProxy,
     tokenContract,
     operatorAuthorizationPolicy,
@@ -603,11 +625,18 @@ async function readBody(request, limitBytes = 256 * 1024, limitLabel = '256 KB')
   return Buffer.concat(chunks).toString('utf-8');
 }
 
-function monitorClientDisconnect(request, response, { signal } = {}) {
+function monitorClientDisconnect(request, response, { signal, timeoutMs } = {}) {
   const controller = new AbortController();
+  let timedOut = false;
   const abort = () => {
     if (!response.writableEnded) controller.abort();
   };
+  const timer = timeoutMs == null
+    ? null
+    : setTimeout(() => {
+        timedOut = true;
+        abort();
+      }, validatePlaygroundRelayTimeoutMs(timeoutMs));
   request.once('aborted', abort);
   response.once('close', abort);
   request.socket?.once('close', abort);
@@ -615,13 +644,30 @@ function monitorClientDisconnect(request, response, { signal } = {}) {
   if (request.aborted || response.destroyed || request.socket?.destroyed || signal?.aborted) controller.abort();
   return {
     signal: controller.signal,
+    get timedOut() {
+      return timedOut;
+    },
     dispose() {
+      if (timer) clearTimeout(timer);
       request.off('aborted', abort);
       response.off('close', abort);
       request.socket?.off('close', abort);
       signal?.removeEventListener('abort', abort);
     },
   };
+}
+
+function finishStoppedRelayRequest(request, response, lifetime) {
+  if (!lifetime.signal.aborted) return false;
+  if (lifetime.timedOut && !response.destroyed && !response.writableEnded) {
+    response.once('finish', () => request.destroy());
+    sendJson(response, 504, {
+      state: 'failed',
+      summary: 'The relay request exceeded the playground time limit.',
+      code: 'relay-timeout',
+    }, { Connection: 'close' });
+  }
+  return true;
 }
 
 /**
@@ -842,6 +888,29 @@ async function handleExecute(
   response,
   { port, host, browserHost, publicOrigin, relay, authorizedCaller = null },
 ) {
+  const lifetime = monitorClientDisconnect(request, response, {
+    timeoutMs: relay.timeoutMs ?? DEFAULT_PLAYGROUND_RELAY_TIMEOUT_MS,
+  });
+  try {
+    await forwardRelayExecute(request, response, {
+      port,
+      host,
+      browserHost,
+      publicOrigin,
+      relay,
+      authorizedCaller,
+      lifetime,
+    });
+  } finally {
+    lifetime.dispose();
+  }
+}
+
+async function forwardRelayExecute(
+  request,
+  response,
+  { port, host, browserHost, publicOrigin, relay, authorizedCaller = null, lifetime },
+) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
@@ -876,13 +945,22 @@ async function handleExecute(
   // The router has already authenticated loopback callers with the per-launch
   // browser session. A non-loopback bind must present a principal the configured
   // authenticator accepts; nothing here fails open.
-  const auth =
-    authorizedCaller ??
-    (await authenticatePrincipal(request, {
-      isLoopbackHost,
-      host,
-      authenticator: relay.authenticator ?? createDenyAllAuthenticator(),
-    }));
+  let auth = authorizedCaller;
+  if (!auth) {
+    try {
+      auth = await raceAbortSignal(
+        authenticatePrincipal(request, {
+          isLoopbackHost,
+          host,
+          authenticator: relay.authenticator ?? createDenyAllAuthenticator(),
+        }),
+        lifetime.signal,
+      );
+    } catch (error) {
+      if (finishStoppedRelayRequest(request, response, lifetime)) return;
+      throw error;
+    }
+  }
   if (!auth.ok) {
     sendHostedAuthorizationFailure(response, auth);
     return;
@@ -890,8 +968,9 @@ async function handleExecute(
 
   let payload;
   try {
-    payload = JSON.parse(await readBody(request));
+    payload = JSON.parse(await raceAbortSignal(readBody(request), lifetime.signal));
   } catch (error) {
+    if (finishStoppedRelayRequest(request, response, lifetime)) return;
     const status = error instanceof RequestRefused ? error.status : 400;
     sendJson(response, status, { state: 'blocked', summary: error?.message ?? 'Malformed request body.' });
     return;
@@ -999,38 +1078,47 @@ async function handleExecute(
       }),
     };
   } catch (error) {
+    void error;
     sendJson(response, 502, {
       state: 'failed',
       summary: 'Not run — could not mint a bound acknowledgement for this request.',
-      detail: String(error?.message ?? error),
     });
     return;
   }
 
   let authorization;
   try {
-    authorization = await relay.credentialProvider.getAuthorizationHeader();
+    authorization = await raceAbortSignal(
+      relay.credentialProvider.getAuthorizationHeader({ signal: lifetime.signal }),
+      lifetime.signal,
+    );
   } catch (error) {
+    if (finishStoppedRelayRequest(request, response, lifetime)) return;
+    void error;
     sendJson(response, 502, {
       state: 'failed',
       summary: 'Could not obtain a credential for the relay.',
-      detail: String(error?.message ?? error),
     });
     return;
   }
 
   try {
     const doFetch = relay.fetchImpl ?? fetch;
-    const upstream = await doFetch(relay.url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        Authorization: authorization,
-      },
-      body: JSON.stringify(forwarded),
-    });
-    const text = await upstream.text();
+    const upstream = await raceAbortSignal(
+      doFetch(relay.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Authorization: authorization,
+        },
+        body: JSON.stringify(forwarded),
+        signal: lifetime.signal,
+      }),
+      lifetime.signal,
+    );
+    const text = await raceAbortSignal(upstream.text(), lifetime.signal);
+    if (finishStoppedRelayRequest(request, response, lifetime)) return;
     let parsed = null;
     try {
       parsed = JSON.parse(text);
@@ -1047,10 +1135,11 @@ async function handleExecute(
     }
     sendJson(response, upstream.ok ? 200 : 502, parsed);
   } catch (error) {
+    if (finishStoppedRelayRequest(request, response, lifetime)) return;
+    void error;
     sendJson(response, 502, {
       state: 'failed',
       summary: 'The relay could not be reached.',
-      detail: String(error?.message ?? error),
     });
   }
 }

@@ -33,6 +33,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { request as httpRequest } from 'node:http';
 
 import { createPlaygroundServer } from '../../server.mjs';
 import { createRelayServer } from '../../src/relay/server.mjs';
@@ -97,6 +98,7 @@ async function listenLoopback(server) {
   const claimed = server.localSessionAuth ? await claimLocalSession(base) : null;
   return {
     base,
+    cookie: claimed?.cookie ?? '',
     call: claimed
       ? createAuthenticatedFetch(base, claimed.cookie)
       : (path, init = {}) => fetch(new URL(path, base), init),
@@ -265,6 +267,64 @@ test('a request the relay refuses (wrong destination allowlisted for this tenant
       assert.notEqual(response.status, 200);
       const body = await response.json();
       assert.equal(body.state, 'blocked');
+    } finally {
+      await proxy.close();
+    }
+  } finally {
+    await relay.close();
+  }
+});
+
+test('a real browser socket disconnect aborts proxy fetch, relay request, and the relay outbound gateway call', { timeout: 5_000 }, async () => {
+  let markGatewayStarted;
+  let markGatewayAborted;
+  const gatewayStarted = new Promise((resolve) => {
+    markGatewayStarted = resolve;
+  });
+  const gatewayAborted = new Promise((resolve) => {
+    markGatewayAborted = resolve;
+  });
+  const slowGatewayFetch = async (_url, init) => {
+    markGatewayStarted();
+    return new Promise((_resolve, reject) => {
+      const abort = () => {
+        markGatewayAborted();
+        const error = new Error('gateway request aborted');
+        error.name = 'AbortError';
+        reject(error);
+      };
+      if (init.signal.aborted) abort();
+      else init.signal.addEventListener('abort', abort, { once: true });
+    });
+  };
+
+  const relay = await listenLoopback(realRelayServer({ fetchImpl: slowGatewayFetch }));
+  try {
+    const proxy = await listenLoopback(realProxyServer(relay.base));
+    try {
+      const body = JSON.stringify({
+        protocolVersion: EXECUTION_PROTOCOL_VERSION,
+        sampleId: 'weather-mcp-discovery',
+        inputs: { 'hub.gatewayUrl': GATEWAY_ORIGIN },
+      });
+      const browserRequest = httpRequest(new URL('/api/execute', proxy.base), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          Cookie: proxy.cookie,
+          Origin: proxy.base,
+        },
+      });
+      const browserClosed = new Promise((resolve) => {
+        browserRequest.once('error', resolve);
+        browserRequest.once('close', resolve);
+      });
+      browserRequest.end(body);
+      await gatewayStarted;
+      browserRequest.destroy();
+      await browserClosed;
+      await gatewayAborted;
     } finally {
       await proxy.close();
     }

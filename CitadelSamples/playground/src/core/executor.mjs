@@ -12,6 +12,7 @@
  *   describeCapability() -> { id, kind, canExecute, supportedStepTypes, reason }
  *   supports(plan)       -> { supported: boolean, unsupportedStepTypes: string[] }
  *   execute(plan, ctx)   -> Promise<ExecutionResult>
+ *   cancel()             -> Promise<{ cancelled: boolean, reason?: string }>
  */
 
 import { EXECUTION_PROTOCOL_VERSION, EXECUTION_STATES } from './types.mjs';
@@ -41,6 +42,48 @@ export function executionResult({ state, sampleId, summary, detail = '', steps =
 export function unsupportedStepTypes(plan, supportedStepTypes) {
   const supported = new Set(supportedStepTypes ?? []);
   return (plan?.requiredStepTypes ?? []).filter((type) => !supported.has(type));
+}
+
+function raceAbortSignal(promise, signal) {
+  const pending = Promise.resolve(promise);
+  pending.catch(() => {});
+  if (!signal) return pending;
+  if (signal.aborted) {
+    const error = new Error('Aborted.');
+    error.name = 'AbortError';
+    return Promise.reject(error);
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      const error = new Error('Aborted.');
+      error.name = 'AbortError';
+      reject(error);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    pending.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function cancelledRelayExecutionResult(sampleId, executor) {
+  return Object.freeze({
+    ...executionResult({
+      state: 'cancelled',
+      sampleId,
+      summary: 'Relay run cancelled before a response was received.',
+      meta: { executor },
+    }),
+    configurationUpdates: Object.freeze({}),
+    secretUpdates: Object.freeze({}),
+  });
 }
 
 /**
@@ -110,6 +153,7 @@ export function createRelayExecutor({
     supportedStepTypes: Object.freeze([...supportedStepTypes]),
     reason: 'An approved relay is configured. It runs a fixed set of catalogue samples on the server side.',
   });
+  let activeRequest = null;
 
   return Object.freeze({
     id,
@@ -120,6 +164,15 @@ export function createRelayExecutor({
         supported: allowed.has(plan?.sampleId) && missing.length === 0,
         unsupportedStepTypes: missing,
       };
+    },
+    get activeSampleId() {
+      return activeRequest?.sampleId ?? null;
+    },
+    async cancel() {
+      const request = activeRequest;
+      if (!request) return Object.freeze({ cancelled: false, reason: 'No relay run is in flight.' });
+      request.controller.abort();
+      return Object.freeze({ cancelled: true, sampleId: request.sampleId });
     },
     /** Exposed so tests can assert the exact wire shape without a network. */
     buildRequestBody(plan, { inputs = {}, acknowledgement } = {}) {
@@ -140,6 +193,15 @@ export function createRelayExecutor({
       return body;
     },
     async execute(plan, { inputs = {}, acknowledgement, signal } = {}) {
+      if (activeRequest) {
+        return executionResult({
+          state: 'blocked',
+          sampleId: plan?.sampleId ?? 'unknown',
+          summary: 'Not run — another relay request is already in flight.',
+          detail: 'Wait for the active relay request to finish or cancel it before starting another.',
+          meta: { executor: id, reason: 'relay-single-flight', activeSampleId: activeRequest.sampleId },
+        });
+      }
       const body = this.buildRequestBody(plan, { inputs, acknowledgement });
       const missing = unsupportedStepTypes(plan, supportedStepTypes);
       if (missing.length > 0) {
@@ -160,68 +222,91 @@ export function createRelayExecutor({
           meta: { executor: id },
         });
       }
-      let response;
-      try {
-        response = await doFetch(endpoint, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          body: JSON.stringify(body),
-          signal,
-        });
-      } catch (error) {
-        return executionResult({
-          state: 'failed',
-          sampleId: plan.sampleId,
-          summary: 'Relay call failed before a response was received.',
-          detail: String(error?.message ?? error),
-          meta: { executor: id },
-        });
-      }
-      let payload = null;
-      try {
-        payload = await response.json();
-      } catch {
-        payload = null;
-      }
-      if (!response.ok) {
-        return executionResult({
-          state: response.status === 501 ? 'blocked' : 'failed',
-          sampleId: plan.sampleId,
-          summary:
-            response.status === 501
-              ? 'Not run — the local server has no relay configured.'
-              : `Relay returned HTTP ${response.status}.`,
-          detail: payload?.detail ?? payload?.message ?? '',
-          meta: { executor: id, status: response.status },
-        });
-      }
-      if (!payload || !EXECUTION_STATES.includes(payload.state)) {
-        return executionResult({
-          state: 'inconclusive',
-          sampleId: plan.sampleId,
-          summary: 'The relay answered, but not with a recognised result state.',
-          detail: 'Treating an unrecognised relay response as inconclusive rather than as a pass.',
-          meta: { executor: id },
-        });
-      }
-      const result = executionResult({
-        state: payload.state,
+      const request = {
+        controller: new AbortController(),
         sampleId: plan.sampleId,
-        summary: payload.summary ?? 'Relay result.',
-        detail: payload.detail ?? '',
-        steps: payload.steps ?? [],
-        assertions: payload.assertions ?? [],
-        meta: { ...(payload.meta ?? {}), executor: id },
-      });
-      // `configurationUpdates` are public and offered to the user;
-      // `secretUpdates` go straight into the in-memory secret store — same
-      // contract as the local executor (`web/js/localClient.mjs`).
-      return Object.freeze({
-        ...result,
-        configurationUpdates: payload.configurationUpdates ?? {},
-        secretUpdates: payload.secretUpdates ?? {},
-      });
+      };
+      const abortFromCaller = () => request.controller.abort();
+      signal?.addEventListener('abort', abortFromCaller, { once: true });
+      if (signal?.aborted) request.controller.abort();
+      activeRequest = request;
+      try {
+        let response;
+        try {
+          response = await raceAbortSignal(
+            doFetch(endpoint, {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+              body: JSON.stringify(body),
+              signal: request.controller.signal,
+            }),
+            request.controller.signal,
+          );
+        } catch (error) {
+          if (request.controller.signal.aborted || error?.name === 'AbortError') {
+            return cancelledRelayExecutionResult(plan.sampleId, id);
+          }
+          return executionResult({
+            state: 'failed',
+            sampleId: plan.sampleId,
+            summary: 'Relay call failed before a response was received.',
+            meta: { executor: id },
+          });
+        }
+        let payload = null;
+        try {
+          payload = await raceAbortSignal(response.json(), request.controller.signal);
+        } catch (error) {
+          if (request.controller.signal.aborted || error?.name === 'AbortError') {
+            return cancelledRelayExecutionResult(plan.sampleId, id);
+          }
+          payload = null;
+        }
+        if (!response.ok) {
+          const payloadState = EXECUTION_STATES.includes(payload?.state) ? payload.state : null;
+          return executionResult({
+            state: response.status === 501 || payloadState === 'blocked' ? 'blocked' : 'failed',
+            sampleId: plan.sampleId,
+            summary:
+              payload?.summary ??
+              (response.status === 501
+                ? 'Not run — the local server has no relay configured.'
+                : `Relay returned HTTP ${response.status}.`),
+            detail: payload?.detail ?? payload?.message ?? '',
+            meta: { executor: id, status: response.status, code: payload?.code },
+          });
+        }
+        if (!payload || !EXECUTION_STATES.includes(payload.state)) {
+          return executionResult({
+            state: 'inconclusive',
+            sampleId: plan.sampleId,
+            summary: 'The relay answered, but not with a recognised result state.',
+            detail: 'Treating an unrecognised relay response as inconclusive rather than as a pass.',
+            meta: { executor: id },
+          });
+        }
+        const result = executionResult({
+          state: payload.state,
+          sampleId: plan.sampleId,
+          summary: payload.summary ?? 'Relay result.',
+          detail: payload.detail ?? '',
+          steps: payload.steps ?? [],
+          assertions: payload.assertions ?? [],
+          meta: { ...(payload.meta ?? {}), executor: id },
+        });
+        // `configurationUpdates` are public and offered to the user;
+        // `secretUpdates` go straight into the in-memory secret store — same
+        // contract as the local executor (`web/js/localClient.mjs`).
+        return Object.freeze({
+          ...result,
+          configurationUpdates: payload.configurationUpdates ?? {},
+          secretUpdates: payload.secretUpdates ?? {},
+        });
+      } finally {
+        signal?.removeEventListener('abort', abortFromCaller);
+        if (activeRequest === request) activeRequest = null;
+      }
     },
   });
 }

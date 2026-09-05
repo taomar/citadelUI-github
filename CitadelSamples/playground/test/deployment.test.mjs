@@ -69,6 +69,7 @@ test('deployment passes managed-identity service authentication and exact relay 
     'CITADEL_PLAYGROUND_OPERATOR_REQUIRED_APP_ROLE',
     'CITADEL_PLAYGROUND_OPERATOR_ALLOWED_PRINCIPAL_IDS',
     'CITADEL_PLAYGROUND_OPERATOR_ALLOWED_GROUP_IDS',
+    'CITADEL_PLAYGROUND_RELAY_TIMEOUT_MS',
     'CITADEL_PLAYGROUND_PUBLIC_ORIGIN',
     'CITADEL_RELAY_ALLOWED_ORIGINS',
     'CITADEL_RELAY_TOKEN_VERSION',
@@ -119,6 +120,10 @@ test('deployment passes managed-identity service authentication and exact relay 
   assert.match(
     bicep,
     /CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS', value: string\(relayAllowedSampleIds\)/,
+  );
+  assert.match(
+    bicep,
+    /CITADEL_PLAYGROUND_RELAY_TIMEOUT_MS', value: string\(relayRunTimeoutMs \+ 15000\)/,
   );
   assert.match(
     bicep,

@@ -414,6 +414,7 @@ resource playground 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'CITADEL_PLAYGROUND_RELAY_CALLER_PRINCIPAL', value: playgroundIdentity.properties.principalId }
             { name: 'CITADEL_PLAYGROUND_RELAY_TENANT', value: entraTenantId }
             { name: 'CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS', value: string(relayAllowedSampleIds) }
+            { name: 'CITADEL_PLAYGROUND_RELAY_TIMEOUT_MS', value: string(relayRunTimeoutMs + 15000) }
           ]
         }
       ]

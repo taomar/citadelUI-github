@@ -12,7 +12,7 @@
  *     resource/audience and presents that instead of a long-lived static
  *     secret.
  *
- * Both expose the same shape, `{ mode, getAuthorizationHeader() }`, so
+ * Both expose the same shape, `{ mode, getAuthorizationHeader({ signal }) }`, so
  * `server.mjs` never has to know which one it was given.
  */
 
@@ -58,8 +58,8 @@ export function createManagedIdentityCredentialProvider({
     });
   return Object.freeze({
     mode: 'managed-identity',
-    async getAuthorizationHeader() {
-      return `Bearer ${await provider.getToken()}`;
+    async getAuthorizationHeader({ signal } = {}) {
+      return `Bearer ${await provider.getToken({ signal })}`;
     },
   });
 }

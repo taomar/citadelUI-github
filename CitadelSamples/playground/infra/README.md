@@ -215,8 +215,10 @@ The playground receives the private relay URL plus the selected Azure cloud,
 same v2 token version, issuer, audience, relay app client ID, and tenant contract
 from Bicep. It also receives `CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED=true`,
 `CITADEL_PLAYGROUND_RELAY_CLIENT_ID` for its assigned user-assigned identity, and
-the same serialized `relayAllowedSampleIds` value the relay receives. It does
-not receive a relay token: it obtains one from its managed identity.
+the same serialized `relayAllowedSampleIds` value the relay receives. Its
+`CITADEL_PLAYGROUND_RELAY_TIMEOUT_MS` budget is the relay run budget plus 15
+seconds for request validation and managed-identity credential acquisition. It
+does not receive a relay token: it obtains one from its managed identity.
 
 The hosted operator policy is passed separately:
 

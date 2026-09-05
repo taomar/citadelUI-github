@@ -28,17 +28,19 @@ test('the static-token provider returns a bearer header carrying exactly the con
 
 test('the managed-identity provider wraps an injected token provider, never IMDS directly in a test', async () => {
   const calls = [];
+  const controller = new AbortController();
   const tokenProvider = {
-    getToken: async () => {
-      calls.push(1);
+    getToken: async (options) => {
+      calls.push(options);
       return 'aad-access-token';
     },
   };
   const provider = createManagedIdentityCredentialProvider({ resource: 'https://relay.example', tokenProvider });
   assert.equal(provider.mode, 'managed-identity');
-  const header = await provider.getAuthorizationHeader();
+  const header = await provider.getAuthorizationHeader({ signal: controller.signal });
   assert.equal(header, `Bearer ${'aad-access-token'}`);
   assert.equal(calls.length, 1);
+  assert.equal(calls[0].signal, controller.signal);
 });
 
 test('the managed-identity provider forwards its environment to the Container Apps token path', async () => {

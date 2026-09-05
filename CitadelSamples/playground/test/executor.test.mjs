@@ -180,6 +180,105 @@ test('the relay posts to its fixed same-origin endpoint and nowhere else', async
   assert.equal(result.meta.executor, 'relay');
 });
 
+test('relay cancellation aborts the exact pre-response request and returns a cancelled result without leaking its error', async () => {
+  let requestSignal;
+  const relay = createRelayExecutor({
+    allowedSampleIds: ALL_IDS,
+    fetchImpl: async (_url, init) => {
+      requestSignal = init.signal;
+      return new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => {
+          const error = new Error(`Abort exposed ${FAKE_API_KEY}`);
+          error.name = 'AbortError';
+          reject(error);
+        }, { once: true });
+      });
+    },
+  });
+  const running = relay.execute(planFor('a2a-agent-card'), { inputs: {} });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(await relay.cancel(), { cancelled: true, sampleId: 'a2a-agent-card' });
+  const result = await running;
+  assert.equal(requestSignal.aborted, true);
+  assert.equal(result.state, 'cancelled');
+  assert.equal(result.sampleId, 'a2a-agent-card');
+  assert.deepEqual(result.configurationUpdates, {});
+  assert.deepEqual(result.secretUpdates, {});
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(FAKE_API_KEY));
+});
+
+test('relay cancellation remains available while a received response body is still pending', async () => {
+  let responseSignal;
+  const relay = createRelayExecutor({
+    allowedSampleIds: ALL_IDS,
+    fetchImpl: async (_url, init) => {
+      responseSignal = init.signal;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => new Promise(() => {}),
+      };
+    },
+  });
+  const running = relay.execute(planFor('a2a-agent-card'), { inputs: {} });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(await relay.cancel(), { cancelled: true, sampleId: 'a2a-agent-card' });
+  const result = await running;
+  assert.equal(responseSignal.aborted, true);
+  assert.equal(result.state, 'cancelled');
+});
+
+test('a cancelled relay request cannot cancel the next run, and a completed run is no longer cancellable', async () => {
+  const signals = [];
+  let calls = 0;
+  const relay = createRelayExecutor({
+    allowedSampleIds: ALL_IDS,
+    fetchImpl: async (_url, init) => {
+      signals.push(init.signal);
+      calls += 1;
+      if (calls === 1) return new Promise(() => {});
+      return { ok: true, status: 200, json: async () => ({ state: 'completed', summary: 'next run' }) };
+    },
+  });
+
+  const first = relay.execute(planFor('a2a-agent-card'), { inputs: {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal((await relay.cancel()).cancelled, true);
+  assert.equal((await first).state, 'cancelled');
+
+  const second = await relay.execute(planFor('weather-mcp-discovery'), { inputs: {} });
+  assert.equal(second.state, 'completed');
+  assert.equal(second.sampleId, 'weather-mcp-discovery');
+  assert.equal(signals[0].aborted, true);
+  assert.equal(signals[1].aborted, false);
+  assert.deepEqual(await relay.cancel(), { cancelled: false, reason: 'No relay run is in flight.' });
+});
+
+test('the relay client is single-flight and refuses a concurrent run without starting another request', async () => {
+  let calls = 0;
+  const relay = createRelayExecutor({
+    allowedSampleIds: ALL_IDS,
+    fetchImpl: async () => {
+      calls += 1;
+      return new Promise(() => {});
+    },
+  });
+  const first = relay.execute(planFor('a2a-agent-card'), { inputs: {} });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const concurrent = await relay.execute(planFor('weather-mcp-discovery'), { inputs: {} });
+  assert.equal(concurrent.state, 'blocked');
+  assert.equal(concurrent.sampleId, 'weather-mcp-discovery');
+  assert.equal(concurrent.meta.reason, 'relay-single-flight');
+  assert.equal(concurrent.meta.activeSampleId, 'a2a-agent-card');
+  assert.equal(calls, 1);
+
+  await relay.cancel();
+  assert.equal((await first).state, 'cancelled');
+});
+
 test('the relay blocks a plan whose step types it does not support', async () => {
   const relay = createRelayExecutor({
     allowedSampleIds: ALL_IDS,
@@ -226,7 +325,8 @@ test('a relay HTTP 501 becomes blocked and any other error becomes failed', asyn
   });
   const result = await offline.execute(planFor('a2a-agent-card'), {});
   assert.equal(result.state, 'failed');
-  assert.match(result.detail, /ECONNREFUSED/);
+  assert.equal(result.detail, '');
+  assert.doesNotMatch(JSON.stringify(result), /ECONNREFUSED/);
 });
 
 test('unsupportedStepTypes reports exactly the gap', () => {

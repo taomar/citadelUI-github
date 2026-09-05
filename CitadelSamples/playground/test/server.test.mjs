@@ -1086,20 +1086,23 @@ test('disconnecting a source-validation socket cancels its exact run and release
 /** A relay config for tests: no network, no env vars, a fully injectable seam. */
 function fakeRelay({
   fetchImpl,
+  credentialProvider = { getAuthorizationHeader: async () => 'test-credential' },
   authenticator = createDenyAllAuthenticator(),
   allowedSampleIds = ['weather-mcp-discovery'],
   callerPrincipal = 'citadel-playground-proxy',
   tenant = 'default-tenant',
+  timeoutMs,
 } = {}) {
   return {
     enabled: true,
     url: 'https://relay.internal.example/execute',
     fetchImpl,
-    credentialProvider: { getAuthorizationHeader: async () => 'test-credential' },
+    credentialProvider,
     authenticator,
     allowedSampleIds,
     callerPrincipal,
     tenant,
+    ...(timeoutMs == null ? {} : { timeoutMs }),
     hosted: false,
   };
 }
@@ -1200,6 +1203,25 @@ test('buildRelayConfig defaults callerPrincipal/tenant to fixed, non-blank value
   assert.deepEqual(config.allowedSampleIds, ['weather-mcp-discovery']);
   assert.equal(config.callerPrincipal, 'citadel-playground-proxy');
   assert.equal(config.tenant, 'default-tenant');
+  assert.equal(config.timeoutMs, 75_000);
+});
+
+test('buildRelayConfig accepts only a bounded relay proxy timeout', () => {
+  assert.equal(
+    buildRelayConfig({
+      ...PLAYGROUND_RELAY_ENV,
+      CITADEL_PLAYGROUND_RELAY_TIMEOUT_MS: '90000',
+    }).timeoutMs,
+    90_000,
+  );
+  assert.throws(
+    () => buildRelayConfig({ ...PLAYGROUND_RELAY_ENV, CITADEL_PLAYGROUND_RELAY_TIMEOUT_MS: '1.5' }),
+    /unsigned base-10 integer/,
+  );
+  assert.throws(
+    () => buildRelayConfig({ ...PLAYGROUND_RELAY_ENV, CITADEL_PLAYGROUND_RELAY_TIMEOUT_MS: '360001' }),
+    /between 1 and 360000/,
+  );
 });
 
 test('buildRelayConfig reads callerPrincipal/tenant from their own env vars when configured', () => {
@@ -1856,6 +1878,150 @@ test('the relay endpoint maps an unreachable relay and a non-JSON relay answer t
       body: JSON.stringify(WEATHER_MCP_REQUEST),
     });
     assert.equal(response.status, 502);
+  });
+});
+
+test('the relay proxy timeout aborts a slow outbound relay call and returns a fixed result with no error leak', async () => {
+  const leaked = 'relay-error-and-secret-must-not-surface';
+  let outboundSignal;
+  const relay = fakeRelay({
+    timeoutMs: 20,
+    fetchImpl: async (_url, init) => {
+      outboundSignal = init.signal;
+      return new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => reject(new Error(leaked)), { once: true });
+      });
+    },
+  });
+  await withServer({ mode: 'preview', relay }, async ({ call }) => {
+    const response = await call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(WEATHER_MCP_REQUEST),
+    });
+    assert.equal(response.status, 504);
+    const payload = await response.json();
+    assert.equal(payload.state, 'failed');
+    assert.equal(payload.code, 'relay-timeout');
+    assert.equal(outboundSignal.aborted, true);
+    assert.doesNotMatch(JSON.stringify(payload), new RegExp(leaked));
+  });
+});
+
+test('the relay proxy timeout closes a stalled inbound upload after returning its controlled 504', { timeout: 5_000 }, async () => {
+  let fetchCalls = 0;
+  const relay = fakeRelay({
+    timeoutMs: 20,
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error('must not reach the relay');
+    },
+  });
+  await withServer({ mode: 'preview', relay }, async ({ baseUrl, cookie }) => {
+    const socketRequest = httpRequest(new URL('/api/execute', baseUrl), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': 100,
+        Cookie: cookie,
+        Origin: baseUrl,
+      },
+    });
+    const responsePromise = new Promise((resolve, reject) => {
+      socketRequest.once('response', resolve);
+      socketRequest.once('error', reject);
+    });
+    socketRequest.write('{');
+    const response = await responsePromise;
+    const chunks = [];
+    for await (const chunk of response) chunks.push(chunk);
+    assert.equal(response.statusCode, 504);
+    assert.equal(response.headers.connection, 'close');
+    assert.equal(JSON.parse(Buffer.concat(chunks).toString('utf-8')).code, 'relay-timeout');
+    assert.equal(fetchCalls, 0);
+    await new Promise((resolve) => socketRequest.once('close', resolve));
+  });
+});
+
+test('disconnecting during relay credential acquisition aborts that exact request before any relay fetch starts', { timeout: 5_000 }, async () => {
+  let markCredentialStarted;
+  let markCredentialAborted;
+  const credentialStarted = new Promise((resolve) => {
+    markCredentialStarted = resolve;
+  });
+  const credentialAborted = new Promise((resolve) => {
+    markCredentialAborted = resolve;
+  });
+  let credentialSignal;
+  let fetchCalls = 0;
+  const relay = fakeRelay({
+    credentialProvider: {
+      async getAuthorizationHeader({ signal }) {
+        credentialSignal = signal;
+        markCredentialStarted();
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            markCredentialAborted();
+            const error = new Error('credential request aborted');
+            error.name = 'AbortError';
+            reject(error);
+          }, { once: true });
+        });
+      },
+    },
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error('must not reach the relay');
+    },
+  });
+
+  await withServer({ mode: 'preview', relay }, async ({ baseUrl, cookie }) => {
+    const body = JSON.stringify(WEATHER_MCP_REQUEST);
+    const socketRequest = httpRequest(new URL('/api/execute', baseUrl), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        Cookie: cookie,
+        Origin: baseUrl,
+      },
+    });
+    const socketClosed = new Promise((resolve) => {
+      socketRequest.once('error', resolve);
+      socketRequest.once('close', resolve);
+    });
+    socketRequest.end(body);
+    await credentialStarted;
+    socketRequest.destroy();
+    await socketClosed;
+    await credentialAborted;
+    assert.equal(credentialSignal.aborted, true);
+    assert.equal(fetchCalls, 0);
+  });
+});
+
+test('a completed relay response is not cancelled when the browser response socket closes normally', async () => {
+  let outboundSignal;
+  const relay = fakeRelay({
+    fetchImpl: async (_url, init) => {
+      outboundSignal = init.signal;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ state: 'completed', summary: 'done' }),
+      };
+    },
+  });
+  await withServer({ mode: 'preview', relay }, async ({ call }) => {
+    const response = await call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(WEATHER_MCP_REQUEST),
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).state, 'completed');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(outboundSignal.aborted, false);
   });
 });
 
