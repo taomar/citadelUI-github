@@ -1,0 +1,779 @@
+/* Signed Run Dossier shell: one masthead, one context bar, one recipe navigator. */
+
+.dossier-shell {
+  --dossier-rail-width: 15rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-areas:
+    'masthead'
+    'context'
+    'workspace'
+    'content';
+  min-height: 100dvh;
+  overflow: hidden;
+  background: var(--ground, #f1f5f9);
+  color: var(--ink-1, #111827);
+  font-family: var(--sans, 'Segoe UI', system-ui, sans-serif);
+}
+
+.dossier-masthead {
+  grid-area: masthead;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5, 0.75rem);
+  min-width: 0;
+  min-height: 3rem;
+  padding-inline: var(--gutter, 1rem);
+  border-bottom: 1px solid var(--nav-rule, #2a6ba3);
+  background: var(--nav, #0b3c68);
+  color: var(--nav-ink, #fff);
+}
+
+.dossier-brand,
+.dossier-masthead-status,
+.dossier-masthead-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3, 0.25rem);
+  flex: none;
+}
+
+.dossier-brand-mark {
+  width: 0.625rem;
+  height: 0.625rem;
+  margin-right: var(--sp-2, 0.25rem);
+  border-radius: 2px;
+  background: currentColor;
+  transform: rotate(45deg);
+}
+
+.dossier-brand-name {
+  font-weight: 700;
+}
+
+.dossier-brand-product,
+.dossier-current-label {
+  color: var(--nav-muted, #c3dcf2);
+  font-size: var(--t-small, 0.78125rem);
+}
+
+.dossier-current-recipe {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3, 0.25rem);
+  min-width: 0;
+  margin-right: auto;
+}
+
+.dossier-current-title {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--t-body, 0.875rem);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dossier-current-id {
+  overflow: hidden;
+  color: var(--nav-muted, #c3dcf2);
+  font-family: var(--mono, 'Cascadia Mono', Consolas, monospace);
+  font-size: var(--t-micro, 0.6875rem);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dossier-shell-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.5rem;
+  padding-inline: var(--sp-4, 0.5rem);
+  border: 1px solid var(--nav-rule, #2a6ba3);
+  border-radius: var(--r-2, 5px);
+  background: var(--nav-hover, #10497b);
+  color: var(--nav-ink, #fff);
+  font-size: var(--t-micro, 0.6875rem);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dossier-shell-badge[data-tone='success']::before,
+.dossier-shell-badge[data-tone='warning']::before {
+  content: '';
+  width: 0.4375rem;
+  height: 0.4375rem;
+  margin-right: var(--sp-3, 0.25rem);
+  border-radius: 50%;
+  background: var(--success-line, #9fd39f);
+}
+
+.dossier-shell-badge[data-tone='warning']::before {
+  background: var(--warning-line, #e6c96c);
+}
+
+.dossier-inspector-button,
+.dossier-identity-summary,
+.dossier-identity-action,
+.dossier-directory-toggle,
+.recipe-directory-close,
+.dossier-stage-button {
+  min-height: 1.875rem;
+  border: 1px solid var(--rule-strong, #b3c3d2);
+  border-radius: var(--r-2, 5px);
+  background: var(--sheet, #fff);
+  color: var(--ink-1, #111827);
+  font: inherit;
+  font-size: var(--t-small, 0.78125rem);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dossier-inspector-button,
+.dossier-identity-summary {
+  border-color: var(--nav-rule, #2a6ba3);
+  background: var(--nav-hover, #10497b);
+  color: var(--nav-ink, #fff);
+}
+
+.dossier-inspector-button:hover,
+.dossier-identity-summary:hover {
+  background: var(--nav-active, #15558e);
+}
+
+.dossier-identity-surface {
+  position: relative;
+}
+
+.dossier-identity-summary {
+  display: inline-flex;
+  align-items: center;
+  padding-inline: var(--sp-4, 0.5rem);
+  list-style: none;
+  white-space: nowrap;
+}
+
+.dossier-identity-summary::-webkit-details-marker {
+  display: none;
+}
+
+.dossier-identity-panel {
+  position: absolute;
+  top: calc(100% + var(--sp-3, 0.25rem));
+  right: 0;
+  z-index: 60;
+  display: grid;
+  gap: var(--sp-4, 0.5rem);
+  width: min(27rem, calc(100vw - 2rem));
+  max-height: min(34rem, calc(100dvh - 4rem));
+  overflow: hidden auto;
+  padding: var(--sp-5, 0.75rem);
+  border: 1px solid var(--rule-strong, #b3c3d2);
+  border-radius: var(--r-3, 6px);
+  background: var(--sheet, #fff);
+  box-shadow: var(--lift, 0 6px 20px -6px rgba(15, 18, 22, 0.18));
+  color: var(--ink-1, #111827);
+}
+
+.dossier-identity-fact {
+  display: grid;
+  grid-template-columns: minmax(7rem, max-content) minmax(0, 1fr);
+  gap: var(--sp-4, 0.5rem);
+  min-width: 0;
+}
+
+.dossier-identity-label,
+.dossier-identity-field > span {
+  color: var(--ink-3, #526171);
+  font-size: var(--t-small, 0.78125rem);
+  font-weight: 600;
+}
+
+.dossier-identity-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--t-small, 0.78125rem);
+}
+
+code.dossier-identity-value {
+  font-family: var(--mono, 'Cascadia Mono', Consolas, monospace);
+}
+
+.dossier-identity-field {
+  display: grid;
+  gap: var(--sp-2, 0.25rem);
+}
+
+.dossier-identity-field select {
+  width: 100%;
+  min-height: 1.875rem;
+  padding-inline: var(--sp-4, 0.5rem);
+  border: 1px solid var(--control-stroke, #64758a);
+  border-radius: var(--r-2, 5px);
+  background: var(--well, #fafcfe);
+  box-shadow: var(--sink, inset 0 1px 0 rgba(15, 18, 22, 0.06));
+  font: inherit;
+}
+
+.dossier-identity-actions {
+  display: flex;
+  gap: var(--sp-3, 0.25rem);
+  flex-wrap: wrap;
+}
+
+.dossier-identity-action {
+  padding-inline: var(--sp-5, 0.75rem);
+}
+
+.dossier-identity-action:hover:not(:disabled) {
+  border-color: var(--ink-3, #526171);
+  background: var(--well, #fafcfe);
+}
+
+.dossier-identity-action-primary {
+  border-color: var(--brand, #0f6cbd);
+  background: var(--brand, #0f6cbd);
+  color: var(--on-brand, #fff);
+}
+
+.dossier-identity-action-primary:hover:not(:disabled) {
+  border-color: var(--brand-hover, #115ea3);
+  background: var(--brand-hover, #115ea3);
+}
+
+.dossier-identity-action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.dossier-terminal-fallback-note {
+  color: var(--ink-2, #344150);
+  font-size: var(--t-small, 0.78125rem);
+}
+
+.execution-context-bar {
+  grid-area: context;
+  min-width: 0;
+  border-bottom: 1px solid var(--rule-strong, #b3c3d2);
+  background: var(--band, #f6f9fc);
+}
+
+.execution-context-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.execution-context-item {
+  display: grid;
+  align-content: center;
+  min-width: 0;
+  min-height: 3.25rem;
+  padding: var(--sp-3, 0.25rem) var(--gutter, 1rem);
+  border-right: 1px solid var(--rule, #d8e2ec);
+}
+
+.execution-context-item:last-child {
+  border-right: 0;
+}
+
+.execution-context-label {
+  color: var(--ink-3, #526171);
+  font-size: var(--t-micro, 0.6875rem);
+  font-weight: 700;
+}
+
+.execution-context-value,
+.execution-context-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.execution-context-value {
+  color: var(--ink-1, #111827);
+  font-size: var(--t-small, 0.78125rem);
+  font-weight: 600;
+}
+
+code.execution-context-value {
+  font-family: var(--mono, 'Cascadia Mono', Consolas, monospace);
+}
+
+.execution-context-detail {
+  color: var(--ink-3, #526171);
+  font-size: var(--t-micro, 0.6875rem);
+}
+
+.execution-context-item[data-context-state='ready-to-attempt'] {
+  box-shadow: inset 0 -2px 0 var(--success, #107c10);
+}
+
+.execution-context-item[data-context-state='blocked'] {
+  box-shadow: inset 0 -2px 0 var(--warning, #8a3707);
+}
+
+.hosted-identity-path {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  overflow-x: auto;
+  border-top: 1px solid var(--rule, #d8e2ec);
+  scrollbar-width: thin;
+}
+
+.hosted-identity-path li {
+  position: relative;
+  display: grid;
+  flex: 1 0 10rem;
+  min-width: 0;
+  padding: var(--sp-3, 0.25rem) var(--gutter, 1rem);
+}
+
+.hosted-identity-path li:not(:last-child)::after {
+  content: '>';
+  position: absolute;
+  top: 50%;
+  right: 0;
+  color: var(--ink-3, #526171);
+  transform: translate(50%, -50%);
+}
+
+.hosted-identity-label {
+  color: var(--ink-3, #526171);
+  font-size: var(--t-micro, 0.6875rem);
+  font-weight: 700;
+}
+
+.hosted-identity-value {
+  overflow: hidden;
+  color: var(--cloud, #006b8f);
+  font-family: var(--mono, 'Cascadia Mono', Consolas, monospace);
+  font-size: var(--t-micro, 0.6875rem);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dossier-workspace-bar {
+  grid-area: workspace;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5, 0.75rem);
+  min-width: 0;
+  padding: var(--sp-3, 0.25rem) var(--gutter, 1rem);
+  border-bottom: 1px solid var(--rule, #d8e2ec);
+  background: var(--sheet, #fff);
+}
+
+.dossier-directory-toggle {
+  padding-inline: var(--sp-5, 0.75rem);
+}
+
+.dossier-stage-navigation {
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.dossier-stage-navigation ol {
+  display: flex;
+  gap: var(--sp-3, 0.25rem);
+}
+
+.dossier-stage-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3, 0.25rem);
+  padding-inline: var(--sp-4, 0.5rem);
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-2, #344150);
+  white-space: nowrap;
+}
+
+.dossier-stage-button:hover {
+  border-color: var(--rule-strong, #b3c3d2);
+  background: var(--well, #fafcfe);
+}
+
+.dossier-stage-button[aria-current='step'] {
+  border-color: var(--brand-line, #b4d6f4);
+  background: var(--brand-wash, #eaf3fc);
+  color: var(--brand, #0f6cbd);
+}
+
+.dossier-stage-number {
+  display: inline-grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-family: var(--mono, 'Cascadia Mono', Consolas, monospace);
+  font-size: var(--t-micro, 0.6875rem);
+}
+
+.dossier-recipe-drawer {
+  grid-area: drawer;
+  min-width: 0;
+  min-height: 0;
+}
+
+.dossier-drawer-scrim {
+  display: none;
+}
+
+.recipe-directory {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  border-right: 1px solid var(--rule-strong, #b3c3d2);
+  background: var(--band, #f6f9fc);
+}
+
+.recipe-directory-header,
+.recipe-directory-heading,
+.recipe-directory-group-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3, 0.25rem);
+}
+
+.recipe-directory-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  justify-content: space-between;
+  min-height: 2.75rem;
+  padding: var(--sp-4, 0.5rem) var(--sp-5, 0.75rem);
+  border-bottom: 1px solid var(--rule, #d8e2ec);
+  background: var(--band, #f6f9fc);
+}
+
+.recipe-directory-heading h2,
+.recipe-directory-group-heading h3 {
+  margin: 0;
+  font-size: var(--t-small, 0.78125rem);
+}
+
+.recipe-directory-count,
+.recipe-directory-group-count {
+  color: var(--ink-3, #526171);
+  font-family: var(--mono, 'Cascadia Mono', Consolas, monospace);
+  font-size: var(--t-micro, 0.6875rem);
+}
+
+.recipe-directory-close {
+  padding-inline: var(--sp-4, 0.5rem);
+}
+
+.recipe-directory-search {
+  padding: var(--sp-4, 0.5rem) var(--sp-5, 0.75rem);
+}
+
+.recipe-directory-search-input {
+  width: 100%;
+  min-height: 1.875rem;
+  padding-inline: var(--sp-4, 0.5rem);
+  border: 1px solid var(--control-stroke, #64758a);
+  border-radius: var(--r-2, 5px);
+  background: var(--well, #fafcfe);
+  box-shadow: var(--sink, inset 0 1px 0 rgba(15, 18, 22, 0.06));
+  font: inherit;
+}
+
+.recipe-directory-group {
+  border-top: 1px solid var(--rule, #d8e2ec);
+}
+
+.recipe-directory-group-heading {
+  justify-content: space-between;
+  padding: var(--sp-4, 0.5rem) var(--sp-5, 0.75rem) 0;
+}
+
+.recipe-directory-group-summary {
+  padding: var(--sp-2, 0.25rem) var(--sp-5, 0.75rem) var(--sp-4, 0.5rem);
+  color: var(--ink-3, #526171);
+  font-size: var(--t-micro, 0.6875rem);
+}
+
+.recipe-directory-list {
+  margin: 0;
+  padding: 0 0 var(--sp-4, 0.5rem);
+  list-style: none;
+}
+
+.recipe-directory-item {
+  position: relative;
+  display: grid;
+  gap: var(--sp-2, 0.25rem);
+  width: 100%;
+  padding: var(--sp-4, 0.5rem) var(--sp-5, 0.75rem);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-1, #111827);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.recipe-directory-item:hover {
+  background: var(--well, #fafcfe);
+}
+
+.recipe-directory-item:active {
+  background: var(--zebra, #f5f9fc);
+}
+
+.recipe-directory-item[aria-current='page'] {
+  background: var(--brand-wash, #eaf3fc);
+}
+
+.recipe-directory-item[aria-current='page']::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 3px;
+  background: var(--brand, #0f6cbd);
+}
+
+.recipe-directory-title {
+  font-weight: 600;
+}
+
+.recipe-directory-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink-3, #526171);
+  font-size: var(--t-micro, 0.6875rem);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.recipe-directory-states,
+.recipe-directory-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3, 0.25rem);
+  flex-wrap: wrap;
+}
+
+.recipe-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.25rem;
+  padding-inline: var(--sp-3, 0.25rem);
+  border: 1px solid var(--rule, #d8e2ec);
+  border-radius: var(--r-1, 4px);
+  background: var(--sheet, #fff);
+  color: var(--ink-2, #344150);
+  font-size: var(--t-micro, 0.6875rem);
+}
+
+.recipe-state[data-tone='brand'] {
+  border-color: var(--brand-line, #b4d6f4);
+  background: var(--brand-wash, #eaf3fc);
+  color: var(--brand, #0f6cbd);
+}
+
+.recipe-state[data-tone='success'] {
+  border-color: var(--success-line, #9fd39f);
+  background: var(--success-wash, #e8f5e9);
+  color: var(--success, #107c10);
+}
+
+.recipe-state[data-tone='warning'] {
+  border-color: var(--warning-line, #e6c96c);
+  background: var(--warning-wash, #fff4ce);
+  color: var(--warning, #8a3707);
+}
+
+.recipe-directory-meta {
+  color: var(--ink-3, #526171);
+  font-family: var(--mono, 'Cascadia Mono', Consolas, monospace);
+  font-size: var(--t-micro, 0.6875rem);
+}
+
+.recipe-risk[data-risk='state-changing'],
+.recipe-risk[data-risk='load-generating'] {
+  color: var(--warning, #8a3707);
+}
+
+.recipe-risk[data-risk='destructive'] {
+  color: var(--danger, #c50f1f);
+}
+
+.recipe-directory-empty {
+  padding: var(--sp-6, 1rem) var(--sp-5, 0.75rem);
+  color: var(--ink-3, #526171);
+  font-size: var(--t-small, 0.78125rem);
+}
+
+.dossier-content {
+  grid-area: content;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  background: var(--sheet, #fff);
+}
+
+@media (min-width: 75rem) {
+  .dossier-shell {
+    grid-template-columns: var(--dossier-rail-width) minmax(0, 1fr);
+    grid-template-areas:
+      'masthead masthead'
+      'context context'
+      'drawer workspace'
+      'drawer content';
+  }
+
+  .dossier-directory-toggle,
+  .recipe-directory-close {
+    display: none;
+  }
+}
+
+@media (max-width: 74.999rem) {
+  .dossier-current-id,
+  .dossier-brand-product {
+    display: none;
+  }
+
+  .dossier-recipe-drawer {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .dossier-recipe-drawer[data-open='true'] {
+    visibility: visible;
+    pointer-events: auto;
+  }
+
+  .dossier-drawer-scrim {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: rgba(17, 24, 39, 0.48);
+    cursor: pointer;
+  }
+
+  .recipe-directory {
+    position: relative;
+    z-index: 1;
+    width: min(20rem, calc(100vw - 3rem));
+    transform: translateX(-100%);
+    transition: transform var(--slow, 180ms) var(--ease, ease);
+  }
+
+  .dossier-recipe-drawer[data-open='true'] .recipe-directory {
+    transform: translateX(0);
+  }
+}
+
+@media (max-width: 62rem) {
+  .dossier-masthead-status .dossier-shell-badge:first-child {
+    display: none;
+  }
+
+  .execution-context-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .execution-context-item {
+    border-bottom: 1px solid var(--rule, #d8e2ec);
+  }
+
+  .execution-context-item:nth-child(even) {
+    border-right: 0;
+  }
+
+  .execution-context-item:last-child {
+    grid-column: 1 / -1;
+    border-bottom: 0;
+  }
+}
+
+@media (max-width: 47.999rem) {
+  .dossier-masthead {
+    gap: var(--sp-3, 0.25rem);
+  }
+
+  .dossier-current-label,
+  .dossier-current-recipe,
+  .dossier-masthead-status,
+  .dossier-brand-product {
+    display: none;
+  }
+
+  .dossier-masthead-actions {
+    margin-left: auto;
+  }
+
+  .dossier-inspector-button {
+    width: 2rem;
+    padding: 0;
+    overflow: hidden;
+    font-size: 0;
+  }
+
+  .dossier-inspector-button::before {
+    font-size: var(--t-small, 0.78125rem);
+  }
+
+  .dossier-inspector-button:first-child::before {
+    content: 'P';
+  }
+
+  .dossier-inspector-button:nth-child(2)::before {
+    content: 'D';
+  }
+
+  .dossier-identity-summary {
+    max-width: 9rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dossier-identity-panel {
+    position: fixed;
+    top: 3.25rem;
+    right: var(--sp-4, 0.5rem);
+    left: var(--sp-4, 0.5rem);
+    width: auto;
+  }
+
+  .execution-context-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .execution-context-item {
+    min-height: 2.75rem;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule, #d8e2ec);
+  }
+
+  .execution-context-item:last-child {
+    border-bottom: 0;
+  }
+
+  .recipe-directory {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .recipe-directory {
+    transition: none;
+  }
+}
