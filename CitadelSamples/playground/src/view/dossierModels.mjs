@@ -1,0 +1,286 @@
+import { buildWorkbenchModel } from './models.mjs';
+
+export const ACCOUNT_CONTROL_STATES = Object.freeze([
+  'login-disabled',
+  'signed-out',
+  'starting',
+  'waiting-system-ui',
+  'verifying',
+  'device-fallback-blocked',
+  'status-unknown',
+  'cancelled',
+  'failed',
+  'timed-out',
+  'ready',
+  'subscription-mismatch',
+]);
+
+const ACCOUNT_CONTROL_STATE_SET = new Set(ACCOUNT_CONTROL_STATES);
+const TERMINAL_ACCOUNT_STATES = new Set(['cancelled', 'failed', 'timed-out']);
+const TARGET_PATH = /(subscriptionId|resourceGroupName|apimName|gatewayUrl|endpoint|keyVault|foundry|project)/i;
+
+function safeText(value, fallback = '') {
+  return typeof value === 'string' ? value.trim() : fallback;
+}
+
+function safeList(value, map) {
+  return Array.isArray(value) ? value.map(map).filter(Boolean) : [];
+}
+
+function safeAccount(value) {
+  if (!value || typeof value !== 'object') return null;
+  const id = safeText(value.id);
+  const name = safeText(value.name);
+  if (!id || !name) return null;
+  return Object.freeze({
+    id,
+    name,
+    username: safeText(value.username),
+    tenantId: safeText(value.tenantId),
+    enabled: value.enabled === true,
+  });
+}
+
+function safeSubscription(value) {
+  if (!value || typeof value !== 'object') return null;
+  const id = safeText(value.id);
+  const name = safeText(value.name);
+  if (!id || !name) return null;
+  return Object.freeze({
+    id,
+    name,
+    tenantId: safeText(value.tenantId),
+    accountId: safeText(value.accountId),
+    enabled: value.enabled === true,
+  });
+}
+
+export function normalizeAccountControlState(value = {}) {
+  const requestedState = safeText(value.state);
+  const state = ACCOUNT_CONTROL_STATE_SET.has(requestedState) ? requestedState : 'login-disabled';
+  const launchAdvertised = value.canLaunch === true && value.launchMode === 'system-browser';
+  const active = ['starting', 'waiting-system-ui', 'verifying'].includes(state);
+  const accounts = safeList(value.accounts, safeAccount);
+  const subscriptions = safeList(value.subscriptions, safeSubscription);
+
+  return Object.freeze({
+    state,
+    message:
+      safeText(value.message) ||
+      (state === 'login-disabled'
+        ? 'Account switching is unavailable until the local server advertises a system-browser launch capability.'
+        : ''),
+    sessionId: safeText(value.sessionId),
+    launchMode: launchAdvertised ? 'system-browser' : null,
+    canLaunch: launchAdvertised && !active,
+    canCancel: value.canCancel === true && active && Boolean(safeText(value.sessionId)),
+    canVerify: value.canVerify === true && !active,
+    canSetActive: value.canSetActive === true && state === 'ready',
+    activeAccountId: safeText(value.activeAccountId),
+    activeSubscriptionId: safeText(value.activeSubscriptionId),
+    intendedSubscriptionId: safeText(value.intendedSubscriptionId),
+    accounts,
+    subscriptions,
+    active,
+    terminal: TERMINAL_ACCOUNT_STATES.has(state),
+  });
+}
+
+function contextFrom(contextState) {
+  return contextState?.status === 'ready' && contextState.context && typeof contextState.context === 'object'
+    ? contextState.context
+    : null;
+}
+
+function credentialLabel(context) {
+  if (!context) return 'Not Reported';
+  if (context.kind === 'gateway-key') return 'Memory-Only APIM Key';
+  if (context.kind === 'hosted-relay') return 'Managed Identity + Key Vault Mapping';
+  if (context.kind === 'offline-python') return 'Local Parser; No Cloud Credential';
+  return 'Local Azure CLI Session';
+}
+
+function humanLabel(context, account) {
+  if (context?.kind === 'gateway-key') return 'Browser Session';
+  if (context?.kind === 'hosted-relay') return 'Entra Caller';
+  return (
+    context?.authority?.principalName ||
+    account.accounts.find((entry) => entry.id === account.activeAccountId)?.username ||
+    account.accounts.find((entry) => entry.id === account.activeAccountId)?.name ||
+    'Not Signed In'
+  );
+}
+
+function runsAsLabel(context) {
+  if (!context) return 'Not Reported';
+  if (context.kind === 'gateway-key') return 'Gateway Caller';
+  if (context.kind === 'hosted-relay') return 'Tenant-Scoped Managed Identity';
+  if (context.kind === 'offline-python') return 'Local Python Parser';
+  return context.authority?.principalName || context.label || 'Local Azure CLI Principal';
+}
+
+function authorizationModel(context, contextState, account) {
+  const contextReady = context?.canExecute === true;
+  const localAccountBlocked =
+    context &&
+    context.kind?.startsWith('azure-cli-') &&
+    !['ready', 'subscription-mismatch'].includes(account.state);
+  const ready = contextReady && !localAccountBlocked;
+  return Object.freeze({
+    ready,
+    label: ready ? 'Ready to Attempt' : 'Not Ready',
+    detail:
+      context?.summary ||
+      safeText(contextState?.message) ||
+      account.message ||
+      'Execution identity and target have not been verified.',
+  });
+}
+
+export function buildDossierIdentityModel({ contextState = {}, accountControlState = {} } = {}) {
+  const context = contextFrom(contextState);
+  const account = normalizeAccountControlState(accountControlState);
+  const isGateway = context?.kind === 'gateway-key';
+  const isHosted = context?.kind === 'hosted-relay';
+  const subscription = context?.subscription ?? null;
+  const target =
+    subscription?.configuredId ||
+    subscription?.activeName ||
+    subscription?.activeId ||
+    (context?.gateway?.headerName ? `Gateway Header ${context.gateway.headerName}` : 'Not Reported');
+
+  return Object.freeze({
+    state: context?.state ?? (contextState?.status === 'loading' ? 'loading' : 'unavailable'),
+    human: humanLabel(context, account),
+    runsAs: runsAsLabel(context),
+    credential: credentialLabel(context),
+    target,
+    tenantId: safeText(context?.authority?.tenantId),
+    subscription: subscription
+      ? Object.freeze({
+          activeId: safeText(subscription.activeId),
+          activeName: safeText(subscription.activeName),
+          intendedId: safeText(subscription.configuredId),
+          matches: subscription.matches === true ? true : subscription.matches === false ? false : null,
+        })
+      : null,
+    authorization: authorizationModel(context, contextState, account),
+    accountControl: Object.freeze({
+      ...account,
+      visible: !isGateway && !isHosted,
+    }),
+    gateway: context?.gateway
+      ? Object.freeze({
+          keyPresent: context.gateway.keyPresent === true,
+          headerName: safeText(context.gateway.headerName),
+        })
+      : null,
+    chain: isHosted
+      ? Object.freeze([
+          'Entra Caller',
+          'Playground Identity',
+          'Relay Managed Identity',
+          'Key Vault Mapping',
+          'Target',
+        ])
+      : Object.freeze([]),
+  });
+}
+
+function collectTargetFacts(configure) {
+  return configure.groups
+    .flatMap((group) => group.fields)
+    .filter(
+      (field) =>
+        field.requirement !== 'secret' &&
+        TARGET_PATH.test(field.path) &&
+        field.value !== undefined &&
+        field.value !== null &&
+        field.value !== '',
+    )
+    .slice(0, 8)
+    .map((field) =>
+      Object.freeze({
+        path: field.path,
+        label: field.label,
+        value: Array.isArray(field.value) ? field.value.join(', ') : String(field.value),
+      }),
+    );
+}
+
+export function buildLedgerAction({
+  blockingCount = 0,
+  canAttempt = false,
+  running = false,
+  stage = 'configure',
+  firstBlockerPath = '',
+} = {}) {
+  if (running) {
+    return Object.freeze({ id: 'cancel', label: 'Cancel Run', target: 'output', disabled: false });
+  }
+  if (blockingCount > 0) {
+    return Object.freeze({
+      id: 'resolve',
+      label: `Resolve ${blockingCount} Required Input${blockingCount === 1 ? '' : 's'}`,
+      target: firstBlockerPath || 'inputs',
+      disabled: false,
+    });
+  }
+  if (stage === 'configure' || !canAttempt) {
+    return Object.freeze({ id: 'review', label: 'Review Sample', target: 'review', disabled: false });
+  }
+  return Object.freeze({ id: 'run', label: 'Run Sample', target: 'output', disabled: false });
+}
+
+export function buildDossierModel({
+  contextState = {},
+  accountControlState = {},
+  stage = 'configure',
+  selectedSourceCellIndex = null,
+  ...workbenchOptions
+}) {
+  const workbench = buildWorkbenchModel(workbenchOptions);
+  const identity = buildDossierIdentityModel({ contextState, accountControlState });
+  const canAttempt = workbench.canRun && identity.authorization.ready;
+  const selectedCell =
+    workbench.source.cells.find((cell) => cell.cellIndex === selectedSourceCellIndex) ??
+    workbench.source.cells[0] ??
+    null;
+  const targetFacts = collectTargetFacts(workbench.configure);
+  const action = buildLedgerAction({
+    blockingCount: workbench.configure.blockingCount,
+    canAttempt,
+    running: workbench.response.running,
+    stage,
+    firstBlockerPath: workbench.configure.blocking[0]?.path,
+  });
+
+  return Object.freeze({
+    ...workbench,
+    stage,
+    identity,
+    canAttempt,
+    targetFacts,
+    sourceInspector: Object.freeze({
+      ...workbench.source,
+      selectedCellIndex: selectedCell?.cellIndex ?? null,
+      selectedCell,
+    }),
+    reviewDecision: Object.freeze({
+      identity,
+      targetFacts,
+      authorization: identity.authorization,
+      risk: workbench.sample.risk,
+      request: workbench.request,
+      canAttempt,
+    }),
+    ledger: Object.freeze({
+      identity,
+      targetFacts,
+      authorization: identity.authorization,
+      risk: workbench.sample.risk,
+      blockers: workbench.configure.blocking,
+      action,
+    }),
+  });
+}
