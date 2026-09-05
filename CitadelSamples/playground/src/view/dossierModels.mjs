@@ -124,6 +124,7 @@ function authorizationModel(context, contextState, account) {
   const ready = contextReady;
   return Object.freeze({
     ready,
+    backendProven: context?.authorization?.proven === true,
     label: ready ? 'Ready to Attempt' : 'Not Ready',
     detail:
       context?.summary ||
@@ -330,7 +331,7 @@ export function buildDossierModel({
     targetFacts,
     authorization: Object.freeze({
       ready: identity.authorization.ready,
-      backendProven: false,
+      backendProven: identity.authorization.backendProven,
       label: identity.authorization.label,
       summary: identity.authorization.detail,
     }),
