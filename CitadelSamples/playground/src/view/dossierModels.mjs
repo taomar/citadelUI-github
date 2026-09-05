@@ -119,13 +119,9 @@ function runsAsLabel(context) {
   return context.authority?.principalName || context.label || 'Local Azure CLI Principal';
 }
 
-function authorizationModel(context, contextState, account) {
+function authorizationModel(context, contextState) {
   const contextReady = context?.canExecute === true;
-  const localAccountBlocked =
-    context &&
-    context.kind?.startsWith('azure-cli-') &&
-    !['ready', 'subscription-mismatch'].includes(account.state);
-  const ready = contextReady && !localAccountBlocked;
+  const ready = contextReady;
   return Object.freeze({
     ready,
     label: ready ? 'Ready to Attempt' : 'Not Ready',
@@ -164,7 +160,7 @@ export function buildDossierIdentityModel({ contextState = {}, accountControlSta
           matches: subscription.matches === true ? true : subscription.matches === false ? false : null,
         })
       : null,
-    authorization: authorizationModel(context, contextState, account),
+    authorization: authorizationModel(context, contextState),
     accountControl: Object.freeze({
       ...account,
       visible: !isGateway && !isHosted,
