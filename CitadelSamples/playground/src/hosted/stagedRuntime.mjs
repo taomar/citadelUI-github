@@ -55,7 +55,7 @@ export function createStagedRuntime(config, sessions, auth, { fetchImpl = create
         headers[target.headerName] = key;
       } else {
         if (!purposeEnabled(config, request.purpose)) refuse('Resource contract unverified.', 'service-contract-unverified', 403);
-        headers.Authorization = `Bearer ${await auth.token(session, request.purpose)}`;
+        headers.Authorization = `Bearer ${await auth.token(session, request.purpose, { signal })}`;
       }
       requireOperator(session, version);
       signal.throwIfAborted();

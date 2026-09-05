@@ -263,19 +263,19 @@ export async function launchBrowserHarness({
     });
   }
 
-  async function pressKey(key, { shift = false, control = false } = {}) {
+  async function pressKey(key, { shift = false, control = false, client = page } = {}) {
     const codes = { Enter: 13, Tab: 9, Escape: 27, Backspace: 8, End: 35, Home: 36, ArrowDown: 40, ArrowUp: 38 };
     const modifiers = (shift ? 8 : 0) | (control ? 2 : 0);
     const params = { key, code: key.length === 1 ? `Key${key.toUpperCase()}` : key,
       windowsVirtualKeyCode: codes[key] ?? key.toUpperCase().charCodeAt(0), modifiers };
-    await page.send('Input.dispatchKeyEvent', { type: key === 'Enter' ? 'keyDown' : 'rawKeyDown', ...params,
+    await client.send('Input.dispatchKeyEvent', { type: key === 'Enter' ? 'keyDown' : 'rawKeyDown', ...params,
       ...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) });
-    await page.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params });
+    await client.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params });
   }
 
-  async function nativeClick(selector) {
+  async function nativeClick(selector, client = page) {
     if (unexpectedDialog) throw unexpectedDialog;
-    const point = await evaluate(page, `(() => {
+    const point = await evaluate(client, `(() => {
       const target = document.querySelector(${JSON.stringify(selector)});
       if (!target || target.disabled || target.closest('[inert], [hidden]')) throw new Error('Native target unavailable');
       target.scrollIntoView({block:'center',inline:'nearest'});
@@ -285,27 +285,28 @@ export async function launchBrowserHarness({
       return {x,y};
     })()`);
     for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
-      await page.send('Input.dispatchMouseEvent', { type, ...point, button: type === 'mouseMoved' ? 'none' : 'left', clickCount: 1 });
+      await client.send('Input.dispatchMouseEvent', { type, ...point, button: type === 'mouseMoved' ? 'none' : 'left', clickCount: 1 });
     }
   }
-  async function nativeInput(selector, value) {
-    await nativeClick(selector);
-    if (await evaluate(page, `document.querySelector(${JSON.stringify(selector)}).tagName === 'SELECT'`)) {
-      await pressKey('End');
-      await pressKey('Enter');
+  async function nativeInput(selector, value, client = page) {
+    await nativeClick(selector, client);
+    if (await evaluate(client, `document.querySelector(${JSON.stringify(selector)}).tagName === 'SELECT'`)) {
+      await pressKey('End', { client });
+      await pressKey('Enter', { client });
     } else {
-      await pressKey('a', { control: true });
-      await pressKey('Backspace');
-      await page.send('Input.insertText', { text: value });
+      await pressKey('a', { control: true, client });
+      await pressKey('Backspace', { client });
+      await client.send('Input.insertText', { text: value });
     }
-    await pressKey('Tab');
+    await pressKey('Tab', { client });
   }
   async function navigate(url, { discardChanges = false } = {}) {
     if (new URL(url).protocol !== 'https:') throw new Error('Native navigation requires HTTPS.');
     expectedBeforeUnload = discardChanges;
     try {
-      await page.send('Page.navigate', { url });
+      const result = await page.send('Page.navigate', { url });
       if (unexpectedDialog) throw unexpectedDialog;
+      return result;
     } finally { expectedBeforeUnload = false; }
   }
 
@@ -378,6 +379,26 @@ export async function launchBrowserHarness({
     setViewport,
     pressKey,
     nativeClick, nativeInput, navigate,
+    async openedTestPage(url) {
+      if (new URL(url).protocol !== 'https:') throw new Error('Browser test pages require HTTPS.');
+      let target;
+      for (let attempts = 0; attempts < 100 && !target; attempts++) {
+        target = (await browserClient.send('Target.getTargets')).targetInfos.find((item) => item.type === 'page' && item.url === url);
+        if (!target) await wait(50);
+      }
+      if (!target) throw new Error('The native link did not open its expected HTTPS page.');
+      const { sessionId } = await browserClient.send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
+      const client = browserClient.session(sessionId);
+      await client.send('Page.enable');
+      await client.send('Runtime.enable');
+      return {
+        evaluate: (expression) => evaluate(client, expression),
+        waitFor: (expression) => waitFor(client, expression),
+        nativeInput: (selector, value) => nativeInput(selector, value, client),
+        nativeClick: (selector) => nativeClick(selector, client),
+        close: () => browserClient.send('Target.closeTarget', { targetId: target.targetId }),
+      };
+    },
     async openTestPage(url, { freshContext = false } = {}) {
       if (new URL(url).protocol !== 'https:') throw new Error('Browser test pages require HTTPS.');
       const context = freshContext ? await browserClient.send('Target.createBrowserContext') : {};

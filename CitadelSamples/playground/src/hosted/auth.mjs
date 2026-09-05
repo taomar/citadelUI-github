@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { ConfidentialClientApplication, InteractionRequiredAuthError } from '@azure/msal-node';
+import { ConfidentialClientApplication, PublicClientApplication, InteractionRequiredAuthError } from '@azure/msal-node';
 import { createRemoteJWKSet, customFetch, jwtVerify } from 'jose';
 import { createHttpsTransport } from './httpsTransport.mjs';
 import { GUID, httpsOrigin } from './config.mjs';
@@ -19,13 +19,25 @@ export function createMicrosoftAuth(config, { fetchImpl = createHttpsTransport()
   const key = verifyKey ?? createRemoteJWKSet(new URL(`${authority}/discovery/v2.0/keys`), {
     [customFetch]: fetchIdentity, timeoutDuration: 10000, cooldownDuration: 30000,
   });
-  async function network(url, options = {}, method) {
-    const response = await fetchIdentity(url, { ...options, method, body: options.body });
-    return { status: response.status, headers: Object.fromEntries(response.headers), body: await response.json() };
-  }
-  function client() {
-    return new ConfidentialClientApplication({
-      auth: { clientId: config.clientId, authority, clientSecret: config.clientSecret,
+  function client(method = 'browser', { signal, onResponse } = {}) {
+    if (!['browser', 'device-code'].includes(method)) throw new TypeError('Unknown authentication method.');
+    const device = method === 'device-code';
+    if (device && (!GUID.test(config.deviceClientId ?? '') || config.deviceClientId === config.clientId)) {
+      throw new TypeError('A dedicated public client is required.');
+    }
+    async function network(url, options = {}, verb) {
+      signal?.throwIfAborted();
+      const response = await fetchIdentity(url, { ...options, method: verb, body: options.body,
+        signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(10000)]) });
+      const body = await response.json();
+      signal?.throwIfAborted();
+      onResponse?.(url, body);
+      return { status: response.status, headers: Object.fromEntries(response.headers), body };
+    }
+    const Application = device ? PublicClientApplication : ConfidentialClientApplication;
+    return new Application({
+      auth: { clientId: device ? config.deviceClientId : config.clientId, authority,
+        ...(!device ? { clientSecret: config.clientSecret } : {}),
         knownAuthorities: [new URL(authority).host] },
       system: {
         networkClient: {
@@ -36,8 +48,37 @@ export function createMicrosoftAuth(config, { fetchImpl = createHttpsTransport()
       },
     });
   }
+  async function verifyResult(tx, result, { device = false, signal } = {}) {
+    signal?.throwIfAborted();
+    if (!result?.idToken || !result.account) throw new Error('Missing identity result.');
+    const audience = device ? config.deviceClientId : config.clientId;
+    const verificationKey = !device || verifyKey ? key : createRemoteJWKSet(new URL(`${authority}/discovery/v2.0/keys`), {
+      [customFetch]: (url, options) => fetchIdentity(url, { ...options, signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]) }),
+      timeoutDuration: 10000, cooldownDuration: 30000,
+    });
+    const { payload } = await jwtVerify(result.idToken, verificationKey, {
+      issuer, audience, algorithms: ['RS256'], maxTokenAge: config.absoluteMs / 1000,
+      requiredClaims: ['exp', 'iat', 'nbf', 'sub', 'tid', 'oid', ...(!device ? ['nonce'] : [])],
+    });
+    signal?.throwIfAborted();
+    if ((!device && payload.nonce !== tx.nonce) || payload.aud !== audience || payload.tid !== config.tenantId
+      || !GUID.test(payload.oid ?? '') || result.account.localAccountId !== payload.oid
+      || result.account.tenantId !== payload.tid || (tx.expectedOid && tx.expectedOid !== payload.oid)
+      || (tx.expectedTid && tx.expectedTid !== payload.tid)
+      || (tx.expectedHomeAccountId && tx.expectedHomeAccountId !== result.account.homeAccountId)) {
+      throw new Error('The sign-in identity did not match the requested transaction.');
+    }
+    const credential = {
+      method: device ? 'device-code' : 'browser', clientKind: device ? 'public' : 'confidential',
+      clientId: audience, authority, purpose: tx.purpose, account: result.account,
+      requestedScopes: purposeScopes(config, tx.purpose), validatedScopes: result.scopes ?? [],
+      cache: device ? tx.client.getTokenCache().serialize() : tx.client, grantGeneration: 1,
+    };
+    return { claims: payload, account: result.account, cache: credential.cache, azure: tx.purpose === 'azure',
+      credentials: tx.purpose === 'signin' ? {} : { [tx.purpose]: credential } };
+  }
   return Object.freeze({
-    client,
+    client, verifyDevice: (tx, result, signal) => verifyResult(tx, result, { device: true, signal }),
     async start(tx, session) {
       const url = await tx.client.getAuthCodeUrl({
         scopes: purposeScopes(config, tx.purpose),
@@ -57,21 +98,9 @@ export function createMicrosoftAuth(config, { fetchImpl = createHttpsTransport()
         code, scopes: purposeScopes(config, tx.purpose),
         redirectUri: config.callback, codeVerifier: tx.verifier,
       });
-      const { payload } = await jwtVerify(result.idToken, key, {
-        issuer, audience: config.clientId, algorithms: ['RS256'],
-        maxTokenAge: config.absoluteMs / 1000,
-        requiredClaims: ['exp', 'iat', 'nbf', 'sub', 'tid', 'oid', 'nonce'],
-      });
-      if (payload.nonce !== tx.nonce || payload.aud !== config.clientId || payload.tid !== config.tenantId || !GUID.test(payload.oid ?? '')
-        || !result.account || result.account.localAccountId !== payload.oid
-        || result.account.tenantId !== payload.tid || (tx.expectedOid && tx.expectedOid !== payload.oid)
-        || (tx.expectedTid && tx.expectedTid !== payload.tid)) {
-        throw new Error('The sign-in identity did not match the requested transaction.');
-      }
-      return { claims: payload, account: result.account, cache: tx.client, azure: tx.purpose === 'azure',
-        credentials: tx.purpose === 'signin' ? {} : { [tx.purpose]: { account: result.account, cache: tx.client, grantGeneration: 1 } } };
+      return verifyResult(tx, result);
     },
-    async token(session, purpose = 'azure') {
+    async token(session, purpose = 'azure', { signal: operationSignal } = {}) {
       const scopes = purposeScopes(config, purpose);
       if (purpose === 'signin') throw new TypeError('Sign-in is not a resource credential.');
       const credential = session.credentials?.[purpose]
@@ -91,17 +120,33 @@ export function createMicrosoftAuth(config, { fetchImpl = createHttpsTransport()
         throw Object.assign(new Error('Resource authorization expired or requires interaction. Reconnect in this application.'), { status: 401, code: `${code}-consent-required` });
       };
       if (credential.account.localAccountId !== session.claims.oid || credential.account.tenantId !== session.claims.tid) reconnect();
-      let result;
-      try { result = await credential.cache.acquireTokenSilent({ account: credential.account, scopes }); }
+      if (credential.clientKind === 'public') {
+        if (credential.method !== 'device-code' || credential.clientId !== config.deviceClientId
+          || credential.authority !== authority || credential.purpose !== purpose || typeof credential.cache !== 'string') reconnect();
+      } else if (credential.clientKind && (credential.clientKind !== 'confidential' || credential.clientId !== config.clientId
+        || credential.authority !== authority || credential.purpose !== purpose)) reconnect();
+      let result, acquisition;
+      try {
+        if (credential.clientKind === 'public') {
+          const signal = AbortSignal.any([...(controller ? [controller.signal] : []),
+            ...(operationSignal ? [operationSignal] : []),
+            ...(session.contextController ? [session.contextController.signal] : []), AbortSignal.timeout(10000)]);
+          acquisition = client('device-code', { signal });
+          acquisition.getTokenCache().deserialize(credential.cache);
+        } else {
+          acquisition = credential.cache;
+        }
+        result = await acquisition.acquireTokenSilent({ account: credential.account, scopes });
+      }
       catch (error) {
-        if (controller?.signal.aborted || session.contextVersion !== version) {
+        if (operationSignal?.aborted || controller?.signal.aborted || session.contextVersion !== version) {
           throw Object.assign(new Error('Execution context changed during token acquisition.'), { status: 409, code: 'context-changed' });
         }
         if (error instanceof InteractionRequiredAuthError
           || ['invalid_grant', 'no_tokens_found', 'token_refresh_required', 'no_account_in_silent_request'].includes(error?.errorCode)) reconnect();
         throw Object.assign(new Error('Resource token acquisition is unavailable. Retry explicitly, or ask the deployment owner to check the confidential credential and identity service.'), { status: 503, code: `${code}-token-unavailable` });
       }
-      if (controller?.signal.aborted || session.contextVersion !== version || session.authPending) {
+      if (operationSignal?.aborted || controller?.signal.aborted || session.contextVersion !== version || session.authPending) {
         throw Object.assign(new Error('Execution context changed during token acquisition.'), { status: 409, code: 'context-changed' });
       }
       if (result.account?.localAccountId !== session.claims.oid || result.account?.tenantId !== session.claims.tid
@@ -109,6 +154,7 @@ export function createMicrosoftAuth(config, { fetchImpl = createHttpsTransport()
         || !(result.expiresOn instanceof Date) || !Number.isFinite(result.expiresOn.getTime())
         || result.expiresOn.getTime() <= Date.now()) reconnect();
       if (credential.account.homeAccountId && result.account.homeAccountId !== credential.account.homeAccountId) reconnect();
+      if (credential.clientKind === 'public') credential.cache = acquisition.getTokenCache().serialize();
       return result.accessToken;
     },
     logoutUrl: `${authority}/oauth2/v2.0/logout?post_logout_redirect_uri=${encodeURIComponent(config.logoutRedirect ?? config.origin + '/')}`,

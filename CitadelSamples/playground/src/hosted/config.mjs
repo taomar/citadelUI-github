@@ -14,6 +14,17 @@ export const GATEWAY_RECIPES = Object.freeze([
 export const ARM_RECIPES = Object.freeze(['azure-context-check', 'apim-discovery']);
 export const HOSTED_RECIPES = Object.freeze([...ARM_RECIPES, ...GATEWAY_RECIPES]);
 
+export function authMethods(config) {
+  return [
+    { id: 'browser', available: (config.authMethodIds ?? ['browser']).includes('browser') && !config.authIssues.length,
+      issues: config.authIssues },
+    { id: 'device-code', available: (config.authMethodIds ?? []).includes('device-code') && !config.deviceAuthIssues?.length
+        && Boolean(config.deviceClientId),
+      applicationName: config.deviceApplicationName,
+      issues: config.deviceAuthIssues ?? ['Device-code sign-in is not enabled by the deployment owner.'] },
+  ];
+}
+
 export function httpsOrigin(value) {
   let url;
   try { url = new URL(value); }
@@ -79,14 +90,39 @@ export function readHostedConfig(env = process.env) {
     return env[name];
   });
   const tenantId = guid('CITADEL_PLAYGROUND_ENTRA_TENANT_ID');
+  const policy = read('CITADEL_PLAYGROUND_OPERATOR_*', () => readHostedAuthorizationPolicy(env));
+  const sharedAuthIssues = [...issues];
+  let authMethodIds = ['browser'];
+  if (env.CITADEL_HOSTED_AUTH_METHODS !== undefined) {
+    authMethodIds = read('CITADEL_HOSTED_AUTH_METHODS', () => {
+      const methods = JSON.parse(env.CITADEL_HOSTED_AUTH_METHODS);
+      if (!Array.isArray(methods) || !methods.length || methods.length > 2
+        || new Set(methods).size !== methods.length || methods.some((method) => !['browser', 'device-code'].includes(method))) {
+        throw new TypeError('Invalid authentication methods.');
+      }
+      return methods;
+    }) ?? [];
+  }
   const clientId = guid('CITADEL_PLAYGROUND_ENTRA_CLIENT_ID');
   const clientSecret = read('CITADEL_ENTRA_CLIENT_SECRET_FILE', () => {
     const value = secretFile(env.CITADEL_ENTRA_CLIENT_SECRET_FILE, 'Client credential').trim();
     if (!value) throw new TypeError('Empty credential');
     return value;
   });
-  const policy = read('CITADEL_PLAYGROUND_OPERATOR_*', () => readHostedAuthorizationPolicy(env));
   const authIssues = [...issues];
+  const deviceClientId = env.CITADEL_PLAYGROUND_ENTRA_DEVICE_CLIENT_ID;
+  const deviceApplicationName = env.CITADEL_PLAYGROUND_ENTRA_DEVICE_APP_NAME;
+  const deviceAuthIssues = [...sharedAuthIssues];
+  if (!authMethodIds.includes('device-code')) deviceAuthIssues.push('Device-code sign-in is not enabled by the deployment owner.');
+  else {
+    if (typeof deviceApplicationName !== 'string' || !/^[\x20-\x7e]{1,100}$/.test(deviceApplicationName) || !deviceApplicationName.trim()) {
+      deviceAuthIssues.push('Configure the public registration display name for the device sign-in confirmation.');
+    }
+    if (!GUID.test(deviceClientId ?? '') || deviceClientId === clientId) {
+      deviceAuthIssues.push('Configure a dedicated, distinct public-client ID for device-code sign-in.');
+    }
+    if (cloud?.name !== 'AzureCloud') deviceAuthIssues.push('Device verification destinations are not verified for this Azure cloud.');
+  }
   const subscriptionIds = read('CITADEL_HOSTED_SUBSCRIPTION_IDS', () => {
     const values = JSON.parse(env.CITADEL_HOSTED_SUBSCRIPTION_IDS ?? '');
     if (!Array.isArray(values) || values.length > 100 || !values.every((id) => GUID.test(id)) || new Set(values).size !== values.length) {
@@ -113,6 +149,8 @@ export function readHostedConfig(env = process.env) {
   return Object.freeze({
     origin, callback: `${origin}/auth/callback`, logoutRedirect: `${origin}/`, cloud, tenantId, clientId, clientSecret, policy,
     authIssues: Object.freeze(authIssues), issues: Object.freeze(issues),
+    authMethodIds: Object.freeze(authMethodIds), deviceClientId, deviceApplicationName,
+    deviceAuthIssues: Object.freeze(deviceAuthIssues),
     subscriptionIds, gatewayPolicy, stagedEnabled, stagedDirectory,
     resourcePurposes: Object.freeze([]),
     idleMs: integer(env, 'CITADEL_SESSION_IDLE_SECONDS', 1800, 1800) * 1000,

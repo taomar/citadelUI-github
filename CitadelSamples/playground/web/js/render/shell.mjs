@@ -5,6 +5,7 @@ import {
 } from './dossier-contract.mjs';
 import { el, replace } from './dom.mjs';
 import { renderDirectory } from './directory.mjs';
+import { updateDeviceSignIn } from '../deviceSignIn.mjs';
 
 const TONES = new Set(['brand', 'success', 'warning', 'danger', 'neutral', 'cloud']);
 
@@ -239,26 +240,43 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
 
 function renderHostedIdentity(identity, callbacks) {
   const auth = identity.auth;
+  const device = auth.methods?.find((method) => method.id === 'device-code');
   const action = (id, label, callback, disabled = false) => el('button', {
     id, type: 'button', class: 'dossier-identity-action', text: label,
     disabled: disabled || identity.busy || typeof callback !== 'function', onclick: callback,
   });
-  return el('section', { id: DOSSIER_IDS.globalIdentity, class: 'task-identity', 'aria-label': 'Application account' }, [
+  const section = el('section', { id: DOSSIER_IDS.globalIdentity, class: 'task-identity', 'aria-label': 'Application account' }, [
     el('h2', { text: auth.signedIn ? 'Application account' : 'Sign in to Citadel' }),
     el('p', { text: auth.account?.name ?? 'Sign in with Microsoft here. No terminal or launch link is required.' }),
     !auth.signedIn ? el('p', { text: 'The selected recipe and non-secret inputs return after sign-in. Gateway keys are not saved and must be re-entered.' }) : null,
     auth.available
       ? action('dossier-identity-sign-in', auth.signedIn ? 'Switch account' : 'Sign in with Microsoft', callbacks.onIdentitySignIn, auth.pending)
       : el('p', { role: 'status', text: auth.recovering ? 'The application session is temporarily unavailable. Retry the connection here.'
-        : 'The deployment owner must configure Microsoft sign-in before this application can authenticate operators.' }),
+        : device?.available ? 'Browser sign-in is unavailable. Device-code sign-in is enabled by the deployment owner.'
+          : 'The deployment owner must configure Microsoft sign-in before this application can authenticate operators.' }),
     auth.recovering ? action('dossier-identity-retry', 'Retry connection', callbacks.onIdentityRetry) : null,
+    device?.available ? action('dossier-device-sign-in', auth.signedIn ? 'Switch account with device code' : 'Sign in with device code',
+      callbacks.onDeviceSignIn, auth.pending) : device ? el('p', { text: `Device-code sign-in unavailable: ${device.issues.join(' ')}` }) : null,
+    el('section', { id: 'device-sign-in', hidden: !identity.deviceFlow, 'aria-label': 'Device-code sign-in' }, [
+      el('h3', { id: 'device-heading', tabindex: '-1', text: 'Sign in with device code' }),
+      el('p', { text: `Only enter a code you requested here. On Microsoft, confirm the application name: ${device?.applicationName ?? 'the owner-configured Citadel application'}. Never enter a code sent by someone else.` }),
+      el('p', { 'data-device-status': '', role: 'status', 'aria-live': 'polite' }),
+      el('p', { 'data-device-resumed': '' }),
+      el('a', { id: 'device-verification-link', hidden: true, target: '_blank', rel: 'noopener noreferrer' }),
+      el('p', {}, [el('span', { text: 'Your code: ' }), el('strong', { 'data-device-code': '', 'aria-label': 'Device user code' })]),
+      el('p', { 'data-device-expiry': '', 'aria-live': 'off' }),
+      action('device-cancel', 'Cancel device sign-in', callbacks.onDeviceCancel),
+      action('device-complete', 'Finish sign-in', callbacks.onDeviceComplete),
+      action('device-retry', 'Retry device sign-in', callbacks.onDeviceRetry),
+    ]),
     auth.signedIn ? action('dossier-identity-sign-out', 'Sign out', callbacks.onIdentitySignOut) : null,
-    auth.pending ? action('dossier-identity-cancel', 'Cancel pending sign-in', callbacks.onIdentityCancel) : null,
-    auth.signedIn && !auth.authorized ? el('p', { role: 'status', text: 'This account has no configured operator entitlement. Contact the deployment owner.' }) : null,
+    auth.pending && !auth.deviceFlow ? action('dossier-identity-cancel', 'Cancel pending sign-in', callbacks.onIdentityCancel) : null,
+    auth.signedIn && !auth.authorized && !auth.pending ? el('p', { role: 'status', text: 'This account has no configured operator entitlement. Contact the deployment owner.' }) : null,
     identity.message ? el('p', { role: 'status', text: identity.message }) : null,
     identity.management && auth.authorized ? el('div', {}, [
       el('p', { text: 'Azure requests use this account through a server-owned delegated token. No Azure CLI session is involved.' }),
-      !auth.azureConnected ? action('dossier-connect-azure', 'Connect Azure', callbacks.onIdentityConnectAzure) : null,
+      !auth.azureConnected && auth.available ? action('dossier-connect-azure', 'Connect Azure', callbacks.onIdentityConnectAzure) : null,
+      !auth.azureConnected && device?.available ? action('dossier-device-azure', 'Connect Azure with device code', callbacks.onDeviceAzure) : null,
       auth.azureConnected ? action('dossier-load-subscriptions', 'Load subscriptions', callbacks.onIdentityVerify) : null,
       auth.azureConnected ? el('label', { for: 'dossier-hosted-subscription', text: 'Permitted Azure subscription' }) : null,
       auth.azureConnected ? el('select', {
@@ -281,6 +299,8 @@ function renderHostedIdentity(identity, callbacks) {
       ...auth.issues.map((issue) => el('p', { text: issue })),
     ]) : null,
   ]);
+  updateDeviceSignIn(section, identity.deviceFlow, { busy: identity.busy });
+  return section;
 }
 
 function hostedIdentityPath(execution = {}) {
@@ -440,6 +460,11 @@ export function renderShell({
   onIdentitySignIn,
   onIdentitySignOut,
   onIdentityConnectAzure,
+  onDeviceSignIn,
+  onDeviceAzure,
+  onDeviceCancel,
+  onDeviceComplete,
+  onDeviceRetry,
   onIdentityRetry,
   onIdentitySubscriptionChange,
   onIdentityVerify,
@@ -488,6 +513,11 @@ export function renderShell({
     onIdentitySignIn,
     onIdentitySignOut,
     onIdentityConnectAzure,
+    onDeviceSignIn,
+    onDeviceAzure,
+    onDeviceCancel,
+    onDeviceComplete,
+    onDeviceRetry,
     onIdentityRetry,
     onIdentitySubscriptionChange,
     onIdentityVerify,

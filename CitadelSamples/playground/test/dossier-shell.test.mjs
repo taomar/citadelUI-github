@@ -299,7 +299,16 @@ test('the renderer source enforces the dossier shell constraints', async () => {
   assert.match(shell, /Refresh Azure CLI Status/);
   assert.match(shell, /Active subscription/);
   assert.match(shell, /Intended target/);
-  assert.doesNotMatch(source, /device[- ]?code|verificationUrl|userCode/i);
+  const legacyIdentity = shell.slice(shell.indexOf('function renderIdentitySurface'), shell.indexOf('function renderHostedIdentity'));
+  assert.doesNotMatch(`${legacyIdentity}\n${directory}`, /device[- ]?code|verificationUrl|userCode/i);
+  assert.match(shell, /device\?\.available \? action\('dossier-device-sign-in'/);
+  const shellParameters = shell.slice(shell.indexOf('export function renderShell'), shell.indexOf('const identityCallbacks'));
+  const forwarded = shell.slice(shell.indexOf('const identityCallbacks'), shell.indexOf('const directory ='));
+  for (const callback of ['onDeviceSignIn', 'onDeviceAzure', 'onDeviceCancel', 'onDeviceComplete', 'onDeviceRetry']) {
+    assert.ok(shellParameters.includes(callback));
+    assert.ok(forwarded.includes(callback));
+  }
+  assert.doesNotMatch(source, /device_code|accessToken|refreshToken|clipboard/i);
   assert.doesNotMatch(source, /sha256|self-test/i);
 
   assert.match(directory, /data-recommended-next/);

@@ -208,6 +208,6 @@ test('layout tracks avoid fixed pixel widths and cap horizontal content', () => 
   assert.match(responsiveCss, /overflow-wrap: anywhere/);
 });
 
-test('the active wizard UI contains no interactive sign-in code surface', () => {
+test('the wizard contains no embedded verification destination or code-copy action', () => {
   assert.doesNotMatch(activeUi, /microsoft\.com\/devicelogin|azure-device-code|copy device code/i);
 });

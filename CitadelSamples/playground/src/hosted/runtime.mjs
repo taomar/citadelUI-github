@@ -32,7 +32,7 @@ export function createHostedRuntime(config, sessions, auth, { fetchImpl = create
   async function arm(session, path, { signal, fetchRequest = fetchImpl } = {}) {
     requireOperator(session);
     const version = session.contextVersion;
-    const token = await auth.token(session);
+    const token = await auth.token(session, 'azure', { signal });
     requireOperator(session);
     if (session.contextVersion !== version) refuse('Context changed; review again.', 'context-changed');
     const url = new URL(path, config.cloud.resourceManager);

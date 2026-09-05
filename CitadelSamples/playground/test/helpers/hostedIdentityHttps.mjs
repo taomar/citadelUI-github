@@ -10,7 +10,17 @@ export async function createHttpsIdentityFixture(config, tls) {
     try {
       const url = new URL(request.url, origin);
       requests.push({ path: url.pathname, method: request.method, protocol: request.socket.getProtocol() });
-      if (url.pathname.endsWith('/authorize')) {
+      if (url.pathname === '/device') {
+        if (request.method === 'GET') {
+          response.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' })
+            .end('<!doctype html><html><body><h1>Synthetic Citadel verification</h1><form method="post"><label>Device code <input name="user_code" autocomplete="off"></label><button>Verify device</button></form></body></html>');
+        } else {
+          let body = '';
+          for await (const chunk of request) { body += chunk; if (body.length > 256) throw new Error('Invalid device form.'); }
+          fixture.acceptDevice(new URLSearchParams(body).get('user_code'));
+          response.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' }).end('<h1>Device verified. Return to Citadel.</h1>');
+        }
+      } else if (url.pathname.endsWith('/authorize')) {
         const callback = new URL(fixture.authorize(url.href));
         if (denyNext) {
           callback.searchParams.delete('code');
@@ -44,6 +54,8 @@ export async function createHttpsIdentityFixture(config, tls) {
     addressAllowed: (address) => address === '127.0.0.1' });
   return {
     origin, requests, authorize: (...args) => fixture.authorize(...args),
+    acceptDevice: (code) => fixture.acceptDevice(code),
+    setDeviceBehavior: (behavior) => fixture.setDeviceBehavior(behavior),
     denyNext: () => { denyNext = true; },
     fetchHttps(url, options) {
       if (new URL(url).origin !== origin) throw new Error('Fixture connector refuses external identity destinations.');

@@ -7,11 +7,17 @@ export function sessionFetch(path, options = {}) {
   if (options.method === 'POST' && capabilities?.auth?.csrf) headers.set('X-Citadel-CSRF', capabilities.auth.csrf);
   return fetch(path, { ...options, headers, credentials: 'same-origin' });
 }
-export async function hostedPost(path, payload) {
-  const response = await sessionFetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+export async function hostedPost(path, payload, { signal } = {}) {
+  const response = await sessionFetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal });
   const data = await response.json();
   if (!response.ok) throw Object.assign(new Error(data.summary || `Request failed (${response.status}).`), { status: response.status, code: data.code });
   return data;
+}
+export async function hostedDevicePost(action, payload) {
+  const result = await hostedPost(`/api/auth/device/${action}`, { protocolVersion: 2, deviceFlowVersion: 1, ...payload },
+    { signal: AbortSignal.timeout(10000) });
+  if (result.csrf && capabilities?.auth) capabilities.auth.csrf = result.csrf;
+  return result;
 }
 export async function startStagedConsent(intent) {
   const response = await sessionFetch('/api/capabilities');

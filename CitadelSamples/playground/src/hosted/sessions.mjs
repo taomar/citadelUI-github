@@ -37,9 +37,15 @@ export function createSessions(config, { now = Date.now } = {}) {
   const invalidators = new Set();
   let loginWindow = 0;
   let logins = 0;
+  function removeTransaction(tx) {
+    tx.invalidated = true;
+    tx.onCancel?.();
+    if (tx.method !== 'device-code' || tx.settled) transactions.delete(tx.state);
+  }
   function revoke(session) {
     if (!session) return;
     session.controller.abort();
+    session.contextController.abort();
     session.run?.controller.abort();
     for (const invalidate of invalidators) invalidate(session);
     session.stagedResolution?.clearSecrets?.();
@@ -51,7 +57,7 @@ export function createSessions(config, { now = Date.now } = {}) {
     session.account = null;
     sessions.delete(session.id);
     pending.delete(session.id);
-    for (const [id, transaction] of transactions) if (transaction.sessionId === session.id) transactions.delete(id);
+    for (const transaction of transactions.values()) if (transaction.sessionId === session.id) removeTransaction(transaction);
   }
   function sweep() {
     const time = now();
@@ -60,8 +66,8 @@ export function createSessions(config, { now = Date.now } = {}) {
         || (pending.has(session.id) && time - session.created >= config.transactionMs)
         || (session.claims && session.claims.exp * 1000 <= time)) revoke(session);
     }
-    for (const [id, tx] of transactions) if (tx.expires <= time) {
-      transactions.delete(id);
+    for (const tx of transactions.values()) if (tx.expires <= time) {
+      removeTransaction(tx);
       const owner = sessions.get(tx.sessionId);
       if (owner) owner.authPending = false;
     }
@@ -69,6 +75,11 @@ export function createSessions(config, { now = Date.now } = {}) {
   }
   const stored = (id) => sessions.get(id) ?? pending.get(id);
   function invalidateContext(session) {
+    session.contextController.abort();
+    session.contextController = new AbortController();
+    for (const tx of transactions.values()) {
+      if (tx.method === 'device-code' && tx.sessionId === session.id && tx.pendingContextVersion !== undefined) removeTransaction(tx);
+    }
     session.contextVersion++;
     session.resolutionGeneration++;
     session.review = null;
@@ -83,7 +94,8 @@ export function createSessions(config, { now = Date.now } = {}) {
   function newSession() {
     const session = { id: randomToken(), csrf: randomToken(), created: now(), touched: now(), claims: null,
       account: null, cache: null, credentials: {}, subscription: null, contextVersion: 0, authGeneration: 0,
-      resolutionGeneration: 0, consentIntents: new Map(), controller: new AbortController(), run: null };
+      resolutionGeneration: 0, consentIntents: new Map(), controller: new AbortController(),
+      contextController: new AbortController(), run: null };
     session.invalidateContext = () => invalidateContext(session);
     return session;
   }
@@ -108,8 +120,9 @@ export function createSessions(config, { now = Date.now } = {}) {
       return Boolean(session && sessions.get(session.id) === session && session.claims
         && session.claims.tid === config.tenantId && entitled(session.claims, config.policy));
     },
-    begin(session, purpose, client, clientId = 'internal-test-client', intent = null) {
+    begin(session, purpose, client, clientId = 'internal-test-client', intent = null, method = 'browser') {
       sweep();
+      if (!['browser', 'device-code'].includes(method)) throw new TypeError('Unknown authentication method.');
       if (!AUTH_PURPOSES.includes(purpose)) throw Object.assign(new Error('Unknown authentication purpose.'), { status: 400 });
       if (RESOURCE_PURPOSES.includes(purpose) && (!intent || session?.consentIntents.get(intent.consentIntentId) !== intent
         || intent.purpose !== purpose || intent.expiresAt <= now() || intent.contextVersion !== session.contextVersion
@@ -132,10 +145,11 @@ export function createSessions(config, { now = Date.now } = {}) {
       if (!session) { session = newSession(); pending.set(session.id, session); }
       if (intent) session.consentIntents.delete(intent.consentIntentId);
       const state = randomToken();
-      const tx = { state, correlation: randomToken(), nonce: randomToken(), verifier: randomToken(),
+      const tx = { state, method, ...(method === 'browser' ? { correlation: randomToken(), nonce: randomToken(), verifier: randomToken() } : {}),
         expires: now() + config.transactionMs, sessionId: session.id, purpose, client, clientId,
         expectedOid: purpose !== 'signin' ? session.claims?.oid : null,
         expectedTid: purpose !== 'signin' ? session.claims?.tid : null,
+        expectedHomeAccountId: purpose !== 'signin' ? session.account?.homeAccountId : null,
         intent, authGeneration: ++session.authGeneration };
       transactions.set(state, tx);
       clients.set(clientId, { start: bucket?.start ?? now(), count: (bucket?.count ?? 0) + 1 });
@@ -145,19 +159,35 @@ export function createSessions(config, { now = Date.now } = {}) {
     consume(state, correlation) {
       sweep();
       const tx = transactions.get(state);
-      if (!tx || tx.consumed || !sameToken(tx.correlation, correlation)) throw Object.assign(new Error('Sign-in expired or browser correlation failed. Start again.'), { status: 400 });
+      if (!tx || tx.method !== 'browser' || tx.invalidated || tx.consumed || !sameToken(tx.correlation, correlation)) throw Object.assign(new Error('Sign-in expired or browser correlation failed. Start again.'), { status: 400 });
       tx.consumed = true;
       if (!stored(tx.sessionId)) throw Object.assign(new Error('Sign-in session expired.'), { status: 400 });
       return tx;
     },
-    hasTransaction(tx) { return Boolean(tx && transactions.get(tx.state) === tx && tx.expires > now()); },
+    hasTransaction(tx) { return Boolean(tx && !tx.invalidated && transactions.get(tx.state) === tx && tx.expires > now()); },
+    consumeDevice(session, tx) {
+      sweep();
+      if (!tx || tx.method !== 'device-code' || tx.invalidated || tx.consumed || !tx.settled
+        || transactions.get(tx.state) !== tx || tx.expires <= now() || stored(session?.id) !== session
+        || tx.sessionId !== session.id || tx.authGeneration !== session.authGeneration
+        || tx.pendingContextVersion !== session.contextVersion) {
+        throw Object.assign(new Error('Device sign-in expired or no longer belongs to this browser.'), { status: 409 });
+      }
+      tx.consumed = true;
+      return tx;
+    },
+    settleDevice(tx) {
+      if (tx.method !== 'device-code') throw new TypeError('Not a device transaction.');
+      tx.settled = true;
+      if (tx.invalidated) transactions.delete(tx.state);
+    },
     bindPendingContext(tx, session) {
       if (transactions.get(tx.state) !== tx || tx.sessionId !== session.id) throw new Error('Authentication transaction is no longer current.');
       tx.pendingContextVersion = session.contextVersion;
     },
     finish(prior, verified, tx) {
       sweep();
-      if (tx && (transactions.get(tx.state) !== tx || tx.sessionId !== prior?.id || !tx.consumed || tx.expires <= now())) {
+      if (tx && (tx.invalidated || transactions.get(tx.state) !== tx || tx.sessionId !== prior?.id || !tx.consumed || tx.expires <= now())) {
         throw Object.assign(new Error('Sign-in transaction expired or was cancelled.'), { status: 409 });
       }
       if (stored(prior?.id) !== prior) throw Object.assign(new Error('Sign-in session expired.'), { status: 401 });
@@ -168,11 +198,14 @@ export function createSessions(config, { now = Date.now } = {}) {
       if (tx?.purpose !== 'signin' && tx && (verified.claims?.oid !== tx.expectedOid || verified.claims?.tid !== tx.expectedTid)) {
         throw Object.assign(new Error('Resource consent must retain the same operator.'), { status: 403 });
       }
-      const operator = verified.claims?.tid === config.tenantId && entitled(verified.claims, config.policy);
+      const consent = tx && tx.purpose !== 'signin';
+      const operatorClaims = consent ? prior.claims : verified.claims;
+      const operator = operatorClaims?.tid === config.tenantId && entitled(operatorClaims, config.policy);
       const destination = operator ? sessions : pending;
       const limit = operator ? config.maxSessions : config.maxTransactions;
       if (!destination.has(prior.id) && destination.size >= limit) throw Object.assign(new Error('Operator session capacity reached; retry later.'), { status: 429 });
       const next = Object.assign(newSession(), verified);
+      if (consent) { next.claims = prior.claims; next.account = prior.account; }
       next.contextVersion = prior.contextVersion + 1;
       const credentials = {};
       const validAccount = (account) => account?.localAccountId === verified.claims?.oid && account?.tenantId === verified.claims?.tid
@@ -183,7 +216,7 @@ export function createSessions(config, { now = Date.now } = {}) {
           credentials[purpose] = credential;
         }
         if (!validAccount(verified.account)) throw Object.assign(new Error('Resource account did not match the operator.'), { status: 403 });
-        credentials[tx.purpose] = { cache: verified.cache, account: verified.account,
+        credentials[tx.purpose] = { ...verified.credentials?.[tx.purpose], cache: verified.cache, account: verified.account,
           grantGeneration: (credentials[tx.purpose]?.grantGeneration ?? 0) + 1 };
       }
       next.credentials = credentials;
@@ -197,8 +230,8 @@ export function createSessions(config, { now = Date.now } = {}) {
     endAuth(session, tx) {
       if (!session || stored(session.id) !== session) return;
       if (tx && transactions.get(tx.state) !== tx) return;
-      for (const [id, active] of transactions) if (active.sessionId === session.id && (!tx || active === tx)) transactions.delete(id);
-      session.authPending = [...transactions.values()].some((active) => active.sessionId === session.id);
+      for (const active of transactions.values()) if (active.sessionId === session.id && (!tx || active === tx)) removeTransaction(active);
+      session.authPending = [...transactions.values()].some((active) => !active.invalidated && active.sessionId === session.id);
     },
     close() { for (const session of [...sessions.values(), ...pending.values()]) revoke(session); transactions.clear(); clients.clear(); },
   });

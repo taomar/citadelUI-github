@@ -5,7 +5,8 @@ import { createSessions, cookieValue, sessionCookie, SESSION_COOKIE, CORRELATION
 import { createMicrosoftAuth } from './auth.mjs';
 import { createHostedRuntime } from './runtime.mjs';
 import { CATALOGUE } from '../catalogue/index.mjs';
-import { HOSTED_RECIPES } from './config.mjs';
+import { HOSTED_RECIPES, authMethods } from './config.mjs';
+import { createDeviceAuth } from './deviceAuth.mjs';
 import { readSampleSource } from '../server/sourceView.mjs';
 import { createStagedRuntime } from './stagedRuntime.mjs';
 import { RESOURCE_PURPOSES, purposeStates } from './credentialPurposes.mjs';
@@ -44,7 +45,7 @@ function exact(value, keys) {
   if (Object.keys(value).some((key) => !keys.includes(key))) fail('Unexpected request fields.');
 }
 
-export function hostedCapabilities(config, sessions, session, runtime, csrf = null) {
+export function hostedCapabilities(config, sessions, session, runtime, csrf = null, device = null) {
   session ??= { claims: null, csrf, contextVersion: 0 };
   const authorized = sessions.authorized(session) && !session.authPending;
   const reason = config.authIssues.length ? 'Deployment owner must complete Microsoft sign-in configuration.'
@@ -53,7 +54,8 @@ export function hostedCapabilities(config, sessions, session, runtime, csrf = nu
     : 'Seven Docker adapters are available when their target policy is configured; twelve require future protected adapters.';
   return {
     status: 'ok', protocolVersion: 2, mode: 'hosted',
-    auth: { mode: 'bff', available: config.authIssues.length === 0, signedIn: Boolean(session.claims),
+    auth: { mode: 'bff', available: authMethods(config)[0].available, defaultMethod: 'browser',
+      methods: authMethods(config), deviceFlow: device?.pending(session) ?? null, signedIn: Boolean(session.claims),
       authorized, pending: session.authPending === true, csrf: session.csrf, account: session.claims ? {
         name: session.claims.preferred_username || session.claims.oid, objectId: session.claims.oid, tenantId: session.claims.tid,
       } : null, azureConnected: session.azure === true, selectedSubscription: session.subscription,
@@ -79,10 +81,11 @@ export function hostedCapabilities(config, sessions, session, runtime, csrf = nu
   };
 }
 
-export function createHostedServer({ config, tls, root, auth: injectedAuth, fetchImpl, now, testAdapters } = {}) {
+export function createHostedServer({ config, tls, root, auth: injectedAuth, fetchImpl, now, testAdapters, testVerificationUris } = {}) {
   if (!tls?.cert || !tls?.key) throw new TypeError('Hosted serving requires mounted TLS certificate and key.');
   const sessions = createSessions(config, { ...(now ? { now } : {}) });
-  const auth = injectedAuth ?? (config.authIssues.length ? null : createMicrosoftAuth(config, { fetchImpl }));
+  const auth = injectedAuth ?? (authMethods(config).some((method) => method.available) ? createMicrosoftAuth(config, { fetchImpl }) : null);
+  const device = auth ? createDeviceAuth(config, sessions, auth, { testVerificationUris }) : null;
   const staged = config.stagedEnabled ? createStagedRuntime(config, sessions, auth, { fetchImpl, testAdapters }) : null;
   const runtime = createHostedRuntime(config, sessions, auth, { fetchImpl, staged });
   const expectedHost = new URL(config.origin).host;
@@ -94,7 +97,7 @@ export function createHostedServer({ config, tls, root, auth: injectedAuth, fetc
       const url = new URL(request.url, config.origin);
       const path = url.pathname;
       if (path === '/auth/callback') {
-        if (request.method !== 'GET' || !auth) fail('Sign-in is not configured.', 400);
+        if (request.method !== 'GET' || !auth || !authMethods(config)[0].available) fail('Sign-in is not configured.', 400);
         let prior, next, tx;
         try {
           for (const key of url.searchParams.keys()) if (url.searchParams.getAll(key).length !== 1) fail('Duplicate authentication response fields.');
@@ -128,15 +131,52 @@ export function createHostedServer({ config, tls, root, auth: injectedAuth, fetc
           || (request.headers.origin && request.headers.origin !== config.origin);
         const existing = cookieValue(request, PREAUTH_COOKIE);
         const csrf = session?.csrf ?? (!crossSite ? sameToken(existing, existing) ? existing : randomToken() : null);
-        send(response, 200, hostedCapabilities(config, sessions, crossSite ? null : session, runtime, crossSite ? null : csrf),
+        send(response, 200, hostedCapabilities(config, sessions, crossSite ? null : session, runtime, crossSite ? null : csrf, crossSite ? null : device),
           !session && !crossSite ? { 'Set-Cookie': sessionCookie(csrf, { preauth: true }) } : {});
         return;
       }
       if (request.method === 'POST') {
         if (request.headers.origin !== config.origin || !['same-origin', undefined].includes(request.headers['sec-fetch-site'])) fail('Same-origin request required.', 403);
-        const csrf = session?.csrf ?? (path === '/api/auth/start' ? cookieValue(request, PREAUTH_COOKIE) : null);
+        const csrf = session?.csrf ?? (['/api/auth/start', '/api/auth/device/start'].includes(path) ? cookieValue(request, PREAUTH_COOKIE) : null);
         if (!sameToken(request.headers['x-citadel-csrf'], csrf)) fail('Session expired or CSRF check failed. Reload to sign in.', 401, 'session-required');
         const payload = await body(request);
+        if (session && sessions.get(session.id, { touch: false }) !== session) fail('Session changed while reading the request. Reload to continue.', 401, 'session-required');
+        if (path.startsWith('/api/auth/device/')) {
+          if (!device || !authMethods(config)[1].available) fail('Device sign-in is not configured by the deployment owner.', 503, 'device-unavailable');
+          if (url.search || payload.protocolVersion !== 2 || payload.deviceFlowVersion !== 1) fail('Invalid device sign-in protocol.');
+          if (path === '/api/auth/device/start') {
+            const { deviceFlowVersion, ...consentPayload } = payload;
+            let intent = null;
+            if (RESOURCE_PURPOSES.includes(payload.purpose)) {
+              if (!staged) fail('Staged resource consent is not enabled.', 403, 'service-contract-unverified');
+              intent = staged.consentIntent(session, consentPayload);
+            } else {
+              exact(payload, ['protocolVersion', 'deviceFlowVersion', 'purpose']);
+              if (!['signin', 'azure'].includes(payload.purpose)) fail('Unknown sign-in purpose.');
+            }
+            if (payload.purpose !== 'signin' && !sessions.authorized(session)) fail('Operator sign-in required.', 403);
+            if (payload.purpose === 'azure' && !config.subscriptionIds.length) fail('Configure permitted subscriptions before Azure consent.', 403);
+            const admitted = device.begin(session, payload.purpose, request.socket.remoteAddress, intent);
+            session = admitted.session;
+            let acknowledged = false;
+            response.once('finish', () => { acknowledged = true; device.start(session, admitted.flowId); });
+            response.once('close', () => { if (!acknowledged) device.abandon(session, admitted.flowId); });
+            const { session: owner, ...status } = admitted;
+            send(response, 202, { ...status, csrf: owner.csrf }, { 'Set-Cookie': [sessionCookie(owner.id)] });
+          } else {
+            exact(payload, ['protocolVersion', 'deviceFlowVersion', 'flowId']);
+            if (typeof payload.flowId !== 'string' || !/^[\w-]{43}$/.test(payload.flowId)) fail('Invalid device flow handle.');
+            if (path === '/api/auth/device/status') send(response, 200, device.status(session, payload.flowId));
+            else if (path === '/api/auth/device/cancel') send(response, 200, device.cancel(session, payload.flowId));
+            else if (path === '/api/auth/device/complete') {
+              const next = device.complete(session, payload.flowId);
+              send(response, 200, { state: 'complete', csrf: next.csrf }, { 'Set-Cookie': [
+                sessionCookie(next.id), sessionCookie('', { preauth: true, clear: true }),
+              ] });
+            } else fail('Unknown device sign-in operation.', 404);
+          }
+          return;
+        }
         if (path === '/api/auth/start') {
           let intent = null;
           if (RESOURCE_PURPOSES.includes(payload.purpose)) {
@@ -146,7 +186,7 @@ export function createHostedServer({ config, tls, root, auth: injectedAuth, fetc
             exact(payload, ['purpose']);
             if (!['signin', 'azure'].includes(payload.purpose)) fail('Sign-in configuration is incomplete.');
           }
-          if (!auth) fail('Sign-in configuration is incomplete.');
+          if (!auth || !authMethods(config)[0].available) fail('Sign-in configuration is incomplete.');
           if (payload.purpose === 'azure' && !sessions.authorized(session)) fail('Operator sign-in required.', 403);
           if (payload.purpose === 'azure' && !config.subscriptionIds.length) fail('The deployment owner must configure permitted subscriptions before Azure consent.', 403);
           const tx = sessions.begin(session, payload.purpose, auth.client(), request.socket.remoteAddress, intent);
@@ -167,6 +207,7 @@ export function createHostedServer({ config, tls, root, auth: injectedAuth, fetc
         }
         if (path === '/api/auth/logout' || path === '/api/auth/cancel') {
           exact(payload, []);
+          if (path.endsWith('cancel') && device?.pending(session)) fail('Cancel device sign-in with its exact flow handle.', 409, 'device-handle-required');
           const retained = path.endsWith('cancel') && sessions.authorized(session);
           if (retained) sessions.endAuth(session);
           else sessions.revoke(session);
@@ -256,9 +297,12 @@ export function createHostedServer({ config, tls, root, auth: injectedAuth, fetc
   server.maxHeadersCount = 80;
   let closingStaged;
   const closeStaged = () => closingStaged ??= staged ? staged.close() : Promise.resolve();
+  let closingDevice;
+  const closeDevice = () => closingDevice ??= device ? device.close() : Promise.resolve();
   server.on('close', () => {
     sessions.close();
+    closeDevice().catch(() => { process.exitCode = 1; process.stderr.write('Device sign-in could not close cleanly.\n'); });
     closeStaged().catch(() => { process.exitCode = 1; process.stderr.write('Staged storage could not close cleanly; owner recovery is required.\n'); });
   });
-  return Object.assign(server, { sessions, runtime, closeStaged });
+  return Object.assign(server, { sessions, runtime, closeStaged, closeDevice });
 }

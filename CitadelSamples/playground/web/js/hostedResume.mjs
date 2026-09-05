@@ -1,5 +1,7 @@
 const KEY = 'citadel-hosted-signin-resume';
 
+export function discardHostedResume(storage) { storage.removeItem(KEY); }
+
 export function saveHostedResume({ storage, sample, inputs, now = Date.now() }) {
   const allowed = new Set(sample.configurationEntries.filter((entry) => !entry.secret).map((entry) => entry.path));
   const safe = Object.fromEntries(Object.entries(inputs).filter(([path]) => allowed.has(path)));
@@ -10,7 +12,7 @@ export function saveHostedResume({ storage, sample, inputs, now = Date.now() }) 
 
 export function consumeHostedResume({ storage, catalogue, now = Date.now() }) {
   const raw = storage.getItem(KEY);
-  storage.removeItem(KEY);
+  discardHostedResume(storage);
   if (!raw) return null;
   if (raw.length > 128 * 1024) throw new Error('The saved sign-in draft is invalid.');
   let value;

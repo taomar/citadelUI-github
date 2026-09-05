@@ -119,6 +119,73 @@ The frozen [W1 staged interface contract](src/hosted/STAGED-CONTRACT.md) describ
 the strict payloads, credential slots, recovery boundary, synchronous-storage
 limits and interfaces reserved for later independently reviewed work.
 
+### Optional application-owned device-code sign-in
+
+Browser sign-in remains the default. The deployment owner may enable the separate
+**Sign in with device code** and **Connect Azure with device code** actions:
+
+| Setting | Owner-provided value |
+| --- | --- |
+| `CITADEL_HOSTED_AUTH_METHODS` | `["browser","device-code"]`; defaults to `["browser"]` |
+| `CITADEL_PLAYGROUND_ENTRA_DEVICE_CLIENT_ID` | A dedicated public-client application ID, distinct from the confidential browser client |
+| `CITADEL_PLAYGROUND_ENTRA_DEVICE_APP_NAME` | The exact public registration's display name, shown in the phishing warning (1-100 printable ASCII characters) |
+
+Register the public client in the configured tenant, enable **Allow public client
+flows**, and arrange the same operator entitlement policy (assigned application
+role or explicit principal/group allowlist). Tenant membership alone is never
+operator authorization. No registration is created or enabled by this code.
+Same-ID mixed public/confidential registrations and borrowed first-party client
+IDs are not supported. Missing optional device settings do not disable browser
+sign-in. An explicitly configured device-only method list is supported; there is
+no automatic fallback between methods.
+
+Only public Azure's exact HTTPS verification destinations
+`https://microsoft.com/devicelogin` and `https://www.microsoft.com/devicelogin`
+are accepted. National-cloud device verification is disabled pending verified
+destinations. The user must request a code here, open the link themselves, check
+the configured application name at Microsoft, and use **Finish sign-in** here
+after verification. Never enter a code received from another person. Provider
+message HTML is not rendered. No clipboard action, terminal login, CLI cache
+import, token export or code-bearing URL is provided.
+
+The short user code is transient in the owning app page only. Tokens and
+`device_code` remain server-only. Reload recovers an exact owning cancellation
+handle and status, not a saved code; cancel/retry obtains a fresh code. Completion
+is one-use and browser/CSRF-bound. An uncertain completion response refreshes
+capabilities instead of replaying completion. The displayed expiry is the earlier
+of provider expiry and the original application deadline (at most 300 seconds).
+Cancel invalidates immediately; Retry waits until the admitted SDK task actually
+settles. At most eight device tasks are active/unsettled, additionally constrained
+by the shared per-client, global and transaction limits described below.
+
+MSAL Node 6.0.0 polls `authorization_pending` but stops on `slow_down`. This
+approved pinned-SDK behavior produces a stopped **in-app** state with a
+30-second cooldown and explicit Retry, never an automatic new flow. Conditional
+Access may block device authentication entirely; browser access, registration,
+consent, tenant policy and deployment support remain owner-provided and unproven.
+OIDC sign-in needs no Graph permissions. ARM consent requests the configured
+cloud's ARM `/.default`, for the same verified operator; the owner supplies any
+required delegated consent/RBAC. Foundry/Key Vault/Insights production consent
+remains disabled under W1.
+
+Unlike browser authorization code, device grant has no redirect exchange,
+PKCE, returned OAuth state or request nonce. Browser state/correlation/PKCE/nonce
+validation is unchanged. Device completion consumes its own exact one-use
+transaction and verifies signed issuer/audience/tenant/account/lifetime claims.
+The device audience is the dedicated public client. Public grants contain
+memory-only serialized MSAL cache plus trusted method/client-kind/client-ID/
+purpose/account metadata. Silent refresh creates a fresh PCA and current
+operation-scoped HTTPS transport, never a confidential client or the expired
+transaction's transport. Same-operator consent preserves unrelated grants and
+the original operator claims; an explicit account switch transfers no grants.
+
+Official references:
+[device authorization protocol](https://learn.microsoft.com/entra/identity-platform/v2-oauth2-device-code),
+[MSAL Node device-code flow](https://learn.microsoft.com/entra/msal/javascript/node/acquire-token-requests#device-code-flow),
+[pinned MSAL Node 6.0.0 DeviceCodeClient](https://github.com/AzureAD/microsoft-authentication-library-for-js/blob/msal-node-v6.0.0/lib/msal-node/src/client/DeviceCodeClient.ts).
+The pinned SDK sends Microsoft's `grant_type=device_code`; the synthetic HTTPS
+fixture exercises that actual request, not an assumed authorization-code shape.
+
 ### TLS and lifecycle
 
 The application listens only on HTTPS, port 8443 by default, with TLS 1.2 minimum.
@@ -205,8 +272,10 @@ They require a separate protected adapter/process-isolation decision. Successful
 sign-in does not authorize arbitrary remote Python, CLI or command execution.
 
 No live Microsoft, Azure, gateway, deployment or end-user aesthetic acceptance
-is implied by offline signed-fixture/HTTPS browser evidence. All seven external
-release gates remain open.
+is implied by offline signed-fixture/HTTPS browser evidence. All nine external
+gates remain open: `browser-matrix`, `screen-reader`, `nonprod-approval`,
+`live-baseline`, `live-fixtures`, `live-policy-cleanup`, `hosted-integration`,
+`configure-hosted-deployment`, and `approve-hosted-agent-framework`.
 
 ### Scoped offline acceptance
 
@@ -215,6 +284,13 @@ Run focused Node cases from this directory:
 ```powershell
 node --test test\hosted-auth.test.mjs test\hosted-runtime.test.mjs test\hosted-boundaries.test.mjs test\hosted-corrections.test.mjs
 ```
+
+Device-specific cases use the same Node runner with
+`test\hosted-device-auth.test.mjs` and `test\device-sign-in-ui.test.mjs`.
+`scripts/hosted-device-browser-acceptance.mjs` uses the existing isolated native
+harness and HTTPS identity fixture, including native device verification form
+entry. Screenshots redact the synthetic user code before capture. These fixtures
+do not authorize or prove an actual tenant/device login.
 
 The existing CDP-pipe browser harness is reused by
 `scripts/hosted-browser-acceptance.mjs`. Its pinned Chromium container installs

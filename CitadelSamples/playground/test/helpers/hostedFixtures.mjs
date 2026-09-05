@@ -7,6 +7,7 @@ import { makeFixtureReader, FIXTURE_VALUES, FIXTURE_SECRETS } from './fixtures.m
 
 export const tenantId = '11111111-1111-1111-1111-111111111111';
 export const clientId = '22222222-2222-2222-2222-222222222222';
+export const deviceClientId = '55555555-5555-5555-5555-555555555555';
 export const oid = '33333333-3333-3333-3333-333333333333';
 export const subscriptionId = FIXTURE_VALUES['hub.subscriptionId'];
 export const gatewayOrigin = FIXTURE_VALUES['hub.gatewayUrl'];
@@ -84,6 +85,13 @@ export async function createIdentityFixture(config) {
   const codes = new Map();
   const calls = [];
   let lastClaims;
+  const devices = new Map(), refreshes = new Map();
+  let deviceBehavior = {};
+  function acceptDevice(userCode) {
+    const device = [...devices.values()].find((item) => item.userCode === userCode);
+    if (!device) throw new Error('Unknown synthetic device challenge.');
+    device.accepted = true;
+  }
   function authorize(location, { roles = ['Citadel.Operator'], objectId = oid } = {}) {
     const url = new URL(location);
     if (url.searchParams.get('redirect_uri') !== config.callback || url.searchParams.get('code_challenge_method') !== 'S256') throw new Error('Invalid fixture authorization');
@@ -101,11 +109,45 @@ export async function createIdentityFixture(config) {
     if (url.includes('.well-known/openid-configuration')) return Response.json({
       issuer, authorization_endpoint: `${authority}/oauth2/v2.0/authorize`,
       token_endpoint: `${authority}/oauth2/v2.0/token`, jwks_uri: `${authority}/discovery/v2.0/keys`,
+      device_authorization_endpoint: `${authority}/oauth2/v2.0/devicecode`,
       end_session_endpoint: `${authority}/oauth2/v2.0/logout`,
     });
     if (url.endsWith('/discovery/v2.0/keys')) return Response.json({ keys: [jwk] });
-    if (!new URL(url).pathname.endsWith('/oauth2/v2.0/token')) throw new Error('Unexpected fixture identity endpoint');
     const parameters = new URLSearchParams(options.body);
+    if (new URL(url).pathname.endsWith('/devicecode')) {
+      if (parameters.get('client_id') !== config.deviceClientId || parameters.has('client_secret') || parameters.has('nonce')
+        || parameters.has('redirect_uri') || parameters.has('code_challenge')) throw new Error('Invalid public device request.');
+      const deviceCode = randomUUID(), userCode = randomUUID().slice(0, 8).toUpperCase();
+      devices.set(deviceCode, { userCode, ...deviceBehavior });
+      return Response.json({ user_code: userCode, device_code: deviceCode,
+        verification_uri: deviceBehavior.verificationUri ?? `${config.cloud.loginEndpoint}/device`,
+        interval: deviceBehavior.interval ?? 1, expires_in: deviceBehavior.expiresIn ?? 300,
+        message: '<script>Never render provider messages</script>' });
+    }
+    if (!new URL(url).pathname.endsWith('/oauth2/v2.0/token')) throw new Error('Unexpected fixture identity endpoint');
+    if (parameters.get('client_id') === config.deviceClientId) {
+      if (parameters.has('client_secret') || parameters.has('code_verifier') || parameters.has('redirect_uri')) throw new Error('Invalid public token request.');
+      let device;
+      if (parameters.get('grant_type') === 'device_code') {
+        device = devices.get(parameters.get('device_code'));
+        if (!device) throw new Error('Unknown device grant.');
+        if (device.error) return Response.json({ error: device.error }, { status: 400 });
+        if (!device.accepted) return Response.json({ error: 'authorization_pending' }, { status: 400 });
+        if (device.wait) await device.wait;
+      } else if (parameters.get('grant_type') === 'refresh_token') {
+        device = refreshes.get(parameters.get('refresh_token'));
+        if (!device) throw new Error('Unknown public refresh grant.');
+      } else throw new Error('Wrong public grant.');
+      const deviceClaims = { ...operatorClaims(), ...device.claims };
+      const token = await new SignJWT(deviceClaims).setProtectedHeader({ alg: 'RS256', kid: jwk.kid })
+        .setSubject(deviceClaims.oid).setIssuer(device.issuer ?? issuer).setAudience(device.audience ?? config.deviceClientId)
+        .setIssuedAt().setNotBefore(Math.floor(Date.now() / 1000) - 1).sign(keys.privateKey);
+      const refreshToken = randomUUID();
+      refreshes.set(refreshToken, device);
+      return Response.json({ token_type: 'Bearer', scope: parameters.get('scope'), expires_in: device.tokenLifetime ?? 3600,
+        access_token: 'synthetic-delegated-arm-token', refresh_token: refreshToken, id_token: token,
+        client_info: Buffer.from(JSON.stringify({ uid: deviceClaims.oid, utid: deviceClaims.tid })).toString('base64url') });
+    }
     if (parameters.get('client_secret') !== config.clientSecret || parameters.get('client_id') !== clientId) throw new Error('Invalid fixture client');
     let tx;
     if (parameters.get('grant_type') === 'authorization_code') {
@@ -122,5 +164,5 @@ export async function createIdentityFixture(config) {
       refresh_token: 'synthetic-refresh-token', id_token: token,
       client_info: Buffer.from(JSON.stringify({ uid: lastClaims.oid, utid: tenantId })).toString('base64url') });
   }
-  return { authorize, fetchImpl, calls };
+  return { authorize, fetchImpl, calls, acceptDevice, setDeviceBehavior: (behavior) => { deviceBehavior = behavior; } };
 }

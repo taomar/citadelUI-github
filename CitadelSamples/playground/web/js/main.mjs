@@ -19,8 +19,9 @@ import {
   reconcileAzureContextCurrent,
 } from './executionContextClient.mjs';
 import { createLocalExecutorClient } from './localClient.mjs';
-import { createHostedExecutorClient, hostedPost, sessionFetch, setHostedCapabilities } from './hostedClient.mjs';
-import { consumeHostedResume, saveHostedResume } from './hostedResume.mjs';
+import { createHostedExecutorClient, hostedPost, hostedDevicePost, sessionFetch, setHostedCapabilities } from './hostedClient.mjs';
+import { createDeviceSignIn, updateDeviceSignIn } from './deviceSignIn.mjs';
+import { consumeHostedResume, discardHostedResume, saveHostedResume } from './hostedResume.mjs';
 import { renderShell } from './render/shell.mjs';
 import {
   captureFocus,
@@ -479,7 +480,7 @@ function shellIdentity(models) {
       supported: state.capabilities.hosted.supportedSampleIds.includes(state.sample.id),
       management: ['azure-context-check', 'apim-discovery'].includes(state.sample.id),
       subscriptions: state.hostedSubscriptions ?? [], selectedSubscriptionId: state.selectedSubscriptionId,
-      busy: state.hostedBusy === true || !appReady, message: state.hostedMessage ?? '' };
+      busy: state.hostedBusy === true || !appReady, message: state.hostedMessage ?? '', deviceFlow: deviceSignIn.snapshot() };
   }
   const identity = models.dossier.identity;
   const contextKind = models.context?.context?.kind;
@@ -1394,6 +1395,11 @@ function render() {
     onIdentitySignIn: () => state.capabilities?.auth?.mode === 'bff' ? beginHostedSignIn('signin') : startSystemBrowserLogin(),
     onIdentitySignOut: signOutHosted,
     onIdentityConnectAzure: () => beginHostedSignIn('azure'),
+    onDeviceSignIn: () => beginDeviceSignIn('signin'),
+    onDeviceAzure: () => beginDeviceSignIn('azure'),
+    onDeviceCancel: () => hostedAction(() => deviceSignIn.cancel()),
+    onDeviceComplete: () => hostedAction(() => deviceSignIn.complete()),
+    onDeviceRetry: () => beginDeviceSignIn(deviceSignIn.snapshot()?.purpose ?? 'signin'),
     onIdentityRetry: () => hostedAction(async () => { await fetchCapabilities(); await refreshExecutionContext(); }),
     onIdentitySubscriptionChange(id) {
       state.selectedSubscriptionId = id;
@@ -1658,6 +1664,7 @@ async function fetchCapabilities({ throwOnFailure = false } = {}) {
     if (!response.ok) throw new Error(`Capability probe failed with HTTP ${response.status}.`);
     state.capabilities = await response.json();
     setHostedCapabilities(state.capabilities);
+    deviceSignIn.reconcile(state.capabilities.auth);
     state.runtimeProbe = {
       mode: state.capabilities.mode ?? 'preview',
       ...probeFromCapabilityPayload(state.capabilities, CATALOGUE.byId),
@@ -2436,6 +2443,26 @@ async function boot() {
   installTestHooks();
   await runDiagnostics();
   render();
+}
+
+const deviceSignIn = createDeviceSignIn({
+  post: hostedDevicePost,
+  refresh: async () => {
+    await fetchCapabilities({ throwOnFailure: true });
+    await refreshExecutionContext();
+    render();
+  },
+  changed: (flow) => updateDeviceSignIn(document, flow, { busy: state.hostedBusy === true || !appReady }),
+});
+window.addEventListener('pagehide', () => deviceSignIn.dispose());
+
+async function beginDeviceSignIn(purpose) {
+  await hostedAction(async () => {
+    discardHostedResume(window.sessionStorage);
+    await fetchCapabilities({ throwOnFailure: true });
+    await deviceSignIn.start(purpose);
+  });
+  if (deviceSignIn.snapshot()) document.querySelector('#device-heading')?.focus();
 }
 
 async function hostedAction(operation) {
