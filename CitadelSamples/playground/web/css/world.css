@@ -622,10 +622,13 @@ input[type='checkbox'] {
   .mh-selftest-body {
     position: static;
     width: 100%;
-    max-height: none;
+    max-height: min(16rem, calc(100dvh - 14rem));
+    overflow-y: auto;
+    overscroll-behavior: contain;
     margin-top: var(--sp-3);
     box-shadow: none;
   }
+
 }
 
 @media (min-width: 66.0625rem) {

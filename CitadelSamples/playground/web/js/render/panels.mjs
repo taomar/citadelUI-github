@@ -313,7 +313,21 @@ export function renderSource(
               'div',
               { class: 'source-nav' },
               source.cells.map((cell) =>
-                el('a', { href: `#source-cell-${cell.cellIndex}`, text: `Cell ${cell.cellIndex}` }),
+                el('a', {
+                  href: `#source-cell-${cell.cellIndex}`,
+                  text: `Cell ${cell.cellIndex}`,
+                  onclick: (event) => {
+                    event.preventDefault();
+                    const target = document.getElementById(`source-cell-${cell.cellIndex}`);
+                    const summary = target?.querySelector(':scope > summary');
+                    if (!target || !summary) return;
+                    target.open = true;
+                    requestAnimationFrame(() => {
+                      summary.focus({ preventScroll: true });
+                      summary.scrollIntoView({ block: 'center' });
+                    });
+                  },
+                }),
               ),
             ),
             el('button', {

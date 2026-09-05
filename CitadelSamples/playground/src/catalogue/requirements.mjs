@@ -79,6 +79,7 @@ export function normaliseConfiguration(sample, lookupField) {
       label: field.label,
       type: field.type,
       classification: field.classification,
+      ...(Object.prototype.hasOwnProperty.call(field, 'mustEqual') ? { mustEqual: field.mustEqual } : {}),
       // Where the field lives: a shared profile id, this sample, or another
       // recipe whose configuration this one legitimately reads.
       owner: describeOwner(sample.id, path),
@@ -119,7 +120,9 @@ export function buildRequirementManifest(sample, read, { hasSecret } = {}) {
     const value = entry.type ? coerceValue({ type: entry.type }, raw) : raw;
     const supplied = entry.secret
       ? Boolean(hasSecret ? hasSecret(entry.path) : !isBlank(value))
-      : !isBlank(value);
+      : Object.prototype.hasOwnProperty.call(entry, 'mustEqual')
+        ? value === entry.mustEqual
+        : !isBlank(value);
     // A conditional entry only blocks while its condition holds. Everything
     // else follows its declared `blockingWhenBlank`.
     const conditionActive =

@@ -129,10 +129,42 @@ test('the execution-context client rejects success-shaped invalid responses', as
 
 test('the execution-context client surfaces server refusal rather than inventing a fallback', async () => {
   const client = createExecutionContextClient({
-    fetchImpl: async () => response({ detail: 'Local execute mode is required.' }, { ok: false, status: 404 }),
+    fetchImpl: async () =>
+      response(
+        {
+          state: 'blocked',
+          summary: 'Local execute mode is required.',
+          code: 'preview-unavailable',
+        },
+        { ok: false, status: 409 },
+      ),
   });
-  await assert.rejects(
-    () => client.getContext({ sampleId: 'azure-context-check' }),
-    /Local execute mode is required/,
-  );
+
+  await assert.rejects(() => client.getContext({ sampleId: 'azure-context-check' }), (error) => {
+    assert.match(error.message, /Local execute mode is required/);
+    assert.match(error.message, /preview-unavailable/);
+    assert.equal(error.status, 409);
+    assert.equal(error.code, 'preview-unavailable');
+    return true;
+  });
+});
+
+test('Azure login refusal preserves the production summary and login-in-progress code', async () => {
+  const client = createExecutionContextClient({
+    fetchImpl: async () =>
+      response(
+        {
+          state: 'blocked',
+          summary: 'An Azure CLI device-code login is already in progress.',
+          code: 'login-in-progress',
+        },
+        { ok: false, status: 409 },
+      ),
+  });
+  await assert.rejects(() => client.startAzureLogin(), (error) => {
+    assert.equal(error.status, 409);
+    assert.equal(error.code, 'login-in-progress');
+    assert.match(error.message, /already in progress/);
+    return true;
+  });
 });

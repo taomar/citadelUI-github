@@ -183,7 +183,7 @@ export function buildExecutionIdentityModel({ contextState = {}, loginState = {}
           return `${key}: ${String(value)}`;
         }),
     canExecute: context.canExecute === true,
-    canSignIn: state === 'signed-out' && !loginActive,
+    canSignIn: state === 'signed-out' && !loginActive && !loginModel?.cancelAvailable,
     canRefresh: !loginActive,
     refreshing: false,
     login: loginModel,

@@ -87,9 +87,16 @@ async function responseJson(response, label) {
     throw new Error(`${label} returned invalid JSON.`);
   }
   if (!response.ok) {
-    const detail = typeof payload?.detail === 'string' ? payload.detail : `HTTP ${response.status}`;
-    const error = new Error(`${label} failed: ${detail}`);
+    const summary =
+      typeof payload?.summary === 'string'
+        ? payload.summary
+        : typeof payload?.detail === 'string'
+          ? payload.detail
+          : `HTTP ${response.status}`;
+    const code = typeof payload?.code === 'string' && payload.code ? ` (${payload.code})` : '';
+    const error = new Error(`${label} failed: ${summary}${code}`);
     error.status = response.status;
+    error.code = typeof payload?.code === 'string' ? payload.code : '';
     throw error;
   }
   return payload;

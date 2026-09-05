@@ -882,6 +882,12 @@ input[type='search'].ctl {
   }
 }
 
+@media (max-width: 66rem) {
+  .sheet-sticky {
+    position: static;
+  }
+}
+
 /* ------------------------------------------------------- parameter rows */
 
 /* A parameter is one row: identity on the left, control on the right, help

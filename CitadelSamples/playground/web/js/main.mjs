@@ -313,6 +313,7 @@ async function loginRequest(action, generation, timeoutMs = 10_000) {
 }
 
 async function startAzureLogin() {
+  const previousLoginState = azureLoginState;
   clearTimeout(azureLoginPollTimer);
   azureLoginController?.abort();
   const generation = ++azureLoginGeneration;
@@ -335,15 +336,31 @@ async function startAzureLogin() {
     } else if (login) {
       applyAzureLogin(login);
     }
-  } catch {
+  } catch (error) {
     if (generation !== azureLoginGeneration) return;
-    azureLoginState = {
-      status: 'error',
-      message: 'Azure sign-in could not start. Confirm the loopback execute server and Azure CLI are available.',
-    };
+    const previousLogin = previousLoginState.status === 'ready' ? previousLoginState.login : null;
+    azureLoginState = previousLogin?.loginId
+      ? {
+          status: 'ready',
+          login: {
+            ...previousLogin,
+            state: 'failed',
+            message:
+              error?.code === 'login-in-progress'
+                ? 'Azure sign-in is already running. Cancel the existing sign-in before retrying.'
+                : 'Azure sign-in could not restart. Cancel the existing sign-in before retrying.',
+          },
+        }
+      : {
+          status: 'error',
+          message: 'Azure sign-in could not start. Confirm the loopback execute server and Azure CLI are available.',
+        };
     render();
-    requestAnimationFrame(() => document.getElementById('start-azure-login')?.focus());
-    announce(azureLoginState.message);
+    requestAnimationFrame(() => {
+      const target = document.getElementById('cancel-azure-login') ?? document.getElementById('start-azure-login');
+      target?.focus();
+    });
+    announce(azureLoginState.login?.message ?? azureLoginState.message);
   }
 }
 
@@ -510,6 +527,7 @@ async function validateProtectedSource() {
     });
   }
   if (version !== validationRequestVersion || state.selectedSampleId !== sampleId) return;
+  validationRequest = null;
   render();
   const outcome = sourceValidationStates.get(sampleId);
   announce(outcome.status === 'ready' ? 'Offline source validation finished.' : outcome.message);
@@ -971,12 +989,18 @@ nodes.directoryToggle.addEventListener('click', toggleDirectory);
 nodes.selfTestRun.addEventListener('click', runSelfTestCheck);
 
 state.subscribe((reason) => {
+  if (reason === 'selection' && validationRequest) {
+    const abortedSampleId = validationRequest.sampleId;
+    validationRequest.controller.abort();
+    validationRequest = null;
+    validationRequestVersion += 1;
+    sourceValidationStates.set(abortedSampleId, { status: 'not-run' });
+  }
   if (reason === 'value' && secretInputInProgress) return;
   if (reason === 'value') scheduleExecutionContext();
   render();
   if (reason === 'selection') {
     sourceRequest?.controller.abort();
-    validationRequest?.controller.abort();
     announce(`${getSample(state.selectedSampleId).title} selected.`);
     loadProtectedSource(state.selectedSampleId);
     if (executionContextAvailable && !testExecutionContextOverride) loadExecutionContext(state.selectedSampleId);
@@ -1063,6 +1087,7 @@ if (TEST_EXECUTOR_ENABLED) {
     startAzureLogin,
     cancelAzureLogin,
     refreshExecutionContext,
+    validateProtectedSource,
     isRunning: () => running,
   });
 }

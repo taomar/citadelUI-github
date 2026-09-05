@@ -38,6 +38,49 @@ function argumentValue(name) {
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
+async function checkValidationAbortReset(harness) {
+  await selectSample(harness, 'azure-context-check');
+  let heldRequestId = null;
+  const removeListener = harness.page.on('Fetch.requestPaused', (event) => {
+    if (event.request.url.includes('/api/source/azure-context-check/validate')) {
+      heldRequestId = event.requestId;
+      return;
+    }
+    harness.page.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {});
+  });
+  await harness.page.send('Fetch.enable', {
+    patterns: [{ urlPattern: '*api/source/azure-context-check/validate*', requestStage: 'Request' }],
+  });
+  try {
+    await harness.evaluate(`(() => {
+      void globalThis.__citadelTestHooks.validateProtectedSource();
+      return true;
+    })()`);
+    await harness.waitFor(
+      `document.getElementById('validate-source-button')?.textContent.includes('Validating')`,
+      { label: 'held source validation to enter its running state' },
+    );
+    await selectSample(harness, 'apim-discovery');
+    await selectSample(harness, 'azure-context-check');
+    const reset = await harness.evaluate(`(() => ({
+      button: document.getElementById('validate-source-button')?.textContent ?? '',
+      running: Boolean(document.querySelector('[data-validation-mode][aria-busy="true"]')),
+      text: document.getElementById('panel-code')?.textContent ?? '',
+    }))()`);
+    reporter.check(
+      'switching recipes resets an aborted source validation to not-run',
+      !/Validating/.test(reset.button) && reset.running === false && !/Compiling protected Python cells/.test(reset.text),
+      JSON.stringify(reset),
+    );
+  } finally {
+    if (heldRequestId) {
+      await harness.page.send('Fetch.failRequest', { requestId: heldRequestId, errorReason: 'Aborted' }).catch(() => {});
+    }
+    await harness.page.send('Fetch.disable').catch(() => {});
+    removeListener?.();
+  }
+}
+
 function reportIssues(label, issues) {
   reporter.check(label, issues.length === 0, issues.join('; '));
 }
@@ -537,6 +580,30 @@ async function checkExecutionIdentity(harness) {
     JSON.stringify(loginDuringRefresh),
   );
 
+  const failedLogin = await harness.evaluate(`(() => {
+    globalThis.__citadelTestHooks.setExecutionContext(globalThis.__acceptanceSignedOutContext);
+    globalThis.__citadelTestHooks.setAzureLogin({
+      loginId: 'login-acceptance',
+      state: 'failed',
+      verificationUrl: '',
+      userCode: '',
+      message: 'Status could not be refreshed.',
+      timestamps: {},
+    });
+    return {
+      signIn: Boolean(document.getElementById('start-azure-login')),
+      cancel: document.getElementById('cancel-azure-login')?.textContent ?? '',
+      message: document.querySelector('.device-login-message')?.textContent ?? '',
+    };
+  })()`);
+  reporter.check(
+    'failed in-flight login keeps its cancellation and suppresses unsafe retry',
+    failedLogin.signIn === false &&
+      failedLogin.cancel === 'Cancel Azure sign-in' &&
+      /could not be refreshed/.test(failedLogin.message),
+    JSON.stringify(failedLogin),
+  );
+
   const ready = await harness.evaluate(`(() => {
     globalThis.__citadelTestHooks.setAzureLogin({
       loginId: 'login-acceptance',
@@ -716,7 +783,19 @@ async function checkApprovalGate(harness) {
     hooks.setValue('hub.subscriptionId', '00000000-1111-2222-3333-444444444444');
     hooks.setValue('hub.resourceGroupName', 'rg-acceptance');
     hooks.setValue('hub.apimName', 'apim-acceptance');
+    hooks.setValue('samples.cleanup.confirmNonProduction', false);
+    document.getElementById('tab-code').click();
+    const guardRow = () => document.querySelector('[data-parameter-path="samples.cleanup.confirmNonProduction"]');
+    const unconfirmed = {
+      ready: [...guardRow().querySelectorAll('.prow-badges .chip')].some((chip) => chip.textContent === 'Ready'),
+      required: guardRow().querySelector('input')?.getAttribute('aria-required'),
+      error: guardRow().querySelector('.field-error')?.textContent ?? '',
+    };
     hooks.setValue('samples.cleanup.confirmNonProduction', true);
+    const confirmed = {
+      ready: [...guardRow().querySelectorAll('.prow-badges .chip')].some((chip) => chip.textContent === 'Ready'),
+      error: guardRow().querySelector('.field-error')?.textContent ?? '',
+    };
     document.getElementById('tab-request').click();
     const before = {
       disabled: document.getElementById('run-button')?.disabled,
@@ -743,6 +822,8 @@ async function checkApprovalGate(harness) {
     while (hooks.isRunning() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
     return {
       before,
+      unconfirmed,
+      confirmed,
       approved,
       invalidated,
       afterRun: {
@@ -753,6 +834,15 @@ async function checkApprovalGate(harness) {
   })()`);
 
   reporter.check('risky execution is blocked before approval', gate.before.disabled === true && /acknowledge/i.test(gate.before.reason));
+  reporter.check(
+    'mustEqual guard readiness stays blocked until the required value is true',
+    gate.unconfirmed.ready === false &&
+      gate.unconfirmed.required === 'true' &&
+      gate.unconfirmed.error.length > 0 &&
+      gate.confirmed.ready === true &&
+      gate.confirmed.error === '',
+    JSON.stringify({ unconfirmed: gate.unconfirmed, confirmed: gate.confirmed }),
+  );
   reporter.check('one explicit approval enables the reviewed run', gate.approved.disabled === false && gate.approved.checked === true);
   reporter.check('editing a parameter directly on Code invalidates approval', gate.invalidated.disabled === true && gate.invalidated.checked === false);
   reporter.check('approval is spent by one run', gate.afterRun.disabled === true && gate.afterRun.checked === false);
@@ -1129,6 +1219,54 @@ async function checkResponsiveLayout(harness) {
   );
   reporter.check('tablet has no page-level horizontal overflow', tablet.documentWidth <= tablet.viewport);
 
+  await selectSample(harness, 'azure-context-check');
+  const tabletCellJump = await harness.evaluate(`(async () => {
+    document.getElementById('tab-code').click();
+    document.querySelector('.source-nav a[href="#source-cell-4"]').click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const sheet = document.querySelector('.sheet').getBoundingClientRect();
+    const sticky = document.querySelector('.sheet-sticky');
+    const heading = document.querySelector('#source-cell-4 > summary').getBoundingClientRect();
+    return {
+      stickyPosition: getComputedStyle(sticky).position,
+      headingTop: heading.top,
+      headingBottom: heading.bottom,
+      sheetTop: sheet.top,
+      viewportBottom: window.innerHeight,
+    };
+  })()`);
+  reporter.check(
+    'tablet source cell navigation leaves the target heading fully visible',
+    tabletCellJump.stickyPosition === 'static' &&
+      tabletCellJump.headingTop >= tabletCellJump.sheetTop - 1 &&
+      tabletCellJump.headingBottom <= tabletCellJump.viewportBottom + 1,
+    JSON.stringify(tabletCellJump),
+  );
+
+  await harness.setViewport({ width: 375, height: 667, mobile: true });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await selectSample(harness, 'azure-context-check');
+  const phoneCellJump = await harness.evaluate(`(async () => {
+    document.querySelector('.source-nav a[href="#source-cell-4"]').click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const sheet = document.querySelector('.sheet').getBoundingClientRect();
+    const heading = document.querySelector('#source-cell-4 > summary').getBoundingClientRect();
+    return {
+      focused: document.activeElement === document.querySelector('#source-cell-4 > summary'),
+      headingTop: heading.top,
+      headingBottom: heading.bottom,
+      sheetTop: sheet.top,
+      viewportBottom: window.innerHeight,
+    };
+  })()`);
+  reporter.check(
+    '375px source jump focuses a fully visible target heading',
+    phoneCellJump.focused === true &&
+      phoneCellJump.headingTop >= phoneCellJump.sheetTop - 1 &&
+      phoneCellJump.headingBottom <= phoneCellJump.viewportBottom + 1,
+    JSON.stringify(phoneCellJump),
+  );
+
   await harness.setViewport({ width: 320, height: 640, mobile: true });
   await new Promise((resolve) => setTimeout(resolve, 250));
   const narrow = await harness.evaluate(`(() => ({
@@ -1153,6 +1291,31 @@ async function checkResponsiveLayout(harness) {
       narrow.jumpTarget === '#code-parameters',
     JSON.stringify(narrow),
   );
+
+  await selectSample(harness, 'azure-context-check');
+  const cellJump = await harness.evaluate(`(async () => {
+    document.getElementById('tab-code').click();
+    document.querySelector('.source-nav a[href="#source-cell-4"]').click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const sheet = document.querySelector('.sheet').getBoundingClientRect();
+    const sticky = document.querySelector('.sheet-sticky');
+    const heading = document.querySelector('#source-cell-4 > summary').getBoundingClientRect();
+    return {
+      stickyPosition: getComputedStyle(sticky).position,
+      headingTop: heading.top,
+      headingBottom: heading.bottom,
+      sheetTop: sheet.top,
+      viewportBottom: window.innerHeight,
+    };
+  })()`);
+  reporter.check(
+    'narrow source cell navigation leaves the target heading fully visible',
+    cellJump.stickyPosition === 'static' &&
+      cellJump.headingTop >= cellJump.sheetTop - 1 &&
+      cellJump.headingBottom <= cellJump.viewportBottom + 1,
+    JSON.stringify(cellJump),
+  );
+
   const jump = await harness.evaluate(`(async () => {
     const link = document.querySelector('.parameter-jump');
     link.click();
@@ -1168,6 +1331,48 @@ async function checkResponsiveLayout(harness) {
     'the narrow parameter jump reveals and focuses the disclosure below the sticky header',
     jump.focused === 'parameter-pane-summary' && jump.visibleBelowHeader === true,
     JSON.stringify(jump),
+  );
+
+  await harness.setViewport({ width: 320, height: 480, mobile: true });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const compactSelfTest = await harness.evaluate(`(async () => {
+    const details = document.getElementById('self-test');
+    details.open = true;
+    document.getElementById('self-test-run').click();
+    const deadline = Date.now() + 5000;
+    while (['Not run', 'Running…'].includes(document.getElementById('self-test-status').textContent)) {
+      if (Date.now() > deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const body = details.querySelector('.mh-selftest-body');
+    body.scrollTop = body.scrollHeight;
+    const last = body.querySelector('.mh-selftest-check:last-child')?.getBoundingClientRect();
+    const bodyRect = body.getBoundingClientRect();
+    const workbench = document.getElementById('workbench').getBoundingClientRect();
+    const selector = document.getElementById('sample-select');
+    selector.focus();
+    selector.scrollIntoView({ block: 'nearest' });
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const focused = selector.getBoundingClientRect();
+    return {
+      status: document.getElementById('self-test-status').textContent,
+      bodyScrollable: body.scrollHeight > body.clientHeight && body.scrollTop > 0,
+      finalContentVisible: Boolean(last && last.bottom <= bodyRect.bottom + 1),
+      workbenchHeight: workbench.height,
+      focusedControlVisible:
+        document.activeElement === selector &&
+        focused.top >= workbench.top - 1 &&
+        focused.bottom <= Math.min(workbench.bottom, window.innerHeight) + 1,
+    };
+  })()`);
+  reporter.check(
+    '320x480 self-test scrolls independently without removing the workbench',
+    /Passed/.test(compactSelfTest.status) &&
+      compactSelfTest.bodyScrollable === true &&
+      compactSelfTest.finalContentVisible === true &&
+      compactSelfTest.workbenchHeight > 0 &&
+      compactSelfTest.focusedControlVisible === true,
+    JSON.stringify(compactSelfTest),
   );
 
   // A 640 CSS-pixel viewport models 200% zoom on a 1280-pixel display.
@@ -1206,6 +1411,7 @@ async function main() {
     await checkCodeParameterWorkspace(harness);
     await checkExecutionIdentity(harness);
     await checkOfflineValidation(harness, sourceBySample);
+    await checkValidationAbortReset(harness);
     await checkApprovalGate(harness);
     await checkRunIdIsolation(harness);
     await checkStreamingAndCancellation(harness);

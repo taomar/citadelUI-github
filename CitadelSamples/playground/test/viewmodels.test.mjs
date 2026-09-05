@@ -90,10 +90,37 @@ test('execution identity exposes device login without treating it as ready', () 
       },
     },
   });
+
   assert.equal(model.canSignIn, false);
   assert.equal(model.login.active, true);
   assert.equal(model.login.userCode, 'ABCD-EFGH');
   assert.notEqual(model.badge.label, 'Ready');
+});
+
+test('a failed in-flight login remains cancellable and must be cancelled before retry', () => {
+  const model = buildExecutionIdentityModel({
+    contextState: {
+      status: 'ready',
+      context: {
+        kind: 'azure-cli-management',
+        label: 'Azure CLI',
+        summary: 'Sign in before this sample can run.',
+        state: 'signed-out',
+        canExecute: false,
+      },
+    },
+    loginState: {
+      status: 'ready',
+      login: {
+        loginId: 'azure-login-0001',
+        state: 'failed',
+        message: 'Status could not be refreshed.',
+      },
+    },
+  });
+  assert.equal(model.canSignIn, false);
+  assert.equal(model.login.cancelAvailable, true);
+  assert.equal(model.login.id, 'azure-login-0001');
 });
 
 test('execution identity names gateway, offline Python, hosted, and deferred credential sources', () => {
@@ -396,6 +423,7 @@ test('the configure model surfaces per-field errors on the right field', () => {
     hasSecret: () => false,
     isTouched: () => true,
   });
+
   const resourceGroup = fieldOf(model, 'hub.resourceGroupName');
   const subscription = fieldOf(model, 'hub.subscriptionId');
   assert.equal(resourceGroup.errors.length, 1);
@@ -404,6 +432,31 @@ test('the configure model surfaces per-field errors on the right field', () => {
   assert.match(subscription.errors[0], /required/);
   assert.equal(model.blockingCount, 2, 'both command coordinates are blocking');
   assert.equal(model.satisfied, false);
+});
+
+test('a mustEqual guard is blocking until its required value is satisfied', () => {
+  const sample = getSample('cleanup');
+  const path = 'samples.cleanup.confirmNonProduction';
+  const unconfirmed = buildConfigureModel({
+    sample,
+    read: makeFixtureReader({ [path]: false }),
+    hasSecret: () => true,
+    isTouched: () => true,
+  });
+  const falseField = fieldOf(unconfirmed, path);
+  assert.equal(falseField.supplied, false);
+  assert.equal(falseField.blocking, true);
+  assert.equal(unconfirmed.satisfied, false);
+
+  const confirmed = buildConfigureModel({
+    sample,
+    read: makeFixtureReader({ [path]: true }),
+    hasSecret: () => true,
+    isTouched: () => true,
+  });
+  const trueField = fieldOf(confirmed, path);
+  assert.equal(trueField.supplied, true);
+  assert.equal(trueField.blocking, false);
 });
 
 test('an untouched, empty required field reads as needed rather than as an error', () => {

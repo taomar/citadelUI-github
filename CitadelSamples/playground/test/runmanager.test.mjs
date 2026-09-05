@@ -221,9 +221,12 @@ test('the non-production confirmation is a hard precondition the server re-check
           { acknowledgement: { accepted: true, sampleId: 'cleanup' } },
         ),
       ),
-    // The browser's acknowledgement is not enough: the confirmation is a value
-    // the server validates in its own right.
-    (error) => error instanceof RequestRefused && /Confirm the target/i.test(error.message),
+    // The browser's acknowledgement is not enough: the requirement manifest
+    // rejects the unsatisfied guard before any plan or executor is reached.
+    (error) =>
+      error instanceof RequestRefused &&
+      error.code === 'incomplete-configuration' &&
+      /This gateway is not production/i.test(error.message),
   );
 });
 
