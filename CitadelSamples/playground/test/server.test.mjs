@@ -1156,6 +1156,7 @@ function fakeHostedRelay({
     ...fakeRelay({ fetchImpl }),
     hosted: true,
     tokenContract: {
+      cloud: 'AzureCloud',
       version: 2,
       issuer: `https://login.microsoftonline.com/${HOSTED_TENANT_ID}/v2.0`,
       resource: `api://${HOSTED_RELAY_CLIENT_ID}`,
@@ -1343,6 +1344,7 @@ test('the hosted playground refuses startup when no operator entitlement policy 
       buildRelayConfig({
         CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.internal.example/execute',
         CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS: '["weather-mcp-discovery"]',
+        CITADEL_PLAYGROUND_AZURE_CLOUD: 'AzureCloud',
         CITADEL_PLAYGROUND_RELAY_RESOURCE: `api://${HOSTED_RELAY_CLIENT_ID}`,
         CITADEL_PLAYGROUND_RELAY_AUDIENCE: HOSTED_RELAY_CLIENT_ID,
         CITADEL_PLAYGROUND_RELAY_TOKEN_VERSION: '2',
