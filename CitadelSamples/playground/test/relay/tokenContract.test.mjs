@@ -80,12 +80,12 @@ test('the relay token contract separates the managed-identity resource from the 
 });
 
 test('the token issuer is pinned to the selected active Azure cloud and Germany is rejected', () => {
-  for (const [cloud, authority] of [
+  for (const [cloud, tokenIssuerBase] of [
     ['AzureCloud', 'https://login.microsoftonline.com'],
     ['AzureUSGovernment', 'https://login.microsoftonline.us'],
-    ['AzureChinaCloud', 'https://login.chinacloudapi.cn'],
+    ['AzureChinaCloud', 'https://login.partner.microsoftonline.cn'],
   ]) {
-    const expected = contract({ cloud, issuer: `${authority}/${TENANT_ID}/v2.0` });
+    const expected = contract({ cloud, issuer: `${tokenIssuerBase}/${TENANT_ID}/v2.0` });
     assert.deepEqual(validateRelayTokenContract(expected), expected);
   }
   assert.throws(
@@ -107,6 +107,32 @@ test('the token issuer is pinned to the selected active Azure cloud and Germany 
         }),
       ),
     /must be exactly one of/,
+  );
+});
+
+test('the Azure China relay verifier requires the partner issuer, exact tenant, cloud, and audience', () => {
+  const chinaContract = contract({
+    cloud: 'AzureChinaCloud',
+    issuer: `https://login.partner.microsoftonline.cn/${TENANT_ID}/v2.0`,
+  });
+  assert.deepEqual(validateRelayTokenContract(chinaContract), chinaContract);
+  for (const issuer of [
+    `https://login.chinacloudapi.cn/${TENANT_ID}/v2.0`,
+    `https://login.microsoftonline.com/${TENANT_ID}/v2.0`,
+    'https://login.partner.microsoftonline.cn/33333333-3333-4333-8333-333333333333/v2.0',
+  ]) {
+    assert.throws(
+      () => validateRelayTokenContract({ ...chinaContract, issuer }),
+      /login\.partner\.microsoftonline\.cn/,
+    );
+  }
+  assert.throws(
+    () => validateRelayTokenContract({ ...chinaContract, cloud: 'AzureCloud' }),
+    /login\.microsoftonline\.com/,
+  );
+  assert.throws(
+    () => validateRelayTokenContract({ ...chinaContract, audience: TENANT_ID }),
+    new RegExp(`must be exactly ${CLIENT_ID}`),
   );
 });
 
@@ -190,6 +216,34 @@ test('the offline checker validates a supplied manifest without any Azure or Gra
   assert.match(readPath, /relay-app\.json$/);
   assert.equal(result.version, 2);
   assert.throws(() => parseRelayAppRegistrationArgs([...args, '--extra', 'value']), /Unknown option/);
+});
+
+test('the offline manifest checker accepts only the exact Azure China v2 issuer', async () => {
+  const args = [
+    '--manifest',
+    '.\\relay-app.json',
+    '--cloud',
+    'AzureChinaCloud',
+    '--tenant-id',
+    TENANT_ID,
+    '--client-id',
+    CLIENT_ID,
+    '--resource',
+    RESOURCE,
+    '--audience',
+    AUDIENCE,
+    '--issuer',
+    `https://login.partner.microsoftonline.cn/${TENANT_ID}/v2.0`,
+  ];
+  const options = { read: async () => JSON.stringify(manifest()) };
+  assert.equal((await checkRelayAppRegistration(args, options)).issuer, args.at(-1));
+  await assert.rejects(
+    checkRelayAppRegistration(
+      args.with(-1, `https://login.chinacloudapi.cn/${TENANT_ID}/v2.0`),
+      options,
+    ),
+    /login\.partner\.microsoftonline\.cn/,
+  );
 });
 
 test('the offline checker decodes UTF-8 BOM and Windows PowerShell UTF-16 manifests', () => {

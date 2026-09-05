@@ -34,6 +34,7 @@ test('Container Apps deployment keeps public playground and relay boundaries exp
   assert.match(bicep, /param azureCloud string/);
   assert.match(bicep, /'AzureCloud'[\s\S]*'AzureUSGovernment'[\s\S]*'AzureChinaCloud'/);
   assert.doesNotMatch(bicep, /AzureGermanCloud|login\.microsoftonline\.de|vault\.microsoftazure\.de/);
+  assert.match(bicep, /relayTokenIssuer = '\$\{azureCloudProfile\.tokenIssuerBase\}\/\$\{entraTenantId\}\/v2\.0'/);
   assert.match(bicep, /openIdIssuer: relayTokenIssuer/);
 });
 
@@ -105,6 +106,7 @@ test('deployment passes managed-identity service authentication and exact relay 
     'https://vault.usgovcloudapi.net',
     '.vault.usgovcloudapi.net',
     'https://login.chinacloudapi.cn',
+    'https://login.partner.microsoftonline.cn',
     'https://management.chinacloudapi.cn',
     'https://vault.azure.cn',
     '.vault.azure.cn',
@@ -155,6 +157,10 @@ test('deployment passes managed-identity service authentication and exact relay 
   }
   assert.match(deploymentGuide, /AzureUSGovernment/);
   assert.match(deploymentGuide, /AzureChinaCloud/);
+  assert.match(deploymentGuide, /login\.partner\.microsoftonline\.cn/);
+  assert.match(deploymentGuide, /authentication-national-cloud/);
+  assert.match(deploymentGuide, /access-tokens#validate-tokens/);
+  assert.match(deploymentGuide, /login\.chinacloudapi\.cn\/common\/v2\.0\/\.well-known\/openid-configuration/);
   assert.match(deploymentGuide, /closed on October 29, 2021/i);
   assert.match(await read('infra/main.bicepparam'), /relayRequestedAccessTokenVersion = 2/);
   assert.match(await read('infra/main.bicepparam'), /azureCloud = 'AzureCloud'/);

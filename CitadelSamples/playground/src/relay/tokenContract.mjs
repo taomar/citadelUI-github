@@ -45,7 +45,7 @@ function requiredString(value, label) {
 
 function canonicalIssuer(value, tenantId, cloudProfile, label) {
   const issuer = requiredString(value, label);
-  const expected = `${cloudProfile.authority}/${tenantId}/v2.0`;
+  const expected = `${cloudProfile.tokenIssuerBase}/${tenantId}/v2.0`;
   if (issuer !== expected) {
     fail(`${label} must be exactly ${expected}.`);
   }

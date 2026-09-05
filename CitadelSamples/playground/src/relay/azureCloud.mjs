@@ -3,24 +3,28 @@
  *
  * These values are code-owned policy. Deployment configuration selects one
  * profile and repeats the expected endpoints so startup can detect drift, but
- * it cannot introduce a new authority, token audience, or vault DNS suffix.
+ * it cannot introduce a new login endpoint, token issuer, token audience, or
+ * vault DNS suffix.
  */
 
 const PROFILE_DEFINITIONS = {
   AzureCloud: {
-    authority: 'https://login.microsoftonline.com',
+    loginEndpoint: 'https://login.microsoftonline.com',
+    tokenIssuerBase: 'https://login.microsoftonline.com',
     resourceManager: 'https://management.azure.com/',
     keyVaultResource: 'https://vault.azure.net',
     keyVaultDnsSuffix: '.vault.azure.net',
   },
   AzureUSGovernment: {
-    authority: 'https://login.microsoftonline.us',
+    loginEndpoint: 'https://login.microsoftonline.us',
+    tokenIssuerBase: 'https://login.microsoftonline.us',
     resourceManager: 'https://management.usgovcloudapi.net/',
     keyVaultResource: 'https://vault.usgovcloudapi.net',
     keyVaultDnsSuffix: '.vault.usgovcloudapi.net',
   },
   AzureChinaCloud: {
-    authority: 'https://login.chinacloudapi.cn',
+    loginEndpoint: 'https://login.chinacloudapi.cn',
+    tokenIssuerBase: 'https://login.partner.microsoftonline.cn',
     resourceManager: 'https://management.chinacloudapi.cn',
     keyVaultResource: 'https://vault.azure.cn',
     keyVaultDnsSuffix: '.vault.azure.cn',

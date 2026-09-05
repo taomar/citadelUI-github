@@ -12,7 +12,8 @@ import {
 const CASES = Object.freeze([
   {
     name: 'AzureCloud',
-    authority: 'https://login.microsoftonline.com',
+    loginEndpoint: 'https://login.microsoftonline.com',
+    tokenIssuerBase: 'https://login.microsoftonline.com',
     resourceManager: 'https://management.azure.com/',
     keyVaultResource: 'https://vault.azure.net',
     keyVaultDnsSuffix: '.vault.azure.net',
@@ -20,7 +21,8 @@ const CASES = Object.freeze([
   },
   {
     name: 'AzureUSGovernment',
-    authority: 'https://login.microsoftonline.us',
+    loginEndpoint: 'https://login.microsoftonline.us',
+    tokenIssuerBase: 'https://login.microsoftonline.us',
     resourceManager: 'https://management.usgovcloudapi.net/',
     keyVaultResource: 'https://vault.usgovcloudapi.net',
     keyVaultDnsSuffix: '.vault.usgovcloudapi.net',
@@ -28,7 +30,8 @@ const CASES = Object.freeze([
   },
   {
     name: 'AzureChinaCloud',
-    authority: 'https://login.chinacloudapi.cn',
+    loginEndpoint: 'https://login.chinacloudapi.cn',
+    tokenIssuerBase: 'https://login.partner.microsoftonline.cn',
     resourceManager: 'https://management.chinacloudapi.cn',
     keyVaultResource: 'https://vault.azure.cn',
     keyVaultDnsSuffix: '.vault.azure.cn',
@@ -53,7 +56,8 @@ test('the trusted cloud table contains exactly the three active Azure clouds', (
   for (const expected of CASES) {
     assert.deepEqual(getAzureCloudProfile(expected.name), {
       name: expected.name,
-      authority: expected.authority,
+      loginEndpoint: expected.loginEndpoint,
+      tokenIssuerBase: expected.tokenIssuerBase,
       resourceManager: expected.resourceManager,
       keyVaultResource: expected.keyVaultResource,
       keyVaultDnsSuffix: expected.keyVaultDnsSuffix,

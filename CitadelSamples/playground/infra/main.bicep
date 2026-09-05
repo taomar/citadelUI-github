@@ -112,7 +112,9 @@ var azureCloudProfiles = {
   AzureCloud: {
     // These are trust anchors checked against environment(), not deployable endpoints inferred from it.
     #disable-next-line no-hardcoded-env-urls
-    authority: 'https://login.microsoftonline.com'
+    loginEndpoint: 'https://login.microsoftonline.com'
+    #disable-next-line no-hardcoded-env-urls
+    tokenIssuerBase: 'https://login.microsoftonline.com'
     #disable-next-line no-hardcoded-env-urls
     resourceManager: 'https://management.azure.com/'
     #disable-next-line no-hardcoded-env-urls
@@ -121,20 +123,22 @@ var azureCloudProfiles = {
     keyVaultDnsSuffix: '.vault.azure.net'
   }
   AzureUSGovernment: {
-    authority: 'https://login.microsoftonline.us'
+    loginEndpoint: 'https://login.microsoftonline.us'
+    tokenIssuerBase: 'https://login.microsoftonline.us'
     resourceManager: 'https://management.usgovcloudapi.net/'
     keyVaultResource: 'https://vault.usgovcloudapi.net'
     keyVaultDnsSuffix: '.vault.usgovcloudapi.net'
   }
   AzureChinaCloud: {
-    authority: 'https://login.chinacloudapi.cn'
+    loginEndpoint: 'https://login.chinacloudapi.cn'
+    tokenIssuerBase: 'https://login.partner.microsoftonline.cn'
     resourceManager: 'https://management.chinacloudapi.cn'
     keyVaultResource: 'https://vault.azure.cn'
     keyVaultDnsSuffix: '.vault.azure.cn'
   }
 }
 var azureCloudProfile = azureCloudProfiles[azureCloud]
-var relayTokenIssuer = '${azureCloudProfile.authority}/${entraTenantId}/v2.0'
+var relayTokenIssuer = '${azureCloudProfile.tokenIssuerBase}/${entraTenantId}/v2.0'
 var hasHostedOperatorPlatformAllowlist = length(hostedOperatorPlatformAllowedPrincipalIds) > 0 || length(hostedOperatorPlatformAllowedGroupIds) > 0
 
 resource managedEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' existing = {

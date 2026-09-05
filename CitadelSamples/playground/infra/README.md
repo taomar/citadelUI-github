@@ -46,11 +46,25 @@ the actual `environment().name`/`environment().resourceManager` values. Relay
 startup requires the complete tuple to match before it constructs the managed
 identity Key Vault provider.
 
-| Profile | Entra authority | ARM endpoint | Key Vault token resource | Vault DNS suffix |
-| --- | --- | --- | --- | --- |
-| `AzureCloud` | `https://login.microsoftonline.com` | `https://management.azure.com/` | `https://vault.azure.net` | `.vault.azure.net` |
-| `AzureUSGovernment` | `https://login.microsoftonline.us` | `https://management.usgovcloudapi.net/` | `https://vault.usgovcloudapi.net` | `.vault.usgovcloudapi.net` |
-| `AzureChinaCloud` | `https://login.chinacloudapi.cn` | `https://management.chinacloudapi.cn` | `https://vault.azure.cn` | `.vault.azure.cn` |
+| Profile | Entra login endpoint | v2 token issuer base | ARM endpoint | Key Vault token resource | Vault DNS suffix |
+| --- | --- | --- | --- | --- | --- |
+| `AzureCloud` | `https://login.microsoftonline.com` | `https://login.microsoftonline.com` | `https://management.azure.com/` | `https://vault.azure.net` | `.vault.azure.net` |
+| `AzureUSGovernment` | `https://login.microsoftonline.us` | `https://login.microsoftonline.us` | `https://management.usgovcloudapi.net/` | `https://vault.usgovcloudapi.net` | `.vault.usgovcloudapi.net` |
+| `AzureChinaCloud` | `https://login.chinacloudapi.cn` | `https://login.partner.microsoftonline.cn` | `https://management.chinacloudapi.cn` | `https://vault.azure.cn` | `.vault.azure.cn` |
+
+The Azure China values are deliberately separate. Microsoft's
+[Azure in China endpoint table](https://learn.microsoft.com/azure/china/concepts-service-availability#azure-in-china-rest-endpoints)
+documents `login.chinacloudapi.cn`, while the
+[national-cloud identity documentation](https://learn.microsoft.com/entra/identity-platform/authentication-national-cloud#microsoft-entra-authentication-endpoints)
+documents `login.partner.microsoftonline.cn`. The authoritative
+[Azure China v2 OpenID configuration](https://login.chinacloudapi.cn/common/v2.0/.well-known/openid-configuration)
+resolves the distinction directly: its authorization and token endpoints use
+`login.chinacloudapi.cn`, but its `issuer` is
+`https://login.partner.microsoftonline.cn/{tenantid}/v2.0`. Microsoft requires
+the token `iss` claim to
+[match that issuer exactly](https://learn.microsoft.com/entra/identity-platform/access-tokens#validate-tokens).
+Only `tokenIssuerBase` therefore drives Easy Auth `openIdIssuer` and the relay
+token verifier; the login endpoint is never accepted as a JWT issuer.
 
 Microsoft Cloud Germany closed on October 29, 2021. `AzureGermanCloud`,
 `login.microsoftonline.de`, and the retired German Key Vault endpoints are
@@ -137,6 +151,10 @@ app ID or identifier URI, non-lowercase or malformed GUIDs, a resource/audience
 mix-up, a retired or unknown cloud, and any issuer that is not the selected
 cloud's exact tenant-specific `/v2.0` issuer. The checker accepts UTF-8 with or
 without a BOM and the UTF-16 JSON files commonly written by Windows PowerShell.
+For `AzureChinaCloud`, the accepted issuer is exactly
+`https://login.partner.microsoftonline.cn/<tenant-id>/v2.0`;
+`login.chinacloudapi.cn` is rejected as an issuer even though Azure metadata and
+authorization endpoints may use that host.
 After it passes, allow the playground identity to request the exposed API.
 Container Apps authentication is the trusted signature/JWKS boundary for both
 apps; never set
