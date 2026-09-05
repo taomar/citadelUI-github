@@ -34,12 +34,28 @@ export function createStaticTokenCredentialProvider({ token }) {
  * @param {object} options
  * @param {string} options.resource   the relay's AAD resource/audience
  * @param {string} [options.clientId]
+ * @param {object} [options.environment] server-owned managed-identity environment
+ * @param {Function} [options.identityEndpointValidator] code-level endpoint policy override
  * @param {Function} [options.fetchImpl]
- * @param {object} [options.tokenProvider]  injected for tests, bypasses IMDS entirely
+ * @param {object} [options.tokenProvider]  injected for tests, bypasses identity acquisition
  */
-export function createManagedIdentityCredentialProvider({ resource, clientId, fetchImpl, tokenProvider } = {}) {
+export function createManagedIdentityCredentialProvider({
+  resource,
+  clientId,
+  environment,
+  identityEndpointValidator,
+  fetchImpl,
+  tokenProvider,
+} = {}) {
   const provider =
-    tokenProvider ?? createManagedIdentityTokenProvider({ resource, clientId, fetchImpl });
+    tokenProvider ??
+    createManagedIdentityTokenProvider({
+      resource,
+      clientId,
+      environment,
+      identityEndpointValidator,
+      fetchImpl,
+    });
   return Object.freeze({
     mode: 'managed-identity',
     async getAuthorizationHeader() {

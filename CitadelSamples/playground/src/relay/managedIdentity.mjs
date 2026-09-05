@@ -1,10 +1,12 @@
 /**
  * Managed-identity token acquisition.
  *
- * Zero-dependency by construction: this talks to the Azure Instance Metadata
- * Service directly over plain `fetch`, the way `az` itself does under the
- * hood, rather than pulling in an Azure SDK package. The playground has no
- * runtime dependencies and this must not be the exception.
+ * Zero-dependency by construction: this talks directly to the managed-identity
+ * endpoint exposed by the current Azure host over plain `fetch`, rather than
+ * pulling in an Azure SDK package. Container Apps injects a local endpoint and
+ * request header; local/VM contexts fall back to the fixed Azure Instance
+ * Metadata Service endpoint. The playground has no runtime dependencies and
+ * this must not be the exception.
  *
  * Used for two distinct hops, each with its own `resource` (AAD audience):
  *   - the local proxy authenticating itself TO the relay
@@ -15,13 +17,13 @@
  * else (no evidence, no `console.log`, no error message).
  *
  * Bounded and cancellable, on two independent axes:
- *   - the IMDS request itself always carries its OWN internal timeout
+ *   - the identity request itself always carries its OWN internal timeout
  *     (`requestTimeoutMs`), regardless of whether any caller ever passes a
  *     signal — an unreachable/hanging metadata endpoint must not be able to
  *     hang a caller (or this whole process) forever.
  *   - a caller may additionally pass its own `signal` (typically the
  *     relay's own per-run deadline) to `getToken({ signal })`. Concurrent
- *     callers collapse onto a single shared, in-flight IMDS request (see
+ *     callers collapse onto a single shared, in-flight identity request (see
  *     `inFlight` below); one caller's own signal firing must only make
  *     THAT caller stop waiting — it must never abort the shared underlying
  *     fetch out from under every OTHER concurrent caller, and must never
@@ -39,23 +41,92 @@
  * open past `requestTimeoutMs`.
  */
 
+import { isIP } from 'node:net';
 import { raceAbortSignal } from './deadline.mjs';
 
 const DEFAULT_IMDS_ENDPOINT = 'http://169.254.169.254/metadata/identity/oauth2/token';
 const DEFAULT_API_VERSION = '2019-08-01';
 const DEFAULT_CLOCK_SKEW_MS = 60_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+const CONTAINER_APPS_ENDPOINT_ENV = 'IDENTITY_ENDPOINT';
+const CONTAINER_APPS_HEADER_ENV = 'IDENTITY_HEADER';
+
+function hasOwn(environment, name) {
+  return Object.prototype.hasOwnProperty.call(environment, name);
+}
+
+function isDefaultContainerAppsEndpoint(url) {
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const ipVersion = isIP(hostname);
+  const loopback =
+    hostname === 'localhost' ||
+    hostname === '::1' ||
+    (ipVersion === 4 && hostname.startsWith('127.'));
+  const tokenPath = url.pathname.toLowerCase();
+  return (
+    url.protocol === 'http:' &&
+    loopback &&
+    (tokenPath === '/msi/token' || tokenPath === '/msi/token/') &&
+    url.username === '' &&
+    url.password === '' &&
+    url.search === '' &&
+    url.hash === ''
+  );
+}
+
+function containerAppsIdentity(environment, identityEndpointValidator) {
+  if (!environment || typeof environment !== 'object' || Array.isArray(environment)) {
+    throw new TypeError('createManagedIdentityTokenProvider requires an environment object.');
+  }
+  const hasEndpoint = hasOwn(environment, CONTAINER_APPS_ENDPOINT_ENV);
+  const hasHeader = hasOwn(environment, CONTAINER_APPS_HEADER_ENV);
+  if (!hasEndpoint && !hasHeader) return null;
+  if (!hasEndpoint || !hasHeader) {
+    throw new TypeError('IDENTITY_ENDPOINT and IDENTITY_HEADER must be configured together.');
+  }
+
+  const endpoint = environment[CONTAINER_APPS_ENDPOINT_ENV];
+  const header = environment[CONTAINER_APPS_HEADER_ENV];
+  if (typeof endpoint !== 'string' || endpoint.trim() === '' || endpoint.trim() !== endpoint) {
+    throw new TypeError('IDENTITY_ENDPOINT must be a non-empty absolute URL without surrounding whitespace.');
+  }
+  if (
+    typeof header !== 'string' ||
+    header.trim() === '' ||
+    header.trim() !== header ||
+    /[\u0000-\u001f\u007f]/.test(header)
+  ) {
+    throw new TypeError('IDENTITY_HEADER must be a non-empty HTTP header value.');
+  }
+
+  let url;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    throw new TypeError('IDENTITY_ENDPOINT must be a valid absolute URL.');
+  }
+  if (!identityEndpointValidator(url)) {
+    throw new TypeError(
+      'IDENTITY_ENDPOINT must be an unadorned HTTP loopback /msi/token URL supplied by Container Apps.',
+    );
+  }
+  return Object.freeze({ endpoint: url.toString(), header });
+}
 
 /**
  * @param {object} options
  * @param {string} options.resource        AAD resource/audience the token is for
  * @param {string} [options.clientId]       user-assigned managed identity client id
- * @param {string} [options.imdsEndpoint]
+ * @param {object} [options.environment]    server-owned environment; Container
+ *        Apps injects IDENTITY_ENDPOINT and IDENTITY_HEADER into this object
+ * @param {Function} [options.identityEndpointValidator] code-level override for
+ *        a future platform-local endpoint shape; the secure default accepts
+ *        localhost, IPv4 127/8, or ::1 with /msi/token
  * @param {string} [options.apiVersion]
  * @param {Function} [options.fetchImpl]    injected for tests
  * @param {Function} [options.now]          injected for tests
  * @param {number} [options.clockSkewMs]
- * @param {number} [options.requestTimeoutMs]  bounds the IMDS request itself
+ * @param {number} [options.requestTimeoutMs]  bounds the identity request itself
  *        (default 10s), independent of any caller-supplied `getToken`
  *        signal — a hanging metadata endpoint must be bounded even for the
  *        very first caller, who has nothing else to race against.
@@ -63,7 +134,8 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 export function createManagedIdentityTokenProvider({
   resource,
   clientId,
-  imdsEndpoint = DEFAULT_IMDS_ENDPOINT,
+  environment = process.env,
+  identityEndpointValidator = isDefaultContainerAppsEndpoint,
   apiVersion = DEFAULT_API_VERSION,
   fetchImpl,
   now = () => Date.now(),
@@ -73,15 +145,24 @@ export function createManagedIdentityTokenProvider({
   if (typeof resource !== 'string' || resource.trim() === '') {
     throw new TypeError('createManagedIdentityTokenProvider requires a `resource` (the AAD audience).');
   }
+  if (clientId !== undefined && (typeof clientId !== 'string' || clientId.trim() === '')) {
+    throw new TypeError('createManagedIdentityTokenProvider requires `clientId` to be a non-empty string when configured.');
+  }
+  if (typeof identityEndpointValidator !== 'function') {
+    throw new TypeError('createManagedIdentityTokenProvider requires `identityEndpointValidator` to be a function.');
+  }
   const doFetch = fetchImpl ?? (typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null);
   if (!doFetch) {
     throw new TypeError('createManagedIdentityTokenProvider requires a fetch implementation.');
   }
+  const containerApps = containerAppsIdentity(environment, identityEndpointValidator);
+  const endpoint = containerApps?.endpoint ?? DEFAULT_IMDS_ENDPOINT;
+  const mode = containerApps ? 'container-apps' : 'imds';
   let cached = null; // { token, expiresAtMs }
   let inFlight = null;
 
   async function requestToken() {
-    const url = new URL(imdsEndpoint);
+    const url = new URL(endpoint);
     url.searchParams.set('api-version', apiVersion);
     url.searchParams.set('resource', resource);
     if (clientId) url.searchParams.set('client_id', clientId);
@@ -98,7 +179,14 @@ export function createManagedIdentityTokenProvider({
       let response;
       try {
         response = await raceAbortSignal(
-          doFetch(url.toString(), { headers: { Metadata: 'true' }, signal: controller.signal }),
+          doFetch(url.toString(), {
+            method: 'GET',
+            headers: containerApps
+              ? { 'X-IDENTITY-HEADER': containerApps.header }
+              : { Metadata: 'true' },
+            redirect: 'error',
+            signal: controller.signal,
+          }),
           controller.signal,
         );
       } catch (error) {
@@ -127,25 +215,29 @@ export function createManagedIdentityTokenProvider({
       throw new Error('The managed identity endpoint returned no access token.');
     }
     const expiresOnSeconds = Number(payload.expires_on);
-    const expiresAtMs = Number.isFinite(expiresOnSeconds) ? expiresOnSeconds * 1000 : now() + 3600_000;
+    const expiresAtMs = expiresOnSeconds * 1000;
+    if (!Number.isFinite(expiresOnSeconds) || expiresAtMs - clockSkewMs <= now()) {
+      throw new Error('The managed identity endpoint returned an invalid or expired token expiration.');
+    }
     return { token: payload.access_token, expiresAtMs };
   }
 
   return Object.freeze({
+    mode,
     resource,
     /**
      * @param {object} [options]
      * @param {AbortSignal} [options.signal]  optional caller deadline (e.g.
      *        the relay's own per-run budget). Firing this signal only makes
      *        THIS call stop waiting and reject — it never aborts a shared
-     *        in-flight IMDS request out from under another concurrent
+     *        in-flight identity request out from under another concurrent
      *        caller, and never marks the eventual (successful or failed)
-     *        result as anything other than what IMDS actually returned.
+     *        result as anything other than what the identity endpoint returned.
      */
     async getToken({ signal } = {}) {
       if (cached && cached.expiresAtMs - clockSkewMs > now()) return cached.token;
       // Collapse concurrent callers onto one in-flight token request rather
-      // than hammering IMDS once per parallel step.
+      // than hammering the identity endpoint once per parallel step.
       if (!inFlight) {
         inFlight = requestToken()
           .then((result) => {

@@ -109,10 +109,19 @@ export function buildRelayConfig(env = process.env) {
       : createManagedIdentityCredentialProvider({
           resource: env.CITADEL_PLAYGROUND_RELAY_RESOURCE ?? url,
           clientId: env.CITADEL_PLAYGROUND_RELAY_CLIENT_ID || undefined,
+          environment: env,
         });
 
   const executeToken = env.CITADEL_PLAYGROUND_EXECUTE_TOKEN ?? '';
   const trustedEntraProxy = env.CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED === 'true';
+  if (
+    authMode === 'managed-identity' &&
+    trustedEntraProxy &&
+    (typeof env.CITADEL_PLAYGROUND_RELAY_CLIENT_ID !== 'string' ||
+      env.CITADEL_PLAYGROUND_RELAY_CLIENT_ID.trim() === '')
+  ) {
+    throw new TypeError('CITADEL_PLAYGROUND_RELAY_CLIENT_ID must be configured for the hosted playground identity.');
+  }
   // Fail closed: a non-loopback bind with nothing configured refuses every
   // `/api/execute` caller rather than accepting them all.
   const authenticator = trustedEntraProxy

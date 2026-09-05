@@ -170,6 +170,7 @@ resource relay 'Microsoft.App/containerApps@2024-03-01' = {
             }
           ]
           env: [
+            // Container Apps injects IDENTITY_ENDPOINT and IDENTITY_HEADER for relayIdentity.
             { name: 'CITADEL_RELAY_PORT', value: '8080' }
             { name: 'CITADEL_RELAY_HOST', value: '0.0.0.0' }
             { name: 'CITADEL_RELAY_ENTRA_AUTHENTICATED', value: 'true' }
@@ -282,6 +283,7 @@ resource playground 'Microsoft.App/containerApps@2024-03-01' = {
             }
           ]
           env: [
+            // Container Apps injects IDENTITY_ENDPOINT and IDENTITY_HEADER for playgroundIdentity.
             { name: 'CITADEL_PLAYGROUND_PORT', value: '8080' }
             { name: 'CITADEL_PLAYGROUND_HOST', value: '0.0.0.0' }
             { name: 'CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED', value: 'true' }

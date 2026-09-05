@@ -48,8 +48,30 @@ The Bicep is the deployment authority. The hosted relay rejects startup unless
 | `CITADEL_RELAY_SECRET_MAPPINGS` | `relaySecretMappings` JSON |
 
 The playground receives the private relay URL and token audience from Bicep,
-plus `CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED=true` and the same tenant ID. It
+plus `CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED=true`, the same tenant ID, and
+`CITADEL_PLAYGROUND_RELAY_CLIENT_ID` for its assigned user-assigned identity. It
 does not receive a relay token: it obtains one from its managed identity.
+
+Container Apps injects the following variables into each container because the
+Bicep assigns a managed identity. They are runtime platform values and must not
+be copied into or overridden by the Bicep container `env` list:
+
+| Platform variable | Contract |
+| --- | --- |
+| `IDENTITY_ENDPOINT` | Local HTTP token endpoint. The secure default accepts `localhost`, IPv4 `127/8`, or `::1` with the `/msi/token` path. |
+| `IDENTITY_HEADER` | Secret request header sent only as `X-IDENTITY-HEADER` to that local endpoint. |
+
+The pair must be wholly present and valid. Partial or malformed injection fails
+startup rather than falling back to VM IMDS. When both values are absent, the
+same provider uses the fixed VM IMDS endpoint with only `Metadata: true`; the
+Container Apps identity header is never sent to IMDS, the relay, or Key Vault.
+Each app reads its own injected pair and uses its own configured user-assigned
+client ID, so identity endpoint/header values never cross the app boundary.
+Microsoft documents the value only as a local URL. The accepted hosts and path
+match the current Container Apps endpoint shape but were not live-deployment
+tested here. A future platform-local shape requires an explicit code-level
+validator override; deployment environment values cannot broaden the default to
+an arbitrary remote URL.
 
 Both apps use 0.5 CPU, 1 GiB memory, 1--2 replicas, and HTTP probes. The
 playground serves `/api/health`; the relay serves `/healthz` and `/readyz`.

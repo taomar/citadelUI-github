@@ -167,6 +167,10 @@ deletion, and hosted quarantine remain future capabilities.
 The existing hosted relay is intentionally limited to allowlisted HTTP and
 assertion work. Its image and import graph must remain free of Python, Azure CLI,
 process transports, arbitrary files, and artifact writers.
+Each Container App acquires tokens only through its own platform-injected
+`IDENTITY_ENDPOINT` and `IDENTITY_HEADER`, with the deployment-owned
+user-assigned client ID. Partial or malformed injection fails closed; the secret
+identity header is never forwarded to the other app, VM IMDS, or Key Vault.
 Its owner-bound admission and managed run state are replica-safe for
 nonce/idempotency, distributed concurrency, dispatcher lease recovery, polling,
 cancellation, and timeouts. That claim is based on offline tests only; the relay

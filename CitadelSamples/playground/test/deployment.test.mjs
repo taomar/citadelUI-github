@@ -31,7 +31,13 @@ test('deployment grants only image pull and relay Key Vault secret read access',
 });
 
 test('deployment passes managed-identity service authentication and exact relay policy inputs', async () => {
-  const bicep = await read('infra/main.bicep');
+  const [bicep, managedIdentity, playgroundServer, relayServer, deploymentGuide] = await Promise.all([
+    read('infra/main.bicep'),
+    read('src/relay/managedIdentity.mjs'),
+    read('server.mjs'),
+    read('relay-server.mjs'),
+    read('infra/README.md'),
+  ]);
   for (const name of [
     'CITADEL_PLAYGROUND_RELAY_RESOURCE',
     'CITADEL_PLAYGROUND_RELAY_CLIENT_ID',
@@ -47,6 +53,15 @@ test('deployment passes managed-identity service authentication and exact relay 
   assert.match(bicep, /relayTokenAudience/);
   assert.match(bicep, /CITADEL_RELAY_ENTRA_AUTHENTICATED', value: 'true'/);
   assert.match(bicep, /CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED', value: 'true'/);
+  assert.doesNotMatch(bicep, /name: 'IDENTITY_(?:ENDPOINT|HEADER)'/, 'platform identity variables must never be authored by Bicep');
+  assert.match(managedIdentity, /environment\[CONTAINER_APPS_ENDPOINT_ENV\]/);
+  assert.match(managedIdentity, /'X-IDENTITY-HEADER'/);
+  assert.match(managedIdentity, /redirect: 'error'/);
+  assert.match(playgroundServer, /createManagedIdentityCredentialProvider\(\{[\s\S]*?environment: env/);
+  assert.match(relayServer, /createKeyVaultSecretProvider\(\{[\s\S]*?environment: env/);
+  assert.match(deploymentGuide, /`IDENTITY_ENDPOINT`/);
+  assert.match(deploymentGuide, /`IDENTITY_HEADER`/);
+  assert.match(deploymentGuide, /Partial or malformed injection fails/);
 });
 
 test('Container Apps probes match implemented health endpoints and constrain resources', async () => {

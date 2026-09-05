@@ -41,20 +41,25 @@ test('the managed-identity provider wraps an injected token provider, never IMDS
   assert.equal(calls.length, 1);
 });
 
-test('the managed-identity provider builds its own token provider from resource/clientId/fetchImpl when none is injected', async () => {
+test('the managed-identity provider forwards its environment to the Container Apps token path', async () => {
   const fetchCalls = [];
   const provider = createManagedIdentityCredentialProvider({
     resource: 'https://relay.example',
     clientId: 'user-assigned-id',
-    fetchImpl: async (url) => {
-      fetchCalls.push(url);
+    environment: {
+      IDENTITY_ENDPOINT: 'http://localhost:42356/msi/token',
+      IDENTITY_HEADER: 'playground-identity-header',
+    },
+    fetchImpl: async (url, init) => {
+      fetchCalls.push({ url, init });
       return { ok: true, json: async () => ({ access_token: 'built-token', expires_on: Math.floor(Date.now() / 1000) + 3600 }) };
     },
   });
   const header = await provider.getAuthorizationHeader();
   assert.equal(header, `Bearer ${'built-token'}`);
   assert.equal(fetchCalls.length, 1);
-  assert.equal(new URL(fetchCalls[0]).searchParams.get('client_id'), 'user-assigned-id');
+  assert.equal(new URL(fetchCalls[0].url).searchParams.get('client_id'), 'user-assigned-id');
+  assert.deepEqual(fetchCalls[0].init.headers, { 'X-IDENTITY-HEADER': 'playground-identity-header' });
 });
 
 test('both credential providers expose the same shape so a caller never needs to branch on mode', async () => {

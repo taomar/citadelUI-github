@@ -61,6 +61,43 @@ test('a mapped ref is fetched from exactly its configured vault URL and secret n
   assert.match(calls[0].init.headers.Authorization, /^Bearer /);
 });
 
+test('the Key Vault provider uses its own Container Apps identity environment without forwarding the identity header to Key Vault', async () => {
+  const calls = [];
+  const provider = createKeyVaultSecretProvider({
+    mappings: { 'gatewayAccess.apiKey': { vaultUrl: 'https://kv-test.vault.azure.net', secretName: 'gateway-key' } },
+    clientId: 'relay-user-assigned-id',
+    environment: {
+      IDENTITY_ENDPOINT: 'http://localhost:42356/msi/token',
+      IDENTITY_HEADER: 'relay-identity-header',
+    },
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      if (new URL(url).hostname === 'localhost') {
+        return {
+          ok: true,
+          json: async () => ({
+            access_token: 'relay-key-vault-token',
+            expires_on: Math.floor(Date.now() / 1000) + 3600,
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ value: 'resolved-secret-value' }) };
+    },
+  });
+
+  assert.equal(await provider.resolve('gatewayAccess.apiKey'), 'resolved-secret-value');
+  assert.equal(calls.length, 2);
+  const identityUrl = new URL(calls[0].url);
+  assert.equal(identityUrl.hostname, 'localhost');
+  assert.equal(identityUrl.searchParams.get('resource'), 'https://vault.azure.net');
+  assert.equal(identityUrl.searchParams.get('client_id'), 'relay-user-assigned-id');
+  assert.deepEqual(calls[0].init.headers, { 'X-IDENTITY-HEADER': 'relay-identity-header' });
+  assert.equal(calls[1].url, 'https://kv-test.vault.azure.net/secrets/gateway-key?api-version=7.4');
+  assert.equal(calls[1].init.headers['X-IDENTITY-HEADER'], undefined);
+  assert.equal(calls[1].init.headers.Metadata, undefined);
+  assert.equal(calls[1].init.headers.Authorization, 'Bearer relay-key-vault-token');
+});
+
 test('a non-OK Key Vault response resolves to null rather than throwing or leaking detail', async () => {
   const provider = createKeyVaultSecretProvider({
     mappings: { 'a.b': { vaultUrl: 'https://kv-test.vault.azure.net', secretName: 'x' } },

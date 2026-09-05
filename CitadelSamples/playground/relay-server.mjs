@@ -61,6 +61,7 @@ export function buildHostedRelay(env = process.env) {
     secretProvider: createKeyVaultSecretProvider({
       mappings: secretMappings(env),
       clientId: required(env, 'CITADEL_RELAY_MANAGED_IDENTITY_CLIENT_ID'),
+      environment: env,
     }),
     limits: {
       maxConcurrentRequests: Number(env.CITADEL_RELAY_MAX_CONCURRENT_REQUESTS ?? 4),

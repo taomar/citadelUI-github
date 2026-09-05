@@ -76,8 +76,10 @@ function boundedSignal(timeoutMs, externalSignal) {
  * @param {string} [options.resource]     AAD resource for the KV token (default: KV)
  * @param {string} [options.apiVersion]
  * @param {Function} [options.fetchImpl]  injected for tests
- * @param {object} [options.tokenProvider] injected for tests, bypasses IMDS
+ * @param {object} [options.tokenProvider] injected for tests, bypasses identity acquisition
  * @param {string} [options.clientId] user-assigned managed identity client id
+ * @param {object} [options.environment] server-owned managed-identity environment
+ * @param {Function} [options.identityEndpointValidator] code-level endpoint policy override
  * @param {number} [options.requestTimeoutMs]  bounds the Key Vault fetch itself
  *        (default 10s), independent of any caller-supplied `resolve` signal.
  */
@@ -88,12 +90,22 @@ export function createKeyVaultSecretProvider({
   fetchImpl,
   tokenProvider,
   clientId,
+  environment,
+  identityEndpointValidator,
   requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
 } = {}) {
   if (!mappings || typeof mappings !== 'object' || Array.isArray(mappings)) {
     throw new TypeError('createKeyVaultSecretProvider requires a `mappings` object.');
   }
-  const provider = tokenProvider ?? createManagedIdentityTokenProvider({ resource, clientId, fetchImpl });
+  const provider =
+    tokenProvider ??
+    createManagedIdentityTokenProvider({
+      resource,
+      clientId,
+      environment,
+      identityEndpointValidator,
+      fetchImpl,
+    });
   const doFetch = fetchImpl ?? (typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null);
   if (!doFetch) {
     throw new TypeError('createKeyVaultSecretProvider requires a fetch implementation.');

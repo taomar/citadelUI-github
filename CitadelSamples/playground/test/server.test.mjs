@@ -525,6 +525,53 @@ test('buildRelayConfig reads callerPrincipal/tenant from their own env vars when
   assert.equal(config.tenant, 'tenant-east');
 });
 
+test('buildRelayConfig binds managed identity to the supplied Container Apps environment and user-assigned client id', async () => {
+  const savedFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url, init });
+      return {
+        ok: true,
+        json: async () => ({
+          access_token: 'playground-relay-token',
+          expires_on: Math.floor(Date.now() / 1000) + 3600,
+        }),
+      };
+    };
+    const config = buildRelayConfig({
+      CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.internal.example/execute',
+      CITADEL_PLAYGROUND_RELAY_RESOURCE: 'api://relay-app',
+      CITADEL_PLAYGROUND_RELAY_CLIENT_ID: 'playground-user-assigned-id',
+      CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED: 'true',
+      CITADEL_PLAYGROUND_ENTRA_TENANT_ID: 'tenant-a',
+      IDENTITY_ENDPOINT: 'http://localhost:42356/msi/token',
+      IDENTITY_HEADER: 'playground-identity-header',
+    });
+
+    assert.equal(await config.credentialProvider.getAuthorizationHeader(), 'Bearer playground-relay-token');
+    assert.equal(calls.length, 1);
+    assert.equal(new URL(calls[0].url).searchParams.get('client_id'), 'playground-user-assigned-id');
+    assert.deepEqual(calls[0].init.headers, { 'X-IDENTITY-HEADER': 'playground-identity-header' });
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
+});
+
+test('the hosted playground requires its deployment-owned user-assigned client id', () => {
+  assert.throws(
+    () =>
+      buildRelayConfig({
+        CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.internal.example/execute',
+        CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED: 'true',
+        CITADEL_PLAYGROUND_ENTRA_TENANT_ID: 'tenant-a',
+        IDENTITY_ENDPOINT: 'http://localhost:42356/msi/token',
+        IDENTITY_HEADER: 'playground-identity-header',
+      }),
+    /CITADEL_PLAYGROUND_RELAY_CLIENT_ID must be configured/,
+  );
+});
+
 test('a relay-disabled server answers /api/execute with 501, never forwarding anything', async () => {
   await withServer({ mode: 'preview', relay: { enabled: false } }, async ({ call }) => {
     const response = await call('/api/execute', {
