@@ -96,6 +96,8 @@ inputs. Do not introduce a general-purpose editable notebook.
 - Agent Framework A2A execution validates every advertised transport route and
   injects the APIM key only after an exact gateway-origin, path, and method check;
   a remote card cannot redirect the credential.
+- Foundry role selection maps only to reviewed immutable role-definition IDs and
+  verifies the exact project scope, role ID, and accepted display name.
 - Human policy labels remain readable while deterministic safe identifiers drive
   generated product, subscription, contract, and workspace paths. Free-text
   product terms use the shared Bicep serializer.
@@ -105,6 +107,12 @@ inputs. Do not introduce a general-purpose editable notebook.
 - Container Apps token acquisition uses the injected local identity endpoint and
   `X-IDENTITY-HEADER`; VM IMDS is used only when the Container Apps variables are
   both absent.
+- Hosted operation requires `Citadel.Operator` or an explicit deployment-owned
+  principal/group allowlist after Easy Auth verifies tenant and audience. Tenant
+  membership alone cannot use the playground managed identity.
+- Relay Key Vault access is pinned to one validated AzureCloud,
+  AzureUSGovernment, or AzureChinaCloud profile. Retired Microsoft Cloud Germany
+  endpoints are rejected.
 - MCP responses are correlated to the outbound JSON-RPC id across JSON and
   multi-event SSE. Missing session captures stop dependent calls before network
   execution and cannot become a pass.
@@ -114,6 +122,8 @@ inputs. Do not introduce a general-purpose editable notebook.
 - Cancellation now covers pre-admission local requests and relay socket
   disconnects. Restart recovery can release a terminal run's reserved capacity
   only after the platform confirms no external job remains active.
+- Relay cancellation aborts the exact pending browser request and propagates
+  through the playground proxy to the standalone relay and gateway call.
 - Managed-run recovery is scheduled across lease expiries and fenced against
   stale dispatcher completions. Local shutdown cancels admission-phase work
   before any registered operation can start.
@@ -123,6 +133,9 @@ inputs. Do not introduce a general-purpose editable notebook.
 - Compile-only Python validation is available only in loopback operator mode,
   accepts only the protocol version, removes its ephemeral workspace, and reports
   no execution, Azure contact, network contact, or live evidence.
+- Burst execution fails if any request exhausts the total run deadline, even when
+  earlier rate-limit evidence exists. Shutdown waits for validation child exit and
+  workspace cleanup.
 - The local executor validates fixed catalogue-owned Azure CLI and Python
   operation shapes, builds child environments from an allowlist, bounds output,
   and terminates timed-out process trees without a shell.
@@ -138,9 +151,9 @@ inputs. Do not introduce a general-purpose editable notebook.
 
 `npm run verify` for the wizard exited 0:
 
-- `npm run check` — 141 modules, 0 dependencies, nothing outside
+- `npm run check` — 147 modules, 0 dependencies, nothing outside
   `CitadelSamples`;
-- `node --test` — 922/922 passing;
+- `node --test` — 977/977 passing;
 - `npm run smoke` — 22/22 passing.
 
 The wizard browser acceptance passed 136/136 checks and regenerated 15 responsive

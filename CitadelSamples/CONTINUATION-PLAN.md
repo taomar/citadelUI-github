@@ -25,8 +25,8 @@ specific Windows username, drive, or local checkout path.
 | Local execution | Server-authoritative registered operations with streamed progress, exact-run cancellation, and contained artifacts |
 | Hosted relay | HTTP/assertion-only; no process, Python, Azure CLI, or artifact execution |
 | Future hosted process execution | Fresh per-run no-ingress isolated jobs only |
-| Verified integration reference | `2b3a617` |
-| Automated baseline | 141 modules, 0 dependencies/out-of-scope; 922/922 Node tests; 22/22 wizard smoke; 136/136 wizard browser acceptance |
+| Verified integration reference | `48a6216` |
+| Automated baseline | 147 modules, 0 dependencies/out-of-scope; 977/977 Node tests; 22/22 wizard smoke; 136/136 wizard browser acceptance |
 | Live Azure validation | Not performed |
 
 ### Decision inputs
