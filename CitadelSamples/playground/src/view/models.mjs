@@ -542,7 +542,55 @@ function matchesQuery(sample, query) {
  * The left-hand recipe directory: groups with their matching samples, plus a
  * flat list for the mobile `<select>`.
  */
-export function buildDirectoryModel({ query = '', selectedSampleId = null } = {}) {
+function directoryReadiness(sample, { read, hasSecret, runtimeProbe, resultFor } = {}) {
+  const dependencies = [...(sample.runtime?.dependencies ?? [])];
+  const resultState = typeof resultFor === 'function' ? resultFor(sample.id)?.state ?? 'not-run' : 'not-run';
+  if (resultState === 'completed') {
+    return { state: 'completed', label: 'Completed', blockingCount: 0, dependencies, dependencyReady: true };
+  }
+  if (typeof read !== 'function') {
+    return { state: 'unknown', label: 'Check inputs', blockingCount: null, dependencies, dependencyReady: null };
+  }
+  const manifest = requirementsFor(sample, read, {
+    hasSecret: typeof hasSecret === 'function' ? hasSecret : () => false,
+  });
+  if (manifest.blocking.length > 0) {
+    return {
+      state: 'needs-input',
+      label: `${manifest.blocking.length} needed`,
+      blockingCount: manifest.blocking.length,
+      dependencies,
+      dependencyReady: null,
+    };
+  }
+  const runtime = describeSampleCapability(sample, runtimeProbe ?? { mode: 'preview' });
+  if (!runtime.ready) {
+    return {
+      state: 'dependency',
+      label: 'Dependency needed',
+      detail: runtime.reasons[0] ?? '',
+      blockingCount: 0,
+      dependencies: [...runtime.dependencies],
+      dependencyReady: runtime.state === 'preview-only' ? null : false,
+    };
+  }
+  return {
+    state: 'ready',
+    label: 'Ready',
+    blockingCount: 0,
+    dependencies: [...runtime.dependencies],
+    dependencyReady: true,
+  };
+}
+
+export function buildDirectoryModel({
+  query = '',
+  selectedSampleId = null,
+  read,
+  hasSecret,
+  runtimeProbe,
+  resultFor,
+} = {}) {
   const groups = CATALOGUE.groups
     .map((group) => {
       const samples = CATALOGUE.samples
@@ -556,12 +604,27 @@ export function buildDirectoryModel({ query = '', selectedSampleId = null } = {}
           riskLevel: sample.risk.level,
           cells: sample.sourceCells.filter((cell) => CATALOGUE.sourceNotebook.codeCellIndexes.includes(cell)),
           selected: sample.id === selectedSampleId,
+          readiness: directoryReadiness(sample, { read, hasSecret, runtimeProbe, resultFor }),
+          recommendedNext: false,
         }));
       return { id: group.id, title: group.title, summary: group.summary, samples, count: samples.length };
     })
     .filter((group) => group.count > 0);
 
   const total = groups.reduce((sum, group) => sum + group.count, 0);
+  const flat = groups.flatMap((group) => group.samples.map((sample) => ({ ...sample, groupTitle: group.title })));
+  const currentIndex = flat.findIndex((sample) => sample.id === selectedSampleId);
+  const candidateOrder =
+    currentIndex >= 0
+      ? [...flat.slice(currentIndex + 1), ...flat.slice(0, currentIndex)]
+      : flat;
+  const recommended = candidateOrder.find((sample) => sample.readiness.state === 'ready');
+  if (recommended) {
+    const grouped = groups
+      .flatMap((group) => group.samples)
+      .find((sample) => sample.id === recommended.id);
+    if (grouped) grouped.recommendedNext = true;
+  }
   return {
     query,
     groups,

@@ -200,7 +200,8 @@ async function claimPrintedLocalSession(baseUrl, output) {
       const launchUrl = new URL(match[1]);
       const capability = new URLSearchParams(launchUrl.hash.slice(1)).get('bootstrap');
       if (!capability) throw new Error('The printed secure launch URL has no bootstrap fragment.');
-      return claimLocalSession(baseUrl, capability);
+      const claim = await claimLocalSession(baseUrl, capability, { origin: launchUrl.origin });
+      return { ...claim, origin: launchUrl.origin };
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 50));
   }
@@ -310,7 +311,7 @@ test('the playground temporary image layout serves protected source and passes i
     await withNodeEntrypoint(resolve(playgroundRoot, 'server.mjs'), playgroundEnvironment(port), async (child, output) => {
       const baseUrl = `http://127.0.0.1:${port}`;
       await waitForResponse(`${baseUrl}/api/health`, { child, output });
-      const { cookie } = await claimPrintedLocalSession(baseUrl, output);
+      const { cookie, origin } = await claimPrintedLocalSession(baseUrl, output);
 
       const sourceResponse = await fetch(`http://127.0.0.1:${port}/api/source/weather-mcp-discovery`);
       assert.equal(sourceResponse.status, 200);
@@ -324,7 +325,7 @@ test('the playground temporary image layout serves protected source and passes i
         headers: {
           'Content-Type': 'application/json',
           Cookie: cookie,
-          Origin: baseUrl,
+          Origin: origin,
           'Sec-Fetch-Site': 'same-origin',
         },
         body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),

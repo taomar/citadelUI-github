@@ -87,7 +87,51 @@ test('the execution-context client sends only the safe per-sample context shape'
     gateway: { keyPresent: true, headerName: 'api-key' },
   });
   assert.equal(calls[0].path, '/api/execution-context');
+  assert.equal(calls[0].options.credentials, 'same-origin');
   assert.deepEqual(calls[0].options.headers, { Accept: 'application/json', 'Content-Type': 'application/json' });
+});
+
+test('the client preserves a disabled Azure subscription context for recovery controls', async () => {
+  const client = createExecutionContextClient({
+    fetchImpl: async () =>
+      response({
+        context: {
+          kind: 'azure-cli-token',
+          label: 'Azure CLI',
+          summary: 'The active subscription is disabled.',
+          state: 'subscription-disabled',
+          code: 'subscription-disabled',
+          canExecute: false,
+          signedInAccount: {
+            state: 'signed-in',
+            principalName: 'operator@example.test',
+            principalType: 'user',
+            tenantId: 'tenant-1',
+          },
+          executionCredential: { type: 'azure-cli', source: 'azure-cli' },
+          activeCliSubscription: {
+            id: '00000000-1111-2222-3333-444444444444',
+            name: 'Disabled',
+            tenantId: 'tenant-1',
+            state: 'Disabled',
+          },
+          intendedTarget: { subscriptionId: null, matchesActive: null },
+          authorization: { state: 'not-checked', label: 'Authorization Not Checked' },
+          gateway: null,
+          hostedRelay: null,
+          guarantees: { tokensExposed: false, credentialsPersisted: false },
+        },
+        futureHostedProcess: { state: 'deferred' },
+      }),
+  });
+
+  const context = await client.getContext({
+    sampleId: 'azure-context-check',
+    configuredSubscriptionId: null,
+    gateway: null,
+  });
+  assert.equal(context.state, 'subscription-disabled');
+  assert.equal(context.canExecute, false);
 });
 
 test('Azure system login and subscription switching use fixed endpoints and exact request bodies', async () => {
@@ -116,6 +160,7 @@ test('Azure system login and subscription switching use fixed endpoints and exac
             id: '00000000-1111-2222-3333-444444444444',
             name: 'Sandbox',
             tenantId: 'tenant-1',
+            state: 'Enabled',
           },
         },
         warning: 'Changes the shared Azure CLI default.',
@@ -141,6 +186,7 @@ test('Azure system login and subscription switching use fixed endpoints and exac
             id: '00000000-1111-2222-3333-444444444444',
             name: 'Sandbox',
             tenantId: 'tenant-1',
+            state: 'Enabled',
           },
         },
         warning: 'Changes the shared Azure CLI default.',
@@ -199,6 +245,7 @@ test('subscription refresh reconciles the account and active default from the se
         id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
         name: 'Old',
         tenantId: 'tenant-old',
+        state: 'Enabled',
       },
       intendedTarget: { subscriptionId: target, matchesActive: false },
       authorization: { state: 'not-checked', label: 'Authorization Not Checked' },
@@ -214,6 +261,7 @@ test('subscription refresh reconciles the account and active default from the se
         id: target,
         name: 'Fresh',
         tenantId: 'tenant-new',
+        state: 'Enabled',
       },
     },
     { sampleId: 'publish-assets' },
@@ -225,6 +273,50 @@ test('subscription refresh reconciles the account and active default from the se
   assert.equal(context.activeCliSubscription.id, target);
   assert.equal(context.intendedTarget.matchesActive, true);
   assert.match(context.summary, /Ready to Attempt/);
+});
+
+test('subscription refresh cannot re-enable a disabled active subscription', () => {
+  const context = reconcileAzureContextCurrent(
+    {
+      kind: 'azure-cli-management',
+      label: 'Azure CLI',
+      summary: 'Disabled.',
+      state: 'subscription-disabled',
+      code: 'subscription-disabled',
+      canExecute: false,
+      signedInAccount: {
+        state: 'signed-in',
+        principalName: 'operator@example.test',
+        principalType: 'user',
+        tenantId: 'tenant-1',
+      },
+      executionCredential: { type: 'azure-cli-user', source: 'azure-cli' },
+      activeCliSubscription: {
+        id: '00000000-1111-2222-3333-444444444444',
+        name: 'Disabled',
+        tenantId: 'tenant-1',
+        state: 'Disabled',
+      },
+      intendedTarget: { subscriptionId: null, matchesActive: null },
+      authorization: { state: 'not-checked', label: 'Authorization Not Checked' },
+    },
+    {
+      signedInAccount: {
+        state: 'signed-in',
+        principalName: 'operator@example.test',
+        principalType: 'user',
+        tenantId: 'tenant-1',
+      },
+      activeCliSubscription: {
+        id: '00000000-1111-2222-3333-444444444444',
+        name: 'Disabled',
+        tenantId: 'tenant-1',
+        state: 'Disabled',
+      },
+    },
+  );
+  assert.equal(context.state, 'subscription-disabled');
+  assert.equal(context.canExecute, false);
 });
 
 test('Azure auth capability adapter exposes stable system-login and subscription flags', () => {

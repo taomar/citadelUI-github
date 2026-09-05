@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 import { CATALOGUE } from '../src/catalogue/index.mjs';
 import {
+  AZURE_CLI_PRINCIPAL_TYPES,
+  EXECUTION_CONTEXT_STATES,
   classifiedSampleIds,
   configuredSubscriptionForSample,
   sampleExecutionContext,
@@ -103,6 +105,8 @@ test('every catalogue sample has exactly one typed execution-context classificat
   assert.equal(sampleExecutionContext('foundry-enable-a2a').kind, 'azure-cli-foundry-token');
   assert.equal(sampleExecutionContext('agent-framework-hr-question').kind, 'gateway-key');
   assert.match(sampleExecutionContext('access-contract-deploy').summary, /AzureCliCredential/);
+  assert.ok(EXECUTION_CONTEXT_STATES.includes('subscription-disabled'));
+  assert.deepEqual(AZURE_CLI_PRINCIPAL_TYPES, ['user', 'service-principal', 'managed-identity']);
   assert.equal(
     configuredSubscriptionForSample('access-contract-kv-verify', {
       'hub.subscriptionId': CONFIGURED_SUBSCRIPTION,
@@ -229,6 +233,7 @@ test('signed-in Azure CLI context exposes only the safe principal and subscripti
       name: 'Operator\u0000 Subscription',
       tenantId: 'tenant-0001',
       user: { name: 'operator@example.test', type: 'user' },
+      state: 'Enabled',
       accessToken: JWT,
     }),
     stderr: '',
@@ -255,6 +260,139 @@ test('signed-in Azure CLI context exposes only the safe principal and subscripti
   assert.equal(result.context.guarantees.tokensExposed, false);
   assert.equal(result.context.guarantees.credentialsPersisted, false);
   assert.equal(JSON.stringify(result).includes(JWT), false);
+});
+
+test('run admission binds the reviewed Azure principal, tenant, and subscription', async () => {
+  const spawn = recordingSpawn(async () => ({
+    code: 0,
+    stdout: account(ACTIVE_SUBSCRIPTION),
+    stderr: '',
+    timedOut: false,
+    aborted: false,
+  }));
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    transports: { spawn },
+  });
+  await assert.rejects(
+    () => manager.forRun({ sampleId: 'publish-assets' }),
+    (error) => error instanceof RequestRefused && error.code === 'reviewed-identity-required',
+  );
+  await assert.rejects(
+    () =>
+      manager.forRun({
+        sampleId: 'publish-assets',
+        reviewedIdentity: {
+          principalName: 'other@example.test',
+          principalType: 'user',
+          tenantId: 'tenant-0001',
+          subscriptionId: ACTIVE_SUBSCRIPTION,
+        },
+      }),
+    (error) => error instanceof RequestRefused && error.code === 'reviewed-identity-changed',
+  );
+  const context = await manager.forRun({
+    sampleId: 'publish-assets',
+    reviewedIdentity: {
+      principalName: 'operator@example.test',
+      principalType: 'user',
+      tenantId: 'tenant-0001',
+      subscriptionId: ACTIVE_SUBSCRIPTION.toUpperCase(),
+    },
+  });
+  assert.equal(context.canExecute, true);
+});
+
+test('run admission uses canonical service-principal and managed-identity types', async () => {
+  for (const [cliType, principalType] of [
+    ['servicePrincipal', 'service-principal'],
+    ['managedIdentity', 'managed-identity'],
+  ]) {
+    const spawn = recordingSpawn(async () => ({
+      code: 0,
+      stdout: JSON.stringify({
+        id: ACTIVE_SUBSCRIPTION,
+        name: 'Active subscription',
+        tenantId: 'tenant-0001',
+        user: { name: 'automation-principal', type: cliType },
+        state: 'Enabled',
+      }),
+      stderr: '',
+      timedOut: false,
+      aborted: false,
+    }));
+    const manager = createExecutionContextManager({
+      playgroundRoot: PLAYGROUND_ROOT,
+      mode: 'execute',
+      transports: { spawn },
+    });
+    const context = await manager.forRun({
+      sampleId: 'publish-assets',
+      reviewedIdentity: {
+        principalName: 'automation-principal',
+        principalType,
+        tenantId: 'tenant-0001',
+        subscriptionId: ACTIVE_SUBSCRIPTION,
+      },
+    });
+    assert.equal(context.signedInAccount.principalType, principalType);
+  }
+});
+
+test('a disabled active Azure CLI subscription cannot execute', async () => {
+  const spawn = recordingSpawn(async () => ({
+    code: 0,
+    stdout: JSON.stringify({
+      ...JSON.parse(account()),
+      state: 'Disabled',
+    }),
+    stderr: '',
+    timedOut: false,
+    aborted: false,
+  }));
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    transports: { spawn },
+  });
+  const result = await manager.describe(contextRequest('publish-assets'), CATALOGUE);
+  assert.equal(result.context.state, 'subscription-disabled');
+  assert.equal(result.context.code, 'subscription-disabled');
+  assert.equal(result.context.canExecute, false);
+  await assert.rejects(
+    () => manager.forRun({ sampleId: 'publish-assets' }),
+    (error) => error instanceof RequestRefused && error.code === 'subscription-disabled',
+  );
+});
+
+test('an incomplete Azure CLI account projection is unavailable and cannot execute', async () => {
+  for (const projection of [
+    { id: ACTIVE_SUBSCRIPTION },
+    {
+      id: ACTIVE_SUBSCRIPTION,
+      tenantId: 'tenant-0001',
+      user: { name: 'operator@example.test', type: 'unexpected-principal-type' },
+    },
+  ]) {
+    const spawn = recordingSpawn(async () => ({
+      code: 0,
+      stdout: JSON.stringify(projection),
+      stderr: '',
+      timedOut: false,
+      aborted: false,
+    }));
+    const manager = createExecutionContextManager({
+      playgroundRoot: PLAYGROUND_ROOT,
+      mode: 'execute',
+      transports: { spawn },
+    });
+    const result = await manager.describe(contextRequest('publish-assets'), CATALOGUE);
+    assert.equal(result.context.state, 'unavailable');
+    assert.equal(result.context.code, 'account-context-invalid');
+    assert.equal(result.context.canExecute, false);
+    assert.equal(result.context.signedInAccount.state, 'status-unknown');
+  }
 });
 
 test('a configured subscription mismatch blocks Azure CLI and AzureCliCredential samples', async () => {
@@ -440,6 +578,12 @@ test('a configured relay never changes the authority used by a direct local run'
   const localManagement = await manager.forRun({
     sampleId: 'publish-assets',
     configuredSubscriptionId: ACTIVE_SUBSCRIPTION,
+    reviewedIdentity: {
+      principalName: 'operator@example.test',
+      principalType: 'user',
+      tenantId: 'tenant-0001',
+      subscriptionId: ACTIVE_SUBSCRIPTION,
+    },
   });
   assert.equal(localManagement.kind, 'azure-cli-management');
   assert.equal(localManagement.state, 'ready-to-attempt');
@@ -984,6 +1128,42 @@ test('subscription list returns only enabled records for the current principal a
   assert.match(result.warning, /shared Azure CLI default/);
 });
 
+test('subscription list accepts the complete bounded 500-record inventory', async () => {
+  const records = Array.from({ length: 500 }, (_, index) => {
+    const suffix = index.toString(16).padStart(12, '0');
+    return {
+      id: `00000000-1111-2222-3333-${suffix}`,
+      name: `Subscription ${index}`,
+      tenantId: 'tenant-0001',
+      user: { name: 'operator@example.test', type: 'user' },
+      isDefault: index === 0,
+      state: 'Enabled',
+    };
+  });
+  const inventory = JSON.stringify(records);
+  const spawn = recordingSpawn(async (options) => {
+    if (options.args[1] === 'show') {
+      return {
+        code: 0,
+        stdout: account(records[0].id),
+        stderr: '',
+        timedOut: false,
+        aborted: false,
+      };
+    }
+    assert.ok(options.maxOutputBytes >= Buffer.byteLength(inventory));
+    return { code: 0, stdout: inventory, stderr: '', timedOut: false, aborted: false };
+  });
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    allowSystemAzureLogin: true,
+    transports: { spawn },
+  });
+  const result = await manager.listSubscriptions();
+  assert.equal(result.subscriptions.length, 500);
+});
+
 test('subscription activation refreshes, sets one exact enabled ID, and verifies readback', async () => {
   let accountReads = 0;
   const spawn = recordingSpawn(async (options) => {
@@ -1034,6 +1214,59 @@ test('subscription activation refreshes, sets one exact enabled ID, and verifies
     ['account', 'set', '--subscription', CONFIGURED_SUBSCRIPTION],
     ACCOUNT_SHOW_ARGS,
   ]);
+});
+
+test('subscription activation aborts its Azure CLI process when the caller disconnects', async () => {
+  let setSignal;
+  let notifySetStarted;
+  const setStarted = new Promise((resolvePromise) => {
+    notifySetStarted = resolvePromise;
+  });
+  const spawn = recordingSpawn(async (options) => {
+    if (options.args[1] === 'show') {
+      return { code: 0, stdout: account(ACTIVE_SUBSCRIPTION), stderr: '', timedOut: false, aborted: false };
+    }
+    if (options.args[1] === 'list') {
+      return {
+        code: 0,
+        stdout: JSON.stringify([
+          {
+            id: CONFIGURED_SUBSCRIPTION,
+            name: 'Configured Subscription',
+            tenantId: 'tenant-0001',
+            user: { name: 'operator@example.test', type: 'user' },
+            isDefault: false,
+            state: 'Enabled',
+          },
+        ]),
+        stderr: '',
+        timedOut: false,
+        aborted: false,
+      };
+    }
+    setSignal = options.signal;
+    notifySetStarted();
+    return new Promise((resolvePromise) => {
+      options.signal.addEventListener('abort', () => {
+        resolvePromise({ code: null, stdout: '', stderr: '', timedOut: false, aborted: true });
+      }, { once: true });
+    });
+  });
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    allowSystemAzureLogin: true,
+    transports: { spawn },
+  });
+  const controller = new AbortController();
+  const pending = manager.activateSubscription(CONFIGURED_SUBSCRIPTION, { signal: controller.signal });
+  await setStarted;
+  controller.abort();
+  await assert.rejects(
+    pending,
+    (error) => error instanceof RequestRefused && error.code === 'subscription-set-failed',
+  );
+  assert.equal(setSignal.aborted, true);
 });
 
 test('subscription activation rejects unsafe readback after set', async () => {
@@ -1214,6 +1447,52 @@ test('Python management run admission stops before a wrapper when CLI auth is ab
   }
 });
 
+test('run admission rejects an Azure identity changed after browser review before creating a workspace', async () => {
+  const spawn = recordingSpawn(async () => ({
+    code: 0,
+    stdout: account(ACTIVE_SUBSCRIPTION),
+    stderr: '',
+    timedOut: false,
+    aborted: false,
+  }));
+  const filesystem = fakeFileSystem({ realReadRoots: [ACCELERATOR_ROOT] });
+  const identity = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    transports: { spawn },
+  });
+  const manager = createRunManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    transports: {
+      spawn,
+      fetch: async () => {
+        throw new Error('network must not be reached');
+      },
+      writeFile: filesystem.writeFile,
+      access: filesystem.access,
+    },
+    fs: filesystem.fs,
+    executionContextManager: identity,
+  });
+  await assert.rejects(
+    () =>
+      manager.start({
+        protocolVersion: EXECUTION_PROTOCOL_VERSION,
+        sampleId: 'azure-context-check',
+        inputs: { 'hub.subscriptionId': ACTIVE_SUBSCRIPTION },
+        reviewedIdentity: {
+          principalName: 'previous@example.test',
+          principalType: 'user',
+          tenantId: 'tenant-0001',
+          subscriptionId: ACTIVE_SUBSCRIPTION,
+        },
+      }),
+    (error) => error instanceof RequestRefused && error.code === 'reviewed-identity-changed',
+  );
+  assert.equal(spawn.calls.length, 1, 'only the post-lease Azure CLI account probe may run');
+  assert.equal(filesystem.files.size, 0);
+});
+
 test('the read-only Azure context diagnostic still runs so it can report a subscription mismatch', async () => {
   const spawn = recordingSpawn(async () => ({
     code: 0,
@@ -1246,6 +1525,12 @@ test('the read-only Azure context diagnostic still runs so it can report a subsc
     protocolVersion: EXECUTION_PROTOCOL_VERSION,
     sampleId: 'azure-context-check',
     inputs: { 'hub.subscriptionId': CONFIGURED_SUBSCRIPTION },
+    reviewedIdentity: {
+      principalName: 'operator@example.test',
+      principalType: 'user',
+      tenantId: 'tenant-0001',
+      subscriptionId: ACTIVE_SUBSCRIPTION,
+    },
   });
   assert.equal(result.executionContext.state, 'subscription-mismatch');
   assert.equal(result.executionContext.canExecute, true);
@@ -1400,6 +1685,53 @@ test('server system-login and subscription endpoints use fixed authenticated sch
       });
       assert.equal(subscriptions.status, 200);
       assert.equal((await subscriptions.json()).subscriptions.length, 1);
+    },
+  );
+});
+
+test('server aborts a subscription operation when its authenticated browser request disconnects', async () => {
+  let operationSignal;
+  let notifyStarted;
+  const started = new Promise((resolvePromise) => {
+    notifyStarted = resolvePromise;
+  });
+  const identity = {
+    listSubscriptions: ({ signal }) => {
+      operationSignal = signal;
+      notifyStarted();
+      return new Promise((resolvePromise, rejectPromise) => {
+        signal.addEventListener('abort', () => {
+          rejectPromise(new RequestRefused('Subscription request cancelled.', {
+            status: 409,
+            code: 'subscription-request-cancelled',
+          }));
+        }, { once: true });
+      });
+    },
+    cancelAll: () => {},
+  };
+  const runManager = {
+    start: async () => {
+      throw new Error('not used');
+    },
+    cancel: () => ({ cancelled: false }),
+    cancelAll: () => {},
+  };
+  await withServer(
+    { mode: 'execute', executionContextManager: identity, runManager, allowSystemAzureLogin: true },
+    async ({ call }) => {
+      const controller = new AbortController();
+      const request = call('/api/azure-subscriptions/list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
+        signal: controller.signal,
+      });
+      await started;
+      controller.abort();
+      await assert.rejects(request, (error) => error?.name === 'AbortError');
+      await new Promise((done) => setTimeout(done, 10));
+      assert.equal(operationSignal.aborted, true);
     },
   );
 });

@@ -1401,21 +1401,6 @@ input[type='search'].ctl {
   flex-wrap: wrap;
 }
 
-.system-login,
-.subscription-control {
-  display: grid;
-  gap: var(--sp-3);
-  padding: var(--sp-4);
-  border: 1px solid var(--brand-line);
-  border-radius: var(--r-2);
-  background: var(--brand-wash);
-}
-
-.system-login-message {
-  color: var(--ink-2);
-  font-size: var(--t-small);
-}
-
 .parameter-contract {
   padding: var(--sp-4);
   border-left: 2px solid var(--brand);

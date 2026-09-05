@@ -245,11 +245,11 @@ export async function launchBrowserHarness({
   let page;
   const pageErrors = [];
 
-  async function setViewport({ width, height, mobile = false }) {
+  async function setViewport({ width, height, mobile = false, deviceScaleFactor = 1 }) {
     await page.send('Emulation.setDeviceMetricsOverride', {
       width,
       height,
-      deviceScaleFactor: 1,
+      deviceScaleFactor,
       mobile,
     });
   }

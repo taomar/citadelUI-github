@@ -104,6 +104,7 @@ export function createRunManager({
                   headerName: resolvedInputs['gatewayAccess.subscriptionKeyHeader'],
                 }
               : null,
+          reviewedIdentity: request.reviewedIdentity,
         },
         { signal: controller.signal },
       );

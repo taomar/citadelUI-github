@@ -371,6 +371,23 @@ test('exactly one directory entry is marked as the current position', () => {
   assert.equal(selected[0].id, 'cleanup');
 });
 
+test('the directory reports input and dependency readiness with one recommended next recipe', () => {
+  const model = buildDirectoryModel({
+    selectedSampleId: 'azure-context-check',
+    read,
+    hasSecret: (path) => Boolean(FIXTURE_SECRETS[path]),
+    runtimeProbe: {
+      mode: 'execute',
+      azureCli: { available: true, version: 'test' },
+      python: { available: true, version: 'test', modules: {} },
+      accelerator: { available: true, files: 1 },
+    },
+  });
+  assert.ok(model.flat.every((sample) => sample.readiness && Array.isArray(sample.readiness.dependencies)));
+  assert.ok(model.flat.some((sample) => sample.readiness.state === 'ready'));
+  assert.equal(model.flat.filter((sample) => sample.recommendedNext).length, 1);
+});
+
 test('risk and state badges map to the semantic tones', () => {
   assert.deepEqual(riskBadge('read-only'), { tone: 'neutral', label: 'Read-only' });
   assert.deepEqual(riskBadge('destructive'), { tone: 'danger', label: 'Destructive' });

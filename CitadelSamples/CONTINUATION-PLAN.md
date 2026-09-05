@@ -119,11 +119,8 @@ Set-Location .\CitadelSamples\playground
 npm start
 ```
 
-Open:
-
-```text
-http://127.0.0.1:4173/
-```
+Open the secure launch URL printed by the server. Local startup chooses a unique
+`*.localhost` browser hostname and a fresh loopback port for every launch.
 
 Preview mode supports:
 

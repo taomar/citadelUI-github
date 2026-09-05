@@ -179,7 +179,12 @@ export function createExecutionContextManager({
     return responseFor(request.sampleId, await contextFor(request, { useRelay: true, signal }));
   }
 
-  async function forRun({ sampleId, configuredSubscriptionId = null, gateway = null }, { signal } = {}) {
+  async function forRun({
+    sampleId,
+    configuredSubscriptionId = null,
+    gateway = null,
+    reviewedIdentity = null,
+  }, { signal } = {}) {
     const context = await contextFor(
       {
         sampleId,
@@ -191,6 +196,7 @@ export function createExecutionContextManager({
     if (!context.canExecute) {
       throw new RequestRefused(context.summary, { status: 409, code: context.code ?? 'execution-context-unavailable' });
     }
+    if (isAzureCliContext(context.kind)) requireReviewedIdentity(context, reviewedIdentity);
     return context;
   }
 
@@ -483,14 +489,16 @@ export function createExecutionContextManager({
     });
   }
 
-  async function listSubscriptions() {
+  async function listSubscriptions({ signal } = {}) {
     requireSystemAzureControls();
     requireOpenForMutation();
     const operation = beginSubscriptionRead();
+    const unlinkSignal = linkAbortSignal(signal, operation.controller);
     operation.promise = listSubscriptionsUnlocked({ signal: operation.controller.signal });
     try {
       return await operation.promise;
     } finally {
+      unlinkSignal();
       subscriptionReads.delete(operation);
     }
   }
@@ -510,7 +518,7 @@ export function createExecutionContextManager({
     });
   }
 
-  async function activateSubscription(subscriptionId) {
+  async function activateSubscription(subscriptionId, { signal } = {}) {
     requireSystemAzureControls();
     requireOpenForMutation();
     const releaseMutation = beginSubscriptionMutation();
@@ -518,6 +526,7 @@ export function createExecutionContextManager({
       controller: new AbortController(),
       promise: null,
     };
+    const unlinkSignal = linkAbortSignal(signal, operation.controller);
     subscriptionOperation = operation;
     operation.promise = activateSubscriptionUnlocked(subscriptionId, {
       signal: operation.controller.signal,
@@ -525,6 +534,7 @@ export function createExecutionContextManager({
     try {
       return await operation.promise;
     } finally {
+      unlinkSignal();
       if (subscriptionOperation === operation) subscriptionOperation = null;
       releaseMutation();
     }
@@ -657,7 +667,7 @@ export function createExecutionContextManager({
   }
 
   async function readSubscriptionInventory(current, { signal } = {}) {
-    const result = await spawnAzure([...ACCOUNT_LIST_ARGS], { maxOutputBytes: 128 * 1024, signal });
+    const result = await spawnAzure([...ACCOUNT_LIST_ARGS], { maxOutputBytes: 1024 * 1024, signal });
     if (result.timedOut) {
       throw new RequestRefused('The Azure CLI subscription list timed out.', {
         status: 504,
@@ -809,6 +819,40 @@ export function createExecutionContextManager({
     return operation;
   }
 
+  function linkAbortSignal(signal, controller) {
+    if (!signal) return () => {};
+    const abort = () => controller.abort(signal.reason);
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+    return () => signal.removeEventListener('abort', abort);
+  }
+
+  function requireReviewedIdentity(context, reviewedIdentity) {
+    if (!reviewedIdentity) {
+      throw new RequestRefused('Refresh and review the Azure execution identity before running.', {
+        status: 409,
+        code: 'reviewed-identity-required',
+      });
+    }
+    const current = {
+      principalName: context.signedInAccount?.principalName,
+      principalType: context.signedInAccount?.principalType,
+      tenantId: context.signedInAccount?.tenantId,
+      subscriptionId: context.activeCliSubscription?.id?.toLowerCase(),
+    };
+    if (
+      reviewedIdentity.principalName !== current.principalName
+      || reviewedIdentity.principalType !== current.principalType
+      || reviewedIdentity.tenantId !== current.tenantId
+      || reviewedIdentity.subscriptionId?.toLowerCase() !== current.subscriptionId
+    ) {
+      throw new RequestRefused('The Azure CLI identity changed after review. Refresh and review it again.', {
+        status: 409,
+        code: 'reviewed-identity-changed',
+      });
+    }
+  }
+
   async function verifyLoginAccount(record) {
     if (closed) return Object.freeze({ signedIn: false, code: 'azure-cli-cancelled' });
     const controller = new AbortController();
@@ -881,15 +925,24 @@ function azureContext(sampleId, descriptor, account, configuredSubscriptionId, {
   const configuredId = normaliseOptional(configuredSubscriptionId);
   const activeId = account.signedIn ? account.activeId : null;
   const matches = account.signedIn && configuredId ? activeId.toLowerCase() === configuredId.toLowerCase() : null;
+  const subscriptionEnabled = account.signedIn && account.subscriptionState === 'Enabled';
   const unavailable = !account.signedIn && account.code !== 'signed-out';
   const state = unavailable
     ? 'unavailable'
     : !account.signedIn
       ? 'signed-out'
+      : !subscriptionEnabled
+        ? 'subscription-disabled'
+        : matches === false
+          ? 'subscription-mismatch'
+          : 'ready-to-attempt';
+  const code = !account.signedIn
+    ? account.code
+    : !subscriptionEnabled
+      ? 'subscription-disabled'
       : matches === false
         ? 'subscription-mismatch'
-        : 'ready-to-attempt';
-  const code = !account.signedIn ? account.code : matches === false ? 'subscription-mismatch' : null;
+        : null;
   const diagnosticMismatch = sampleId === 'azure-context-check' && state === 'subscription-mismatch';
   const summary =
     account.code === 'azure-cli-timeout'
@@ -908,6 +961,8 @@ function azureContext(sampleId, descriptor, account, configuredSubscriptionId, {
                 ? diagnosticMismatch
                   ? 'The active Azure CLI subscription does not match the intended target. This read-only diagnostic may run to report the mismatch.'
                   : 'The active Azure CLI subscription does not match the intended target.'
+                : state === 'subscription-disabled'
+                  ? 'The active Azure CLI subscription is not Enabled. Select an enabled subscription before running this sample.'
                 : `${descriptor.summary} Authorization has not been checked; this context is Ready to Attempt only.`;
   return Object.freeze({
     kind: descriptor.kind,
@@ -929,6 +984,7 @@ function azureContext(sampleId, descriptor, account, configuredSubscriptionId, {
           id: account.activeId,
           name: account.activeName,
           tenantId: account.tenantId,
+          state: account.subscriptionState,
         })
       : null,
     intendedTarget: Object.freeze({
@@ -980,6 +1036,7 @@ function safeLoginContext(account) {
           id: account.activeId,
           name: account.activeName,
           tenantId: account.tenantId,
+          state: account.subscriptionState,
         })
       : null,
   });
@@ -996,15 +1053,21 @@ function accountProjection(account) {
 
 function parseAccount(data) {
   const activeId = normaliseGuid(data?.id);
-  if (!activeId) return Object.freeze({ signedIn: false, code: 'account-context-invalid' });
+  const principalName = safeText(data?.user?.name, 256);
+  const principalType = safePrincipalType(data?.user?.type);
+  const tenantId = safeText(data?.tenantId, 128);
+  const subscriptionState = safeText(data?.state, 32);
+  if (!activeId || !principalName || !principalType || !tenantId || !subscriptionState) {
+    return Object.freeze({ signedIn: false, code: 'account-context-invalid' });
+  }
   return Object.freeze({
     signedIn: true,
-    principalName: safeText(data?.user?.name, 256) || null,
-    principalType: safePrincipalType(data?.user?.type),
-    tenantId: safeText(data?.tenantId, 128) || null,
+    principalName,
+    principalType,
+    tenantId,
     activeId,
     activeName: safeText(data?.name, 256) || null,
-    subscriptionState: safeText(data?.state, 32) || null,
+    subscriptionState,
     isDefault: data?.isDefault === true,
   });
 }
@@ -1179,7 +1242,7 @@ function safePrincipalType(value) {
   if (normalised === 'user') return 'user';
   if (normalised === 'serviceprincipal' || normalised === 'service-principal') return 'service-principal';
   if (normalised === 'managedidentity' || normalised === 'managed-identity') return 'managed-identity';
-  return normalised ? 'unknown' : null;
+  return null;
 }
 
 function normaliseOptional(value) {

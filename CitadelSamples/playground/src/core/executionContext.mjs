@@ -20,8 +20,15 @@ export const EXECUTION_CONTEXT_STATES = Object.freeze([
   'unavailable',
   'signed-out',
   'subscription-mismatch',
+  'subscription-disabled',
   'missing-key',
   'deferred',
+]);
+
+export const AZURE_CLI_PRINCIPAL_TYPES = Object.freeze([
+  'user',
+  'service-principal',
+  'managed-identity',
 ]);
 
 const AZURE_CLI_MANAGEMENT = Object.freeze({

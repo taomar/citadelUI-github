@@ -175,6 +175,7 @@ test('the relay posts to its fixed same-origin endpoint and nowhere else', async
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, '/api/execute');
   assert.equal(calls[0].init.method, 'POST');
+  assert.equal(calls[0].init.credentials, 'same-origin');
   assert.equal(result.state, 'completed');
   assert.equal(result.meta.executor, 'relay');
 });
@@ -264,11 +265,18 @@ test('runPlan never reaches an executor for an unacknowledged risky plan', async
 test('runPlan forwards progress only after validation and acknowledgement pass', async () => {
   const reported = [];
   const onProgress = (event) => reported.push(event);
+  const reviewedIdentity = {
+    principalName: 'operator@example.test',
+    principalType: 'user',
+    tenantId: 'tenant-1',
+    subscriptionId: '00000000-1111-2222-3333-444444444444',
+  };
   const executor = {
     describeCapability: () => ({ canExecute: true, supportedStepTypes: ['azure-cli', 'assertion'] }),
     supports: () => ({ supported: true, unsupportedStepTypes: [] }),
     execute: async (_plan, context) => {
       assert.equal(context.onProgress, onProgress);
+      assert.equal(context.reviewedIdentity, reviewedIdentity);
       context.onProgress({ type: 'step-start', step: { id: 'account-show' } });
       return executionResult({ state: 'completed', sampleId: 'azure-context-check', summary: 'ran' });
     },
@@ -278,6 +286,7 @@ test('runPlan forwards progress only after validation and acknowledgement pass',
   const result = await runPlan(executor, plan, {
     validation,
     acknowledgement: { required: false, satisfied: true, issues: [] },
+    reviewedIdentity,
     onProgress,
   });
 
@@ -322,6 +331,8 @@ test('the local client learns the run id before completion so it can cancel the 
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(client.activeRunId, 'weather-run-1');
   assert.deepEqual(await client.cancel(), { cancelled: true, runId: 'weather-run-1' });
+  assert.equal(calls[0].init.credentials, 'same-origin');
+  assert.equal(calls[1].init.credentials, 'same-origin');
   assert.equal(JSON.parse(calls[1].init.body).runId, 'weather-run-1');
 
   finishRun({
@@ -335,6 +346,25 @@ test('the local client learns the run id before completion so it can cancel the 
   assert.equal(result.state, 'cancelled');
   assert.equal(result.meta.runId, 'weather-run-1');
   assert.equal(client.activeRunId, null);
+});
+
+test('the local client sends the reviewed Azure identity without command material', () => {
+  const client = createLocalExecutorClient({ allowedSampleIds: ALL_IDS });
+  const reviewedIdentity = {
+    principalName: 'operator@example.test',
+    principalType: 'user',
+    tenantId: 'tenant-1',
+    subscriptionId: '00000000-1111-2222-3333-444444444444',
+  };
+  const body = client.buildRequestBody({
+    sampleId: 'azure-context-check',
+    inputs: {},
+    secrets: {},
+    reviewedIdentity,
+  });
+  assert.deepEqual(body.reviewedIdentity, reviewedIdentity);
+  assert.equal(body.command, undefined);
+  assert.equal(body.args, undefined);
 });
 
 test('the local client aborts a pending run request before response headers expose a run id', async () => {

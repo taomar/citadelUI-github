@@ -27,6 +27,7 @@ import {
   isLoopbackHost,
   parseTrustedPublicOrigin,
   probeRuntimes,
+  resolvePlaygroundPort,
   resolveServedPath,
 } from '../server.mjs';
 import { CATALOGUE, getSample } from '../src/catalogue/index.mjs';
@@ -36,6 +37,13 @@ import { canonicalInputDigest } from '../src/relay/acknowledgement.mjs';
 import { resolveSpawnInvocation, spawnProcess } from '../src/server/transports.mjs';
 import { createRunManager } from '../src/server/runManager.mjs';
 import { createDenyAllAuthenticator, createSharedSecretAuthenticator } from '../src/relay/principalAuth.mjs';
+
+test('local startup defaults to a fresh per-launch origin', () => {
+  assert.equal(resolvePlaygroundPort('127.0.0.1'), 0);
+  assert.equal(resolvePlaygroundPort('localhost'), 0);
+  assert.equal(resolvePlaygroundPort('0.0.0.0'), 4173);
+  assert.equal(resolvePlaygroundPort('127.0.0.1', '43123'), 43123);
+});
 import { FIXTURE_VALUES } from './helpers/fixtures.mjs';
 import {
   claimLocalSession,

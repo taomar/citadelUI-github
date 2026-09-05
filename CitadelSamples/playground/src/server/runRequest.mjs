@@ -1,9 +1,9 @@
 /**
  * Request validation and plan reconstruction.
  *
- * The browser sends four things and nothing else:
+ * The browser sends six narrowly scoped things and nothing else:
  *
- *   { protocolVersion, sampleId, inputs, secrets, acknowledgement }
+ *   { protocolVersion, sampleId, inputs, secrets, acknowledgement, reviewedIdentity }
  *
  * It cannot send a plan, a command, a URL, a header set, a file path, an
  * executable, or a script. Anything resembling one is rejected here by name, so
@@ -16,6 +16,11 @@
  */
 
 import { EXECUTION_PROTOCOL_VERSION } from '../core/types.mjs';
+import {
+  AZURE_CLI_PRINCIPAL_TYPES,
+  isAzureCliContext,
+  sampleExecutionContext,
+} from '../core/executionContext.mjs';
 import { coerceValue, isBlank } from '../core/validation.mjs';
 import { isWellFormedUnicode } from '../core/identifiers.mjs';
 
@@ -60,7 +65,7 @@ const FORBIDDEN_MEMBERS = Object.freeze([
  *
  * @param {unknown} payload
  * @param {object} catalogue
- * @returns {{ sample, inputs, secrets, acknowledgement }}
+ * @returns {{ sample, inputs, secrets, acknowledgement, reviewedIdentity }}
  */
 export function validateRunRequest(payload, catalogue) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -137,7 +142,54 @@ export function validateRunRequest(payload, catalogue) {
     }
   }
 
-  return { sample, inputs, secrets, acknowledgement };
+  const reviewedIdentity = validateReviewedIdentity(payload.reviewedIdentity, sample);
+  return { sample, inputs, secrets, acknowledgement, reviewedIdentity };
+}
+
+function validateReviewedIdentity(value, sample) {
+  if (value === undefined) return null;
+  const azure = isAzureCliContext(sampleExecutionContext(sample.id).kind);
+  if (!azure) {
+    throw new RequestRefused('`reviewedIdentity` is valid only for local Azure CLI samples.', {
+      code: 'unexpected-reviewed-identity',
+    });
+  }
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new RequestRefused('`reviewedIdentity` must be an object.', { code: 'invalid-reviewed-identity' });
+  }
+  const keys = Object.keys(value).sort();
+  const expected = ['principalName', 'principalType', 'subscriptionId', 'tenantId'];
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
+    throw new RequestRefused('`reviewedIdentity` has an invalid shape.', { code: 'invalid-reviewed-identity' });
+  }
+  const principalName = checkedIdentityString(value.principalName, 'principalName', 256);
+  const tenantId = checkedIdentityString(value.tenantId, 'tenantId', 128);
+  if (!AZURE_CLI_PRINCIPAL_TYPES.includes(value.principalType)) {
+    throw new RequestRefused('`reviewedIdentity.principalType` is invalid.', {
+      code: 'invalid-reviewed-identity',
+    });
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.subscriptionId)) {
+    throw new RequestRefused('`reviewedIdentity.subscriptionId` must be a GUID.', {
+      code: 'invalid-reviewed-identity',
+    });
+  }
+  return Object.freeze({
+    principalName,
+    principalType: value.principalType,
+    tenantId,
+    subscriptionId: value.subscriptionId.toLowerCase(),
+  });
+}
+
+function checkedIdentityString(value, name, limit) {
+  if (typeof value !== 'string' || value === '' || value.length > limit || value.includes('\0') || !isWellFormedUnicode(value)) {
+    throw new RequestRefused(`\`reviewedIdentity.${name}\` is invalid.`, {
+      code: 'invalid-reviewed-identity',
+    });
+  }
+  return value;
 }
 
 function checkedValue(entry, value) {

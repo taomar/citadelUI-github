@@ -3,7 +3,7 @@
  *
  * The browser's whole contribution to a run is this object:
  *
- *   { protocolVersion, sampleId, inputs, secrets, acknowledgement }
+ *   { protocolVersion, sampleId, inputs, secrets, acknowledgement, reviewedIdentity }
  *
  * It carries no plan, no command, no URL, no header, no path and no script. The
  * server rebuilds every one of those from its own catalogue, which is what
@@ -37,15 +37,24 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
     supports: (plan) => ({ supported: allowed.has(plan?.sampleId), unsupportedStepTypes: [] }),
 
     /** Exposed so a test can assert the exact wire shape without a network. */
-    buildRequestBody({ sampleId, inputs, secrets, acknowledgement }) {
+    buildRequestBody({ sampleId, inputs, secrets, acknowledgement, reviewedIdentity }) {
       if (!allowed.has(sampleId)) throw new Error(`Refused unknown sample "${sampleId}"`);
-      return {
+      const body = {
         protocolVersion: EXECUTION_PROTOCOL_VERSION,
         sampleId,
         inputs: JSON.parse(JSON.stringify(inputs ?? {})),
         secrets: { ...(secrets ?? {}) },
         acknowledgement: acknowledgement ?? null,
       };
+      if (reviewedIdentity) {
+        body.reviewedIdentity = {
+          principalName: reviewedIdentity.principalName,
+          principalType: reviewedIdentity.principalType,
+          tenantId: reviewedIdentity.tenantId,
+          subscriptionId: reviewedIdentity.subscriptionId,
+        };
+      }
+      return body;
     },
 
     get activeRunId() {
@@ -73,7 +82,10 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
       }
     },
 
-    async execute(plan, { sampleId, inputs = {}, secrets = {}, acknowledgement = null, onProgress } = {}) {
+    async execute(
+      plan,
+      { sampleId, inputs = {}, secrets = {}, acknowledgement = null, reviewedIdentity = null, onProgress } = {},
+    ) {
       const fetchImplementation = doFetch();
       if (!fetchImplementation) {
         return executionResult({
@@ -83,7 +95,13 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
           meta: { executor: 'local' },
         });
       }
-      const body = this.buildRequestBody({ sampleId: sampleId ?? plan.sampleId, inputs, secrets, acknowledgement });
+      const body = this.buildRequestBody({
+        sampleId: sampleId ?? plan.sampleId,
+        inputs,
+        secrets,
+        acknowledgement,
+        reviewedIdentity,
+      });
       const request = { controller: new AbortController(), runId: null };
       activeRequest = request;
       let response;

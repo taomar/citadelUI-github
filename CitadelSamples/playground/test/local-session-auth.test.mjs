@@ -292,16 +292,25 @@ test('a restart rotates both bootstrap admission and the session cookie', async 
   const first = await startServer();
   const firstLaunch = new URL(first.server.localSessionAuth.launchUrl(first.baseUrl));
   const firstBootstrap = new URLSearchParams(firstLaunch.hash.slice(1)).get('bootstrap');
-  const firstClaim = await claimLocalSession(first.baseUrl, firstBootstrap);
+  assert.equal((await claimRequest(first.baseUrl, firstBootstrap)).status, 403);
+  const firstClaim = await claimLocalSession(first.baseUrl, firstBootstrap, { origin: firstLaunch.origin });
   await first.close();
 
   const second = await startServer();
   try {
     const secondLaunch = new URL(second.server.localSessionAuth.launchUrl(second.baseUrl));
     const secondBootstrap = new URLSearchParams(secondLaunch.hash.slice(1)).get('bootstrap');
+    assert.match(firstLaunch.hostname, /^citadel-[a-f0-9]{32}\.localhost$/);
+    assert.match(secondLaunch.hostname, /^citadel-[a-f0-9]{32}\.localhost$/);
+    assert.notEqual(secondLaunch.hostname, firstLaunch.hostname);
     assert.notEqual(secondBootstrap, firstBootstrap);
-    assert.equal((await claimRequest(second.baseUrl, firstBootstrap)).status, 401);
-    const secondClaim = await claimLocalSession(second.baseUrl, secondBootstrap);
+    assert.equal(
+      (await claimRequest(second.baseUrl, firstBootstrap, {
+        headers: { Origin: secondLaunch.origin },
+      })).status,
+      401,
+    );
+    const secondClaim = await claimLocalSession(second.baseUrl, secondBootstrap, { origin: secondLaunch.origin });
     assert.notEqual(secondClaim.cookie, firstClaim.cookie);
 
     const staleSession = await second.rawCall('/api/self-test', {

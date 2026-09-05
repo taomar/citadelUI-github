@@ -4,6 +4,7 @@ const CONTEXT_STATES = new Set([
   'ready-to-attempt',
   'unavailable',
   'signed-out',
+  'subscription-disabled',
   'subscription-mismatch',
   'missing-key',
   'deferred',
@@ -117,6 +118,7 @@ function validateCurrentAzureContext(payload) {
   }
   string(subscription.name, 'Current active CLI subscription name', { optional: true });
   string(subscription.tenantId, 'Current active CLI subscription tenant id');
+  string(subscription.state, 'Current active CLI subscription state');
   return value;
 }
 
@@ -131,13 +133,16 @@ export function reconcileAzureContextCurrent(context, current, { sampleId = '' }
       ? null
       : intendedId.toLowerCase() === fresh.activeCliSubscription.id.toLowerCase();
   const mismatch = matchesActive === false;
+  const disabled = fresh.activeCliSubscription.state !== 'Enabled';
   const diagnosticMismatch = mismatch && sampleId === 'azure-context-check';
   return {
     ...prior,
-    state: mismatch ? 'subscription-mismatch' : 'ready-to-attempt',
-    code: mismatch ? 'subscription-mismatch' : null,
-    canExecute: !mismatch || diagnosticMismatch,
-    summary: mismatch
+    state: disabled ? 'subscription-disabled' : mismatch ? 'subscription-mismatch' : 'ready-to-attempt',
+    code: disabled ? 'subscription-disabled' : mismatch ? 'subscription-mismatch' : null,
+    canExecute: !disabled && (!mismatch || diagnosticMismatch),
+    summary: disabled
+      ? 'The active Azure CLI subscription is not Enabled. Select an enabled subscription before running this sample.'
+      : mismatch
       ? diagnosticMismatch
         ? 'The active Azure CLI subscription does not match the intended target. This read-only diagnostic may run to report the mismatch.'
         : 'The active Azure CLI subscription does not match the intended target.'

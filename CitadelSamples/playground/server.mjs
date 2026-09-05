@@ -64,7 +64,6 @@ import {
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const SERVED_ROOTS = ['web', 'src'].map((dir) => resolve(ROOT, dir));
 
-const PORT = Number(process.env.CITADEL_PLAYGROUND_PORT ?? 4173);
 const HOST = process.env.CITADEL_PLAYGROUND_HOST ?? '127.0.0.1';
 const PYTHON = process.env.CITADEL_PLAYGROUND_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
 
@@ -74,6 +73,12 @@ const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 export function isLoopbackHost(host) {
   return LOOPBACK_HOSTS.has(String(host).replace(/^\[|\]$/g, ''));
 }
+
+export function resolvePlaygroundPort(host, configuredPort) {
+  return Number(configuredPort ?? (isLoopbackHost(host) ? 0 : 4173));
+}
+
+const PORT = resolvePlaygroundPort(HOST, process.env.CITADEL_PLAYGROUND_PORT);
 
 /** Parse one canonical HTTPS origin; paths, credentials, query, and fragments are never trusted. */
 export function parseTrustedPublicOrigin(rawValue, { name = 'CITADEL_PLAYGROUND_PUBLIC_ORIGIN' } = {}) {
@@ -495,7 +500,13 @@ function monitorClientDisconnect(request, response, { signal } = {}) {
  */
 export function checkStateChangingRequest(
   request,
-  { port = PORT, host = HOST, publicOrigin = DEFAULT_PUBLIC_ORIGIN, requireOrigin = false } = {},
+  {
+    port = PORT,
+    host = HOST,
+    browserHost = null,
+    publicOrigin = DEFAULT_PUBLIC_ORIGIN,
+    requireOrigin = false,
+  } = {},
 ) {
   const site = request.headers['sec-fetch-site'];
   if (site && site !== 'same-origin' && site !== 'none') {
@@ -507,11 +518,15 @@ export function checkStateChangingRequest(
       return { ok: false, status: 403, message: 'Refused a request without an Origin header.' };
     }
     const effectivePort = request.socket?.localPort ?? port;
-    const expected = new Set([
-      httpOrigin(host, effectivePort),
-      httpOrigin('localhost', effectivePort),
-      httpOrigin('127.0.0.1', effectivePort),
-    ]);
+    const expected = new Set(
+      browserHost
+        ? [httpOrigin(browserHost, effectivePort)]
+        : [
+            httpOrigin(host, effectivePort),
+            httpOrigin('localhost', effectivePort),
+            httpOrigin('127.0.0.1', effectivePort),
+          ],
+    );
     if (publicOrigin) expected.add(publicOrigin);
     if (origin && !expected.has(origin)) {
       return { ok: false, status: 403, message: `Refused a request from origin ${origin}.` };
@@ -547,7 +562,7 @@ function requireLocalSession(request, response, localSessionAuth) {
   return false;
 }
 
-async function handleSessionClaim(request, response, { localSessionAuth, port, host, publicOrigin }) {
+async function handleSessionClaim(request, response, { localSessionAuth, port, host, browserHost, publicOrigin }) {
   if (!localSessionAuth) {
     send(response, 404, securityHeaders('text/plain; charset=utf-8'), 'Not found');
     return;
@@ -555,6 +570,7 @@ async function handleSessionClaim(request, response, { localSessionAuth, port, h
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
     publicOrigin,
     requireOrigin: true,
   });
@@ -612,10 +628,11 @@ function httpOrigin(host, port) {
   return url.origin;
 }
 
-async function handleExecute(request, response, { port, host, publicOrigin, relay }) {
+async function handleExecute(request, response, { port, host, browserHost, publicOrigin, relay }) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
     publicOrigin,
     requireOrigin: isLoopbackHost(host),
   });
@@ -837,10 +854,11 @@ async function handleStatic(request, response) {
   }
 }
 
-async function handleRun(request, response, { mode, manager, port, host, publicOrigin, shutdownSignal }) {
+async function handleRun(request, response, { mode, manager, port, host, browserHost, publicOrigin, shutdownSignal }) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
     publicOrigin,
     requireOrigin: isLoopbackHost(host),
   });
@@ -925,10 +943,11 @@ async function handleRun(request, response, { mode, manager, port, host, publicO
   }
 }
 
-async function handleExecutionContext(request, response, { manager, port, host, publicOrigin }) {
+async function handleExecutionContext(request, response, { manager, port, host, browserHost, publicOrigin }) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
     publicOrigin,
     requireOrigin: isLoopbackHost(host),
   });
@@ -959,10 +978,11 @@ async function handleExecutionContext(request, response, { manager, port, host, 
   }
 }
 
-async function handleAzureLogin(request, response, { action, manager, port, host, publicOrigin }) {
+async function handleAzureLogin(request, response, { action, manager, port, host, browserHost, publicOrigin }) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
     publicOrigin,
     requireOrigin: isLoopbackHost(host),
   });
@@ -1029,10 +1049,11 @@ async function handleAzureLogin(request, response, { action, manager, port, host
   }
 }
 
-async function handleAzureSubscriptions(request, response, { action, manager, port, host, publicOrigin }) {
+async function handleAzureSubscriptions(request, response, { action, manager, port, host, browserHost, publicOrigin }) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
     publicOrigin,
     requireOrigin: isLoopbackHost(host),
   });
@@ -1040,18 +1061,21 @@ async function handleAzureSubscriptions(request, response, { action, manager, po
     sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
     return;
   }
+  const disconnect = monitorClientDisconnect(request, response);
   try {
     const payload = JSON.parse(await readBody(request, 4096));
     let result;
     if (action === 'list') {
       validateSubscriptionListRequest(payload);
-      result = await manager.listSubscriptions();
+      result = await manager.listSubscriptions({ signal: disconnect.signal });
     } else {
       const subscriptionId = validateSubscriptionActivateRequest(payload);
-      result = await manager.activateSubscription(subscriptionId);
+      result = await manager.activateSubscription(subscriptionId, { signal: disconnect.signal });
     }
+    if (response.destroyed) return;
     sendJson(response, 200, result);
   } catch (error) {
+    if (disconnect.signal.aborted && response.destroyed) return;
     if (error instanceof RequestRefused) {
       sendJson(response, error.status, {
         state: 'blocked',
@@ -1064,13 +1088,16 @@ async function handleAzureSubscriptions(request, response, { action, manager, po
       state: 'failed',
       summary: 'The Azure CLI subscription request could not be completed.',
     });
+  } finally {
+    disconnect.dispose();
   }
 }
 
-async function handleCancel(request, response, { manager, port, host, publicOrigin }) {
+async function handleCancel(request, response, { manager, port, host, browserHost, publicOrigin }) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
     publicOrigin,
     requireOrigin: isLoopbackHost(host),
   });
@@ -1102,10 +1129,11 @@ async function handleCancel(request, response, { manager, port, host, publicOrig
  * guarded exactly like every other state-changing endpoint even though it
  * changes nothing, so it cannot be triggered from a cross-site page.
  */
-async function handleSelfTest(request, response, { mode, port, host, publicOrigin }) {
+async function handleSelfTest(request, response, { mode, port, host, browserHost, publicOrigin }) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
     publicOrigin,
     requireOrigin: isLoopbackHost(host),
   });
@@ -1185,10 +1213,19 @@ async function handleProtectedSource(response, sampleId) {
   }
 }
 
-async function handleSourceValidation(request, response, { mode, manager, sampleId, port, host, publicOrigin }) {
+async function handleSourceValidation(request, response, {
+  mode,
+  manager,
+  sampleId,
+  port,
+  host,
+  browserHost,
+  publicOrigin,
+}) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
     publicOrigin,
     requireOrigin: isLoopbackHost(host),
   });
@@ -1327,9 +1364,11 @@ export function createPlaygroundServer({
   const localSessionAuth = isLoopbackHost(host)
     ? createLocalSessionAuth({
         bootstrapCapability: testBootstrapCapability,
+        browserHost: testBootstrapCapability == null ? undefined : String(host).replace(/^\[|\]$/g, ''),
         secureCookie: secureSessionCookie,
       })
     : null;
+  const browserHost = localSessionAuth?.browserHost ?? null;
   const identityManager =
     executionContextManager ??
     createExecutionContextManager({
@@ -1372,7 +1411,13 @@ export function createPlaygroundServer({
           sendJson(response, 405, { state: 'blocked', summary: 'Use POST.', code: 'method-not-allowed' });
           return;
         }
-        await handleSessionClaim(request, response, { localSessionAuth, port, host, publicOrigin });
+        await handleSessionClaim(request, response, {
+          localSessionAuth,
+          port,
+          host,
+          browserHost,
+          publicOrigin,
+        });
         return;
       }
 
@@ -1420,6 +1465,7 @@ export function createPlaygroundServer({
           manager,
           port,
           host,
+          browserHost,
           publicOrigin,
           shutdownSignal: shutdownController.signal,
         });
@@ -1431,7 +1477,7 @@ export function createPlaygroundServer({
           sendJson(response, 405, { cancelled: false, reason: 'Use POST.' });
           return;
         }
-        await handleCancel(request, response, { manager, port, host, publicOrigin });
+        await handleCancel(request, response, { manager, port, host, browserHost, publicOrigin });
         return;
       }
 
@@ -1440,7 +1486,13 @@ export function createPlaygroundServer({
           sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
           return;
         }
-        await handleExecutionContext(request, response, { manager: identityManager, port, host, publicOrigin });
+        await handleExecutionContext(request, response, {
+          manager: identityManager,
+          port,
+          host,
+          browserHost,
+          publicOrigin,
+        });
         return;
       }
 
@@ -1455,6 +1507,7 @@ export function createPlaygroundServer({
           manager: identityManager,
           port,
           host,
+          browserHost,
           publicOrigin,
         });
         return;
@@ -1480,6 +1533,7 @@ export function createPlaygroundServer({
           manager: identityManager,
           port,
           host,
+          browserHost,
           publicOrigin,
         });
         return;
@@ -1490,7 +1544,7 @@ export function createPlaygroundServer({
           sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
           return;
         }
-        await handleExecute(request, response, { port, host, publicOrigin, relay });
+        await handleExecute(request, response, { port, host, browserHost, publicOrigin, relay });
         return;
       }
 
@@ -1499,7 +1553,13 @@ export function createPlaygroundServer({
           sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
           return;
         }
-        await handleSelfTest(request, response, { mode, port, host, publicOrigin });
+        await handleSelfTest(request, response, {
+          mode,
+          port: request.socket?.localPort ?? port,
+          host,
+          browserHost,
+          publicOrigin,
+        });
         return;
       }
 
@@ -1515,6 +1575,7 @@ export function createPlaygroundServer({
           sampleId: decodeSampleId(validationRoute[1]),
           port,
           host,
+          browserHost,
           publicOrigin,
         });
         return;
@@ -1626,7 +1687,9 @@ if (invokedDirectly) {
   const mode = wantsExecution ? 'execute' : 'preview';
   const server = createPlaygroundServer({ mode, allowSystemAzureLogin });
   server.listen(PORT, HOST, async () => {
-    const origin = httpOrigin(HOST, PORT);
+    const address = server.address();
+    const actualPort = typeof address === 'object' && address ? address.port : PORT;
+    const origin = httpOrigin(HOST, actualPort);
     process.stdout.write(
       server.localSessionAuth
         ? `Citadel Publish Playground secure launch URL: ${server.localSessionAuth.launchUrl(origin)}\n`
