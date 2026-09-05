@@ -50,6 +50,10 @@ test('account switching fails closed without an advertised system-browser launch
     terminal: false,
   });
   assert.equal(normalizeAccountControlState({ state: 'unknown-state', canLaunch: true }).state, 'login-disabled');
+  assert.equal(
+    normalizeAccountControlState({ state: 'subscription-mismatch', canSetActive: true }).canSetActive,
+    true,
+  );
 });
 
 test('identity fails closed when neither execution context nor account adapter reports', () => {

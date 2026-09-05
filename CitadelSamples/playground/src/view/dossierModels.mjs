@@ -75,7 +75,7 @@ export function normalizeAccountControlState(value = {}) {
     canLaunch: launchAdvertised && !active,
     canCancel: value.canCancel === true && active && Boolean(safeText(value.sessionId)),
     canVerify: value.canVerify === true && !active,
-    canSetActive: value.canSetActive === true && state === 'ready',
+    canSetActive: value.canSetActive === true && ['ready', 'subscription-mismatch'].includes(state),
     activeAccountId: safeText(value.activeAccountId),
     activeSubscriptionId: safeText(value.activeSubscriptionId),
     intendedSubscriptionId: safeText(value.intendedSubscriptionId),
