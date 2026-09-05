@@ -153,6 +153,10 @@ switching rotates the session. Explicit Sign out always revokes it.
 Consumed callbacks still occupy their admission slot while token validation is
 in flight. Cancellation/expiry prevents a late result from committing, clearing a
 newer correlation cookie, or cancelling a subsequent consent attempt.
+An explicit Sign in click refreshes read-only capability/CSRF state before starting
+authentication, so an expired pre-auth cookie does not require reloading the page.
+If that refresh fails, the application offers Retry without starting authentication.
+Resource, review and run operations are not retried.
 
 `CITADEL_SESSION_IDLE_SECONDS`, `CITADEL_SESSION_ABSOLUTE_SECONDS` and
 `CITADEL_AUTH_TRANSACTION_SECONDS` may reduce, not increase, those time bounds.
@@ -168,7 +172,8 @@ Supported adapters are `azure-context-check`, `apim-discovery`,
 `a2a-message-send`, and `weather-tools-call`. Their previews identify the actual
 HTTP operations; protected notebook source is unchanged. Weather output exposes
 only bounded, typed, redacted weather fields. Raw upstream bodies and tokens are
-not published.
+not published. Select **Evidence** and read **Step evidence** to inspect the returned
+weather payload; the default Transcript is the execution log.
 
 The remaining twelve stay visibly unsupported: `foundry-enable-a2a`,
 `apim-foundry-grant`, `weather-api-ensure`, `publish-assets`,

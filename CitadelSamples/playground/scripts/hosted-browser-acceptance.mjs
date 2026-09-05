@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { isDeepStrictEqual } from 'node:util';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -18,9 +19,11 @@ const tls = testTls();
 const nss = join(homedir(), '.local', 'share', 'pki', 'nssdb');
 mkdirSync(nss, { recursive: true });
 execFileSync('certutil', ['-N', '--empty-password', '-d', `sql:${nss}`]);
-execFileSync('certutil', ['-A', '-d', `sql:${nss}`, '-n', 'citadel-auth-test-8ea0cc0f', '-t', 'C,,', '-i', join(tls.directory, 'ca.pem')]);
+execFileSync('certutil', ['-A', '-d', `sql:${nss}`, '-n', 'citadel-auth-v5-8ea0cc0f', '-t', 'C,,', '-i', join(tls.directory, 'ca.pem')]);
 let app, holdResource = false, releaseResource;
 let armRequests = 0, gatewayRequests = 0;
+let admittedStarts = 0, weatherExchange;
+const entryRequests = [];
 const config = hostedConfig();
 const identity = await createHttpsIdentityFixture(config, tls);
 const reporter = createCheckReporter({ name: 'hosted HTTPS browser acceptance (synthetic identity/resources)' });
@@ -41,8 +44,25 @@ try {
           if (holdResource) await new Promise((resolve) => { releaseResource = resolve; });
           if (new URL(url).origin === 'https://management.azure.com') armRequests++;
           else gatewayRequests++;
-          return fixtureResourceResponse(url, options);
+          const response = fixtureResourceResponse(url, options);
+          if (new URL(url).origin === gatewayOrigin && options.body) {
+            const request = JSON.parse(options.body);
+            if (request.method === 'tools/call') {
+              const returned = await response.clone().json();
+              weatherExchange = { sentCity: request.params.arguments.city,
+                payload: JSON.parse(returned.result.content.find((item) => item.type === 'text').text) };
+            }
+          }
+          return response;
         } });
+      app.on('request', (request, response) => {
+        if (['/api/capabilities', '/api/auth/start'].includes(request.url)) {
+          entryRequests.push({ method: request.method, path: request.url });
+        }
+        if (request.url === '/api/auth/start') response.once('finish', () => {
+          if (response.statusCode === 200) admittedStarts++;
+        });
+      });
       return app;
     },
   });
@@ -66,11 +86,13 @@ try {
     }
     throw new Error(`Native Tab did not reach ${selector}`);
   };
-  const runCheck = async ({ city } = {}) => {
+  const runCheck = async ({ changeCity = false } = {}) => {
     for (let step = 0; step < 6; step++) {
       await browser.waitFor("document.querySelector('.wizard-primary') && !document.querySelector('.wizard-primary').disabled");
       const label = await browser.evaluate("document.querySelector('.wizard-primary').textContent");
       if (/Run Check|Run now|Run recipe/i.test(label)) {
+        const initialCity = changeCity ? await browser.evaluate("document.querySelector('#f-samples-weather-tools-call-city').value") : null;
+        const city = changeCity ? initialCity === 'Paris' ? 'Berlin' : 'Paris' : null;
         if (city) await input('#f-samples-weather-tools-call-city', city);
         await tabTo('.wizard-primary');
         await browser.pressKey('Tab', { shift: true });
@@ -78,7 +100,7 @@ try {
         await browser.waitFor("document.querySelector('.wizard-primary') && !document.querySelector('.wizard-primary').disabled");
         await tabTo('.wizard-primary');
         await browser.pressKey('Enter');
-        return;
+        return { initialCity, city };
       }
       await click('.wizard-primary');
       await new Promise((resolve) => setTimeout(resolve, 200));
@@ -88,8 +110,30 @@ try {
   await browser.waitFor("document.querySelector('#dossier-identity-sign-in')?.textContent === 'Sign in with Microsoft' && !document.querySelector('#dossier-identity-sign-in').disabled");
   reporter.check('fresh ordinary HTTPS URL exposes functional in-app sign-in without a bootstrap', await browser.evaluate("isSecureContext && !location.hash.includes('bootstrap')"));
   await input('#f-hub-subscriptionId', subscriptionId);
+  const entryDocument = await browser.evaluate('performance.timeOrigin');
+  const cachedCsrf = await browser.evaluate("(async () => (await import('/web/js/hostedClient.mjs')).hostedAuth().csrf)()");
+  assert.ok(typeof cachedCsrf === 'string' && cachedCsrf.length === 43);
+  assert.ok((await browser.page.send('Network.getCookies', { urls: [browser.baseUrl] })).cookies
+    .some((cookie) => cookie.name === '__Host-citadel-preauth'));
+  assert.ok(await browser.evaluate('document.hasFocus()'));
+  const beforeExpiry = entryRequests.length;
+  await browser.page.send('Network.deleteCookies', { name: '__Host-citadel-preauth', url: browser.baseUrl });
+  const cookies = await browser.page.send('Network.getCookies', { urls: [browser.baseUrl] });
+  reporter.check('preauth expiry leaves the focused page, stale client and entered input intact',
+    !cookies.cookies.some((cookie) => cookie.name === '__Host-citadel-preauth')
+    && await browser.evaluate(`(async () => document.hasFocus() && performance.timeOrigin === ${entryDocument}
+      && (await import('/web/js/hostedClient.mjs')).hostedAuth().csrf === ${JSON.stringify(cachedCsrf)}
+      && document.querySelector('#f-hub-subscriptionId').value === ${JSON.stringify(subscriptionId)})()`));
+  assert.equal(entryRequests.length, beforeExpiry, 'cookie deletion must not refresh client state');
+  const beforeStart = admittedStarts;
   await click('#dossier-identity-sign-in');
   await browser.waitFor("document.querySelector('#dossier-connect-azure') && !document.querySelector('#dossier-connect-azure').disabled");
+  reporter.check('Sign in click refreshes read-only capability before its single auth POST',
+    isDeepStrictEqual(entryRequests.slice(beforeExpiry, beforeExpiry + 2), [
+      { method: 'GET', path: '/api/capabilities' }, { method: 'POST', path: '/api/auth/start' },
+    ]), JSON.stringify(entryRequests.slice(beforeExpiry, beforeExpiry + 2)));
+  const admittedInitialStarts = admittedStarts - beforeStart;
+  reporter.equal('expired preauth recovers with exactly one admitted auth transaction', admittedInitialStarts, 1);
   reporter.equal('recipe and entered subscription survive Microsoft-controlled fixture redirect', await browser.evaluate("document.querySelector('#f-hub-subscriptionId')?.value"), subscriptionId);
   reporter.equal('operator sign-in alone does not request ARM', armRequests, 0);
   identity.denyNext();
@@ -149,10 +193,31 @@ try {
   await input('#f-gatewayAccess-apiKey', 'FAKE-CONTRACT-KEY-do-not-use-0000');
   await browser.waitFor("document.body.textContent.includes('Key present in memory.')");
   reporter.check('native re-entry commits the ephemeral key before leaving Connection', true);
-  await runCheck({ city: 'Seattle' });
+  const cityChange = await runCheck({ changeCity: true });
   await browser.waitFor("document.body.textContent.includes('Synthetic weather') || document.body.textContent.includes('checks passed')");
   reporter.check('Weather tools/call reaches the bounded gateway adapter', gatewayRequests >= 3);
-  reporter.check('native non-default City reaches the Weather result', (await browser.evaluate('document.body.textContent')).includes('Seattle'));
+  reporter.check('native City differs from its actual initial value', cityChange.city !== cityChange.initialCity);
+  reporter.equal('exact changed City is sent to the gateway', weatherExchange.sentCity, cityChange.city);
+  reporter.equal('gateway returns that exact changed City', weatherExchange.payload.city, cityChange.city);
+  await click('#dossier-output-tab-evidence');
+  await browser.waitFor("document.querySelector('#dossier-output-tab-evidence').getAttribute('aria-selected') === 'true' && !document.querySelector('#dossier-output-panel-evidence').hidden");
+  const displayedWeather = await browser.evaluate(`(() => {
+    const panel = document.querySelector('#dossier-output-panel-evidence');
+    const label = [...panel.querySelectorAll('.output-facts dt')].find(el => el.innerText === 'weather');
+    const value = label?.nextElementSibling.querySelector('code');
+    if (!value) throw new Error('Weather did not reach the selected Evidence panel');
+    value.scrollIntoView({block:'center',inline:'nearest'});
+    const rect = value.getBoundingClientRect();
+    const x = Math.max(0, rect.left) + Math.min(rect.width, innerWidth - Math.max(0, rect.left)) / 2;
+    const y = Math.max(0, rect.top) + Math.min(rect.height, innerHeight - Math.max(0, rect.top)) / 2;
+    const visible = value.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})
+      && rect.width > 0 && rect.height > 0 && x > 0 && x < innerWidth && y > 0 && y < innerHeight
+      && value.contains(document.elementFromPoint(x,y));
+    return {visible, payload: visible ? JSON.parse(value.innerText) : null};
+  })()`);
+  reporter.check('native non-default City reaches the Weather result', displayedWeather.visible && displayedWeather.payload?.city === cityChange.city);
+  reporter.check('selected visible Evidence exposes the complete returned weather payload',
+    isDeepStrictEqual(displayedWeather.payload, weatherExchange.payload), JSON.stringify({ displayedWeather, weatherExchange }));
   reporter.equal('Weather does not acquire or call ARM', armRequests, beforeGatewayArm);
   reporter.equal('no uncaught JavaScript errors', browser.runtimeErrors.length, 0);
   reporter.check('hosted result evidence is not mislabelled preview or boundary-conflicted', !(await browser.evaluate('document.body.textContent')).includes('Evidence boundary conflict'));
@@ -184,6 +249,10 @@ try {
       body: Buffer.from('{"summary":"Synthetic capacity unavailable"}').toString('base64') });
   });
   await browser.page.send('Fetch.enable', { patterns: [{ urlPattern: `${browser.baseUrl}/api/capabilities` }] });
+  const startsBeforeFailure = admittedStarts;
+  await click('#dossier-identity-sign-in');
+  await browser.waitFor("document.body.textContent.includes('Sign-in readiness could not be refreshed') && document.querySelector('#dossier-identity-retry') && !document.querySelector('#dossier-identity-retry').disabled");
+  reporter.equal('failed sign-in preflight offers Retry without admitting authentication', admittedStarts, startsBeforeFailure);
   await browser.navigate(`${browser.baseUrl}/?recipe=azure-context-check`, { discardChanges: true });
   await browser.waitFor("document.querySelector('#dossier-identity-retry') && !document.querySelector('#dossier-identity-retry').disabled");
   reporter.check('temporary session API failure offers in-app retry rather than terminal fallback', !(await browser.evaluate('document.body.textContent')).includes('Open the secure launch URL'));
@@ -201,6 +270,11 @@ try {
   console.log('Native event provenance:', JSON.stringify(browser.nativeEvents));
   console.log('Dialog provenance:', JSON.stringify(browser.dialogs));
   console.log('Identity HTTPS provenance (no tokens):', JSON.stringify(identity.requests));
+  console.log('Entry and weather provenance (synthetic, non-secret):', JSON.stringify({
+    entryRequests: entryRequests.slice(beforeExpiry, beforeExpiry + 2), admittedInitialStarts,
+    initialCity: cityChange.initialCity, sentCity: weatherExchange.sentCity,
+    returnedCity: weatherExchange.payload.city, evidenceVisible: displayedWeather.visible, armRequestsDuringWeather: armRequests - beforeGatewayArm,
+  }));
   const outcome = reporter.finish();
   assert.equal(outcome.ok, true);
 } catch (error) {

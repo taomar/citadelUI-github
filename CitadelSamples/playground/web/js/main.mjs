@@ -1652,7 +1652,7 @@ async function validateSource() {
   render();
 }
 
-async function fetchCapabilities() {
+async function fetchCapabilities({ throwOnFailure = false } = {}) {
   try {
     const response = await fetch('/api/capabilities', { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`Capability probe failed with HTTP ${response.status}.`);
@@ -1712,6 +1712,7 @@ async function fetchCapabilities() {
       ? createHostedExecutorClient({ capability: state.capabilities.executor, contextVersion: () => 0 })
       : createUnavailableExecutor({ reason: state.capabilities.executor.reason });
     state.executorCapability = state.executor.describeCapability();
+    if (throwOnFailure) throw new Error('Sign-in readiness could not be refreshed. Use Retry in this application.', { cause: error });
   }
 }
 
@@ -2466,6 +2467,7 @@ function saveSignInDraft() {
 async function beginHostedSignIn(purpose) {
   return hostedAction(async () => {
     saveSignInDraft();
+    await fetchCapabilities({ throwOnFailure: true });
     const result = await hostedPost('/api/auth/start', { purpose });
     if (new URL(result.url).protocol !== 'https:') throw new Error('Sign-in requires HTTPS.');
     playgroundState.markInputsHandled();

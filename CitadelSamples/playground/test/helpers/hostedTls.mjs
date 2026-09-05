@@ -7,7 +7,7 @@ import { request } from 'node:https';
 // Synthetic one-day certificates, generated only in a disposable test directory.
 // Trust is supplied to each test client, never installed in the operating system.
 export function testTls({ expired = false } = {}) {
-  const directory = mkdtempSync(join(tmpdir(), 'citadel-auth-v4-8ea0cc0f-'));
+  const directory = mkdtempSync(join(tmpdir(), 'citadel-auth-v5-8ea0cc0f-'));
   const run = (...args) => {
     const result = spawnSync('openssl', args, { cwd: directory, encoding: 'utf8', windowsHide: true });
     if (result.status !== 0) {
