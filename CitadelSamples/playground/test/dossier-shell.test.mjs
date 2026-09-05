@@ -304,7 +304,7 @@ test('the renderer source enforces the dossier shell constraints', async () => {
   assert.match(shell, /device\?\.available \? action\('dossier-device-sign-in'/);
   const shellParameters = shell.slice(shell.indexOf('export function renderShell'), shell.indexOf('const identityCallbacks'));
   const forwarded = shell.slice(shell.indexOf('const identityCallbacks'), shell.indexOf('const directory ='));
-  for (const callback of ['onDeviceSignIn', 'onDeviceAzure', 'onDeviceCancel', 'onDeviceComplete', 'onDeviceRetry']) {
+  for (const callback of ['onDeviceSignIn', 'onDeviceAzure', 'onDeviceCancel', 'onDeviceComplete', 'onDeviceRetry', 'onDeviceCheckStatus']) {
     assert.ok(shellParameters.includes(callback));
     assert.ok(forwarded.includes(callback));
   }

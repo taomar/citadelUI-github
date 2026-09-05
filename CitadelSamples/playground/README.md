@@ -27,8 +27,8 @@ operation is attributable, bounded, and explainable before it runs.
 The Docker image starts `hosted-server.mjs`, not the workstation executor. Open
 the deployment's ordinary stable HTTPS URL, choose **Sign in with Microsoft**,
 and return to the application. New browsers, expired sessions and restarts use
-that same flow. No terminal, bootstrap URL, Copilot session, device code, Azure
-CLI cache or server-side WAM is involved.
+that same default browser flow. No terminal, bootstrap URL, Copilot session,
+device code, Azure CLI cache or server-side WAM is involved in that default flow.
 
 For Azure context check and APIM discovery, **Connect Azure** requests delegated
 Azure Service Management consent for the same user, then **Load subscriptions**

@@ -1401,6 +1401,7 @@ function render() {
     onDeviceCancel: () => hostedAction(() => deviceSignIn.cancel()),
     onDeviceComplete: () => hostedAction(() => deviceSignIn.complete()),
     onDeviceRetry: () => beginDeviceSignIn(deviceSignIn.snapshot()?.purpose ?? 'signin'),
+    onDeviceCheckStatus: () => hostedAction(() => deviceSignIn.checkStatus()),
     onIdentityRetry: () => hostedAction(async () => { await fetchCapabilities(); await refreshExecutionContext(); }),
     onIdentitySubscriptionChange(id) {
       state.selectedSubscriptionId = id;

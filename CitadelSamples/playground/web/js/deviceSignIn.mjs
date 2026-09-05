@@ -3,7 +3,7 @@ const messages = {
   starting: 'Requesting a code from Microsoft.',
   pending: 'Waiting for you to verify with Microsoft.',
   ready: 'Microsoft verification finished. Choose Finish sign-in to use this account.',
-  cancelling: 'Cancelled. Waiting for the previous request to stop before retrying.',
+  cancelling: 'Cancellation requested. Waiting for the previous request to stop before retrying.',
   cancelled: 'Device sign-in cancelled.',
   expired: 'Device sign-in expired. Request a new code when ready.',
   declined: 'Microsoft verification was declined.',
@@ -12,6 +12,7 @@ const messages = {
 
 export function createDeviceSignIn({ post, refresh, changed, intervalMs = 1000 }) {
   let current = null, generation = 0, timer, completionAttempted = false, transientDisplay = false;
+  let cancellationRequested = false;
   // Recent retired handles add local rollback protection behind capability request epochs.
   const retired = new Set();
   function retire(id) {
@@ -21,17 +22,28 @@ export function createDeviceSignIn({ post, refresh, changed, intervalMs = 1000 }
   }
   function publish(value) { current = value; changed(value); }
   function stop() { clearTimeout(timer); timer = null; }
+  function unavailable(message) {
+    publish({ ...current, userCode: undefined, verificationUri: undefined, statusUnavailable: true, message });
+  }
+  async function readback(version, id) {
+    try { await refresh(); }
+    catch {
+      if (version === generation && current?.flowId === id) unavailable(
+        'The owning flow could not be checked. Choose Check status to retry this read; cancellation will not be sent again.');
+      return;
+    }
+    if (version === generation && current?.flowId === id) await poll({ manual: true });
+  }
   function schedule() {
     stop();
     if (current && (active.has(current.state) || current.settled === false || current.retryAfterMs > 0)
       && !completionAttempted) timer = setTimeout(poll, intervalMs);
   }
-  async function poll() {
+  async function poll({ manual = false } = {}) {
     const version = generation, id = current?.flowId;
     if (!id) return;
-    if (Date.now() > current.deadlineAt + 70000) {
-      publish({ ...current, userCode: undefined, verificationUri: undefined,
-        message: 'The status observation deadline passed. Reload to recover the current owning flow; no new code was requested.' });
+    if (!manual && Date.now() > current.deadlineAt + 70000) {
+      unavailable('The status observation deadline passed. Choose Check status for a read-only update; no new code was requested.');
       return;
     }
     try {
@@ -40,12 +52,13 @@ export function createDeviceSignIn({ post, refresh, changed, intervalMs = 1000 }
       const previousState = current.state;
       const { userCode, verificationUri, ...metadata } = result;
       publish({ ...metadata, ...(transientDisplay ? { userCode, verificationUri } : {}),
-        resumed: !transientDisplay });
+        cancellationRequested, resumed: !transientDisplay,
+        ...(cancellationRequested && ['starting', 'pending', 'ready'].includes(result.state)
+          ? { message: 'Cancellation is not confirmed. This flow is still active. Cancel it explicitly again or wait for its status; no account will be adopted.' } : {}) });
       if (!active.has(result.state) && active.has(previousState)) await refresh();
     } catch {
       if (version !== generation) return;
-      publish({ ...current, userCode: undefined, verificationUri: undefined,
-        message: 'Status is unavailable. Cancel this exact flow or reload to recover its handle.' });
+      unavailable('Status is unavailable. Choose Check status for this exact flow; no sign-in or cancellation will be retried.');
       return;
     }
     if (version === generation) schedule();
@@ -55,18 +68,18 @@ export function createDeviceSignIn({ post, refresh, changed, intervalMs = 1000 }
     reconcile(auth) {
       const flow = auth?.deviceFlow;
       if (!flow) {
-        if (current && active.has(current.state)) { retire(current.flowId); generation++; stop(); publish(null); }
+        if (current && (active.has(current.state) || current.statusUnavailable)) { retire(current.flowId); generation++; stop(); publish(null); }
         return;
       }
       if (retired.has(flow.flowId)) return;
       if (flow.flowId === current?.flowId) return;
       retire(current?.flowId);
-      generation++; stop(); completionAttempted = false; transientDisplay = false;
+      generation++; stop(); completionAttempted = false; transientDisplay = false; cancellationRequested = false;
       publish({ ...flow, resumed: true });
       schedule();
     },
     async start(purpose) {
-      generation++; stop(); completionAttempted = false; transientDisplay = true;
+      generation++; stop(); completionAttempted = false; transientDisplay = true; cancellationRequested = false;
       const version = generation;
       let result;
       try { result = await post('start', { purpose }); }
@@ -83,16 +96,35 @@ export function createDeviceSignIn({ post, refresh, changed, intervalMs = 1000 }
     async cancel() {
       if (!current) return;
       const id = current.flowId, version = ++generation;
-      stop(); completionAttempted = false; transientDisplay = false;
-      publish({ ...current, state: 'cancelling', settled: false, userCode: undefined, verificationUri: undefined });
-      const result = await post('cancel', { flowId: id });
+      stop(); completionAttempted = false; transientDisplay = false; cancellationRequested = true;
+      publish({ ...current, state: 'cancelling', settled: false, cancellationRequested,
+        userCode: undefined, verificationUri: undefined, statusUnavailable: false,
+        message: 'Requesting cancellation. No account will be adopted from this flow.' });
+      let result;
+      try { result = await post('cancel', { flowId: id }); }
+      catch {
+        if (version !== generation) return;
+        unavailable('Cancellation could not be confirmed. Checking this flow without retrying cancellation.');
+        await readback(version, id);
+        return;
+      }
       if (version !== generation) return;
-      publish(result);
-      await refresh();
+      publish({ ...result, cancellationRequested });
+      try { await refresh(); }
+      catch {
+        if (version === generation) unavailable('The application state could not be refreshed. Choose Check status before requesting a new code.');
+        return;
+      }
       if (version === generation) schedule();
     },
+    async checkStatus() {
+      if (!current?.statusUnavailable) return;
+      const id = current.flowId, version = ++generation;
+      stop();
+      await readback(version, id);
+    },
     async complete() {
-      if (!current || current.state !== 'ready' || completionAttempted) return;
+      if (!current || current.state !== 'ready' || completionAttempted || cancellationRequested || current.statusUnavailable) return;
       const id = current.flowId, version = ++generation;
       completionAttempted = true; stop();
       publish({ ...current, completionAttempted: true });
@@ -138,9 +170,13 @@ export function updateDeviceSignIn(root, flow, { busy = false } = {}) {
   cancel.hidden = !active.has(flow.state);
   cancel.disabled = busy || !['starting', 'pending', 'ready'].includes(flow.state);
   const complete = panel.querySelector('#device-complete');
-  complete.hidden = flow.state !== 'ready';
-  complete.disabled = busy || flow.state !== 'ready' || flow.completionAttempted === true;
+  complete.hidden = flow.state !== 'ready' || flow.cancellationRequested === true;
+  complete.disabled = busy || flow.state !== 'ready' || flow.completionAttempted === true
+    || flow.cancellationRequested === true || flow.statusUnavailable === true;
   const retry = panel.querySelector('#device-retry');
   retry.hidden = active.has(flow.state);
-  retry.disabled = busy || active.has(flow.state) || !flow.settled || flow.retryAfterMs > 0;
+  retry.disabled = busy || active.has(flow.state) || !flow.settled || flow.retryAfterMs > 0 || flow.statusUnavailable === true;
+  const check = panel.querySelector('#device-check-status');
+  check.hidden = flow.statusUnavailable !== true;
+  check.disabled = busy || flow.statusUnavailable !== true;
 }
