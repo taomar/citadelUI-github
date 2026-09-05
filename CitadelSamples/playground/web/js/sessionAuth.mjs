@@ -6,15 +6,15 @@ export function consumeBootstrapCapability({
   locationRef = globalThis.location,
   historyRef = globalThis.history,
 } = {}) {
-  const match = String(locationRef?.hash ?? '').match(/^#bootstrap=([A-Za-z0-9_-]{43})$/);
-  if (!match) return null;
-  const capability = match[1];
+  const hash = String(locationRef?.hash ?? '');
+  if (!hash.startsWith('#bootstrap=')) return null;
   historyRef?.replaceState?.(
     null,
     '',
     `${locationRef.pathname ?? '/'}${locationRef.search ?? ''}`,
   );
-  return capability;
+  const match = hash.match(/^#bootstrap=([A-Za-z0-9_-]{43})$/);
+  return match?.[1] ?? null;
 }
 
 export function normalizeSessionAuthDescriptor(value = {}) {

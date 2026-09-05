@@ -37,6 +37,14 @@ test('invalid or unrelated fragments are not consumed', () => {
 
   assert.equal(capability, null);
   assert.equal(replaced, false);
+
+  const invalidCalls = [];
+  const invalid = consumeBootstrapCapability({
+    locationRef: { hash: '#bootstrap=invalid', pathname: '/', search: '' },
+    historyRef: { replaceState: (...args) => invalidCalls.push(args) },
+  });
+  assert.equal(invalid, null);
+  assert.equal(invalidCalls.length, 1, 'a malformed bootstrap fragment is still erased immediately');
 });
 
 test('the session descriptor accepts only the fixed same-origin claim endpoint', () => {
