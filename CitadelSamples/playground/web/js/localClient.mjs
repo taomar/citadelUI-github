@@ -63,6 +63,7 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
       try {
         const response = await fetchImplementation('/api/run/cancel', {
           method: 'POST',
+          credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
           body: JSON.stringify({ runId: request.runId }),
         });
@@ -89,6 +90,7 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
       try {
         response = await fetchImplementation('/api/run', {
           method: 'POST',
+          credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson, application/json' },
           body: JSON.stringify(body),
           signal: request.controller.signal,

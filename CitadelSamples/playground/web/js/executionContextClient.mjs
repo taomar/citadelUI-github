@@ -109,6 +109,7 @@ export function createExecutionContextClient({ fetchImpl = globalThis.fetch } = 
   async function post(path, body, { signal } = {}) {
     const response = await fetchImpl(path, {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal,
