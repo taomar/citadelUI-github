@@ -827,6 +827,172 @@ test('an atomic worker lease allows only one worker to execute a queued run', as
   assert.equal((await second).state, 'running');
 });
 
+test('an expired worker lease fences stale writes and retains the only capacity slot until that worker promise settles', async () => {
+  let now = 1_000;
+  const store = createInMemoryManagedRunStore({ now: () => now, workerLeaseMs: 100 });
+  assert.throws(
+    () =>
+      createManagedRunWorker({
+        store,
+        cancellationPollMs: 100,
+        executeWork: async () => ({ state: 'completed', steps: [] }),
+      }),
+    /cancellationPollMs must be less than workerLeaseMs/,
+  );
+  const execution = deferred();
+  let reportPartial;
+  let workerExecutions = 0;
+  const workerIntervals = [];
+  const worker = createManagedRunWorker({
+    store,
+    now: () => now,
+    workerId: 'worker-expiry-capacity',
+    cancellationPollMs: 25,
+    setIntervalFn: (callback, ms) => {
+      const interval = { callback, ms };
+      workerIntervals.push(interval);
+      return interval;
+    },
+    clearIntervalFn: (interval) => {
+      interval.cleared = true;
+    },
+    executeWork: async (_work, context) => {
+      workerExecutions += 1;
+      reportPartial = context.reportPartial;
+      return execution.promise;
+    },
+  });
+  let launchToken;
+  const { orchestrator } = createSharedOrchestrator({
+    store,
+    now: () => now,
+    limits: { maxConcurrentRuns: 1, maxConcurrentRunsPerPrincipal: 1 },
+    jobLauncher: {
+      launch: ({ run, fence, signal }) => {
+        launchToken = fence.token;
+        return worker.execute(run.runId, { launchToken: fence.token, signal });
+      },
+    },
+  });
+
+  const created = await createRun(orchestrator, { idempotencyKey: 'worker-expiry-capacity' });
+  await new Promise((done) => setImmediate(done));
+  assert.equal(workerExecutions, 1);
+  assert.equal(workerIntervals.length, 1);
+
+  now += 101;
+  const blocked = await createRun(orchestrator, { idempotencyKey: 'worker-expiry-blocked' });
+  assert.deepEqual(blocked, { outcome: 'limit', scope: 'global' });
+
+  const stranded = await store.get(created.run.runId);
+  assert.equal(stranded.state, 'inconclusive');
+  assert.equal(stranded.capacityReserved, true);
+  assert.equal(stranded.workerLease, 'worker-expiry-capacity');
+
+  await reportPartial([{ id: 'late', kind: 'http', state: 'completed' }]);
+  assert.deepEqual((await store.get(created.run.runId)).steps, [], 'the expired worker cannot persist stale progress');
+
+  const replacementWorker = createManagedRunWorker({
+    store,
+    now: () => now,
+    workerId: 'worker-expiry-replacement',
+    executeWork: async () => assert.fail('a stranded expired lease must not admit overlapping worker execution'),
+  });
+  const duplicate = await replacementWorker.execute(created.run.runId, { launchToken });
+  assert.equal(duplicate.state, 'inconclusive');
+
+  execution.resolve({ state: 'completed', steps: [{ id: 'late', kind: 'http', state: 'completed' }] });
+  await new Promise((done) => setImmediate(done));
+  await new Promise((done) => setImmediate(done));
+
+  const settled = await store.get(created.run.runId);
+  assert.equal(settled.state, 'inconclusive', 'lease expiry fences the late completion state');
+  assert.equal(settled.capacityReserved, false, 'the settled worker promise proves its capacity can be released');
+  assert.equal(settled.workerLease, null);
+  assert.deepEqual(settled.steps, []);
+
+  const admitted = await createRun(orchestrator, { idempotencyKey: 'worker-expiry-after-settlement' });
+  assert.equal(admitted.outcome, 'created');
+});
+
+test('worker lease polling is single-flight and a stalled store check loses the lease without issuing overlapping requests', async () => {
+  let now = 1_000;
+  const base = createInMemoryManagedRunStore({ now: () => now, workerLeaseMs: 100 });
+  let launchedRunId;
+  let launchedToken;
+  const { orchestrator } = createSharedOrchestrator({
+    store: base,
+    now: () => now,
+    jobLauncher: {
+      launch: ({ run, fence }) => {
+        launchedRunId = run.runId;
+        launchedToken = fence.token;
+        return new Promise(() => {});
+      },
+    },
+  });
+  await createRun(orchestrator, { idempotencyKey: 'single-flight-worker-poll' });
+  await new Promise((done) => setImmediate(done));
+
+  const stalledRead = deferred();
+  let getCalls = 0;
+  const store = {
+    workerLeaseMs: 100,
+    claimWorker: (...args) => base.claimWorker(...args),
+    renewWorkerLease: (...args) => base.renewWorkerLease(...args),
+    get: (...args) => {
+      getCalls += 1;
+      return stalledRead.promise.then(() => base.get(...args));
+    },
+    update: (...args) => base.update(...args),
+  };
+  const intervals = [];
+  let executions = 0;
+  const worker = createManagedRunWorker({
+    store,
+    now: () => now,
+    workerId: 'worker-stalled-poll',
+    cancellationPollMs: 25,
+    setIntervalFn: (callback, ms) => {
+      const interval = { callback, ms };
+      intervals.push(interval);
+      return interval;
+    },
+    clearIntervalFn: (interval) => {
+      interval.cleared = true;
+    },
+    executeWork: async () => {
+      executions += 1;
+      return { state: 'completed', steps: [] };
+    },
+  });
+
+  const result = worker.execute(launchedRunId, { launchToken: launchedToken });
+  await new Promise((done) => setImmediate(done));
+  assert.equal(getCalls, 1);
+  assert.equal(intervals.length, 1);
+
+  for (const elapsed of [25, 50, 75]) {
+    now = 1_000 + elapsed;
+    intervals[0].callback();
+    await new Promise((done) => setImmediate(done));
+    assert.equal(getCalls, 1, 'a pending lease read suppresses overlapping polls');
+  }
+
+  now = 1_101;
+  intervals[0].callback();
+  const finished = await result;
+  assert.equal(finished.state, 'inconclusive');
+  assert.equal(executions, 0, 'work never starts after its initial lease check exceeds the lease budget');
+  assert.equal(getCalls, 1);
+  assert.equal(intervals[0].cleared, true);
+  assert.equal((await base.get(launchedRunId)).capacityReserved, false, 'no work started, so the fenced lease can release immediately');
+
+  stalledRead.resolve();
+  await new Promise((done) => setImmediate(done));
+  assert.equal((await base.get(launchedRunId)).state, 'inconclusive', 'the abandoned read cannot revive or complete the fenced worker');
+});
+
 test('a renewed dispatch lease survives past its original expiry so a second orchestrator never redispatches still-active work, while a genuinely abandoned dispatch is still recovered exactly once', async () => {
   let now = 1_000;
   const store = createInMemoryManagedRunStore({ now: () => now });
@@ -959,8 +1125,10 @@ test('the recovery scheduler revisits an active startup record after its lease e
   assert.equal((await store.get(created.run.runId)).capacityReserved, true);
 
   now += 50;
-  dispatcherB.timers[2].fired = true;
-  dispatcherB.timers[2].callback();
+  const retryTimer = dispatcherB.timers.find((timer) => timer.ms === 50 && !timer.fired && !timer.cleared);
+  assert.ok(retryTimer);
+  retryTimer.fired = true;
+  retryTimer.callback();
   await new Promise((done) => setImmediate(done));
   await new Promise((done) => setImmediate(done));
   assert.equal(activeChecks, 2);
@@ -971,6 +1139,242 @@ test('the recovery scheduler revisits an active startup record after its lease e
   assert.ok(pendingScheduler, 'the serial scheduler remains armed after recovery');
   dispatcherB.orchestrator.stopRecovery();
   assert.equal(pendingScheduler.cleared, true, 'shutdown clears the one outstanding recovery timer');
+});
+
+test('a timed-out platform probe retains its reservation while recovery continues other records and re-arms single-flight scheduling', async () => {
+  let now = 1_000;
+  const store = createInMemoryManagedRunStore({ now: () => now, dispatchLeaseMs: 100 });
+  const dispatcherA = createSharedOrchestrator({
+    store,
+    now: () => now,
+    sequenceOffset: 0,
+    limits: { maxConcurrentRuns: 2, maxConcurrentRunsPerPrincipal: 2 },
+    dispatchLeaseMs: 100,
+    dispatchHeartbeatMs: 25,
+    jobLauncher: { launch: () => new Promise(() => {}) },
+  });
+  const first = await createRun(dispatcherA.orchestrator, { idempotencyKey: 'probe-timeout-first' });
+  const second = await createRun(dispatcherA.orchestrator, { idempotencyKey: 'probe-timeout-second' });
+  await new Promise((done) => setImmediate(done));
+  await dispatcherA.orchestrator.cancel({ owner: OWNER, tenant: TENANT, runId: first.run.runId });
+  await dispatcherA.orchestrator.cancel({ owner: OWNER, tenant: TENANT, runId: second.run.runId });
+  now += 100;
+
+  const probeAborted = deferred();
+  const checked = [];
+  const errors = [];
+  const dispatcherB = createSharedOrchestrator({
+    store,
+    now: () => now,
+    sequenceOffset: 100,
+    limits: { maxConcurrentRuns: 2, maxConcurrentRunsPerPrincipal: 2 },
+    dispatchLeaseMs: 100,
+    dispatchHeartbeatMs: 25,
+    recoveryIntervalMs: 50,
+    recoveryProbeTimeoutMs: 25,
+    jobLauncher: {
+      launch: () => assert.fail('terminal records must not be redispatched'),
+      isActive: ({ run, signal }) => {
+        checked.push(run.runId);
+        if (run.runId === first.run.runId) {
+          signal.addEventListener('abort', () => probeAborted.resolve(), { once: true });
+          return new Promise(() => {});
+        }
+        return false;
+      },
+    },
+    onError: (info) => errors.push(info),
+  });
+
+  const startup = dispatcherB.orchestrator.startRecovery();
+  await new Promise((done) => setImmediate(done));
+  const concurrent = dispatcherB.orchestrator.recover();
+  assert.equal(concurrent, startup, 'manual recovery adopts the same in-progress scheduler pass');
+  assert.deepEqual(checked, [first.run.runId]);
+
+  const probeTimer = dispatcherB.timers.find((timer) => timer.ms === 25 && !timer.cleared);
+  assert.ok(probeTimer);
+  probeTimer.callback();
+  await probeAborted.promise;
+  assert.equal(await startup, 0);
+
+  assert.deepEqual(checked, [first.run.runId, second.run.runId], 'a timed-out record does not prevent later recovery work');
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].runId, first.run.runId);
+  assert.equal((await store.get(first.run.runId)).capacityReserved, true, 'timeout is unverifiable and fails closed');
+  assert.equal((await store.get(second.run.runId)).capacityReserved, false, 'an explicit inactive result releases only its own record');
+
+  const schedulerTimer = dispatcherB.timers.find((timer) => timer.ms === 50 && !timer.fired && !timer.cleared);
+  assert.ok(schedulerTimer, 'the single-flight scheduler re-arms after a bounded timeout');
+  now += 50;
+  schedulerTimer.fired = true;
+  schedulerTimer.callback();
+  await new Promise((done) => setImmediate(done));
+  await new Promise((done) => setImmediate(done));
+  assert.deepEqual(checked, [first.run.runId, second.run.runId], 'an ignored timed-out probe is not started again while still outstanding');
+
+  const nextSchedulerTimer = dispatcherB.timers.find((timer) => timer.ms === 50 && !timer.fired && !timer.cleared);
+  assert.ok(nextSchedulerTimer);
+  dispatcherB.orchestrator.stopRecovery();
+  assert.equal(nextSchedulerTimer.cleared, true);
+});
+
+test('stopping recovery aborts a never-settling platform probe and prevents the pass from re-arming', async () => {
+  let now = 1_000;
+  const store = createInMemoryManagedRunStore({ now: () => now, dispatchLeaseMs: 100 });
+  const dispatcherA = createSharedOrchestrator({
+    store,
+    now: () => now,
+    sequenceOffset: 0,
+    dispatchLeaseMs: 100,
+    dispatchHeartbeatMs: 25,
+    jobLauncher: { launch: () => new Promise(() => {}) },
+  });
+  const created = await createRun(dispatcherA.orchestrator, { idempotencyKey: 'shutdown-aborts-probe' });
+  await new Promise((done) => setImmediate(done));
+  await dispatcherA.orchestrator.cancel({ owner: OWNER, tenant: TENANT, runId: created.run.runId });
+  now += 100;
+
+  const probeStarted = deferred();
+  let probeSignal;
+  const errors = [];
+  const dispatcherB = createSharedOrchestrator({
+    store,
+    now: () => now,
+    sequenceOffset: 100,
+    dispatchLeaseMs: 100,
+    dispatchHeartbeatMs: 25,
+    recoveryIntervalMs: 50,
+    recoveryProbeTimeoutMs: 25,
+    jobLauncher: {
+      launch: () => assert.fail('shutdown must not redispatch terminal work'),
+      isActive: ({ signal }) => {
+        probeSignal = signal;
+        probeStarted.resolve();
+        return new Promise(() => {});
+      },
+    },
+    onError: (info) => errors.push(info),
+  });
+
+  const recovery = dispatcherB.orchestrator.startRecovery();
+  await probeStarted.promise;
+  dispatcherB.orchestrator.stopRecovery();
+
+  assert.equal(probeSignal.aborted, true);
+  assert.equal(await recovery, 0);
+  assert.equal(errors.length, 0, 'shutdown abort is not reported as a platform failure');
+  assert.equal((await store.get(created.run.runId)).capacityReserved, true);
+  assert.equal(
+    dispatcherB.timers.some((timer) => timer.ms === 50 && !timer.cleared),
+    false,
+    'an invalidated pass cannot re-arm recovery after shutdown',
+  );
+  assert.equal(
+    dispatcherB.timers.filter((timer) => timer.ms === 25).every((timer) => timer.cleared),
+    true,
+    'shutdown clears the probe timeout after aborting it',
+  );
+});
+
+test('restarting recovery while an aborted probe unwinds queues an immediate pass for the new generation', async () => {
+  let now = 1_000;
+  const store = createInMemoryManagedRunStore({ now: () => now, dispatchLeaseMs: 100 });
+  const dispatcherA = createSharedOrchestrator({
+    store,
+    now: () => now,
+    sequenceOffset: 0,
+    dispatchLeaseMs: 100,
+    dispatchHeartbeatMs: 25,
+    jobLauncher: { launch: () => new Promise(() => {}) },
+  });
+  const created = await createRun(dispatcherA.orchestrator, { idempotencyKey: 'restart-after-aborted-probe' });
+  await new Promise((done) => setImmediate(done));
+  await dispatcherA.orchestrator.cancel({ owner: OWNER, tenant: TENANT, runId: created.run.runId });
+  now += 100;
+
+  const firstProbeStarted = deferred();
+  let probes = 0;
+  const dispatcherB = createSharedOrchestrator({
+    store,
+    now: () => now,
+    sequenceOffset: 100,
+    dispatchLeaseMs: 100,
+    dispatchHeartbeatMs: 25,
+    recoveryIntervalMs: 50,
+    recoveryProbeTimeoutMs: 25,
+    jobLauncher: {
+      launch: () => assert.fail('terminal work must not be redispatched'),
+      isActive: ({ signal }) => {
+        probes += 1;
+        if (probes === 1) {
+          firstProbeStarted.resolve();
+          return new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('probe aborted')), { once: true });
+          });
+        }
+        return false;
+      },
+    },
+  });
+
+  const firstPass = dispatcherB.orchestrator.startRecovery();
+  await firstProbeStarted.promise;
+  dispatcherB.orchestrator.stopRecovery();
+  const restarted = dispatcherB.orchestrator.startRecovery();
+
+  assert.equal(await firstPass, 0);
+  assert.equal(await restarted, 0);
+  assert.equal(probes, 2, 'restart runs a fresh immediate pass instead of adopting the invalidated one');
+  assert.equal((await store.get(created.run.runId)).capacityReserved, false);
+
+  const schedulerTimer = dispatcherB.timers.find((timer) => timer.ms === 50 && !timer.cleared);
+  assert.ok(schedulerTimer);
+  dispatcherB.orchestrator.stopRecovery();
+});
+
+test('multiple stop-start cycles queue recovery for the newest generation instead of adopting an obsolete restart', async () => {
+  const base = createInMemoryManagedRunStore();
+  const firstScanEntered = deferred();
+  const releaseFirstScan = deferred();
+  let scans = 0;
+  const store = {
+    findIdempotency: (...args) => base.findIdempotency(...args),
+    claim: (...args) => base.claim(...args),
+    claimDispatch: (...args) => base.claimDispatch(...args),
+    claimLaunch: (...args) => base.claimLaunch(...args),
+    get: (...args) => base.get(...args),
+    update: (...args) => base.update(...args),
+    async listRecoverable() {
+      scans += 1;
+      if (scans === 1) {
+        firstScanEntered.resolve();
+        await releaseFirstScan.promise;
+      }
+      return base.listRecoverable();
+    },
+  };
+  const { orchestrator } = createSharedOrchestrator({
+    store,
+    now: () => 1_000,
+    recoveryIntervalMs: 50,
+    jobLauncher: { launch: () => new Promise(() => {}) },
+  });
+
+  const original = orchestrator.startRecovery();
+  await firstScanEntered.promise;
+  orchestrator.stopRecovery();
+  const firstRestart = orchestrator.startRecovery();
+  orchestrator.stopRecovery();
+  const newestRestart = orchestrator.startRecovery();
+
+  assert.notEqual(newestRestart, firstRestart);
+  releaseFirstScan.resolve();
+  assert.equal(await original, 0);
+  assert.equal(await firstRestart, 0);
+  assert.equal(await newestRestart, 0);
+  assert.equal(scans, 2, 'only the original scan and one fresh newest-generation scan run');
+  orchestrator.stopRecovery();
 });
 
 test('an adopted manual recovery remains single-flight and stopping it prevents stale dispatch or rescheduling', async () => {
@@ -1100,18 +1504,28 @@ test('a late completion from an abandoned dispatch generation cannot finish or r
   const store = createInMemoryManagedRunStore({ now: () => now });
   const originalExecution = deferred();
   const recoveredExecution = deferred();
+  let originalPartial;
+  let recoveredPartial;
   const dispatcherA = createSharedOrchestrator({
     store,
     now: () => now,
     sequenceOffset: 0,
-    jobLauncher: { launch: () => originalExecution.promise },
+    jobLauncher: {
+      launch: ({ reportPartial }) => {
+        originalPartial = reportPartial;
+        return originalExecution.promise;
+      },
+    },
   });
   const dispatcherB = createSharedOrchestrator({
     store,
     now: () => now,
     sequenceOffset: 100,
     jobLauncher: {
-      launch: () => recoveredExecution.promise,
+      launch: ({ reportPartial }) => {
+        recoveredPartial = reportPartial;
+        return recoveredExecution.promise;
+      },
       isActive: async () => false,
     },
   });
@@ -1127,6 +1541,14 @@ test('a late completion from an abandoned dispatch generation cannot finish or r
   assert.ok(recovered.dispatchGeneration > original.dispatchGeneration);
   assert.equal(recovered.state, 'running');
   assert.equal(recovered.capacityReserved, true);
+
+  await recoveredPartial([{ id: 'replacement', kind: 'http', state: 'completed' }]);
+  await originalPartial([{ id: 'stale', kind: 'http', state: 'failed' }]);
+  assert.deepEqual(
+    (await store.get(created.run.runId)).steps,
+    [{ id: 'replacement', kind: 'http', state: 'completed' }],
+    'the abandoned generation cannot overwrite replacement progress',
+  );
 
   originalExecution.resolve({ state: 'completed', steps: [] });
   await new Promise((done) => setImmediate(done));

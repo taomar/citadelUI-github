@@ -9,7 +9,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 
-import { raceAbortSignal } from './deadline.mjs';
+import { DEADLINE_EXCEEDED, raceAbortSignal, raceDeadline } from './deadline.mjs';
 
 const ACTIVE_STATES = new Set(['pending', 'running']);
 const TERMINAL_STATES = new Set(['completed', 'failed', 'cancelled', 'inconclusive']);
@@ -103,6 +103,8 @@ function publicRecord(record) {
  * descriptor and writes its safe partial/final projection back through the
  * same store. The token binds that worker to one exact dispatch generation so
  * a delayed worker from an older launch cannot execute a recovered run.
+ * `workerLeaseMs` must match the durable store's lease duration; the in-memory
+ * store exposes its value so the worker derives a safe polling cadence.
  */
 export function createManagedRunWorker({
   store,
@@ -111,7 +113,8 @@ export function createManagedRunWorker({
   workerId = `worker_${randomBytes(16).toString('base64url')}`,
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
-  cancellationPollMs = 250,
+  workerLeaseMs = store?.workerLeaseMs ?? DEFAULT_WORKER_LEASE_MS,
+  cancellationPollMs = Math.min(250, Math.max(1, Math.floor(workerLeaseMs / 3))),
 } = {}) {
   if (
     !store ||
@@ -124,13 +127,24 @@ export function createManagedRunWorker({
   }
   if (typeof executeWork !== 'function') throw new TypeError('Managed run worker requires an executeWork function.');
   if (!validIdentifier(workerId)) throw new TypeError('Managed run worker requires a valid workerId.');
+  requirePositiveInteger(workerLeaseMs, 'workerLeaseMs');
   if (typeof setIntervalFn !== 'function' || typeof clearIntervalFn !== 'function' || !Number.isSafeInteger(cancellationPollMs) || cancellationPollMs < 1) {
     throw new TypeError('Managed run worker requires valid cancellation polling controls.');
+  }
+  if (cancellationPollMs >= workerLeaseMs) {
+    throw new TypeError('cancellationPollMs must be less than workerLeaseMs so a healthy worker renews before its lease can expire.');
   }
 
   async function savePartial(runId, steps) {
     return store.update(runId, (current) => {
-      if (!ACTIVE_STATES.has(current.state)) return current;
+      if (
+        !ACTIVE_STATES.has(current.state) ||
+        current.workerLease !== workerId ||
+        !Number.isFinite(current.workerLeaseExpiresAt) ||
+        current.workerLeaseExpiresAt <= now()
+      ) {
+        return current;
+      }
       return { ...current, steps: safeSteps(steps) };
     });
   }
@@ -146,34 +160,86 @@ export function createManagedRunWorker({
       if (claim.outcome !== 'claimed') return publicRecord(claim.record);
       const current = claim.record;
       const controller = new AbortController();
+      let leaseLost = false;
+      let leaseDeadline = current.workerLeaseExpiresAt;
+      let pollPromise = null;
       const onExternalAbort = () => controller.abort();
+      const loseLease = () => {
+        leaseLost = true;
+        controller.abort();
+      };
       if (signal?.aborted) controller.abort();
       else signal?.addEventListener('abort', onExternalAbort, { once: true });
       const pollCancellation = async () => {
         const latest = await store.get(runId);
-        if (!latest || !ACTIVE_STATES.has(latest.state) || latest.workerLease !== workerId) {
-          controller.abort();
+        if (
+          !latest ||
+          !ACTIVE_STATES.has(latest.state) ||
+          latest.workerLease !== workerId ||
+          !Number.isFinite(latest.workerLeaseExpiresAt) ||
+          latest.workerLeaseExpiresAt <= now()
+        ) {
+          loseLease();
+          return false;
+        }
+        leaseDeadline = latest.workerLeaseExpiresAt;
+        if (!(await store.renewWorkerLease(runId, workerId))) {
+          loseLease();
+          return false;
+        }
+        leaseDeadline = now() + workerLeaseMs;
+        return true;
+      };
+      const startPoll = () => {
+        if (pollPromise) return pollPromise;
+        if (!Number.isFinite(leaseDeadline) || leaseDeadline <= now()) {
+          loseLease();
+          return Promise.resolve(false);
+        }
+        const pending = Promise.resolve().then(pollCancellation);
+        pollPromise = pending;
+        pending.then(
+          () => {
+            if (pollPromise === pending) pollPromise = null;
+          },
+          () => {
+            if (pollPromise === pending) pollPromise = null;
+          },
+        );
+        return pending;
+      };
+      const cancellationPoll = setIntervalFn(() => {
+        if (pollPromise) {
+          if (!Number.isFinite(leaseDeadline) || leaseDeadline <= now()) loseLease();
           return;
         }
-        if (!(await store.renewWorkerLease(runId, workerId))) controller.abort();
-      };
-      try {
-        await pollCancellation();
-      } catch {
-        controller.abort();
-      }
-      const cancellationPoll = setIntervalFn(() => {
-        void pollCancellation().catch(() => controller.abort());
+        void startPoll().catch(loseLease);
       }, cancellationPollMs);
+      try {
+        await raceDeadline(startPoll(), controller.signal);
+      } catch {
+        loseLease();
+      }
       if (controller.signal.aborted) {
         clearIntervalFn(cancellationPoll);
         signal?.removeEventListener('abort', onExternalAbort);
-        const cancelled = await store.update(runId, (current) => ({
-          ...current,
-          state: 'cancelled',
-          finishedAt: now(),
-          capacityReserved: false,
-        }));
+        const cancelled = await store.update(runId, (current) => {
+          if (current.workerLease !== workerId) return current;
+          if (TERMINAL_STATES.has(current.state)) {
+            return { ...current, capacityReserved: false, workerLease: null, workerLeaseExpiresAt: null };
+          }
+          return {
+            ...current,
+            state:
+              leaseLost || !Number.isFinite(current.workerLeaseExpiresAt) || current.workerLeaseExpiresAt <= now()
+                ? 'inconclusive'
+                : 'cancelled',
+            finishedAt: now(),
+            capacityReserved: false,
+            workerLease: null,
+            workerLeaseExpiresAt: null,
+          };
+        });
         return publicRecord(cancelled);
       }
       try {
@@ -182,12 +248,17 @@ export function createManagedRunWorker({
           reportPartial: (steps) => savePartial(runId, steps),
         });
         const updated = await store.update(runId, (current) => {
-          if (TERMINAL_STATES.has(current.state)) return { ...current, capacityReserved: false };
+          if (current.workerLease !== workerId) return current;
+          if (TERMINAL_STATES.has(current.state)) {
+            return { ...current, capacityReserved: false, workerLease: null, workerLeaseExpiresAt: null };
+          }
+          const expired =
+            leaseLost || !Number.isFinite(current.workerLeaseExpiresAt) || current.workerLeaseExpiresAt <= now();
           return {
             ...current,
-            state: controller.signal.aborted ? 'cancelled' : terminalState(result),
+            state: expired ? 'inconclusive' : controller.signal.aborted ? 'cancelled' : terminalState(result),
             finishedAt: now(),
-            steps: safeSteps(result?.steps ?? current.steps),
+            steps: expired ? current.steps : safeSteps(result?.steps ?? current.steps),
             capacityReserved: false,
             workerLease: null,
             workerLeaseExpiresAt: null,
@@ -196,11 +267,18 @@ export function createManagedRunWorker({
         return publicRecord(updated);
       } catch {
         const updated = await store.update(runId, (current) =>
-          TERMINAL_STATES.has(current.state)
-            ? { ...current, capacityReserved: false }
+          current.workerLease !== workerId
+            ? current
+            : TERMINAL_STATES.has(current.state)
+              ? { ...current, capacityReserved: false, workerLease: null, workerLeaseExpiresAt: null }
             : {
                 ...current,
-                state: controller.signal.aborted ? 'cancelled' : 'failed',
+                state:
+                  leaseLost || !Number.isFinite(current.workerLeaseExpiresAt) || current.workerLeaseExpiresAt <= now()
+                    ? 'inconclusive'
+                    : controller.signal.aborted
+                      ? 'cancelled'
+                      : 'failed',
                 finishedAt: now(),
                 capacityReserved: false,
                 workerLease: null,
@@ -265,13 +343,22 @@ export function createInMemoryManagedRunStore({
   const idempotency = new Map();
   const nonces = new Map(); // nonce -> expiresAtMs; single-use tracking for the atomic `claim` admission below.
 
+  function strandExpiredWorker(current) {
+    return {
+      ...current,
+      state: 'inconclusive',
+      finishedAt: current.finishedAt ?? now(),
+      // Lease expiry fences the worker's state writes, but does not prove its
+      // promise or external job stopped. Keep both the reservation and worker
+      // identity until settlement or an authoritative inactivity check.
+      capacityReserved: current.capacityReserved !== false,
+    };
+  }
+
   function reapExpiredWorkerLeases() {
     for (const [runId, current] of runs) {
       if (!ACTIVE_STATES.has(current.state) || !current.workerLease || current.workerLeaseExpiresAt > now()) continue;
-      runs.set(
-        runId,
-        copy({ ...current, state: 'inconclusive', finishedAt: now(), capacityReserved: false, workerLease: null, workerLeaseExpiresAt: null }),
-      );
+      runs.set(runId, copy(strandExpiredWorker(current)));
     }
   }
 
@@ -306,6 +393,7 @@ export function createInMemoryManagedRunStore({
   }
 
   return Object.freeze({
+    workerLeaseMs,
     async findIdempotency({ owner, tenant, idempotencyKeyHash, requestDigest }) {
       const runId = idempotency.get(idempotencyIdentity({ owner, tenant, key: idempotencyKeyHash }));
       if (!runId) return { outcome: 'missing' };
@@ -378,8 +466,11 @@ export function createInMemoryManagedRunStore({
       const current = runs.get(runId);
       if (!current) return { outcome: 'missing' };
       if (!ACTIVE_STATES.has(current.state)) return { outcome: 'not-runnable', record: copy(current) };
-      if (current.workerLease && current.workerLeaseExpiresAt > now()) {
-        return { outcome: 'worker-active', record: copy(current) };
+      if (current.workerLease) {
+        if (current.workerLeaseExpiresAt > now()) return { outcome: 'worker-active', record: copy(current) };
+        const stranded = strandExpiredWorker(current);
+        runs.set(runId, copy(stranded));
+        return { outcome: 'not-runnable', record: copy(stranded) };
       }
       if (current.dispatcherId && current.dispatcherId !== dispatcherId && current.dispatchLeaseExpiresAt > now()) {
         return { outcome: 'dispatcher-active', record: copy(current) };
@@ -432,14 +523,7 @@ export function createInMemoryManagedRunStore({
       }
       if (current.workerLease) {
         if (current.workerLeaseExpiresAt > now()) return { outcome: 'already-claimed', record: copy(current) };
-        const stranded = {
-          ...current,
-          state: 'inconclusive',
-          finishedAt: now(),
-          capacityReserved: false,
-          workerLease: null,
-          workerLeaseExpiresAt: null,
-        };
+        const stranded = strandExpiredWorker(current);
         runs.set(runId, copy(stranded));
         return { outcome: 'not-runnable', record: copy(stranded) };
       }
@@ -455,6 +539,10 @@ export function createInMemoryManagedRunStore({
     async renewWorkerLease(runId, workerId) {
       const current = runs.get(runId);
       if (!current || current.workerLease !== workerId || !ACTIVE_STATES.has(current.state)) return false;
+      if (!Number.isFinite(current.workerLeaseExpiresAt) || current.workerLeaseExpiresAt <= now()) {
+        runs.set(runId, copy(strandExpiredWorker(current)));
+        return false;
+      }
       runs.set(runId, copy({ ...current, workerLeaseExpiresAt: now() + workerLeaseMs }));
       return true;
     },
@@ -497,7 +585,7 @@ export function createInMemoryManagedRunStore({
  * => void }`. Cancellation always aborts `signal`; an adapter may additionally
  * cancel its platform job.
  *
- * `jobLauncher.isActive({ run, work })` is optional. `recover()` calls it,
+ * `jobLauncher.isActive({ run, work, signal })` is optional. `recover()` calls it,
  * when present, for a run whose dispatch lease has lapsed with no worker
  * claim, so an adapter that can independently confirm its platform job is
  * still running can refuse a redundant redispatch instead of only trusting
@@ -547,7 +635,13 @@ export function createInMemoryManagedRunStore({
  * `recover()`, and a repeated `startRecovery()` all share the same in-progress
  * promise rather than overlapping store reads or dispatch attempts. The timer
  * wakes at least every `recoveryIntervalMs`, and sooner when a terminal launch
- * commitment has a nearer lease expiry. `stopRecovery()` clears that timer and
+ * commitment has a nearer lease expiry. Every platform-status probe is itself
+ * bounded by `recoveryProbeTimeoutMs`; timeout, abort, error, and non-boolean
+ * outcomes are unverifiable and therefore retain capacity without redispatch.
+ * If a timed-out dependency ignores abort, later passes do not start overlapping
+ * probes for that record; verification resumes only after the outstanding call
+ * settles. A call that never settles therefore keeps the reservation fail-closed.
+ * `stopRecovery()` clears the scheduler timer, aborts in-flight probes, and
  * prevents an in-progress pass from scheduling another one during shutdown.
  */
 export function createManagedRunOrchestrator({
@@ -565,6 +659,7 @@ export function createManagedRunOrchestrator({
   dispatchLeaseMs = DEFAULT_DISPATCH_LEASE_MS,
   dispatchHeartbeatMs = Math.max(1, Math.floor(dispatchLeaseMs / 3)),
   recoveryIntervalMs = Math.max(1, Math.floor(dispatchLeaseMs / 2)),
+  recoveryProbeTimeoutMs = 10_000,
 } = {}) {
   if (
     !store ||
@@ -590,6 +685,7 @@ export function createManagedRunOrchestrator({
   requirePositiveInteger(dispatchLeaseMs, 'dispatchLeaseMs');
   requirePositiveInteger(dispatchHeartbeatMs, 'dispatchHeartbeatMs');
   requirePositiveInteger(recoveryIntervalMs, 'recoveryIntervalMs');
+  requirePositiveInteger(recoveryProbeTimeoutMs, 'recoveryProbeTimeoutMs');
   if (dispatchHeartbeatMs >= dispatchLeaseMs) {
     throw new TypeError('dispatchHeartbeatMs must be less than dispatchLeaseMs so a live dispatcher always renews before its lease can expire.');
   }
@@ -608,11 +704,57 @@ export function createManagedRunOrchestrator({
   let recoveryTimer = null;
   let recoveryTimerDueAt = null;
   let recoveryPromise = null;
+  let recoveryPromiseGeneration = null;
+  let recoveryRestartPromise = null;
+  let recoveryRestartGeneration = null;
   let recoverySchedulerStarted = false;
   let recoveryGeneration = 0;
+  const recoveryProbeControllers = new Set();
+  const outstandingHostedJobProbes = new Map();
 
   function recoveryIsCurrent(generation) {
     return generation === null || generation === recoveryGeneration;
+  }
+
+  async function probeHostedJobActive(record, operation) {
+    if (outstandingHostedJobProbes.has(record.runId)) return null;
+    const controller = new AbortController();
+    recoveryProbeControllers.add(controller);
+    let timedOut = false;
+    const timeout = setTimeoutFn(() => {
+      timedOut = true;
+      controller.abort();
+    }, recoveryProbeTimeoutMs);
+    try {
+      const probe = Promise.resolve().then(() =>
+        jobLauncher.isActive({
+          run: publicRecord(record),
+          work: copy(record.work),
+          signal: controller.signal,
+        }),
+      );
+      outstandingHostedJobProbes.set(record.runId, probe);
+      probe.then(
+        () => {
+          if (outstandingHostedJobProbes.get(record.runId) === probe) outstandingHostedJobProbes.delete(record.runId);
+        },
+        () => {
+          if (outstandingHostedJobProbes.get(record.runId) === probe) outstandingHostedJobProbes.delete(record.runId);
+        },
+      );
+      const outcome = await raceDeadline(probe, controller.signal);
+      if (outcome === DEADLINE_EXCEEDED) {
+        if (timedOut) onError({ runId: record.runId, operation });
+        return null;
+      }
+      return typeof outcome === 'boolean' ? outcome : null;
+    } catch {
+      if (!controller.signal.aborted || timedOut) onError({ runId: record.runId, operation });
+      return null;
+    } finally {
+      clearTimeoutFn(timeout);
+      recoveryProbeControllers.delete(controller);
+    }
   }
 
   function makeRunId() {
@@ -637,9 +779,9 @@ export function createManagedRunOrchestrator({
     }
   }
 
-  async function reportPartial(runId, steps) {
+  async function reportPartial(runId, steps, fence = null) {
     return store.update(runId, (current) => {
-      if (!ACTIVE_STATES.has(current.state)) return current;
+      if (!ownsDispatch(current, fence) || !ACTIVE_STATES.has(current.state)) return current;
       return { ...current, steps: safeSteps(steps) };
     });
   }
@@ -668,7 +810,10 @@ export function createManagedRunOrchestrator({
 
   async function releaseRecoveredCapacity(runId) {
     try {
-      await releaseCapacity(runId);
+      await store.update(runId, (current) => {
+        if (!TERMINAL_STATES.has(current.state) || current.capacityReserved === false) return current;
+        return { ...current, capacityReserved: false, workerLease: null, workerLeaseExpiresAt: null };
+      });
     } catch {
       onError({ runId, operation: 'release its recovered capacity reservation' });
     }
@@ -784,13 +929,10 @@ export function createManagedRunOrchestrator({
           return;
         }
         if (typeof jobLauncher.isActive === 'function') {
-          let stillActive = true;
-          try {
-            stillActive = await jobLauncher.isActive({ run: publicRecord(dispatchClaim.record), work: copy(dispatchClaim.record.work) });
-          } catch {
-            onError({ runId: record.runId, operation: 'verify whether its hosted job is still active before releasing stale capacity' });
-            return;
-          }
+          const stillActive = await probeHostedJobActive(
+            dispatchClaim.record,
+            'verify whether its hosted job is still active before releasing stale capacity',
+          );
           if (!recoveryIsCurrent(recoveryFence)) return;
           if (stillActive === false) await releaseRecoveredCapacity(record.runId);
         }
@@ -917,7 +1059,7 @@ export function createManagedRunOrchestrator({
         run: publicRecord(beforeLaunch),
         work: copy(beforeLaunch.work),
         signal: controller.signal,
-        reportPartial: (steps) => reportPartial(record.runId, steps),
+        reportPartial: (steps) => reportPartial(record.runId, steps, dispatchFence),
         fence: Object.freeze({
           token: launchToken,
           generation: beforeLaunch.dispatchGeneration,
@@ -1026,13 +1168,7 @@ export function createManagedRunOrchestrator({
           continue;
         }
         if (typeof jobLauncher.isActive !== 'function') continue;
-        let stillActive;
-        try {
-          stillActive = await jobLauncher.isActive({ run: publicRecord(record), work: copy(record.work) });
-        } catch {
-          onError({ runId: record.runId, operation: 'verify whether its terminal hosted job is still active' });
-          continue;
-        }
+        const stillActive = await probeHostedJobActive(record, 'verify whether its terminal hosted job is still active');
         if (!recoveryIsCurrent(recoveryFence)) break;
         if (stillActive === false) await releaseRecoveredCapacity(record.runId);
         continue;
@@ -1047,21 +1183,7 @@ export function createManagedRunOrchestrator({
       // duplicate job for still-active external work; a launcher that
       // offers no such check keeps today's lease-expiry-only behavior.
       if (typeof jobLauncher.isActive === 'function') {
-        let stillActive;
-        try {
-          stillActive = await jobLauncher.isActive({ run: publicRecord(record), work: copy(record.work) });
-        } catch {
-          // Fail CLOSED: an adapter that cannot confirm whether the
-          // platform job is still active must never be treated as having
-          // confirmed it is NOT. Redispatching on that unverifiable
-          // "no" would risk launching a duplicate job on top of
-          // still-active external work — exactly the failure this check
-          // exists to prevent. Leave this run's state and capacity
-          // reservation untouched; the next `recover()` pass gets another
-          // chance to verify it.
-          onError({ runId: record.runId, operation: 'verify whether its hosted job is still active' });
-          continue;
-        }
+        const stillActive = await probeHostedJobActive(record, 'verify whether its hosted job is still active');
         if (!recoveryIsCurrent(recoveryFence)) break;
         if (stillActive !== false) continue;
       }
@@ -1093,7 +1215,7 @@ export function createManagedRunOrchestrator({
       recoveryTimer = null;
       recoveryTimerDueAt = null;
       if (!recoverySchedulerStarted) return;
-      void recoverRuns().catch(() => onError({ operation: 'complete its scheduled pass' }));
+      void recoverCurrentGeneration().catch(() => onError({ operation: 'complete its scheduled pass' }));
     }, Math.max(1, dueAt - now()));
   }
 
@@ -1101,6 +1223,7 @@ export function createManagedRunOrchestrator({
     if (recoveryPromise) return recoveryPromise;
     clearRecoveryTimer();
     const recoveryFence = recoveryGeneration;
+    recoveryPromiseGeneration = recoveryFence;
     let nextLeaseExpiry = null;
     const pass = recoverPass(recoveryFence).then((result) => {
       nextLeaseExpiry = result.nextLeaseExpiry;
@@ -1108,21 +1231,45 @@ export function createManagedRunOrchestrator({
     });
     recoveryPromise = pass.finally(() => {
       recoveryPromise = null;
+      recoveryPromiseGeneration = null;
       scheduleRecovery(nextLeaseExpiry);
     });
     return recoveryPromise;
   }
 
+  function recoverCurrentGeneration() {
+    if (recoveryRestartPromise && recoveryRestartGeneration === recoveryGeneration) return recoveryRestartPromise;
+    if (recoveryPromise && recoveryPromiseGeneration === recoveryGeneration) return recoveryPromise;
+    if (!recoveryPromise && !recoveryRestartPromise) return recoverRuns();
+
+    const stalePass = recoveryRestartPromise ?? recoveryPromise;
+    const requestedGeneration = recoveryGeneration;
+    const restart = stalePass.then(
+      () => (requestedGeneration === recoveryGeneration ? recoverRuns() : 0),
+      () => (requestedGeneration === recoveryGeneration ? recoverRuns() : 0),
+    );
+    let trackedRestart;
+    trackedRestart = restart.finally(() => {
+      if (recoveryRestartPromise !== trackedRestart) return;
+      recoveryRestartPromise = null;
+      recoveryRestartGeneration = null;
+    });
+    recoveryRestartPromise = trackedRestart;
+    recoveryRestartGeneration = requestedGeneration;
+    return trackedRestart;
+  }
+
   function startRecovery() {
-    if (recoverySchedulerStarted) return recoveryPromise ?? Promise.resolve(0);
+    if (recoverySchedulerStarted) return recoverCurrentGeneration();
     recoverySchedulerStarted = true;
-    return recoverRuns();
+    return recoverCurrentGeneration();
   }
 
   function stopRecovery() {
     recoverySchedulerStarted = false;
     recoveryGeneration += 1;
     clearRecoveryTimer();
+    for (const controller of recoveryProbeControllers) controller.abort();
   }
 
   return Object.freeze({
@@ -1203,7 +1350,7 @@ export function createManagedRunOrchestrator({
       }
       return publicRecord(cancelled);
     },
-    recover: recoverRuns,
+    recover: recoverCurrentGeneration,
     startRecovery,
     stopRecovery,
   });
