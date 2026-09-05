@@ -166,6 +166,11 @@ test('destructive review repeats the exact APIM target and fingerprints public c
     contextState: { status: 'unavailable', message: 'No identity.' },
   });
   assert.equal(model.reviewDecision.confirmationText, 'DELETE apim-sandbox');
+  assert.equal(model.reviewDecision.target.apimName, 'apim-sandbox');
+  assert.equal(model.reviewDecision.target.resourceGroup, 'rg-sandbox');
+  assert.equal(model.reviewDecision.target.actionLabel, 'apim-sandbox');
+  assert.equal(model.reviewDecision.authorization.label, 'Not Ready');
+  assert.deepEqual(model.reviewDecision.requiredInputs, []);
   assert.match(model.reviewDecision.fingerprint, /apim-sandbox/);
   assert.ok(!model.reviewDecision.fingerprint.includes(FAKE_API_KEY));
 });

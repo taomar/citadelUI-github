@@ -226,6 +226,32 @@ function reviewFingerprint({ sampleId, identity, targetFacts, request }) {
   });
 }
 
+function subscriptionLabel(identity) {
+  if (!identity.subscription) return '';
+  const active = [identity.subscription.activeName, identity.subscription.activeId].filter(Boolean).join(' · ');
+  const intended = identity.subscription.intendedId;
+  if (active && intended && intended !== identity.subscription.activeId) {
+    return `${active} · intended ${intended}`;
+  }
+  return active || intended;
+}
+
+function targetModel(identity, targetFacts) {
+  const fact = (pattern) => targetFacts.find((entry) => pattern.test(entry.path))?.value ?? '';
+  const apimName = fact(/apimName$/i);
+  const resourceGroup = fact(/resourceGroupName$/i);
+  const exactFacts = targetFacts.map((entry) => `${entry.label}: ${entry.value}`);
+  return Object.freeze({
+    exact: exactFacts.join(' · ') || identity.target,
+    apimName,
+    resourceGroup,
+    tenant: identity.tenantId,
+    subscription: subscriptionLabel(identity),
+    actionLabel: apimName,
+    fingerprint: JSON.stringify(targetFacts),
+  });
+}
+
 export function buildLedgerAction({
   blockingCount = 0,
   canAttempt = false,
@@ -265,18 +291,69 @@ export function buildDossierModel({
     workbench.source.cells[0] ??
     null;
   const targetFacts = collectTargetFacts(workbench.configure);
+  const target = targetModel(identity, targetFacts);
+  const reviewed = ['review', 'run', 'result'].includes(stage);
+  const canRunWithoutAcknowledgement =
+    workbench.configure.satisfied &&
+    workbench.request.available &&
+    workbench.runtime.ready &&
+    identity.authorization.ready;
   const reviewDecision = Object.freeze({
-    identity,
+    title: workbench.sample.title,
+    shortTitle: workbench.sample.shortTitle,
+    reviewed,
+    running: workbench.response.running,
+    canRun: canRunWithoutAcknowledgement,
+    runAllowed: canRunWithoutAcknowledgement,
+    runBlockedReason: workbench.runBlockedReason,
+    requiredInputs: workbench.configure.blocking.map((entry) =>
+      Object.freeze({
+        ...entry,
+        href: `#f-${entry.path.replace(/[^a-zA-Z0-9-]/g, '-')}`,
+      }),
+    ),
+    requiredInputCount: workbench.configure.blockingCount,
+    identity: Object.freeze({
+      human: identity.human,
+      execution: identity.runsAs,
+      tenant: identity.tenantId,
+      subscription: subscriptionLabel(identity),
+      fingerprint: JSON.stringify({
+        state: identity.state,
+        human: identity.human,
+        runsAs: identity.runsAs,
+        tenantId: identity.tenantId,
+        subscription: identity.subscription,
+      }),
+    }),
+    target,
     targetFacts,
-    authorization: identity.authorization,
+    authorization: Object.freeze({
+      ready: identity.authorization.ready,
+      backendProven: false,
+      label: identity.authorization.label,
+      summary: identity.authorization.detail,
+    }),
     risk: workbench.sample.risk,
     request: workbench.request,
+    operation: Object.freeze({
+      summary: workbench.request.available
+        ? `Review the exact generated operation for ${workbench.sample.shortTitle}.`
+        : workbench.request.reason,
+      text: workbench.request.available ? workbench.request.fullText : workbench.request.reason,
+      steps: workbench.request.steps ?? [],
+    }),
+    acknowledgement: workbench.request.acknowledgement,
     effect: workbench.sample.risk.effect,
     blastRadius: workbench.sample.risk.blastRadius,
     reversibility: workbench.sample.risk.reversibility,
     deviations: workbench.request.deviations ?? [],
     placeholders: workbench.request.secretRefs ?? [],
     confirmationText: destructiveConfirmationText(workbench.sample.risk, targetFacts),
+    confirmation: Object.freeze({
+      requiredText: destructiveConfirmationText(workbench.sample.risk, targetFacts),
+    }),
+    inputFingerprint: '',
     fingerprint: '',
     canAttempt,
   });
@@ -293,6 +370,12 @@ export function buildDossierModel({
     stage,
     firstBlockerPath: workbench.configure.blocking[0]?.path,
   });
+  const reviewModel = Object.freeze({
+    ...reviewDecision,
+    inputFingerprint: fingerprint,
+    confirmationFingerprint: fingerprint,
+    fingerprint,
+  });
 
   return Object.freeze({
     ...workbench,
@@ -305,14 +388,7 @@ export function buildDossierModel({
       selectedCellIndex: selectedCell?.cellIndex ?? null,
       selectedCell,
     }),
-    reviewDecision: Object.freeze({ ...reviewDecision, fingerprint }),
-    ledger: Object.freeze({
-      identity,
-      targetFacts,
-      authorization: identity.authorization,
-      risk: workbench.sample.risk,
-      blockers: workbench.configure.blocking,
-      action,
-    }),
+    reviewDecision: reviewModel,
+    ledger: Object.freeze({ ...reviewModel, action }),
   });
 }

@@ -51,12 +51,18 @@ function targetOf(model) {
 function authorizationOf(model) {
   const authorization = model.authorization ?? {};
   const proven = authorization.backendProven === true;
+  const ready =
+    authorization.ready === true ||
+    proven ||
+    /^ready to attempt$/i.test(present(authorization.label, ''));
   return {
     proven,
-    label: proven ? present(authorization.label, 'Verified by backend') : 'Not verified by backend',
+    label: ready ? 'Ready to Attempt' : 'Not Ready',
     summary: proven
       ? present(authorization.summary, 'The backend reported authorization for this exact attempt.')
-      : 'Ready means the operation can be attempted. It does not prove that the execution identity is authorized.',
+      : ready
+        ? 'The execution context is ready for an attempt. The target may still refuse the operation.'
+        : present(authorization.summary, 'The execution identity or target is not ready for an attempt.'),
   };
 }
 

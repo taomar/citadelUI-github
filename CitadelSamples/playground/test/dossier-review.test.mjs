@@ -210,6 +210,7 @@ function reviewModel(overrides = {}) {
       fingerprint: 'target-01',
     },
     authorization: {
+      ready: true,
       proven: true,
       label: 'Authorized',
       summary: 'A client-side guess must not become authority.',
@@ -353,7 +354,8 @@ test('review is decision-first, says Ready to Attempt, and collapses technical d
         },
       }),
     );
-    assert.ok(container.textContent.includes('StateAuthorizedMeaning'));
+    assert.ok(container.textContent.includes('StateReady to AttemptMeaning'));
+    assert.doesNotMatch(container.textContent, /\bAuthorized\b/);
   }));
 
 test('destructive confirmation requires the exact typed APIM phrase before callback', () =>

@@ -187,14 +187,6 @@
   overflow-wrap: anywhere;
 }
 
-.configure-identity {
-  padding: var(--sp-5);
-  border: 1px solid var(--rule);
-  border-radius: var(--r-2);
-  background: var(--band);
-  box-shadow: var(--sink);
-}
-
 .configure-inputs {
   gap: var(--sp-7);
   min-width: 0;
