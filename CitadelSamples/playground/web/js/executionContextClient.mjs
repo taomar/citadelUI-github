@@ -97,6 +97,7 @@ async function responseJson(response, label) {
     const error = new Error(`${label} failed: ${summary}${code}`);
     error.status = response.status;
     error.code = typeof payload?.code === 'string' ? payload.code : '';
+    error.payload = payload;
     throw error;
   }
   return payload;
@@ -138,12 +139,20 @@ export function createExecutionContextClient({ fetchImpl = globalThis.fetch } = 
     },
 
     async startAzureLogin(options = {}) {
-      const payload = object(
-        await post('/api/azure-login/start', { protocolVersion: PROTOCOL_VERSION }, options),
-        'Azure login response',
-      );
-      const login = validateLogin(payload.login);
-      return { ...login, loginId: login.id, context: payload.context ?? null };
+      try {
+        const payload = object(
+          await post('/api/azure-login/start', { protocolVersion: PROTOCOL_VERSION }, options),
+          'Azure login response',
+        );
+        const login = validateLogin(payload.login);
+        return { ...login, loginId: login.id, context: payload.context ?? null };
+      } catch (error) {
+        if (error?.code === 'login-in-progress' && error.payload?.login) {
+          const login = validateLogin(error.payload.login);
+          error.login = { ...login, loginId: login.id, context: error.payload.context ?? null };
+        }
+        throw error;
+      }
     },
 
     async getAzureLogin(loginId, options = {}) {

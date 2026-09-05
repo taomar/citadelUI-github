@@ -313,7 +313,6 @@ async function loginRequest(action, generation, timeoutMs = 10_000) {
 }
 
 async function startAzureLogin() {
-  const previousLoginState = azureLoginState;
   clearTimeout(azureLoginPollTimer);
   azureLoginController?.abort();
   const generation = ++azureLoginGeneration;
@@ -338,29 +337,26 @@ async function startAzureLogin() {
     }
   } catch (error) {
     if (generation !== azureLoginGeneration) return;
-    const previousLogin = previousLoginState.status === 'ready' ? previousLoginState.login : null;
-    azureLoginState = previousLogin?.loginId
-      ? {
-          status: 'ready',
-          login: {
-            ...previousLogin,
-            state: 'failed',
-            message:
-              error?.code === 'login-in-progress'
-                ? 'Azure sign-in is already running. Cancel the existing sign-in before retrying.'
-                : 'Azure sign-in could not restart. Cancel the existing sign-in before retrying.',
-          },
-        }
-      : {
-          status: 'error',
-          message: 'Azure sign-in could not start. Confirm the loopback execute server and Azure CLI are available.',
-        };
+    if (error?.code === 'login-in-progress' && error.login) {
+      if (azureLoginCancelRequested) {
+        azureLoginState = { status: 'ready', login: error.login };
+        await cancelAzureLogin('Azure sign-in cancelled.');
+      } else {
+        applyAzureLogin(error.login);
+      }
+      return;
+    }
+    azureLoginState = {
+      status: 'error',
+      message:
+        'Azure sign-in start could not be confirmed. Refresh the execution identity or retry sign-in; cancellation is unavailable until the server returns a current login ID.',
+    };
     render();
     requestAnimationFrame(() => {
-      const target = document.getElementById('cancel-azure-login') ?? document.getElementById('start-azure-login');
+      const target = document.getElementById('start-azure-login') ?? document.getElementById('refresh-execution-context');
       target?.focus();
     });
-    announce(azureLoginState.login?.message ?? azureLoginState.message);
+    announce(azureLoginState.message);
   }
 }
 

@@ -774,7 +774,16 @@ async function handleAzureLogin(request, response, { action, manager, port, host
     sendJson(response, action === 'start' ? 202 : 200, result);
   } catch (error) {
     if (error instanceof RequestRefused) {
-      sendJson(response, error.status, { state: 'blocked', summary: error.message, code: error.code });
+      const current =
+        error.code === 'login-in-progress' && typeof manager.currentLogin === 'function'
+          ? manager.currentLogin()
+          : null;
+      sendJson(response, error.status, {
+        state: 'blocked',
+        summary: error.message,
+        code: error.code,
+        ...(current ?? {}),
+      });
       return;
     }
     sendJson(response, 500, { state: 'failed', summary: 'The Azure CLI login request could not be completed.' });
@@ -935,13 +944,33 @@ async function handleSourceValidation(request, response, { mode, manager, sample
     });
     return;
   }
+  let startedRunId = null;
+  let completed = false;
+  let disconnected = false;
+  let cancelRequested = false;
+  const cancelDisconnectedRun = () => {
+    disconnected = true;
+    if (completed || cancelRequested || !startedRunId) return;
+    cancelRequested = true;
+    manager.cancel(startedRunId);
+  };
+  request.once('aborted', cancelDisconnectedRun);
+  response.once('close', cancelDisconnectedRun);
   try {
-    const result = await manager.start(sampleId, payload);
+    const result = await manager.start(sampleId, payload, {
+      onStart: ({ runId }) => {
+        startedRunId = runId;
+        if (disconnected) cancelDisconnectedRun();
+      },
+    });
+    completed = true;
+    if (response.destroyed) return;
     sendJson(response, 200, {
       ...result,
       executionContext: offlinePythonContext({ available: result.state !== 'blocked' }),
     });
   } catch (error) {
+    if (disconnected && response.destroyed) return;
     if (error instanceof RequestRefused) {
       sendJson(response, error.status, {
         scenario: CODE_VALIDATION_SCENARIO,
@@ -964,6 +993,9 @@ async function handleSourceValidation(request, response, { mode, manager, sample
       networkContacted: false,
       liveEvidence: false,
     });
+  } finally {
+    request.off('aborted', cancelDisconnectedRun);
+    response.off('close', cancelDisconnectedRun);
   }
 }
 

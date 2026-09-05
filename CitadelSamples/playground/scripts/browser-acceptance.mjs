@@ -670,6 +670,173 @@ async function checkExecutionIdentity(harness) {
   );
 }
 
+async function checkAzureLoginRestartRecovery(harness) {
+  await selectSample(harness, 'azure-context-check');
+  const priorPageErrorCount = harness.pageErrors.length;
+  let attempt = 0;
+  let heldRestartRequestId = null;
+  let cancelledLoginId = null;
+  const descriptor = {
+    state: 'blocked',
+    summary: 'An Azure CLI device-code login is already in progress.',
+    code: 'login-in-progress',
+    login: {
+      id: 'azure-login-0042',
+      state: 'waiting-for-user',
+      verificationUrl: 'https://microsoft.com/devicelogin',
+      userCode: 'RETRY-1234',
+      message: 'Continue the current sign-in.',
+    },
+    context: null,
+  };
+  const removeListener = harness.page.on('Fetch.requestPaused', (event) => {
+    if (event.request.url.includes('/api/azure-login/cancel')) {
+      cancelledLoginId = JSON.parse(event.request.postData).loginId;
+      harness.page
+        .send('Fetch.fulfillRequest', {
+          requestId: event.requestId,
+          responseCode: 200,
+          responseHeaders: [{ name: 'Content-Type', value: 'application/json; charset=utf-8' }],
+          body: Buffer.from(
+            JSON.stringify({
+              login: {
+                ...descriptor.login,
+                state: 'cancelled',
+                message: 'Azure CLI device-code sign-in was cancelled.',
+              },
+              context: null,
+            }),
+          ).toString('base64'),
+        })
+        .catch(() => {});
+      return;
+    }
+    if (!event.request.url.includes('/api/azure-login/start')) {
+      harness.page.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {});
+      return;
+    }
+    attempt += 1;
+    if (attempt === 1) {
+      harness.page.send('Fetch.failRequest', { requestId: event.requestId, errorReason: 'Aborted' }).catch(() => {});
+      return;
+    }
+    if (attempt > 2) {
+      heldRestartRequestId = event.requestId;
+      return;
+    }
+    harness.page
+      .send('Fetch.fulfillRequest', {
+        requestId: event.requestId,
+        responseCode: 409,
+        responseHeaders: [{ name: 'Content-Type', value: 'application/json; charset=utf-8' }],
+        body: Buffer.from(JSON.stringify(descriptor)).toString('base64'),
+      })
+      .catch(() => {});
+  });
+  await harness.page.send('Fetch.enable', {
+    patterns: [{ urlPattern: '*api/azure-login/*', requestStage: 'Request' }],
+  });
+  try {
+    const ambiguous = await harness.evaluate(`(async () => {
+      const hooks = globalThis.__citadelTestHooks;
+      hooks.setExecutionContext(globalThis.__acceptanceSignedOutContext);
+      hooks.setAzureLogin({
+        loginId: 'obsolete-terminal-login',
+        state: 'failed',
+        verificationUrl: '',
+        userCode: '',
+        message: 'The prior sign-in failed.',
+      });
+      await hooks.startAzureLogin();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      return {
+        message: document.querySelector('.device-login-message')?.textContent ?? '',
+        cancel: Boolean(document.getElementById('cancel-azure-login')),
+        retry: Boolean(document.getElementById('start-azure-login')),
+        refresh: Boolean(document.getElementById('refresh-execution-context')),
+        focused: document.activeElement?.id ?? '',
+      };
+    })()`);
+    reporter.check(
+      'an ambiguous sign-in restart never resurrects a terminal login id and remains recoverable',
+      ambiguous.cancel === false &&
+        ambiguous.retry === true &&
+        ambiguous.refresh === true &&
+        ambiguous.focused === 'start-azure-login' &&
+        /could not be confirmed/i.test(ambiguous.message),
+      JSON.stringify(ambiguous),
+    );
+
+    const reconciled = await harness.evaluate(`(async () => {
+      await globalThis.__citadelTestHooks.startAzureLogin();
+      return {
+        state: document.querySelector('.device-login')?.dataset.loginState ?? '',
+        code: document.getElementById('azure-device-code')?.textContent ?? '',
+        cancel: document.getElementById('cancel-azure-login')?.textContent ?? '',
+        retry: Boolean(document.getElementById('start-azure-login')),
+      };
+    })()`);
+    reporter.check(
+      'a login-in-progress descriptor reconciles the UI to the current cancellable login',
+      reconciled.state === 'waiting-for-user' &&
+        reconciled.code === 'RETRY-1234' &&
+        reconciled.cancel === 'Cancel Azure sign-in' &&
+        reconciled.retry === false,
+      JSON.stringify(reconciled),
+    );
+
+    await harness.evaluate(`(() => {
+      const hooks = globalThis.__citadelTestHooks;
+      hooks.setExecutionContext(globalThis.__acceptanceSignedOutContext);
+      hooks.setAzureLogin({
+        loginId: 'another-terminal-login',
+        state: 'failed',
+        verificationUrl: '',
+        userCode: '',
+        message: 'The prior sign-in failed.',
+      });
+      globalThis.__acceptancePendingLoginStart = hooks.startAzureLogin();
+      return true;
+    })()`);
+    const heldDeadline = Date.now() + 2_000;
+    while (!heldRestartRequestId && Date.now() < heldDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    if (!heldRestartRequestId) throw new Error('The held Azure login restart request was not observed.');
+    await harness.evaluate(`globalThis.__citadelTestHooks.cancelAzureLogin()`);
+    await harness.page.send('Fetch.fulfillRequest', {
+      requestId: heldRestartRequestId,
+      responseCode: 409,
+      responseHeaders: [{ name: 'Content-Type', value: 'application/json; charset=utf-8' }],
+      body: Buffer.from(JSON.stringify(descriptor)).toString('base64'),
+    });
+    const cancelled = await harness.evaluate(`(async () => {
+      await globalThis.__acceptancePendingLoginStart;
+      delete globalThis.__acceptancePendingLoginStart;
+      return {
+        state: document.querySelector('.device-login')?.dataset.loginState ?? '',
+        cancel: Boolean(document.getElementById('cancel-azure-login')),
+      };
+    })()`);
+    reporter.check(
+      'cancellation requested before reconciliation cancels the returned current login id',
+      heldRestartRequestId !== null &&
+        cancelledLoginId === descriptor.login.id &&
+        cancelled.state === 'cancelled' &&
+        cancelled.cancel === false,
+      JSON.stringify({ heldRestartRequestId, cancelledLoginId, ...cancelled }),
+    );
+  } finally {
+    await harness.page.send('Fetch.disable').catch(() => {});
+    removeListener?.();
+    for (let index = harness.pageErrors.length - 1; index >= priorPageErrorCount; index -= 1) {
+      if (/Failed to load resource: the server responded with a status of 409/.test(harness.pageErrors[index])) {
+        harness.pageErrors.splice(index, 1);
+      }
+    }
+  }
+}
+
 async function checkOfflineValidation(harness, sourceBySample) {
   const sampleId = 'azure-context-check';
   const expected = sourceBySample.get(sampleId)?.expected;
@@ -1292,46 +1459,45 @@ async function checkResponsiveLayout(harness) {
     JSON.stringify(narrow),
   );
 
-  await selectSample(harness, 'azure-context-check');
-  const cellJump = await harness.evaluate(`(async () => {
-    document.getElementById('tab-code').click();
-    document.querySelector('.source-nav a[href="#source-cell-4"]').click();
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const sheet = document.querySelector('.sheet').getBoundingClientRect();
-    const sticky = document.querySelector('.sheet-sticky');
-    const heading = document.querySelector('#source-cell-4 > summary').getBoundingClientRect();
-    return {
-      stickyPosition: getComputedStyle(sticky).position,
-      headingTop: heading.top,
-      headingBottom: heading.bottom,
-      sheetTop: sheet.top,
-      viewportBottom: window.innerHeight,
-    };
-  })()`);
-  reporter.check(
-    'narrow source cell navigation leaves the target heading fully visible',
-    cellJump.stickyPosition === 'static' &&
-      cellJump.headingTop >= cellJump.sheetTop - 1 &&
-      cellJump.headingBottom <= cellJump.viewportBottom + 1,
-    JSON.stringify(cellJump),
-  );
-
-  const jump = await harness.evaluate(`(async () => {
-    const link = document.querySelector('.parameter-jump');
-    link.click();
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const strip = document.querySelector('.sheet-sticky').getBoundingClientRect();
-    const summary = document.getElementById('parameter-pane-summary').getBoundingClientRect();
-    return {
-      focused: document.activeElement?.id ?? '',
-      visibleBelowHeader: summary.top >= strip.bottom - 1 && summary.bottom <= window.innerHeight + 1,
-    };
-  })()`);
-  reporter.check(
-    'the narrow parameter jump reveals and focuses the disclosure below the sticky header',
-    jump.focused === 'parameter-pane-summary' && jump.visibleBelowHeader === true,
-    JSON.stringify(jump),
-  );
+  for (const viewport of [
+    { width: 375, height: 667 },
+    { width: 320, height: 480 },
+  ]) {
+    await harness.setViewport({ ...viewport, mobile: true });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await selectSample(harness, 'azure-context-check');
+    const jump = await harness.evaluate(`(async () => {
+      document.getElementById('tab-code').click();
+      document.querySelector('.source-nav a[href="#source-cell-4"]').click();
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      document.querySelector('.parameter-jump').click();
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const sheet = document.querySelector('.sheet').getBoundingClientRect();
+      const sticky = document.querySelector('.sheet-sticky');
+      const stickyRect = sticky.getBoundingClientRect();
+      const summary = document.getElementById('parameter-pane-summary').getBoundingClientRect();
+      const stickyCoversTop =
+        getComputedStyle(sticky).position === 'sticky' &&
+        stickyRect.bottom > sheet.top &&
+        stickyRect.top <= sheet.top + 1;
+      const visibleTop = stickyCoversTop ? Math.min(stickyRect.bottom, sheet.bottom) : sheet.top;
+      const visibleBottom = Math.min(sheet.bottom, window.innerHeight);
+      return {
+        focused: document.activeElement?.id ?? '',
+        summaryTop: summary.top,
+        summaryBottom: summary.bottom,
+        visibleTop,
+        visibleBottom,
+      };
+    })()`);
+    reporter.check(
+      `${viewport.width}x${viewport.height} source then parameter jump keeps the actual target in the visible sheet viewport`,
+      jump.focused === 'parameter-pane-summary' &&
+        jump.summaryTop >= jump.visibleTop - 1 &&
+        jump.summaryBottom <= jump.visibleBottom + 1,
+      JSON.stringify(jump),
+    );
+  }
 
   await harness.setViewport({ width: 320, height: 480, mobile: true });
   await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1410,6 +1576,7 @@ async function main() {
     const sourceBySample = await checkSourceContracts(harness, notebook, notebookMeta);
     await checkCodeParameterWorkspace(harness);
     await checkExecutionIdentity(harness);
+    await checkAzureLoginRestartRecovery(harness);
     await checkOfflineValidation(harness, sourceBySample);
     await checkValidationAbortReset(harness);
     await checkApprovalGate(harness);

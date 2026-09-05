@@ -14,6 +14,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
 import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -374,6 +375,104 @@ test('execute-mode source validation accepts only the fixed protocol request', a
     });
     assert.equal(response.status, 400);
     assert.equal((await response.json()).code, 'forbidden-member');
+  });
+});
+
+test('disconnecting a source-validation socket cancels its exact run and releases the slot', async () => {
+  let sequence = 0;
+  let markFirstStarted;
+  const firstStarted = new Promise((resolveStarted) => {
+    markFirstStarted = resolveStarted;
+  });
+  const active = new Map();
+  const cancelled = [];
+  const result = (sampleId, runId, state) => ({
+    scenario: 'offline-python-source-validation',
+    sampleId,
+    runId,
+    state,
+    summary: state === 'cancelled' ? 'Cancelled.' : 'Protected source compiled.',
+    mode: 'offline-local',
+    validation: 'python-compile-only',
+    sourceEditable: false,
+    sourceExecuted: false,
+    azureContacted: false,
+    networkContacted: false,
+    liveEvidence: false,
+    source: null,
+    steps: [],
+    checks: [],
+    artifact: null,
+    workspaceRemoved: true,
+  });
+  const manager = {
+    async start(sampleId, _payload, { onStart } = {}) {
+      sequence += 1;
+      const runId = `code-${sampleId}-${String(sequence).padStart(4, '0')}`;
+      if (sequence > 1) return result(sampleId, runId, 'passed');
+      let finish;
+      const completion = new Promise((resolveCompletion) => {
+        finish = resolveCompletion;
+      });
+      active.set(runId, { finish, sampleId });
+      onStart?.({ runId, sampleId });
+      markFirstStarted(runId);
+      try {
+        return await completion;
+      } finally {
+        active.delete(runId);
+      }
+    },
+    cancel(runId) {
+      const run = active.get(runId);
+      if (!run) return { cancelled: false };
+      cancelled.push(runId);
+      run.finish(result(run.sampleId, runId, 'cancelled'));
+      return { cancelled: true, runId };
+    },
+    cancelAll() {
+      for (const runId of active.keys()) this.cancel(runId);
+    },
+    get activeCount() {
+      return active.size;
+    },
+  };
+
+  await withServer({ mode: 'execute', codeValidationManager: manager }, async ({ call, port }) => {
+    const body = JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION });
+    let socketRequest;
+    const socketClosed = new Promise((resolveClosed) => {
+      socketRequest = httpRequest({
+        hostname: '127.0.0.1',
+        port,
+        path: '/api/source/azure-context-check/validate',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      });
+      socketRequest.once('error', resolveClosed);
+      socketRequest.once('close', resolveClosed);
+      socketRequest.end(body);
+    });
+
+    const firstRunId = await firstStarted;
+    assert.equal(manager.activeCount, 1);
+    socketRequest.destroy();
+    await socketClosed;
+    const deadline = Date.now() + 2_000;
+    while (manager.activeCount > 0 && Date.now() < deadline) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    }
+    assert.deepEqual(cancelled, [firstRunId]);
+    assert.equal(manager.activeCount, 0);
+
+    const next = await call('/api/source/azure-context-check/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    assert.equal(next.status, 200);
+    assert.equal((await next.json()).state, 'passed');
+    assert.deepEqual(cancelled, [firstRunId], 'a completed request must not be cancelled');
   });
 });
 

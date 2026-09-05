@@ -2,6 +2,30 @@
 
 import { bullets, chip, disclosure, el, facts, link, linkList, replace, section } from './dom.mjs';
 
+function scrollTargetIntoSheetView(target, { block = 'start', gap = 8 } = {}) {
+  const sheet = target.closest('.sheet');
+  target.scrollIntoView({ block, inline: 'nearest' });
+  if (!sheet) return;
+
+  const sheetRect = sheet.getBoundingClientRect();
+  const sticky = sheet.querySelector('.sheet-sticky');
+  const stickyRect = sticky?.getBoundingClientRect();
+  const stickyCoversTop =
+    sticky &&
+    getComputedStyle(sticky).position === 'sticky' &&
+    stickyRect.bottom > sheetRect.top &&
+    stickyRect.top <= sheetRect.top + 1;
+  const visibleTop = (stickyCoversTop ? Math.min(stickyRect.bottom, sheetRect.bottom) : sheetRect.top) + gap;
+  const visibleBottom = Math.min(sheetRect.bottom, window.innerHeight) - gap;
+  const targetRect = target.getBoundingClientRect();
+
+  if (targetRect.top < visibleTop) {
+    sheet.scrollTop += targetRect.top - visibleTop;
+  } else if (targetRect.bottom > visibleBottom) {
+    sheet.scrollTop += targetRect.bottom - visibleBottom;
+  }
+}
+
 const WIDTH_CLASS = { num: 'ctl-w-num', short: 'ctl-w-short', id: 'ctl-w-id', long: 'ctl-w-long' };
 
 const REQUIREMENT_LABEL = {
@@ -300,11 +324,7 @@ export function renderSource(
               details.open = true;
               requestAnimationFrame(() => {
                 summary.focus({ preventScroll: true });
-                const sheet = document.querySelector('.sheet');
-                const sticky = document.querySelector('.sheet-sticky');
-                if (!sheet || !sticky) return;
-                const offset = summary.getBoundingClientRect().top - sticky.getBoundingClientRect().bottom - 8;
-                sheet.scrollTop += offset;
+                scrollTargetIntoSheetView(summary);
               });
             },
           }),
@@ -324,7 +344,7 @@ export function renderSource(
                     target.open = true;
                     requestAnimationFrame(() => {
                       summary.focus({ preventScroll: true });
-                      summary.scrollIntoView({ block: 'center' });
+                      scrollTargetIntoSheetView(summary, { block: 'center' });
                     });
                   },
                 }),

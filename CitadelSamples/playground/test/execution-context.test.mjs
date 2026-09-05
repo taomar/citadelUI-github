@@ -731,6 +731,17 @@ test('server device-code endpoints start, poll, and return refreshed context wit
       const started = await start.json();
       assert.equal(started.login.state, 'waiting-for-user');
 
+      const duplicate = await call('/api/azure-login/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
+      });
+      assert.equal(duplicate.status, 409);
+      const inProgress = await duplicate.json();
+      assert.equal(inProgress.code, 'login-in-progress');
+      assert.equal(inProgress.login.id, started.login.id);
+      assert.equal(inProgress.login.state, 'waiting-for-user');
+
       releaseLogin();
       await waitForLogin(identity, started.login.id, 'succeeded');
       const status = await call('/api/azure-login/status', {

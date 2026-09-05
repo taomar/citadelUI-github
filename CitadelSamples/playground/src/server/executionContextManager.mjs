@@ -229,6 +229,11 @@ export function createExecutionContextManager({
     return loginResponse(requireLogin(loginId));
   }
 
+  function currentLogin() {
+    requireLocalExecuteMode();
+    return login?.inFlight ? loginResponse(login) : null;
+  }
+
   function cancelLogin(loginId) {
     requireLocalExecuteMode();
     const record = requireLogin(loginId);
@@ -367,6 +372,7 @@ export function createExecutionContextManager({
     forRun,
     readAzureCliAccount,
     startLogin,
+    currentLogin,
     statusLogin,
     cancelLogin,
     cancelAll,

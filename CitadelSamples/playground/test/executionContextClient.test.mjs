@@ -149,7 +149,7 @@ test('the execution-context client surfaces server refusal rather than inventing
   });
 });
 
-test('Azure login refusal preserves the production summary and login-in-progress code', async () => {
+test('Azure login refusal preserves the production summary and reconciles the in-progress descriptor', async () => {
   const client = createExecutionContextClient({
     fetchImpl: async () =>
       response(
@@ -157,6 +157,14 @@ test('Azure login refusal preserves the production summary and login-in-progress
           state: 'blocked',
           summary: 'An Azure CLI device-code login is already in progress.',
           code: 'login-in-progress',
+          login: {
+            id: 'azure-login-0042',
+            state: 'waiting-for-user',
+            verificationUrl: 'https://microsoft.com/devicelogin',
+            userCode: 'RETRY-1234',
+            message: 'Continue the current sign-in.',
+          },
+          context: null,
         },
         { ok: false, status: 409 },
       ),
@@ -165,6 +173,15 @@ test('Azure login refusal preserves the production summary and login-in-progress
     assert.equal(error.status, 409);
     assert.equal(error.code, 'login-in-progress');
     assert.match(error.message, /already in progress/);
+    assert.deepEqual(error.login, {
+      id: 'azure-login-0042',
+      state: 'waiting-for-user',
+      verificationUrl: 'https://microsoft.com/devicelogin',
+      userCode: 'RETRY-1234',
+      message: 'Continue the current sign-in.',
+      loginId: 'azure-login-0042',
+      context: null,
+    });
     return true;
   });
 });
