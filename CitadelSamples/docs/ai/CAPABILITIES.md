@@ -6,9 +6,12 @@ Windows, local Git worktrees. Recheck when surface/version changes.
 Evidence grades: **documented**, **tool-exposed**, **locally exercised**,
 **verified in intended runtime**, **unchecked**. Execution modes:
 **verified automatic**, **human assisted**, **unavailable**, **not yet checked**.
-Tool exposure is not an exercised guarantee. Parent observations below were
-supplied in assignment `install-orchestration-protocol` v1; they are not new
-experiments by the documentation worker.
+Tool exposure is not an exercised guarantee. Parent observations were supplied
+in assignment `install-orchestration-protocol` v1. The later independent native
+rehearsal and coordinator acceptance are recorded in
+[BOOTSTRAP_RESULT.md](BOOTSTRAP_RESULT.md), including exact candidate/report
+identity and tool-returned IDs versus reported aliases. These are not new
+experiments by the evidence-documentation worker.
 
 ## Discovery
 
@@ -38,8 +41,8 @@ Do not modify global configuration to bypass this scope.
 
 | Capability / worker type | Mechanism and evidence | Mode / limit |
 | --- | --- | --- |
-| Scoped instruction loading | CLI documentation above; files configured by this change | Not yet checked in a NEW app session; no auto-loading claim |
-| Explicit protocol read | Native `view`; worker read the full supplied attachment and existing local guidance | Locally exercised access; fresh integrated paths still need rehearsal |
+| Scoped instruction loading | CLI documentation above; fresh reviewer's pre-read inventory identified only injected root Agent notes, no identifiable child instructions or discovery diagnostics | Automatic discovery **UNCHECKED**; context presence does not establish automatic file loading |
+| Explicit protocol read | Independent NEW native session explicitly read all eleven integrated guidance/fixture files; [accepted evidence](BOOTSTRAP_RESULT.md) | Locally exercised in the intended runtime through explicit fallback, not automatic loading |
 | Roles and skills | Five prompts in [STARTUP_PROMPTS.md](STARTUP_PROMPTS.md); native `skill` exposed, `orchestrate` loaded by this worker | Prompts documented, skill loading locally exercised; not installed custom agents |
 | Native independent child | `create_session`, `get_session`; parent observed separate branch/worktree/ID; this worker confirmed clean assigned HEAD | Locally exercised; verified automatic worktree creation only, not service/credential isolation |
 | Native child observation | `get_session`, `notify_on_idle` events observed by parent | Locally exercised; status/output/idle are not proof of stopped processes or accepted work |
@@ -50,7 +53,7 @@ Do not modify global configuration to bypass this scope.
 | Background task agent | `read_agent` / `write_agent` exposed for supported multi-turn agents | Tool-exposed only here; same-invocation follow-up/control unchecked; do not assume native-session semantics |
 | One-shot delegated invocation | Tool descriptions distinguish one-shot tasks from multi-turn agents | Documented/tool-exposed distinction; use new complete packet where follow-up unsupported |
 | VS Code subagent | Source protocol cites [VS Code documentation](https://code.visualstudio.com/docs/agents/run/subagents) as stateless at its baseline | Different surface, not exercised here; do not impose that behavior on app/native/background workers |
-| Save/recover Git artifacts | Native Git snapshot and accessible local worktree; initial state inspected by this worker | Local bytes accessible; fresh-session recovery of integrated candidate unchecked |
+| Save/recover Git artifacts | Fresh native reviewer located and quoted the saved partial fixture on the integrated candidate | Locally exercised access and SIMULATION continuity; no real writer transfer or artifact restoration performed |
 | Session SQLite | Native `sql`, coordinator-only `orchestration_assignments`; `todos` UI projection | Session-local, not a shared worker DB; ownership rule is procedural, export needed for recovery |
 | Exclusive integration | One named owner plus current-version/candidate review at integration | Human/agent-assisted procedure, **no observed enforced cross-session lock** |
 | Exclusive external mutation | Resource reservations and explicit owner approval | No observed revocation/fencing; unsupported concurrent effects must stop |
@@ -63,15 +66,24 @@ it, or that a commit hash protects shared resources. Use the
 If native delegation is absent, a human opens the explicitly assigned child;
 the parent does not take an inline implementation exception.
 
-## Bootstrap evidence still required
+## Accepted bootstrap evidence and remaining limits
 
-The coordinator will launch one NEW read-only native session on the integrated
-candidate, not this writer's moving branch. It must report loading evidence,
-actual HEAD, source baseline vs tested candidate, state/authority comprehension,
-and the [SIMULATION fixtures](fixtures/README.md) independently.
+The coordinator accepted protocol v1 and the independent NEW read-only native
+rehearsal with **explicit-fallback/local-SIMULATION limits**. See
+[BOOTSTRAP_RESULT.md](BOOTSTRAP_RESULT.md) for the source submission, separately
+identified integrated candidate, frozen report and four observed responses.
+The reviewer used actual integrated files and reported instruction provenance,
+identity, authority and recovery constraints without relying on automatic loading.
 
-Record the session ID, candidate SHA, prompt, discovered/read instruction sources,
-scenario outputs, deviations and checks in the coordinator's versioned result
-artifact. Update capability grades only from that evidence. Simulations are not
-passed rehearsals merely because expected answers are documented; a successful
-rehearsal still does not prove live cancellation or unattended recovery.
+Automatic discovery remains **UNCHECKED**: no discovery diagnostic was available,
+and injected root notes did not identify the child instruction files as loaded.
+The four responses demonstrate reasoning over harmless local fixtures, not live
+cancellation, external-write fencing or unattended recovery. Fixtures retain
+their unexecuted-data labels; the separate result records the actual rehearsal.
+No browser, live-product or deployment gate was accepted by this rehearsal.
+
+This evidence-only amendment records the earlier candidate; it was not itself
+loaded by that session. At recording, remote distribution had not occurred.
+The parent owns safe integration/publication without publishing unaccepted UX.
+Further capability upgrades require new bounded evidence, not a rereading of the
+expected fixture answers.
