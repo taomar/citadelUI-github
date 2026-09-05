@@ -37,6 +37,7 @@ test('evidence provenance distinguishes offline, local live-capable, hosted rela
   assert.equal(classifyRunEvidence({ mode: 'execute', executorKind: 'local' }), 'local-live-capable');
   assert.equal(classifyRunEvidence({ mode: 'execute', executorKind: 'relay' }), 'hosted-relay');
   assert.equal(classifyRunEvidence({ mode: 'execute', executorKind: 'relay-core' }), 'hosted-relay');
+  assert.equal(classifyRunEvidence({ mode: 'preview', executorKind: 'relay' }), 'hosted-relay');
   assert.equal(classifyRunEvidence({ mode: 'preview', executorKind: 'local' }), 'preview');
   assert.equal(classifyRunEvidence({ mode: 'execute', executorKind: 'unavailable' }), 'preview');
 });

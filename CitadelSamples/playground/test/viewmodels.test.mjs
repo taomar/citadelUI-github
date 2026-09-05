@@ -20,6 +20,7 @@ import {
   buildDirectoryModel,
   buildExecutionIdentityModel,
   buildExecutionEnvironmentModel,
+  describeEffectiveExecutionCapability,
   buildGuideModel,
   buildRequestModel,
   buildResponseModel,
@@ -803,6 +804,50 @@ test('execution environments distinguish preview, local machine, and hosted rela
       ['Hosted relay', 'Live-capable'],
     ],
   );
+});
+
+test('effective relay readiness ignores local preview mode but fails closed on allow-list and step support', () => {
+  const relay = {
+    kind: 'relay',
+    canExecute: true,
+    allowedSampleIds: ['weather-mcp-discovery', 'weather-api-ensure'],
+    supportedStepTypes: ['http', 'assertion'],
+  };
+  const ready = describeEffectiveExecutionCapability({
+    sample: getSample('weather-mcp-discovery'),
+    requiredStepTypes: ['http', 'assertion'],
+    capability: relay,
+    runtimeProbe: { mode: 'preview' },
+  });
+  assert.equal(ready.ready, true);
+  assert.equal(ready.executionKind, 'relay');
+
+  const disallowed = describeEffectiveExecutionCapability({
+    sample: getSample('publish-assets'),
+    requiredStepTypes: ['artifact', 'azure-cli', 'assertion'],
+    capability: relay,
+    runtimeProbe: { mode: 'preview' },
+  });
+  assert.equal(disallowed.ready, false);
+  assert.match(disallowed.reasons[0], /not allowlisted/i);
+
+  const unsupported = describeEffectiveExecutionCapability({
+    sample: getSample('weather-api-ensure'),
+    requiredStepTypes: ['library', 'assertion'],
+    capability: relay,
+    runtimeProbe: { mode: 'preview' },
+  });
+  assert.equal(unsupported.ready, false);
+  assert.deepEqual(unsupported.unsupportedStepTypes, ['library']);
+
+  const localPreview = describeEffectiveExecutionCapability({
+    sample: getSample('weather-mcp-discovery'),
+    requiredStepTypes: ['http', 'assertion'],
+    capability,
+    runtimeProbe: { mode: 'preview' },
+  });
+  assert.equal(localPreview.ready, false);
+  assert.equal(localPreview.state, 'preview-only');
 });
 
 test('a completed run keeps the evidence environment captured when it started', () => {

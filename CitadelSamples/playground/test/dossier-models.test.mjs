@@ -10,8 +10,10 @@ import {
   normalizeAccountControlState,
 } from '../src/view/dossierModels.mjs';
 import { CATALOGUE, fieldByPath, getSample } from '../src/catalogue/index.mjs';
+import { hostedRelayContext } from '../src/core/executionContext.mjs';
 import { createPlaygroundState } from '../src/core/state.mjs';
-import { createUnavailableExecutor } from '../src/core/executor.mjs';
+import { createUnavailableExecutor, executionResult } from '../src/core/executor.mjs';
+import { capabilitiesPayload } from '../server.mjs';
 import { FAKE_API_KEY, makeFixtureReader } from './helpers/fixtures.mjs';
 
 test('the account control supports the complete launch-gated state vocabulary', () => {
@@ -186,6 +188,79 @@ test('hosted identity exposes the complete relay authority chain', () => {
     'Target',
   ]);
   assert.equal(identity.accountControl.visible, false);
+});
+
+test('a hosted relay capability makes only its allowed and supported weather sample runnable in preview mode', () => {
+  const payload = capabilitiesPayload({
+    mode: 'preview',
+    relay: {
+      enabled: true,
+      allowedSampleIds: ['weather-mcp-discovery', 'weather-api-ensure'],
+    },
+    operatorAuthorization: {
+      required: true,
+      signedIn: true,
+      authorized: true,
+      state: 'authorized',
+      message: 'Authorized hosted operator.',
+    },
+  });
+  const build = (sampleId, { acknowledged = false, available = true, result = null } = {}) =>
+    buildDossierModel({
+      sample: getSample(sampleId),
+      read: makeFixtureReader(),
+      hasSecret: () => true,
+      isTouched: () => true,
+      acknowledged,
+      capability: payload.executor,
+      runtimeProbe: { mode: payload.mode },
+      contextState: {
+        status: 'ready',
+        context: hostedRelayContext({ available, hosted: true, authorized: true }),
+      },
+      result,
+      sourceState: { status: 'loading' },
+    });
+
+  const ready = build('weather-mcp-discovery', {
+    result: executionResult({
+      state: 'completed',
+      sampleId: 'weather-mcp-discovery',
+      summary: 'Hosted weather discovery completed.',
+      meta: { evidenceClass: 'hosted-relay' },
+    }),
+  });
+  assert.equal(payload.mode, 'preview');
+  assert.equal(ready.canAttempt, true);
+  assert.equal(ready.ledger.canRun, true);
+  assert.equal(ready.runtime.executionKind, 'relay');
+  assert.equal(ready.context.runtime.badge.label, 'Hosted relay ready');
+  assert.equal(ready.environment.label, 'Hosted relay');
+  assert.equal(ready.response.environment.mode, 'hosted-relay');
+  assert.equal(ready.response.environment.evidenceLabel, 'Live-capable');
+
+  const disallowed = build('publish-assets', { acknowledged: true, available: false });
+  assert.equal(disallowed.canAttempt, false);
+  assert.equal(disallowed.ledger.canRun, false);
+  assert.match(disallowed.ledger.runBlockedReason, /not allowlisted/i);
+
+  const unsupported = build('weather-api-ensure', { acknowledged: true });
+  assert.equal(unsupported.canAttempt, false);
+  assert.equal(unsupported.ledger.canRun, false);
+  assert.match(unsupported.ledger.runBlockedReason, /library step type/i);
+
+  const localPreview = buildDossierModel({
+    sample: getSample('weather-mcp-discovery'),
+    read: makeFixtureReader(),
+    hasSecret: () => true,
+    isTouched: () => true,
+    capability: createUnavailableExecutor().describeCapability(),
+    runtimeProbe: { mode: 'preview' },
+    contextState: { status: 'unavailable', message: 'No relay is configured.' },
+    sourceState: { status: 'loading' },
+  });
+  assert.equal(localPreview.canAttempt, false);
+  assert.equal(localPreview.environment.label, 'Preview only');
 });
 
 test('the ledger exposes one contextual action', () => {

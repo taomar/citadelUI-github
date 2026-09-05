@@ -541,7 +541,7 @@ function shellExecution(models) {
   const identity = models.dossier.identity;
   const hosted = models.context?.context?.hostedRelay;
   const gateway = wizardIdentityKind() === 'gateway';
-  const subscriptionValue = gateway
+  const subscriptionValue = gateway || hosted
     ? 'Not applicable'
     : identity.subscription
       ? [identity.subscription.activeName, identity.subscription.activeId].filter(Boolean).join(' — ')
@@ -551,7 +551,9 @@ function shellExecution(models) {
     runsAs: { value: identity.runsAs, credential: identity.credential },
     activeSubscription: {
       value: subscriptionValue,
-      detail: gateway
+      detail: hosted
+        ? 'Hosted relay gateway runs do not use this browser session`s Azure account or subscription.'
+        : gateway
         ? 'Gateway recipes do not use Azure account or subscription controls.'
         : identity.targetSubscriptionMismatch
           ? 'The private Azure CLI subscription and intended target do not match.'
@@ -2012,7 +2014,10 @@ async function startRun({ confirmed = false } = {}) {
       assertions: [],
       configurationUpdates: {},
       secretUpdates: {},
-      meta: { runId: state.activeRunId },
+      meta: {
+        runId: state.activeRunId,
+        evidenceClass: state.progress?.meta?.evidenceClass,
+      },
     };
     state.stage = 'result';
     state.completedWizardSteps.add('run-result');

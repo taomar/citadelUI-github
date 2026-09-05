@@ -2,8 +2,8 @@
 /**
  * Browser acceptance for the per-recipe Citadel run wizard.
  *
- * The runner uses only the loopback preview server and the explicit test
- * executor seam. Every non-loopback request is blocked.
+ * The runner uses loopback servers, including one configured with the real
+ * relay capability path. Every browser-originated non-loopback request is blocked.
  */
 
 import { mkdir, rm, writeFile } from 'node:fs/promises';
@@ -1848,6 +1848,143 @@ async function checkSystemAzureIdentityControls(reporter) {
   }
 }
 
+function browserAcceptanceRelay() {
+  return {
+    enabled: true,
+    hosted: false,
+    url: 'https://relay.example.test/execute',
+    allowedSampleIds: ['weather-mcp-discovery'],
+    callerPrincipal: 'browser-acceptance-proxy',
+    tenant: 'browser-acceptance-tenant',
+    credentialProvider: {
+      getAuthorizationHeader: async () => 'Bearer browser-acceptance',
+    },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          state: 'completed',
+          summary: 'Hosted weather discovery completed.',
+          detail: '',
+          steps: [],
+          assertions: [],
+          configurationUpdates: {},
+          secretUpdates: {},
+          meta: {
+            executor: 'hosted-relay',
+            azureContacted: true,
+            liveEvidence: true,
+          },
+        }),
+    }),
+  };
+}
+
+async function checkHostedRelayReadiness(reporter) {
+  const harness = await launchBrowserHarness({
+    browserPath: argumentValue('--chrome'),
+    createServer: ({ port, testBootstrapCapability }) =>
+      createPlaygroundServer({
+        port,
+        mode: 'preview',
+        publicOrigin: null,
+        relay: browserAcceptanceRelay(),
+        testBootstrapCapability,
+      }),
+    path: '/?recipe=weather-mcp-discovery',
+  });
+  try {
+    await harness.waitFor(
+      "document.querySelector('.dossier-current-id')?.textContent === 'weather-mcp-discovery'",
+      { timeoutMs: 30_000, label: 'hosted weather wizard' },
+    );
+    await harness.waitFor(
+      "document.querySelector('.execution-context-bar')?.dataset.identityKind === 'hosted-relay'",
+      { label: 'hosted relay execution context' },
+    );
+    await clickContinue(harness);
+    await harness.evaluate(`(() => {
+      const row = [...document.querySelectorAll('[data-parameter-path]')]
+        .find((candidate) => candidate.dataset.parameterPath === 'hub.gatewayUrl');
+      const input = row?.querySelector('input');
+      if (!input) return false;
+      input.value = 'https://gateway.example.test';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      const continueButton = [...document.querySelectorAll('#wizard-action-bar button')]
+        .find((candidate) => candidate.textContent.trim() === 'Continue');
+      continueButton?.click();
+      return true;
+    })()`);
+    await harness.waitFor(
+      "document.querySelector('.wizard-step-content')?.textContent.includes('nothing missing')",
+      { label: 'hosted weather input readiness' },
+    );
+    const reachedReview = await advanceToReview(harness);
+    const beforeRun = await harness.evaluate(`(() => {
+      const run = [...document.querySelectorAll('#wizard-action-bar button')]
+        .find((candidate) => /^Run sample/.test(candidate.textContent.trim()));
+      return {
+        runner: document.querySelector('.dossier-masthead-status')?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
+        identityKind: document.querySelector('.execution-context-bar')?.dataset.identityKind ?? '',
+        context: document.querySelector('.execution-context-bar')?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
+        chain: [...document.querySelectorAll('.hosted-identity-path li')].map((item) =>
+          item.textContent.replace(/\\s+/g, ' ').trim()
+        ),
+        gatewayKeyField: Boolean(document.querySelector('[data-parameter-path="gatewayAccess.apiKey"]')),
+        runPresent: Boolean(run),
+        runEnabled: Boolean(run && !run.disabled),
+      };
+    })()`);
+    reporter.check(
+      'the real preview capability enables the allowlisted hosted weather run',
+      reachedReview &&
+        beforeRun.runner.includes('Hosted relay') &&
+        !beforeRun.runner.includes('Preview only') &&
+        beforeRun.identityKind === 'hosted-relay' &&
+        beforeRun.context.includes('Not applicable') &&
+        beforeRun.context.includes('Hosted relay gateway runs do not use this browser session') &&
+        beforeRun.chain.length === 5 &&
+        !beforeRun.gatewayKeyField &&
+        beforeRun.runPresent &&
+        beforeRun.runEnabled,
+      JSON.stringify(beforeRun),
+    );
+
+    await harness.evaluate(`(() => {
+      const run = [...document.querySelectorAll('#wizard-action-bar button')]
+        .find((candidate) => /^Run sample/.test(candidate.textContent.trim()));
+      run?.click();
+      return Boolean(run && !run.disabled);
+    })()`);
+    await harness.waitFor(
+      "document.querySelector('[data-wizard-step]')?.dataset.wizardStep === 'run-result' && document.body.textContent.includes('Hosted weather discovery completed.')",
+      { label: 'hosted relay result' },
+    );
+    const result = await harness.evaluate(`(() => ({
+      runner: document.querySelector('.dossier-masthead-status')?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
+      output: document.getElementById('dossier-output')?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
+    }))()`);
+    reporter.check(
+      'hosted relay progress and results remain live-capable rather than preview evidence',
+      result.runner.includes('Hosted relay') &&
+        !result.runner.includes('Preview only') &&
+        result.output.includes('Hosted relay') &&
+        result.output.includes('Live target evidence') &&
+        !result.output.includes('Preview only'),
+      JSON.stringify(result),
+    );
+    reporter.check(
+      'the hosted relay browser flow reports no uncaught errors',
+      harness.pageErrors.length === 0,
+      harness.pageErrors.join('; '),
+    );
+  } finally {
+    await harness.close();
+  }
+}
+
 async function main() {
   const reporter = createCheckReporter({ name: 'wizard browser acceptance' });
   await prepareArtifacts();
@@ -2144,6 +2281,7 @@ async function main() {
   }
 
   await checkSystemAzureIdentityControls(reporter);
+  await checkHostedRelayReadiness(reporter);
   const outcome = reporter.finish();
   if (!outcome.ok) process.exitCode = 1;
 }

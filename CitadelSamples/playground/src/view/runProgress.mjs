@@ -27,10 +27,10 @@ const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
  */
 export function classifyRunEvidence({ mode = 'preview', executorKind = 'unavailable' } = {}) {
   if (mode === 'offline-local') return 'offline';
-  if (mode === 'preview') return 'preview';
   if (executorKind === 'relay' || executorKind === 'relay-core' || executorKind === 'hosted-relay') {
     return 'hosted-relay';
   }
+  if (mode === 'preview') return 'preview';
   if (mode === 'execute' && executorKind === 'local') return 'local-live-capable';
   return 'preview';
 }

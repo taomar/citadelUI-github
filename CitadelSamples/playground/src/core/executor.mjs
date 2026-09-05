@@ -151,6 +151,7 @@ export function createRelayExecutor({
     kind: 'relay',
     canExecute: true,
     supportedStepTypes: Object.freeze([...supportedStepTypes]),
+    allowedSampleIds: Object.freeze([...allowed]),
     reason: 'An approved relay is configured. It runs a fixed set of catalogue samples on the server side.',
   });
   let activeRequest = null;

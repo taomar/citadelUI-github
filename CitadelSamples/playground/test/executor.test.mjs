@@ -79,7 +79,9 @@ test('the relay refuses to be constructed without an allow-list, or with an arbi
     () => createRelayExecutor({ allowedSampleIds: ALL_IDS, endpoint: '//evil.test/proxy' }),
     /same-origin path/,
   );
-  assert.doesNotThrow(() => createRelayExecutor({ allowedSampleIds: ALL_IDS }));
+  const relay = createRelayExecutor({ allowedSampleIds: ['weather-mcp-discovery'] });
+  assert.deepEqual(relay.describeCapability().allowedSampleIds, ['weather-mcp-discovery']);
+  assert.throws(() => relay.describeCapability().allowedSampleIds.push('publish-assets'), TypeError);
 });
 
 test('the relay body carries only sampleId, inputs and secret ref NAMES', () => {

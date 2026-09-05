@@ -354,6 +354,9 @@ export function buildDossierModel({
     workbench.request.available &&
     workbench.runtime.ready &&
     identity.authorization.ready;
+  const runBlockedReason =
+    workbench.runBlockedReason ||
+    (identity.authorization.ready ? '' : identity.authorization.detail);
   const reviewDecision = Object.freeze({
     title: workbench.sample.title,
     shortTitle: workbench.sample.shortTitle,
@@ -361,7 +364,7 @@ export function buildDossierModel({
     running: workbench.response.running,
     canRun: canRunWithoutAcknowledgement,
     runAllowed: canRunWithoutAcknowledgement,
-    runBlockedReason: workbench.runBlockedReason,
+    runBlockedReason,
     requiredInputs: workbench.configure.blocking.map((entry) =>
       Object.freeze({
         ...entry,

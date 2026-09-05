@@ -71,6 +71,7 @@ export function buildExecutionEnvironmentModel(capability) {
       detail: 'An approved hosted relay can execute this plan and return live evidence.',
     };
   }
+
   return {
     mode: 'local-machine',
     label: 'Local machine',
@@ -79,6 +80,53 @@ export function buildExecutionEnvironmentModel(capability) {
     liveCapable: true,
     detail: 'The local executor can run this plan from this machine and return live evidence.',
   };
+}
+
+export function describeEffectiveExecutionCapability({
+  sample,
+  requiredStepTypes = [],
+  capability,
+  runtimeProbe = {},
+} = {}) {
+  const localRuntime = describeSampleCapability(sample, runtimeProbe);
+  if (capability?.kind !== 'relay') return localRuntime;
+
+  const allowedSampleIds = Array.isArray(capability.allowedSampleIds)
+    ? capability.allowedSampleIds
+    : [];
+  const supportedStepTypes = new Set(capability.supportedStepTypes ?? []);
+  const unsupportedStepTypes = requiredStepTypes.filter((type) => !supportedStepTypes.has(type));
+  let reason = '';
+  if (capability.canExecute !== true) {
+    reason = capability.reason || 'The hosted relay is unavailable.';
+  } else if (!allowedSampleIds.includes(sample.id)) {
+    reason = 'This sample is not allowlisted for the configured hosted relay.';
+  } else if (unsupportedStepTypes.length > 0) {
+    reason = `The hosted relay does not support this plan's ${unsupportedStepTypes.join(', ')} step type${unsupportedStepTypes.length === 1 ? '' : 's'}.`;
+  }
+  const ready = reason === '';
+  const dependencyDetail = ready
+    ? 'Provided by the configured hosted relay.'
+    : 'Not available through the configured hosted relay.';
+  return Object.freeze({
+    state: ready ? 'ready' : 'partial',
+    ready,
+    executionKind: 'relay',
+    reasons: Object.freeze(reason ? [reason] : []),
+    advisories: Object.freeze([]),
+    unsupportedStepTypes: Object.freeze(unsupportedStepTypes),
+    dependencies: Object.freeze(
+      localRuntime.dependencies.map((dependency) =>
+        Object.freeze({
+          ...dependency,
+          available: ready,
+          detail: ready ? dependencyDetail : '',
+          reason: ready ? undefined : reason,
+          missingModules: undefined,
+        }),
+      ),
+    ),
+  });
 }
 
 const EXECUTION_CONTEXT_TONE = Object.freeze({
@@ -692,8 +740,12 @@ export function buildContextModel({ sample, read, hasSecret, capability, sampleC
       ? {
           ...sampleCapability,
           badge:
-            sampleCapability.state === 'ready'
-              ? { tone: 'success', label: 'Local execution ready' }
+            sampleCapability.executionKind === 'relay' && sampleCapability.ready
+              ? { tone: 'success', label: 'Hosted relay ready' }
+              : sampleCapability.executionKind === 'relay'
+                ? { tone: 'warning', label: 'Relay unavailable' }
+                : sampleCapability.state === 'ready'
+                  ? { tone: 'success', label: 'Local execution ready' }
               : sampleCapability.state === 'partial'
                 ? { tone: 'warning', label: 'Missing runtime' }
                 : { tone: 'neutral', label: 'Preview only' },
@@ -987,7 +1039,12 @@ export function buildWorkbenchModel({
 }) {
   const validation = validateSample(sample, read);
   const request = buildRequestModel({ sample, read, acknowledged, secrets });
-  const sampleCapability = describeSampleCapability(sample, runtimeProbe);
+  const sampleCapability = describeEffectiveExecutionCapability({
+    sample,
+    requiredStepTypes: request.requiredStepTypes ?? [],
+    capability,
+    runtimeProbe,
+  });
   const configure = buildConfigureModel({
     sample,
     read,
