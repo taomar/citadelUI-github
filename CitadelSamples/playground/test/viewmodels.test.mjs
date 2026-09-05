@@ -65,6 +65,33 @@ test('execution identity stays honest while unavailable and maps safe ready cont
   assert.equal(ready.runsAs, 'Ada Lovelace');
   assert.equal(ready.credentialSource, 'Azure CLI device sign-in');
   assert.equal(ready.subscription.matches, true);
+  assert.equal(ready.canSignIn, true);
+  assert.equal(ready.signInLabel, 'Switch Azure account');
+});
+
+test('execution identity offers account switching for a subscription mismatch', () => {
+  const model = buildExecutionIdentityModel({
+    contextState: {
+      status: 'ready',
+      context: {
+        kind: 'azure-cli-python-management',
+        label: 'Azure CLI user',
+        summary: 'The active subscription does not match.',
+        state: 'subscription-mismatch',
+        canExecute: false,
+        authority: {
+          type: 'azure-cli-user',
+          principalName: 'Ada Lovelace',
+          principalType: 'user',
+          tenantId: 'tenant-1',
+        },
+        subscription: { activeId: 'sub-1', activeName: 'Sandbox', configuredId: 'sub-2', matches: false },
+      },
+    },
+  });
+
+  assert.equal(model.canSignIn, true);
+  assert.equal(model.signInLabel, 'Switch Azure account');
 });
 
 test('execution identity exposes device login without treating it as ready', () => {

@@ -156,6 +156,7 @@ export function buildExecutionIdentityModel({ contextState = {}, loginState = {}
       gateway: null,
       guarantees: [],
       canSignIn: false,
+      signInLabel: 'Sign In to Azure',
       canRefresh: !loginActive,
       refreshing: loading,
       login: loginModel,
@@ -163,6 +164,8 @@ export function buildExecutionIdentityModel({ contextState = {}, loginState = {}
   }
 
   const state = context.state;
+  const azureLoginCapable =
+    context.kind?.startsWith('azure-cli-') || context.authority?.type === 'azure-cli-user';
   return {
     state,
     code: context.code ?? '',
@@ -183,7 +186,12 @@ export function buildExecutionIdentityModel({ contextState = {}, loginState = {}
           return `${key}: ${String(value)}`;
         }),
     canExecute: context.canExecute === true,
-    canSignIn: state === 'signed-out' && !loginActive && !loginModel?.cancelAvailable,
+    canSignIn:
+      azureLoginCapable &&
+      ['signed-out', 'ready', 'subscription-mismatch'].includes(state) &&
+      !loginActive &&
+      !loginModel?.cancelAvailable,
+    signInLabel: state === 'signed-out' ? 'Sign In to Azure' : 'Switch Azure account',
     canRefresh: !loginActive,
     refreshing: false,
     login: loginModel,

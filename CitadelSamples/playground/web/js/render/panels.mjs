@@ -759,7 +759,7 @@ function renderExecutionIdentity(identity, { onRefreshIdentity, onSignIn, onCanc
             type: 'button',
             class: 'btn btn-primary',
             id: 'start-azure-login',
-            text: 'Sign In to Azure',
+            text: identity.signInLabel || 'Sign In to Azure',
             onclick: () => onSignIn?.(),
           })
         : null,
