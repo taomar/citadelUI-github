@@ -54,6 +54,14 @@ test('account switching fails closed without an advertised system-browser launch
     normalizeAccountControlState({ state: 'subscription-mismatch', canSetActive: true }).canSetActive,
     true,
   );
+  assert.equal(
+    normalizeAccountControlState({
+      state: 'waiting-system-ui',
+      systemBrowserAzureLogin: true,
+      canLaunch: false,
+    }).launchMode,
+    'system-browser',
+  );
 });
 
 test('identity fails closed when neither execution context nor account adapter reports', () => {

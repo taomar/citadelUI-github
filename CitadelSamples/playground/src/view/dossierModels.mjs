@@ -58,7 +58,8 @@ function safeSubscription(value) {
 export function normalizeAccountControlState(value = {}) {
   const requestedState = safeText(value.state);
   const state = ACCOUNT_CONTROL_STATE_SET.has(requestedState) ? requestedState : 'login-disabled';
-  const launchAdvertised = value.canLaunch === true && value.launchMode === 'system-browser';
+  const launchAdvertised =
+    value.systemBrowserAzureLogin === true || value.launchMode === 'system-browser';
   const active = ['starting', 'waiting-system-ui', 'verifying'].includes(state);
   const accounts = safeList(value.accounts, safeAccount);
   const subscriptions = safeList(value.subscriptions, safeSubscription);
@@ -72,7 +73,7 @@ export function normalizeAccountControlState(value = {}) {
         : ''),
     sessionId: safeText(value.sessionId),
     launchMode: launchAdvertised ? 'system-browser' : null,
-    canLaunch: launchAdvertised && !active,
+    canLaunch: launchAdvertised && value.canLaunch === true && !active,
     canCancel: value.canCancel === true && active && Boolean(safeText(value.sessionId)),
     canVerify: value.canVerify === true && !active,
     canSetActive: value.canSetActive === true && ['ready', 'subscription-mismatch'].includes(state),
