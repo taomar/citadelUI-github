@@ -27,8 +27,8 @@
 
 import { createManagedIdentityTokenProvider } from './managedIdentity.mjs';
 import { raceAbortSignal } from './deadline.mjs';
+import { getAzureCloudProfile, validateKeyVaultUrl } from './azureCloud.mjs';
 
-const KEY_VAULT_RESOURCE = 'https://vault.azure.net';
 const DEFAULT_API_VERSION = '7.4';
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 
@@ -73,7 +73,7 @@ function boundedSignal(timeoutMs, externalSignal) {
  * @param {Record<string,{vaultUrl:string, secretName:string}>} options.mappings
  *   Logical ref -> vault location. Fixed at construction time by the
  *   operator; never derived from a request.
- * @param {string} [options.resource]     AAD resource for the KV token (default: KV)
+ * @param {string} options.cloud          trusted Azure cloud profile name
  * @param {string} [options.apiVersion]
  * @param {Function} [options.fetchImpl]  injected for tests
  * @param {object} [options.tokenProvider] injected for tests, bypasses identity acquisition
@@ -83,24 +83,49 @@ function boundedSignal(timeoutMs, externalSignal) {
  * @param {number} [options.requestTimeoutMs]  bounds the Key Vault fetch itself
  *        (default 10s), independent of any caller-supplied `resolve` signal.
  */
-export function createKeyVaultSecretProvider({
-  mappings,
-  resource = KEY_VAULT_RESOURCE,
-  apiVersion = DEFAULT_API_VERSION,
-  fetchImpl,
-  tokenProvider,
-  clientId,
-  environment,
-  identityEndpointValidator,
-  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
-} = {}) {
+export function createKeyVaultSecretProvider(options = {}) {
+  const {
+    mappings,
+    cloud,
+    apiVersion = DEFAULT_API_VERSION,
+    fetchImpl,
+    tokenProvider,
+    clientId,
+    environment,
+    identityEndpointValidator,
+    requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  } = options;
   if (!mappings || typeof mappings !== 'object' || Array.isArray(mappings)) {
     throw new TypeError('createKeyVaultSecretProvider requires a `mappings` object.');
+  }
+  if (Object.prototype.hasOwnProperty.call(options, 'resource')) {
+    throw new TypeError(
+      'createKeyVaultSecretProvider does not accept a caller-configured token resource; select a trusted Azure cloud profile.',
+    );
+  }
+  const cloudProfile = getAzureCloudProfile(cloud, 'createKeyVaultSecretProvider cloud');
+  const fixedMappings = new Map();
+  for (const [ref, mapping] of Object.entries(mappings)) {
+    if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)) {
+      throw new TypeError(`Secret mapping "${ref}" must be an object.`);
+    }
+    if (
+      typeof mapping.secretName !== 'string' ||
+      mapping.secretName.trim() === '' ||
+      mapping.secretName.trim() !== mapping.secretName ||
+      /[\u0000-\u001f\u007f]/.test(mapping.secretName)
+    ) {
+      throw new TypeError(`Secret mapping "${ref}" must carry a non-empty secretName.`);
+    }
+    fixedMappings.set(ref, {
+      vaultUrl: validateKeyVaultUrl(mapping.vaultUrl, cloudProfile.name, `Secret mapping "${ref}" vaultUrl`),
+      secretName: mapping.secretName,
+    });
   }
   const provider =
     tokenProvider ??
     createManagedIdentityTokenProvider({
-      resource,
+      resource: cloudProfile.keyVaultResource,
       clientId,
       environment,
       identityEndpointValidator,
@@ -112,6 +137,8 @@ export function createKeyVaultSecretProvider({
   }
   return Object.freeze({
     mode: 'managed-identity-key-vault',
+    cloud: cloudProfile.name,
+    resource: cloudProfile.keyVaultResource,
     /**
      * @param {string} ref
      * @param {object} [options]
@@ -120,10 +147,10 @@ export function createKeyVaultSecretProvider({
      *        request and the Key Vault fetch this call makes.
      */
     async resolve(ref, { signal } = {}) {
-      const mapping = mappings[ref];
+      const mapping = fixedMappings.get(ref);
       // An unknown ref is refused, never guessed at from caller input: the
       // caller supplies only the ref NAME, never a vault URL or secret name.
-      if (!mapping || typeof mapping.vaultUrl !== 'string' || typeof mapping.secretName !== 'string') return null;
+      if (!mapping) return null;
       const token = await provider.getToken({ signal });
       const url = `${mapping.vaultUrl.replace(/\/+$/, '')}/secrets/${encodeURIComponent(mapping.secretName)}?api-version=${apiVersion}`;
       const bound = boundedSignal(requestTimeoutMs, signal);

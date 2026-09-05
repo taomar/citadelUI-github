@@ -5,16 +5,12 @@
  * Bicep, and offline manifest preflight all enforce the same v2-only contract.
  */
 
+import { getAzureCloudProfile } from './azureCloud.mjs';
+
 export const RELAY_ACCESS_TOKEN_VERSION = 2;
 export const RELAY_TOKEN_CONFIGURATION_ERROR = 'relay-token-configuration-invalid';
 
 const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const ENTRA_AUTHORITY_HOSTS = new Set([
-  'login.microsoftonline.com',
-  'login.microsoftonline.us',
-  'login.chinacloudapi.cn',
-  'login.microsoftonline.de',
-]);
 
 export class RelayTokenConfigurationError extends TypeError {
   constructor(message) {
@@ -47,26 +43,9 @@ function requiredString(value, label) {
   return value;
 }
 
-function canonicalIssuer(value, tenantId, label) {
+function canonicalIssuer(value, tenantId, cloudProfile, label) {
   const issuer = requiredString(value, label);
-  let parsed;
-  try {
-    parsed = new URL(issuer);
-  } catch {
-    fail(`${label} must be the exact tenant-specific Microsoft Entra v2 issuer.`);
-  }
-  if (
-    parsed.protocol !== 'https:' ||
-    parsed.username !== '' ||
-    parsed.password !== '' ||
-    parsed.port !== '' ||
-    parsed.search !== '' ||
-    parsed.hash !== '' ||
-    !ENTRA_AUTHORITY_HOSTS.has(parsed.hostname.toLowerCase())
-  ) {
-    fail(`${label} must be the exact tenant-specific Microsoft Entra v2 issuer.`);
-  }
-  const expected = `${parsed.origin}/${tenantId}/v2.0`;
+  const expected = `${cloudProfile.authority}/${tenantId}/v2.0`;
   if (issuer !== expected) {
     fail(`${label} must be exactly ${expected}.`);
   }
@@ -77,6 +56,7 @@ function canonicalIssuer(value, tenantId, label) {
  * Validate the exact v2-only resource-app contract used by managed identity.
  */
 export function validateRelayTokenContract({
+  cloud,
   version,
   issuer,
   resource,
@@ -85,6 +65,7 @@ export function validateRelayTokenContract({
   clientId,
   labels = {},
 } = {}) {
+  const cloudLabel = labels.cloud ?? 'relay Azure cloud profile';
   const versionLabel = labels.version ?? 'relay token version';
   const issuerLabel = labels.issuer ?? 'relay token issuer';
   const resourceLabel = labels.resource ?? 'relay token resource';
@@ -92,6 +73,12 @@ export function validateRelayTokenContract({
   const tenantLabel = labels.tenantId ?? 'relay tenant ID';
   const clientLabel = labels.clientId ?? 'relay app client ID';
 
+  let cloudProfile;
+  try {
+    cloudProfile = getAzureCloudProfile(cloud, cloudLabel);
+  } catch (error) {
+    fail(error.message);
+  }
   if (version !== RELAY_ACCESS_TOKEN_VERSION && version !== String(RELAY_ACCESS_TOKEN_VERSION)) {
     fail(
       `${versionLabel} must be exactly ${RELAY_ACCESS_TOKEN_VERSION}; null/default or v1 app registrations issue incompatible v1 access tokens.`,
@@ -111,8 +98,9 @@ export function validateRelayTokenContract({
   }
 
   return Object.freeze({
+    cloud: cloudProfile.name,
     version: RELAY_ACCESS_TOKEN_VERSION,
-    issuer: canonicalIssuer(issuer, canonicalTenantId, issuerLabel),
+    issuer: canonicalIssuer(issuer, canonicalTenantId, cloudProfile, issuerLabel),
     resource: canonicalResource,
     audience: canonicalAudience,
     tenantId: canonicalTenantId,
@@ -128,12 +116,13 @@ export function readRelayTokenContract(environment, names) {
   if (!environment || typeof environment !== 'object' || Array.isArray(environment)) {
     fail('the hosted relay environment must be an object.');
   }
-  for (const key of ['version', 'issuer', 'resource', 'audience', 'tenantId', 'clientId']) {
+  for (const key of ['cloud', 'version', 'issuer', 'resource', 'audience', 'tenantId', 'clientId']) {
     if (typeof names?.[key] !== 'string' || names[key] === '') {
       throw new TypeError(`readRelayTokenContract requires a ${key} environment-variable name.`);
     }
   }
   return validateRelayTokenContract({
+    cloud: environment[names.cloud],
     version: environment[names.version],
     issuer: environment[names.issuer],
     resource: environment[names.resource],
@@ -141,6 +130,7 @@ export function readRelayTokenContract(environment, names) {
     tenantId: environment[names.tenantId],
     clientId: environment[names.clientId],
     labels: {
+      cloud: names.cloud,
       version: names.version,
       issuer: names.issuer,
       resource: names.resource,

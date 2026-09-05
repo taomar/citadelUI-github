@@ -31,6 +31,9 @@ test('Container Apps deployment keeps public playground and relay boundaries exp
   }
   assert.match(bicep, /param relayRequestedAccessTokenVersion int/);
   assert.match(bicep, /@allowed\(\[\s*2\s*\]\)/);
+  assert.match(bicep, /param azureCloud string/);
+  assert.match(bicep, /'AzureCloud'[\s\S]*'AzureUSGovernment'[\s\S]*'AzureChinaCloud'/);
+  assert.doesNotMatch(bicep, /AzureGermanCloud|login\.microsoftonline\.de|vault\.microsoftazure\.de/);
   assert.match(bicep, /openIdIssuer: relayTokenIssuer/);
 });
 
@@ -54,6 +57,7 @@ test('deployment passes managed-identity service authentication and exact relay 
   ]);
   for (const name of [
     'CITADEL_PLAYGROUND_RELAY_RESOURCE',
+    'CITADEL_PLAYGROUND_AZURE_CLOUD',
     'CITADEL_PLAYGROUND_RELAY_AUDIENCE',
     'CITADEL_PLAYGROUND_RELAY_TOKEN_VERSION',
     'CITADEL_PLAYGROUND_RELAY_TOKEN_ISSUER',
@@ -68,6 +72,11 @@ test('deployment passes managed-identity service authentication and exact relay 
     'CITADEL_PLAYGROUND_PUBLIC_ORIGIN',
     'CITADEL_RELAY_ALLOWED_ORIGINS',
     'CITADEL_RELAY_TOKEN_VERSION',
+    'CITADEL_RELAY_AZURE_CLOUD',
+    'CITADEL_RELAY_ARM_CLOUD',
+    'CITADEL_RELAY_ARM_ENDPOINT',
+    'CITADEL_RELAY_KEY_VAULT_RESOURCE',
+    'CITADEL_RELAY_KEY_VAULT_DNS_SUFFIX',
     'CITADEL_RELAY_TOKEN_ISSUER',
     'CITADEL_RELAY_TOKEN_RESOURCE',
     'CITADEL_RELAY_TOKEN_AUDIENCE',
@@ -85,6 +94,24 @@ test('deployment passes managed-identity service authentication and exact relay 
     assert.match(bicep, new RegExp(name));
   }
   assert.match(bicep, /relayTokenResource/);
+  for (const value of [
+    'https://login.microsoftonline.com',
+    'https://management.azure.com/',
+    'https://vault.azure.net',
+    '.vault.azure.net',
+    'https://login.microsoftonline.us',
+    'https://management.usgovcloudapi.net/',
+    'https://vault.usgovcloudapi.net',
+    '.vault.usgovcloudapi.net',
+    'https://login.chinacloudapi.cn',
+    'https://management.chinacloudapi.cn',
+    'https://vault.azure.cn',
+    '.vault.azure.cn',
+  ]) {
+    assert.ok(bicep.includes(value), `Bicep cloud profiles must include ${value}`);
+  }
+  assert.match(bicep, /CITADEL_RELAY_ARM_CLOUD', value: environment\(\)\.name/);
+  assert.match(bicep, /CITADEL_RELAY_ARM_ENDPOINT', value: environment\(\)\.resourceManager/);
   assert.match(bicep, /CITADEL_RELAY_TOKEN_AUDIENCE', value: relayEntraClientId/);
   assert.match(bicep, /CITADEL_PLAYGROUND_RELAY_AUDIENCE', value: relayEntraClientId/);
   assert.match(bicep, /CITADEL_RELAY_ENTRA_AUTHENTICATED', value: 'true'/);
@@ -121,6 +148,11 @@ test('deployment passes managed-identity service authentication and exact relay 
     const parameter = ['hosted', 'Operator', 'Platform', 'Allowed', suffix].join('');
     assert.match(parameterFile, new RegExp(`${parameter} = \\[\\]`));
   }
+  assert.match(deploymentGuide, /AzureUSGovernment/);
+  assert.match(deploymentGuide, /AzureChinaCloud/);
+  assert.match(deploymentGuide, /closed on October 29, 2021/i);
+  assert.match(await read('infra/main.bicepparam'), /relayRequestedAccessTokenVersion = 2/);
+  assert.match(await read('infra/main.bicepparam'), /azureCloud = 'AzureCloud'/);
 });
 
 test('the example Weather MCP request policy names and authorizes the canonical rebuilt plan exactly', async () => {

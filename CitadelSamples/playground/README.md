@@ -286,6 +286,11 @@ Each Container App acquires tokens only through its own platform-injected
 `IDENTITY_ENDPOINT` and `IDENTITY_HEADER`, with the deployment-owned
 user-assigned client ID. Partial or malformed injection fails closed; the secret
 identity header is never forwarded to the other app, VM IMDS, or Key Vault.
+Hosted deployment selects one fixed Azure cloud profile: public, US Government,
+or China. Relay startup cross-checks that profile with the actual ARM cloud,
+tenant-specific Entra issuer, fixed Key Vault audience/DNS suffix, and vault
+host before requesting a token. Retired Microsoft Cloud Germany endpoints and
+caller-supplied audiences are rejected.
 The deployed direct `/execute` path uses process-local atomic nonce consumption
 and request admission, so each active Container Apps revision is fixed at one
 replica and horizontal scale-out is prohibited until one actually shared atomic

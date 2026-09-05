@@ -169,6 +169,7 @@ export function buildRelayConfig(env = process.env) {
   }
   const tokenContract = trustedEntraProxy
     ? readRelayTokenContract(env, {
+        cloud: 'CITADEL_PLAYGROUND_AZURE_CLOUD',
         version: 'CITADEL_PLAYGROUND_RELAY_TOKEN_VERSION',
         issuer: 'CITADEL_PLAYGROUND_RELAY_TOKEN_ISSUER',
         resource: 'CITADEL_PLAYGROUND_RELAY_RESOURCE',

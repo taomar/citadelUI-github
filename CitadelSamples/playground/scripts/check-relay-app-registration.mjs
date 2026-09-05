@@ -8,6 +8,7 @@ import { validateRelayAppRegistrationManifest } from '../src/relay/tokenContract
 
 const OPTION_NAMES = Object.freeze({
   '--manifest': 'manifest',
+  '--cloud': 'cloud',
   '--tenant-id': 'tenantId',
   '--client-id': 'clientId',
   '--resource': 'resource',
@@ -44,6 +45,7 @@ export async function checkRelayAppRegistration(args, { read = readFile } = {}) 
     throw error;
   }
   return validateRelayAppRegistrationManifest(manifest, {
+    cloud: options.cloud,
     version: 2,
     issuer: options.issuer,
     resource: options.resource,

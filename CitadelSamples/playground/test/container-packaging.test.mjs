@@ -119,6 +119,11 @@ function relayEnvironment(port) {
     CITADEL_RELAY_PORT: String(port),
     CITADEL_RELAY_HOST: '127.0.0.1',
     CITADEL_RELAY_TOKEN_VERSION: '2',
+    CITADEL_RELAY_AZURE_CLOUD: 'AzureCloud',
+    CITADEL_RELAY_ARM_CLOUD: 'AzureCloud',
+    CITADEL_RELAY_ARM_ENDPOINT: 'https://management.azure.com/',
+    CITADEL_RELAY_KEY_VAULT_RESOURCE: 'https://vault.azure.net',
+    CITADEL_RELAY_KEY_VAULT_DNS_SUFFIX: '.vault.azure.net',
     CITADEL_RELAY_TOKEN_ISSUER: 'https://login.microsoftonline.com/11111111-1111-4111-8111-111111111111/v2.0',
     CITADEL_RELAY_TOKEN_RESOURCE: 'api://22222222-2222-4222-8222-222222222222',
     CITADEL_RELAY_TOKEN_AUDIENCE: '22222222-2222-4222-8222-222222222222',
@@ -319,6 +324,47 @@ test('the relay temporary image layout starts and serves health without process-
         assert.equal(payload.code, 'relay-token-configuration-invalid');
         assert.match(payload.detail, /must be exactly 2/);
         assert.match(output(), /Hosted relay authentication configuration error/);
+      });
+    });
+  });
+
+  test('the relay entrypoint rejects a cross-cloud Key Vault tuple before managed identity is initialized', async () => {
+    await temporaryPackage(RELAY_PACKAGE, async (root) => {
+      const port = await reservePort();
+      const environment = relayEnvironment(port);
+      environment.CITADEL_RELAY_KEY_VAULT_RESOURCE = 'https://attacker.example';
+      environment.IDENTITY_ENDPOINT = 'https://attacker.example/token';
+      environment.IDENTITY_HEADER = 'must-not-be-used';
+      await withNodeEntrypoint(resolve(root, 'app/relay-server.mjs'), environment, async (child, output) => {
+        const live = await waitForResponse(`http://127.0.0.1:${port}/livez`, { child, output });
+        assert.deepEqual(await live.json(), { status: 'ok' });
+        const response = await waitForResponse(`http://127.0.0.1:${port}/readyz`, {
+          child,
+          output,
+          expectedStatus: 503,
+        });
+        const payload = await response.json();
+        assert.equal(payload.code, 'relay-token-configuration-invalid');
+        assert.match(payload.detail, /CITADEL_RELAY_KEY_VAULT_RESOURCE must be exactly https:\/\/vault\.azure\.net/);
+        assert.doesNotMatch(output(), /IDENTITY_ENDPOINT must be/);
+      });
+    });
+  });
+
+  test('the relay entrypoint reports a partial cloud tuple as non-ready', async () => {
+    await temporaryPackage(RELAY_PACKAGE, async (root) => {
+      const port = await reservePort();
+      const environment = relayEnvironment(port);
+      delete environment.CITADEL_RELAY_KEY_VAULT_DNS_SUFFIX;
+      await withNodeEntrypoint(resolve(root, 'app/relay-server.mjs'), environment, async (child, output) => {
+        const response = await waitForResponse(`http://127.0.0.1:${port}/readyz`, {
+          child,
+          output,
+          expectedStatus: 503,
+        });
+        const payload = await response.json();
+        assert.equal(payload.code, 'relay-token-configuration-invalid');
+        assert.match(payload.detail, /CITADEL_RELAY_KEY_VAULT_DNS_SUFFIX/);
       });
     });
   });

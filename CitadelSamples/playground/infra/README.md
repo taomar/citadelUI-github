@@ -39,6 +39,23 @@ app-role, principal, and group membership are alternatives. The internal relay s
 identity can reach it. Easy Auth cannot enforce the `roles` claim directly; the
 playground server's app-role check is mandatory.
 
+`azureCloud` is required and accepts only `AzureCloud`, `AzureUSGovernment`, or
+`AzureChinaCloud`. It is not a free-form endpoint switch. The Bicep carries the
+same fixed profile table as the relay and passes both the selected profile and
+the actual `environment().name`/`environment().resourceManager` values. Relay
+startup requires the complete tuple to match before it constructs the managed
+identity Key Vault provider.
+
+| Profile | Entra authority | ARM endpoint | Key Vault token resource | Vault DNS suffix |
+| --- | --- | --- | --- | --- |
+| `AzureCloud` | `https://login.microsoftonline.com` | `https://management.azure.com/` | `https://vault.azure.net` | `.vault.azure.net` |
+| `AzureUSGovernment` | `https://login.microsoftonline.us` | `https://management.usgovcloudapi.net/` | `https://vault.usgovcloudapi.net` | `.vault.usgovcloudapi.net` |
+| `AzureChinaCloud` | `https://login.chinacloudapi.cn` | `https://management.chinacloudapi.cn` | `https://vault.azure.cn` | `.vault.azure.cn` |
+
+Microsoft Cloud Germany closed on October 29, 2021. `AzureGermanCloud`,
+`login.microsoftonline.de`, and the retired German Key Vault endpoints are
+rejected rather than represented as a deployable profile.
+
 `relayAllowedOrigins`, `relayAllowedSampleIds`, `relayRequestPolicy`, and
 `relayLogicalRefMappings` are required policy input. The same serialized
 `relayAllowedSampleIds` array is passed to both the playground and relay; neither
@@ -107,6 +124,7 @@ preflight before deployment. The checker makes no Azure or Graph call:
 
 ```powershell
 npm run check:relay-app -- --manifest .\relay-app-registration.json `
+  --cloud 'AzureCloud' `
   --tenant-id '<tenant-id>' `
   --client-id '<relay-app-id>' `
   --resource 'api://<relay-app-id>' `
@@ -116,11 +134,12 @@ npm run check:relay-app -- --manifest .\relay-app-registration.json `
 
 The preflight rejects a missing/default/v1 requested token version, a different
 app ID or identifier URI, non-lowercase or malformed GUIDs, a resource/audience
-mix-up, and any issuer that is not the exact supported-cloud tenant-specific
-`/v2.0` issuer. The checker accepts UTF-8 with or without a BOM and the UTF-16
-JSON files commonly written by Windows PowerShell. After it passes, allow the
-playground identity to request the exposed API. Container Apps authentication
-is the trusted signature/JWKS boundary for both apps; never set
+mix-up, a retired or unknown cloud, and any issuer that is not the selected
+cloud's exact tenant-specific `/v2.0` issuer. The checker accepts UTF-8 with or
+without a BOM and the UTF-16 JSON files commonly written by Windows PowerShell.
+After it passes, allow the playground identity to request the exposed API.
+Container Apps authentication is the trusted signature/JWKS boundary for both
+apps; never set
 `CITADEL_PLAYGROUND_EXECUTE_TOKEN`,
 `CITADEL_PLAYGROUND_RELAY_TOKEN`, or
 `CITADEL_PLAYGROUND_RELAY_AUTH_MODE=static-token` in this deployment.
@@ -157,6 +176,11 @@ The Bicep is the deployment authority. The hosted relay rejects startup unless
 
 | Relay variable | Source |
 | --- | --- |
+| `CITADEL_RELAY_AZURE_CLOUD` | Required `azureCloud` profile |
+| `CITADEL_RELAY_ARM_CLOUD` | Actual `environment().name`; must equal the selected profile |
+| `CITADEL_RELAY_ARM_ENDPOINT` | Actual `environment().resourceManager`; must equal the selected profile |
+| `CITADEL_RELAY_KEY_VAULT_RESOURCE` | Fixed profile value; startup compares it with the code-owned table |
+| `CITADEL_RELAY_KEY_VAULT_DNS_SUFFIX` | Fixed profile value; startup compares it with the code-owned table |
 | `CITADEL_RELAY_TENANT_ID` | `entraTenantId` |
 | `CITADEL_RELAY_TOKEN_VERSION` | `relayRequestedAccessTokenVersion` (must be `2`) |
 | `CITADEL_RELAY_TOKEN_ISSUER` | Exact tenant-specific v2 issuer derived by Bicep |
@@ -165,7 +189,7 @@ The Bicep is the deployment authority. The hosted relay rejects startup unless
 | `CITADEL_RELAY_ENTRA_CLIENT_ID` | `relayEntraClientId` |
 | `CITADEL_RELAY_ALLOWED_PRINCIPAL_ID` | Playground managed identity principal ID |
 | `CITADEL_RELAY_MANAGED_IDENTITY_CLIENT_ID` | Relay managed identity client ID |
-| `CITADEL_RELAY_KEY_VAULT_URI` | Existing Key Vault |
+| `CITADEL_RELAY_KEY_VAULT_URI` | Existing Key Vault; must be one unadorned HTTPS host under the selected profile suffix |
 | `CITADEL_RELAY_ALLOWED_ORIGINS` | `relayAllowedOrigins` JSON |
 | `CITADEL_RELAY_ALLOWED_SAMPLE_IDS` | `relayAllowedSampleIds` JSON |
 | `CITADEL_RELAY_REQUEST_POLICY` | `relayRequestPolicy` JSON |
@@ -187,9 +211,9 @@ concurrency value limits both burst workers and globally admitted `/execute`
 requests; excess requests fail closed with HTTP 429 before authentication, body
 parsing, secret resolution, or network execution.
 
-The playground receives the private relay URL plus the same v2 token version,
-issuer, audience, relay app client ID, and tenant contract from Bicep. It also
-receives `CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED=true`,
+The playground receives the private relay URL plus the selected Azure cloud,
+same v2 token version, issuer, audience, relay app client ID, and tenant contract
+from Bicep. It also receives `CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED=true`,
 `CITADEL_PLAYGROUND_RELAY_CLIENT_ID` for its assigned user-assigned identity, and
 the same serialized `relayAllowedSampleIds` value the relay receives. It does
 not receive a relay token: it obtains one from its managed identity.
@@ -214,7 +238,11 @@ the safe principal/tenant plus the configured role match. Names, email
 addresses, raw group membership, and unrelated claims are not returned to the
 browser.
 
-Both processes validate this tuple before relay use. An incomplete or
+Both processes validate the selected cloud against the issuer before relay use.
+The relay additionally validates the actual ARM cloud and endpoint, fixed Key
+Vault audience and suffix, and configured vault host before any managed-identity
+token request. The Key Vault audience is selected only from the code-owned cloud
+table; it is never derived from a caller or vault URL. An incomplete or
 inconsistent hosted configuration disables execution, reports
 `relay-token-configuration-invalid` or
 `hosted-authorization-configuration-invalid` through capability/health with HTTP

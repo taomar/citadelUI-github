@@ -12,6 +12,7 @@ import { computeRelayAllowedSampleIds, parseRelayAllowedSampleIds } from './src/
 import { createOriginAllowlist } from './src/relay/originAllowlist.mjs';
 import { createSampleRequestPolicy } from './src/relay/requestPolicy.mjs';
 import { createKeyVaultSecretProvider } from './src/relay/secretProvider.mjs';
+import { validateRelayCloudConfiguration } from './src/relay/azureCloud.mjs';
 import { createContainerAppsEntraAuthenticator } from './src/relay/principalAuth.mjs';
 import {
   HostedAuthorizationConfigurationError,
@@ -46,12 +47,11 @@ function json(env, name) {
   }
 }
 
-function secretMappings(env) {
+function secretMappings(env, vaultUrl) {
   const configured = json(env, 'CITADEL_RELAY_SECRET_MAPPINGS');
   if (!configured || typeof configured !== 'object' || Array.isArray(configured)) {
     throw new TypeError('CITADEL_RELAY_SECRET_MAPPINGS must be a JSON object of logical refs to Key Vault secret names.');
   }
-  const vaultUrl = required(env, 'CITADEL_RELAY_KEY_VAULT_URI');
   return Object.fromEntries(
     Object.entries(configured).map(([ref, secretName]) => {
       if (typeof secretName !== 'string' || secretName === '') {
@@ -67,6 +67,7 @@ export function buildHostedRelay(env = process.env) {
     throw new RelayTokenConfigurationError('CITADEL_RELAY_ENTRA_AUTHENTICATED must be exactly true.');
   }
   const tokenContract = readRelayTokenContract(env, {
+    cloud: 'CITADEL_RELAY_AZURE_CLOUD',
     version: 'CITADEL_RELAY_TOKEN_VERSION',
     issuer: 'CITADEL_RELAY_TOKEN_ISSUER',
     resource: 'CITADEL_RELAY_TOKEN_RESOURCE',
@@ -74,6 +75,27 @@ export function buildHostedRelay(env = process.env) {
     tenantId: 'CITADEL_RELAY_TENANT_ID',
     clientId: 'CITADEL_RELAY_ENTRA_CLIENT_ID',
   });
+  let cloudProfile;
+  try {
+    cloudProfile = validateRelayCloudConfiguration({
+      cloud: tokenContract.cloud,
+      armCloud: env.CITADEL_RELAY_ARM_CLOUD,
+      armEndpoint: env.CITADEL_RELAY_ARM_ENDPOINT,
+      keyVaultResource: env.CITADEL_RELAY_KEY_VAULT_RESOURCE,
+      keyVaultDnsSuffix: env.CITADEL_RELAY_KEY_VAULT_DNS_SUFFIX,
+      keyVaultUrl: env.CITADEL_RELAY_KEY_VAULT_URI,
+      labels: {
+        cloud: 'CITADEL_RELAY_AZURE_CLOUD',
+        armCloud: 'CITADEL_RELAY_ARM_CLOUD',
+        armEndpoint: 'CITADEL_RELAY_ARM_ENDPOINT',
+        keyVaultResource: 'CITADEL_RELAY_KEY_VAULT_RESOURCE',
+        keyVaultDnsSuffix: 'CITADEL_RELAY_KEY_VAULT_DNS_SUFFIX',
+        keyVaultUrl: 'CITADEL_RELAY_KEY_VAULT_URI',
+      },
+    });
+  } catch (error) {
+    throw new RelayTokenConfigurationError(error.message);
+  }
   const tenantId = tokenContract.tenantId;
   const allowedPrincipalId = required(env, 'CITADEL_RELAY_ALLOWED_PRINCIPAL_ID');
   const allowedSampleIds = parseRelayAllowedSampleIds(
@@ -90,7 +112,8 @@ export function buildHostedRelay(env = process.env) {
     originAllowlist: createOriginAllowlist(allowedOrigins),
     requestPolicy: createSampleRequestPolicy(requestPolicy),
     secretProvider: createKeyVaultSecretProvider({
-      mappings: secretMappings(env),
+      mappings: secretMappings(env, cloudProfile.vaultUrl),
+      cloud: cloudProfile.name,
       clientId: required(env, 'CITADEL_RELAY_MANAGED_IDENTITY_CLIENT_ID'),
       environment: env,
     }),
@@ -116,6 +139,7 @@ export function buildHostedRelay(env = process.env) {
     ...relayServerLimitsFromHosted(hostedLimits),
   });
   server.tokenContract = tokenContract;
+  server.cloudProfile = cloudProfile;
   return server;
 }
 

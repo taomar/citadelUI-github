@@ -17,10 +17,12 @@ const TENANT_ID = '11111111-1111-4111-8111-111111111111';
 const CLIENT_ID = '22222222-2222-4222-8222-222222222222';
 const RESOURCE = `api://${CLIENT_ID}`;
 const AUDIENCE = CLIENT_ID;
+const CLOUD = 'AzureCloud';
 const ISSUER = `https://login.microsoftonline.com/${TENANT_ID}/v2.0`;
 
 function contract(overrides = {}) {
   return {
+    cloud: CLOUD,
     version: 2,
     issuer: ISSUER,
     resource: RESOURCE,
@@ -77,6 +79,37 @@ test('the relay token contract separates the managed-identity resource from the 
   );
 });
 
+test('the token issuer is pinned to the selected active Azure cloud and Germany is rejected', () => {
+  for (const [cloud, authority] of [
+    ['AzureCloud', 'https://login.microsoftonline.com'],
+    ['AzureUSGovernment', 'https://login.microsoftonline.us'],
+    ['AzureChinaCloud', 'https://login.chinacloudapi.cn'],
+  ]) {
+    const expected = contract({ cloud, issuer: `${authority}/${TENANT_ID}/v2.0` });
+    assert.deepEqual(validateRelayTokenContract(expected), expected);
+  }
+  assert.throws(
+    () =>
+      validateRelayTokenContract(
+        contract({
+          cloud: 'AzureUSGovernment',
+          issuer: `https://login.microsoftonline.com/${TENANT_ID}/v2.0`,
+        }),
+      ),
+    /login\.microsoftonline\.us/,
+  );
+  assert.throws(
+    () =>
+      validateRelayTokenContract(
+        contract({
+          cloud: 'AzureGermanCloud',
+          issuer: `https://login.microsoftonline.de/${TENANT_ID}/v2.0`,
+        }),
+      ),
+    /must be exactly one of/,
+  );
+});
+
 test('the offline manifest preflight rejects null/default and v1 app registrations before deployment', () => {
   for (const requestedAccessTokenVersion of [undefined, null, 1, '2']) {
     assert.throws(
@@ -101,6 +134,7 @@ test('the offline manifest preflight rejects null/default and v1 app registratio
 
 test('runtime environment validation names the missing or incompatible setting', () => {
   const names = {
+    cloud: 'CLOUD',
     version: 'VERSION',
     issuer: 'ISSUER',
     resource: 'RESOURCE',
@@ -109,6 +143,7 @@ test('runtime environment validation names the missing or incompatible setting',
     clientId: 'CLIENT',
   };
   const environment = {
+    CLOUD,
     VERSION: '2',
     ISSUER,
     RESOURCE,
@@ -131,6 +166,8 @@ test('the offline checker validates a supplied manifest without any Azure or Gra
   const args = [
     '--manifest',
     '.\\relay-app.json',
+    '--cloud',
+    CLOUD,
     '--tenant-id',
     TENANT_ID,
     '--client-id',

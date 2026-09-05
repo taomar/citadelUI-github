@@ -1229,6 +1229,7 @@ test('buildRelayConfig binds managed identity to the supplied Container Apps env
     const config = buildRelayConfig({
       CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.internal.example/execute',
       CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS: '["weather-mcp-discovery"]',
+      CITADEL_PLAYGROUND_AZURE_CLOUD: 'AzureCloud',
       CITADEL_PLAYGROUND_RELAY_RESOURCE: 'api://22222222-2222-4222-8222-222222222222',
       CITADEL_PLAYGROUND_RELAY_TOKEN_VERSION: '2',
       CITADEL_PLAYGROUND_RELAY_TOKEN_ISSUER: 'https://login.microsoftonline.com/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/v2.0',
@@ -1261,6 +1262,7 @@ test('the hosted playground requires its deployment-owned user-assigned client i
       buildRelayConfig({
         CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.internal.example/execute',
         CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS: '["weather-mcp-discovery"]',
+        CITADEL_PLAYGROUND_AZURE_CLOUD: 'AzureCloud',
         CITADEL_PLAYGROUND_RELAY_RESOURCE: 'api://22222222-2222-4222-8222-222222222222',
         CITADEL_PLAYGROUND_RELAY_TOKEN_VERSION: '2',
         CITADEL_PLAYGROUND_RELAY_TOKEN_ISSUER: 'https://login.microsoftonline.com/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/v2.0',
@@ -1284,6 +1286,7 @@ test('the hosted playground permits only managed identity and one exact canonica
   const hosted = {
     CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.internal.example/execute',
     CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS: '["weather-mcp-discovery"]',
+    CITADEL_PLAYGROUND_AZURE_CLOUD: 'AzureCloud',
     CITADEL_PLAYGROUND_RELAY_RESOURCE: 'api://22222222-2222-4222-8222-222222222222',
     CITADEL_PLAYGROUND_RELAY_AUDIENCE: '22222222-2222-4222-8222-222222222222',
     CITADEL_PLAYGROUND_RELAY_TOKEN_VERSION: '2',
@@ -1871,6 +1874,7 @@ test('hosted relay capability and health fail closed on an incomplete v2 token c
     ...fakeRelay(),
     hosted: true,
     tokenContract: {
+      cloud: 'AzureCloud',
       version: 1,
       issuer: 'https://login.microsoftonline.com/11111111-1111-4111-8111-111111111111/v1.0',
       resource: 'api://22222222-2222-4222-8222-222222222222',

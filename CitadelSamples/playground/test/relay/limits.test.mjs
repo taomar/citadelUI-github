@@ -63,6 +63,11 @@ test('hosted relay limits reject unknown, malformed, out-of-range, and internall
 test('the hosted entrypoint wires every static environment limit to the enforcing layer', async () => {
   const server = buildHostedRelay({
     CITADEL_RELAY_ENTRA_AUTHENTICATED: 'true',
+    CITADEL_RELAY_AZURE_CLOUD: 'AzureCloud',
+    CITADEL_RELAY_ARM_CLOUD: 'AzureCloud',
+    CITADEL_RELAY_ARM_ENDPOINT: 'https://management.azure.com/',
+    CITADEL_RELAY_KEY_VAULT_RESOURCE: 'https://vault.azure.net',
+    CITADEL_RELAY_KEY_VAULT_DNS_SUFFIX: '.vault.azure.net',
     CITADEL_RELAY_TOKEN_VERSION: '2',
     CITADEL_RELAY_TOKEN_ISSUER: 'https://login.microsoftonline.com/11111111-1111-4111-8111-111111111111/v2.0',
     CITADEL_RELAY_TOKEN_RESOURCE: 'api://22222222-2222-4222-8222-222222222222',
@@ -74,7 +79,7 @@ test('the hosted entrypoint wires every static environment limit to the enforcin
     CITADEL_RELAY_ALLOWED_ORIGINS: '["https://gateway.example.test"]',
     CITADEL_RELAY_REQUEST_POLICY: '{}',
     CITADEL_RELAY_SECRET_MAPPINGS: '{}',
-    CITADEL_RELAY_KEY_VAULT_URI: 'https://vault.example.test',
+    CITADEL_RELAY_KEY_VAULT_URI: 'https://limits-test.vault.azure.net',
     CITADEL_RELAY_MANAGED_IDENTITY_CLIENT_ID: 'relay-client',
     CITADEL_RELAY_BODY_LIMIT_BYTES: '8192',
     CITADEL_RELAY_RUN_TIMEOUT_MS: '25000',

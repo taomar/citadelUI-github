@@ -10,8 +10,12 @@ import assert from 'node:assert/strict';
 
 import {
   createInMemorySecretProvider,
-  createKeyVaultSecretProvider,
+  createKeyVaultSecretProvider as createKeyVaultSecretProviderImpl,
 } from '../../src/relay/secretProvider.mjs';
+
+function createKeyVaultSecretProvider(options) {
+  return createKeyVaultSecretProviderImpl({ cloud: 'AzureCloud', ...options });
+}
 
 test('the in-memory provider resolves a configured ref and returns null for anything else', async () => {
   const provider = createInMemorySecretProvider({ 'gatewayAccess.apiKey': 'fixture-value' });
@@ -98,6 +102,68 @@ test('the Key Vault provider uses its own Container Apps identity environment wi
   assert.equal(calls[1].init.headers.Authorization, 'Bearer relay-key-vault-token');
 });
 
+test('the Key Vault provider selects the exact trusted resource and vault suffix for sovereign clouds', async () => {
+  for (const [cloud, vaultUrl, resource] of [
+    ['AzureUSGovernment', 'https://kv-government.vault.usgovcloudapi.net', 'https://vault.usgovcloudapi.net'],
+    ['AzureChinaCloud', 'https://kv-china.vault.azure.cn', 'https://vault.azure.cn'],
+  ]) {
+    const calls = [];
+    const provider = createKeyVaultSecretProviderImpl({
+      cloud,
+      mappings: { 'gatewayAccess.apiKey': { vaultUrl, secretName: 'gateway-key' } },
+      clientId: 'relay-user-assigned-id',
+      environment: {
+        IDENTITY_ENDPOINT: 'http://localhost:42356/msi/token',
+        IDENTITY_HEADER: 'relay-identity-header',
+      },
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init });
+        if (new URL(url).hostname === 'localhost') {
+          return {
+            ok: true,
+            json: async () => ({
+              access_token: 'relay-key-vault-token',
+              expires_on: Math.floor(Date.now() / 1000) + 3600,
+            }),
+          };
+        }
+        return { ok: true, json: async () => ({ value: 'resolved-secret-value' }) };
+      },
+    });
+
+    assert.equal(await provider.resolve('gatewayAccess.apiKey'), 'resolved-secret-value');
+    assert.equal(provider.resource, resource);
+    assert.equal(new URL(calls[0].url).searchParams.get('resource'), resource);
+    assert.equal(calls[1].url, `${vaultUrl}/secrets/gateway-key?api-version=7.4`);
+  }
+});
+
+test('the Key Vault provider rejects a caller-selected token audience and attacker vault URL', () => {
+  assert.throws(
+    () =>
+      createKeyVaultSecretProviderImpl({
+        cloud: 'AzureCloud',
+        resource: 'https://attacker.example',
+        mappings: {},
+      }),
+    /does not accept a caller-configured token resource/,
+  );
+  assert.throws(
+    () =>
+      createKeyVaultSecretProvider({
+        mappings: {
+          'gatewayAccess.apiKey': {
+            vaultUrl: 'https://kv-test.vault.azure.net.attacker.example',
+            secretName: 'gateway-key',
+          },
+        },
+        tokenProvider: { getToken: async () => 'kv-token' },
+        fetchImpl: async () => ({ ok: true, json: async () => ({ value: 'never' }) }),
+      }),
+    /ending in \.vault\.azure\.net/,
+  );
+});
+
 test('a non-OK Key Vault response resolves to null rather than throwing or leaking detail', async () => {
   const provider = createKeyVaultSecretProvider({
     mappings: { 'a.b': { vaultUrl: 'https://kv-test.vault.azure.net', secretName: 'x' } },
@@ -124,7 +190,7 @@ test('createKeyVaultSecretProvider requires a fetch implementation when globalTh
     assert.throws(
       () =>
         createKeyVaultSecretProvider({
-          mappings: { 'a.b': { vaultUrl: 'https://kv.example', secretName: 'x' } },
+          mappings: { 'a.b': { vaultUrl: 'https://kv-test.vault.azure.net', secretName: 'x' } },
           tokenProvider: { getToken: async () => 't' },
         }),
       /requires a fetch/,

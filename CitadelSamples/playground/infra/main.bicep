@@ -3,6 +3,14 @@ targetScope = 'resourceGroup'
 @description('Azure region for the user-assigned identities and Container Apps.')
 param location string = resourceGroup().location
 
+@description('Trusted Azure cloud profile. Must match the ARM cloud running this deployment.')
+@allowed([
+  'AzureCloud'
+  'AzureUSGovernment'
+  'AzureChinaCloud'
+])
+param azureCloud string
+
 @description('Existing Container Apps managed environment resource ID.')
 param managedEnvironmentId string
 
@@ -100,7 +108,33 @@ var relayEffectiveRequestTimeoutMs = min(relayRequestTimeoutMs, relayRunTimeoutM
 var acrPullRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
 var keyVaultSecretsUserRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
 var managedEnvironmentName = last(split(managedEnvironmentId, '/'))
-var relayTokenIssuer = '${environment().authentication.loginEndpoint}${entraTenantId}/v2.0'
+var azureCloudProfiles = {
+  AzureCloud: {
+    // These are trust anchors checked against environment(), not deployable endpoints inferred from it.
+    #disable-next-line no-hardcoded-env-urls
+    authority: 'https://login.microsoftonline.com'
+    #disable-next-line no-hardcoded-env-urls
+    resourceManager: 'https://management.azure.com/'
+    #disable-next-line no-hardcoded-env-urls
+    keyVaultResource: 'https://vault.azure.net'
+    #disable-next-line no-hardcoded-env-urls
+    keyVaultDnsSuffix: '.vault.azure.net'
+  }
+  AzureUSGovernment: {
+    authority: 'https://login.microsoftonline.us'
+    resourceManager: 'https://management.usgovcloudapi.net/'
+    keyVaultResource: 'https://vault.usgovcloudapi.net'
+    keyVaultDnsSuffix: '.vault.usgovcloudapi.net'
+  }
+  AzureChinaCloud: {
+    authority: 'https://login.chinacloudapi.cn'
+    resourceManager: 'https://management.chinacloudapi.cn'
+    keyVaultResource: 'https://vault.azure.cn'
+    keyVaultDnsSuffix: '.vault.azure.cn'
+  }
+}
+var azureCloudProfile = azureCloudProfiles[azureCloud]
+var relayTokenIssuer = '${azureCloudProfile.authority}/${entraTenantId}/v2.0'
 var hasHostedOperatorPlatformAllowlist = length(hostedOperatorPlatformAllowedPrincipalIds) > 0 || length(hostedOperatorPlatformAllowedGroupIds) > 0
 
 resource managedEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
@@ -225,6 +259,11 @@ resource relay 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'CITADEL_RELAY_PORT', value: '8080' }
             { name: 'CITADEL_RELAY_HOST', value: '0.0.0.0' }
             { name: 'CITADEL_RELAY_ENTRA_AUTHENTICATED', value: 'true' }
+            { name: 'CITADEL_RELAY_AZURE_CLOUD', value: azureCloud }
+            { name: 'CITADEL_RELAY_ARM_CLOUD', value: environment().name }
+            { name: 'CITADEL_RELAY_ARM_ENDPOINT', value: environment().resourceManager }
+            { name: 'CITADEL_RELAY_KEY_VAULT_RESOURCE', value: azureCloudProfile.keyVaultResource }
+            { name: 'CITADEL_RELAY_KEY_VAULT_DNS_SUFFIX', value: azureCloudProfile.keyVaultDnsSuffix }
             { name: 'CITADEL_RELAY_TOKEN_VERSION', value: string(relayRequestedAccessTokenVersion) }
             { name: 'CITADEL_RELAY_TOKEN_ISSUER', value: relayTokenIssuer }
             { name: 'CITADEL_RELAY_TOKEN_RESOURCE', value: relayTokenResource }
@@ -358,6 +397,7 @@ resource playground 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'CITADEL_PLAYGROUND_PORT', value: '8080' }
             { name: 'CITADEL_PLAYGROUND_HOST', value: '0.0.0.0' }
             { name: 'CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED', value: 'true' }
+            { name: 'CITADEL_PLAYGROUND_AZURE_CLOUD', value: azureCloud }
             { name: 'CITADEL_PLAYGROUND_ENTRA_TENANT_ID', value: entraTenantId }
             { name: 'CITADEL_PLAYGROUND_ENTRA_CLIENT_ID', value: playgroundEntraClientId }
             { name: 'CITADEL_PLAYGROUND_OPERATOR_REQUIRED_APP_ROLE', value: hostedOperatorRequiredAppRole }

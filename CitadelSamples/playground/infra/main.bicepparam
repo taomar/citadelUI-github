@@ -3,6 +3,7 @@ using './main.bicep'
 // Populate environment-specific values through an operator-owned parameter file
 // or CI secret store. No secret value belongs in this sample parameter file.
 param location = 'westeurope'
+param azureCloud = 'AzureCloud'
 param managedEnvironmentId = '/subscriptions/<subscription-id>/resourceGroups/<resource-group>/providers/Microsoft.App/managedEnvironments/<environment-name>'
 param containerRegistryName = '<registry-name>'
 param keyVaultName = '<key-vault-name>'
