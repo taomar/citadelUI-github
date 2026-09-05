@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 
+import { buildSamplePlan, getSample } from '../src/catalogue/index.mjs';
 import { createLocalExecutor } from '../src/server/localExecutor.mjs';
 import {
   resolveAzOperation,
@@ -12,6 +13,7 @@ import {
   createProcessEnvironment,
   spawnProcess,
 } from '../src/server/transports.mjs';
+import { makeFixtureReader } from './helpers/fixtures.mjs';
 
 const ROOT = resolve('.');
 const PYTHON_ROOT = resolve('runtime', 'python');
@@ -236,6 +238,70 @@ test('resolved bindings cannot turn a value position into an Azure CLI option', 
       ),
     /invalid Azure resource name/,
   );
+});
+
+test('the registry allows only the two reviewed Foundry role definition ids', () => {
+  const cases = [
+    ['Foundry Agent Consumer', 'eed3b665-ab3a-47b6-8f48-c9382fb1dad6'],
+    ['Azure AI User', '53ca6127-db72-4b80-b1b0-d745d6d5456d'],
+  ];
+  for (const [selection, roleDefinitionId] of cases) {
+    const { plan } = buildSamplePlan(
+      getSample('apim-foundry-grant'),
+      makeFixtureReader({ 'foundry.role': selection }),
+    );
+    const assign = plan.steps.find((step) => step.id === 'assign-role');
+    assert.equal(assign.command.args[assign.command.args.indexOf('--role') + 1], roleDefinitionId);
+    assert.doesNotThrow(() => resolveAzOperation('apim-foundry-grant', assign));
+    assert.doesNotThrow(() =>
+      validateResolvedAzArguments('apim-foundry-grant', assign.id, assign.command.args),
+    );
+  }
+
+  const { plan } = buildSamplePlan(getSample('apim-foundry-grant'), makeFixtureReader());
+  const assign = plan.steps.find((step) => step.id === 'assign-role');
+  const roleIndex = assign.command.args.indexOf('--role') + 1;
+  for (const smuggled of [
+    'Foundry Agent Consumer',
+    'Foundry User',
+    'Azure AI User',
+    'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    '--debug',
+  ]) {
+    const altered = {
+      ...assign,
+      command: {
+        ...assign.command,
+        args: assign.command.args.map((value, index) => (index === roleIndex ? smuggled : value)),
+      },
+    };
+    assert.throws(
+      () => resolveAzOperation('apim-foundry-grant', altered),
+      /approved Foundry role definition id/,
+      `${smuggled} must not pass the registry`,
+    );
+  }
+});
+
+test('the Foundry role readback query cannot omit definition ids or add options', () => {
+  const { plan } = buildSamplePlan(getSample('apim-foundry-grant'), makeFixtureReader());
+  const verify = plan.steps.find((step) => step.id === 'verify-assignment');
+  assert.doesNotThrow(() => resolveAzOperation('apim-foundry-grant', verify));
+  const queryIndex = verify.command.args.indexOf('--query') + 1;
+  for (const query of [
+    '[].{roleDefinitionName:roleDefinitionName, scope:scope}',
+    '[].{roleDefinitionName:roleDefinitionName, roleDefinitionId:roleDefinitionId, scope:scope} | [0]',
+    '--debug',
+  ]) {
+    const altered = {
+      ...verify,
+      command: {
+        ...verify.command,
+        args: verify.command.args.map((value, index) => (index === queryIndex ? query : value)),
+      },
+    };
+    assert.throws(() => resolveAzOperation('apim-foundry-grant', altered), /unapproved argument|complete approved/);
+  }
 });
 
 test('Python wrapper paths stay registry-owned when inputs carry path-like values', () => {

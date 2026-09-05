@@ -12,6 +12,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 import { CATALOGUE, SAMPLES, citedCodeCells, profilesFor } from '../src/catalogue/index.mjs';
+import { FOUNDRY_ROLE_DEFINITIONS } from '../src/core/foundryRoles.mjs';
 import { FIELD_CLASSIFICATIONS, GROUP_IDS, RISK_LEVELS, SOURCE_NOTEBOOK } from '../src/core/types.mjs';
 
 const NOTEBOOK_URL = new URL('../../citadel-publish-contract-tests.ipynb', import.meta.url);
@@ -181,6 +182,41 @@ test('the five shared profiles exist with classified fields', () => {
       }
     }
   }
+});
+
+test('the Foundry role selector advertises only the two reviewed built-in definitions', () => {
+  const roleField = CATALOGUE.profileById.get('foundry').fields.find((field) => field.name === 'role');
+  assert.equal(roleField.type, 'enum');
+  assert.equal(roleField.default, 'Foundry Agent Consumer');
+  assert.deepEqual(
+    roleField.options,
+    [
+      { value: 'Foundry Agent Consumer', label: 'Foundry Agent Consumer (least privilege)' },
+      { value: 'Azure AI User', label: 'Foundry User (formerly Azure AI User; broader data-plane access)' },
+    ],
+  );
+  assert.deepEqual(
+    FOUNDRY_ROLE_DEFINITIONS.map((role) => ({
+      selection: role.selection,
+      roleDefinitionName: role.roleDefinitionName,
+      acceptedRoleDefinitionNames: role.acceptedRoleDefinitionNames,
+      roleDefinitionId: role.roleDefinitionId,
+    })),
+    [
+      {
+        selection: 'Foundry Agent Consumer',
+        roleDefinitionName: 'Foundry Agent Consumer',
+        acceptedRoleDefinitionNames: ['Foundry Agent Consumer'],
+        roleDefinitionId: 'eed3b665-ab3a-47b6-8f48-c9382fb1dad6',
+      },
+      {
+        selection: 'Azure AI User',
+        roleDefinitionName: 'Foundry User',
+        acceptedRoleDefinitionNames: ['Foundry User', 'Azure AI User'],
+        roleDefinitionId: '53ca6127-db72-4b80-b1b0-d745d6d5456d',
+      },
+    ],
+  );
 });
 
 test('every profile a recipe declares exists, and every profile is used somewhere', () => {

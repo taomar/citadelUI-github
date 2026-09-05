@@ -12,6 +12,7 @@ import {
   foundryAgentPatchUrl,
   foundryProjectResourceId,
 } from '../../core/endpoints.mjs';
+import { foundryRoleDefinition } from '../../core/foundryRoles.mjs';
 import { generated, mandatory, optional } from '../requirements.mjs';
 import { LINKS } from '../profiles.mjs';
 
@@ -335,7 +336,7 @@ export const PREPARE_SAMPLES = [
     explanation: [
       'Three things happen in order. First the APIM identity is discovered, preferring a user-assigned identity over the system-assigned one, because a user-assigned identity can be shared and pre-granted. Second the Foundry project`s ARM id is composed, which is the account id plus `/projects/<project>` — the account may live in a different resource group from the hub, so it is looked up by name across the subscription. Third the role is assigned at project scope.',
       'The client id matters as much as the principal id. The principal id receives the role; the client id is passed to the publish contract as `managedIdentityClientId` so the generated backend embeds managed-identity auth using that specific identity. Leaving it empty makes the backend fall back to the system-assigned identity, which is only correct if that is the identity you granted.',
-      '`Foundry Agent Consumer` is the least-privilege choice and is the notebook`s default. `Azure AI User` is broader. Assigning either requires Owner or User Access Administrator on the project scope; a failure here is very often a permissions failure, not a wrong role name.',
+      '`Foundry Agent Consumer` (`eed3b665-ab3a-47b6-8f48-c9382fb1dad6`) is the least-privilege choice and is the notebook code`s default. The broader accelerator option `Azure AI User` is now named `Foundry User`; its unchanged role definition id is `53ca6127-db72-4b80-b1b0-d745d6d5456d`. The recipe passes these immutable ids to Azure CLI rather than mutable display names.',
       'Role assignment is eventually consistent. A grant made seconds before a deployment can still be invisible to the data plane for a short time, so a 403 immediately after this recipe is not proof that the grant failed.',
     ],
     flow: [
@@ -362,9 +363,10 @@ export const PREPARE_SAMPLES = [
       },
       {
         id: 'role-available',
-        title: 'The role name exists in your tenant',
-        detail: '`Foundry Agent Consumer` and `Azure AI User` are built-in, but availability tracks service rollout.',
-        howTo: 'List candidates with `az role definition list --query "[?contains(roleName, \'Foundry\')].roleName" -o tsv`.',
+        title: 'The selected role definition is reviewed',
+        detail:
+          '`Foundry Agent Consumer` is fixed to `eed3b665-ab3a-47b6-8f48-c9382fb1dad6`; `Foundry User` (formerly `Azure AI User`) is fixed to `53ca6127-db72-4b80-b1b0-d745d6d5456d`.',
+        howTo: 'Do not type or substitute a role name. Select one of the two catalogue choices, which bind the reviewed built-in role definition id.',
         links: [LINKS.foundryRbac],
       },
     ],
@@ -389,7 +391,11 @@ export const PREPARE_SAMPLES = [
       mandatory('hub.apimName', 'The API Management service whose identity is granted the Foundry role.'),
       mandatory('foundry.accountName', 'Looked up by name to resolve the account resource id the project scope is built from.'),
       mandatory('foundry.projectName', 'The role is assigned at `<accountId>/projects/<project>`, not at account scope.'),
-      optional('foundry.role', 'The built-in data-plane role granted.', 'Falls back to `Foundry Agent Consumer`, the least-privilege option.'),
+      optional(
+        'foundry.role',
+        'Selects one of two reviewed built-in data-plane role definitions.',
+        'Falls back to `Foundry Agent Consumer` (`eed3b665-ab3a-47b6-8f48-c9382fb1dad6`), the least-privilege option.',
+      ),
       generated(
         'foundry.apimIdentityPrincipalId',
         'The object id the assignment is made for.',
@@ -458,6 +464,7 @@ export const PREPARE_SAMPLES = [
     deviations: [
       'The notebook treats a failed role assignment as a warning and continues. This recipe reports it as a failure, because every later A2A recipe depends on it.',
       'The notebook does not verify the assignment after creating it. This recipe adds a read-back listing at the same scope so an "already exists" outcome is distinguishable from a silent failure.',
+      'The imported accelerator exposes the historical `Azure AI User` role name. Microsoft renamed that built-in role to `Foundry User` without changing its id, so this recipe keeps the source-facing selection but executes and verifies the immutable role definition id.',
     ],
     notes: [
       'Role assignments are eventually consistent. Allow a minute before concluding that a 403 from a gateway-routed A2A call means the grant did not land.',
@@ -468,7 +475,7 @@ export const PREPARE_SAMPLES = [
       const apimName = ctx.get('hub.apimName');
       const accountName = ctx.get('foundry.accountName');
       const projectName = ctx.get('foundry.projectName');
-      const role = ctx.get('foundry.role');
+      const role = foundryRoleDefinition(ctx.get('foundry.role'));
       const accountResourceId = ctx.get('foundry.accountResourceId');
       const principalId = ctx.get('foundry.apimIdentityPrincipalId');
       const subscriptionId = ctx.get('hub.subscriptionId');
@@ -559,7 +566,7 @@ export const PREPARE_SAMPLES = [
           step.cli({
             id: 'assign-role',
             title: 'Create the role assignment',
-            detail: 'Grants the APIM identity the chosen Foundry role at project scope.',
+            detail: `Grants the APIM identity ${role.roleDefinitionName} (${role.roleDefinitionId}) at project scope.`,
             command: {
               executable: 'az',
               args: [
@@ -571,7 +578,7 @@ export const PREPARE_SAMPLES = [
                 '--assignee-principal-type',
                 ctx.self('principalType'),
                 '--role',
-                role,
+                role.roleDefinitionId,
                 '--scope',
                 scope,
                 '--subscription',
@@ -579,7 +586,7 @@ export const PREPARE_SAMPLES = [
                 '-o',
                 'json',
               ],
-              note: 'Requires Owner or User Access Administrator at the scope. An identical existing assignment is reported as a conflict, not a new grant.',
+              note: `Requires Owner or User Access Administrator at the scope. The reviewed role definition is ${role.roleDefinitionName} (${role.roleDefinitionId}); an identical existing assignment is reported as a conflict, not a new grant.`,
             },
             produces: ['assignmentId'],
           }),
@@ -599,7 +606,7 @@ export const PREPARE_SAMPLES = [
                 '--scope',
                 scope,
                 '--query',
-                '[].{role:roleDefinitionName, scope:scope}',
+                '[].{roleDefinitionName:roleDefinitionName, roleDefinitionId:roleDefinitionId, scope:scope}',
                 '--subscription',
                 subscriptionId,
                 '-o',
@@ -615,10 +622,13 @@ export const PREPARE_SAMPLES = [
             assertion: {
               kind: 'role-assignment',
               source: '{{steps.verify-assignment.assignments}}',
-              expectedRole: role,
+              expectedRoleDefinitionName: role.roleDefinitionName,
+              expectedRoleDefinitionNames: role.acceptedRoleDefinitionNames,
+              expectedRoleDefinitionId: role.roleDefinitionId,
               expectedScope: scope,
               expectations: [
-                `An assignment with role "${role}" exists at the project scope.`,
+                `An assignment for ${role.roleDefinitionName} has role definition id ${role.roleDefinitionId}.`,
+                'The assignment exists at the exact Foundry project scope in the explicitly bound Hub subscription.',
                 'The client id is recorded for `managedIdentityClientId` when a user-assigned identity was used.',
               ],
             },

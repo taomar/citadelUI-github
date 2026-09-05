@@ -11,7 +11,7 @@ import { contractIdentifierSegments } from '../src/core/identifiers.mjs';
 import { STEP_TYPES } from '../src/core/types.mjs';
 import { serializePlan } from '../src/core/plan.mjs';
 import { previewPlan, previewSteps } from '../src/core/preview.mjs';
-import { FIXTURE_SECRETS, makeFixtureReader } from './helpers/fixtures.mjs';
+import { FIXTURE_SECRETS, FIXTURE_VALUES, makeFixtureReader } from './helpers/fixtures.mjs';
 
 const read = makeFixtureReader();
 const DEFAULT_IDENTIFIERS = contractIdentifierSegments({
@@ -21,6 +21,20 @@ const DEFAULT_IDENTIFIERS = contractIdentifierSegments({
 });
 const DEFAULT_CONTRACT_POSTFIX =
   `${DEFAULT_IDENTIFIERS.businessUnitId}-${DEFAULT_IDENTIFIERS.useCaseId}-${DEFAULT_IDENTIFIERS.environmentId}`;
+const FOUNDRY_ROLE_CASES = [
+  {
+    selection: 'Foundry Agent Consumer',
+    roleDefinitionName: 'Foundry Agent Consumer',
+    acceptedRoleDefinitionNames: ['Foundry Agent Consumer'],
+    roleDefinitionId: 'eed3b665-ab3a-47b6-8f48-c9382fb1dad6',
+  },
+  {
+    selection: 'Azure AI User',
+    roleDefinitionName: 'Foundry User',
+    acceptedRoleDefinitionNames: ['Foundry User', 'Azure AI User'],
+    roleDefinitionId: '53ca6127-db72-4b80-b1b0-d745d6d5456d',
+  },
+];
 
 function planFor(id, overrides = {}) {
   const sample = getSample(id);
@@ -207,6 +221,38 @@ test('golden: dropping the A2A asset removes it from the publish contract', () =
   assert.ok(content.includes("assetType: 'mcp-from-api'"));
   const assertion = plan.steps.find((step) => step.type === 'assertion');
   assert.ok(assertion.assertion.expectations.some((entry) => entry.includes('holds 2 entries')));
+});
+
+test('golden: both Foundry role choices bind exact definitions, scope, subscription, and readback', () => {
+  const scope = `${FIXTURE_VALUES['foundry.accountResourceId']}/projects/${FIXTURE_VALUES['foundry.projectName']}`;
+  for (const role of FOUNDRY_ROLE_CASES) {
+    const plan = planFor('apim-foundry-grant', { 'foundry.role': role.selection });
+    const assign = plan.steps.find((step) => step.id === 'assign-role');
+    assert.equal(assign.command.args[assign.command.args.indexOf('--role') + 1], role.roleDefinitionId);
+    assert.equal(assign.command.args[assign.command.args.indexOf('--scope') + 1], scope);
+    assert.equal(
+      assign.command.args[assign.command.args.indexOf('--subscription') + 1],
+      FIXTURE_VALUES['hub.subscriptionId'],
+    );
+    assert.equal(assign.command.args.includes(role.selection), false, 'the mutable selection name must not reach Azure CLI');
+
+    const verify = plan.steps.find((step) => step.id === 'verify-assignment');
+    assert.equal(verify.command.args[verify.command.args.indexOf('--scope') + 1], scope);
+    assert.equal(
+      verify.command.args[verify.command.args.indexOf('--query') + 1],
+      '[].{roleDefinitionName:roleDefinitionName, roleDefinitionId:roleDefinitionId, scope:scope}',
+    );
+    assert.equal(
+      verify.command.args[verify.command.args.indexOf('--subscription') + 1],
+      FIXTURE_VALUES['hub.subscriptionId'],
+    );
+
+    const assertion = plan.steps.find((step) => step.id === 'assert-grant').assertion;
+    assert.equal(assertion.expectedRoleDefinitionName, role.roleDefinitionName);
+    assert.deepEqual(assertion.expectedRoleDefinitionNames, role.acceptedRoleDefinitionNames);
+    assert.equal(assertion.expectedRoleDefinitionId, role.roleDefinitionId);
+    assert.equal(assertion.expectedScope, scope);
+  }
 });
 
 test('golden: the access contract classifies a mixed contract and generates both artefacts', () => {

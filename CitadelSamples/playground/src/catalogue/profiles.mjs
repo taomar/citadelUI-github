@@ -12,6 +12,8 @@
  *   secret          memory only, never persisted, previewed or copied
  */
 
+import { FOUNDRY_ROLE_OPTIONS } from '../core/foundryRoles.mjs';
+
 export const LINKS = Object.freeze({
   azAccountShow: {
     label: 'az account show',
@@ -38,8 +40,8 @@ export const LINKS = Object.freeze({
     href: 'https://learn.microsoft.com/en-us/cli/azure/role/assignment#az-role-assignment-create',
   },
   foundryRbac: {
-    label: 'Azure AI Foundry role-based access control',
-    href: 'https://learn.microsoft.com/en-us/azure/ai-foundry/concepts/rbac-azure-ai-foundry',
+    label: 'Microsoft Foundry role-based access control',
+    href: 'https://learn.microsoft.com/en-us/azure/foundry/concepts/rbac-foundry',
   },
   foundryA2a: {
     label: 'Enable the agent-to-agent (A2A) endpoint on a Foundry agent',
@@ -348,13 +350,11 @@ export const PROFILES = Object.freeze([
         type: 'enum',
         classification: 'sample-default',
         default: 'Foundry Agent Consumer',
-        options: [
-          { value: 'Foundry Agent Consumer', label: 'Foundry Agent Consumer (least privilege)' },
-          { value: 'Azure AI User', label: 'Azure AI User (broader data-plane access)' },
-        ],
-        help: 'Data-plane role granted to the APIM identity on the Foundry project so the published A2A backend can call the agent without keys.',
+        options: FOUNDRY_ROLE_OPTIONS,
+        help:
+          'Data-plane role granted to the APIM identity on the Foundry project so the published A2A backend can call the agent without keys. Each choice maps to one reviewed built-in role definition id; role names are never accepted as free-form command input.',
         howToObtain:
-          'Both roles are built-in. Assigning either needs Owner or User Access Administrator on the project. If the name is unavailable in your tenant, assign it in the portal instead.',
+          'Choose Foundry Agent Consumer for least privilege. The imported accelerator calls the broader option Azure AI User; Microsoft now displays the same unchanged role definition as Foundry User.',
         links: [LINKS.foundryRbac, LINKS.azRoleAssignmentCreate],
         notebookRef: 'cell 10 `foundry_role`',
       },

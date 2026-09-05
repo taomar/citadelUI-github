@@ -99,6 +99,25 @@ test('secret fields are password controls and never carry a model value', () => 
   assert.equal(secret.secretSet, true);
 });
 
+test('the Foundry role UI renders both reviewed choices and preserves either selection', () => {
+  const expectedOptions = [
+    { value: 'Foundry Agent Consumer', label: 'Foundry Agent Consumer (least privilege)' },
+    { value: 'Azure AI User', label: 'Foundry User (formerly Azure AI User; broader data-plane access)' },
+  ];
+  for (const selected of expectedOptions.map((option) => option.value)) {
+    const configure = buildConfigureModel({
+      sample: getSample('apim-foundry-grant'),
+      read: makeFixtureReader({ 'foundry.role': selected }),
+      hasSecret: () => true,
+    });
+    const contract = buildConfigureRenderContract(configure);
+    const role = contract.fields.find((field) => field.path === 'foundry.role');
+    assert.equal(role.inputType, 'select');
+    assert.equal(role.value, selected);
+    assert.deepEqual(role.options, expectedOptions);
+  }
+});
+
 test('duplicate field paths fail before a second canonical control can render', () => {
   const duplicate = {
     path: 'hub.subscriptionId',

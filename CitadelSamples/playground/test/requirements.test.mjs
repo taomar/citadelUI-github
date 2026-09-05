@@ -26,6 +26,8 @@ function perturb(field, current) {
   switch (field.type) {
     case 'boolean':
       return current === true ? false : true;
+    case 'enum':
+      return field.options?.find((option) => option.value !== current)?.value ?? 'zzz-perturbation-probe';
     case 'integer':
       return typeof current === 'number' && current === 4242 ? 9191 : 4242;
     case 'string-list':

@@ -160,6 +160,27 @@ test('Foundry account names cannot alter the credentialed PATCH origin', () => {
   }
 });
 
+test('Foundry role selection rejects names, ids, and options outside the reviewed enum', () => {
+  const sample = getSample('apim-foundry-grant');
+  for (const role of [
+    'Foundry User',
+    'Foundry Owner',
+    'eed3b665-ab3a-47b6-8f48-c9382fb1dad6',
+    'Foundry Agent Consumer --scope /subscriptions/attacker',
+    '--debug',
+  ]) {
+    const { plan, validation } = buildSamplePlan(sample, makeFixtureReader({ 'foundry.role': role }));
+    assert.equal(plan, null, `${role} must not produce a plan`);
+    assert.ok(
+      errorsOf(validation.issues).some((issue) => issue.path === 'foundry.role' && /must be one of/.test(issue.message)),
+      `${role} must be rejected by the enum gate`,
+    );
+  }
+  for (const role of ['Foundry Agent Consumer', 'Azure AI User']) {
+    assert.ok(buildSamplePlan(sample, makeFixtureReader({ 'foundry.role': role })).plan, `${role} must remain selectable`);
+  }
+});
+
 test('contract display labels reject controls before a plan or path is generated', () => {
   for (const path of ['policy.businessUnit', 'policy.useCaseName', 'policy.environment']) {
     const sample = getSample('access-contract-deploy');

@@ -14,6 +14,7 @@
  */
 
 import { extractToolCallText, extractToolNames, interpretJsonRpc, parseWeatherPayload } from '../core/parsing.mjs';
+import { normaliseRoleDefinitionId } from '../core/foundryRoles.mjs';
 import { isCompatibleMcpProtocolVersion } from '../core/types.mjs';
 
 const PASS = 'passed';
@@ -109,17 +110,27 @@ const EVALUATORS = {
     const assignments = readSource(assertion.source, outputs);
     if (!Array.isArray(assignments)) return outcome(UNKNOWN, 'The role-assignment listing was never produced.');
     const expectedScope = readSource(assertion.expectedScope, outputs) ?? assertion.expectedScope;
+    const expectedRoleDefinitionId = normaliseRoleDefinitionId(assertion.expectedRoleDefinitionId);
+    const expectedRoleDefinitionNames = Array.isArray(assertion.expectedRoleDefinitionNames)
+      ? assertion.expectedRoleDefinitionNames
+      : [assertion.expectedRoleDefinitionName].filter(Boolean);
     const match = assignments.find((assignment) => {
-      const role = assignment?.role ?? assignment?.roleDefinitionName;
-      return role === assertion.expectedRole && assignment?.scope === expectedScope;
+      const roleDefinitionName = assignment?.roleDefinitionName ?? assignment?.role;
+      const roleDefinitionId = normaliseRoleDefinitionId(assignment?.roleDefinitionId);
+      return (
+        roleDefinitionId === expectedRoleDefinitionId &&
+        expectedRoleDefinitionNames.includes(roleDefinitionName) &&
+        assignment?.scope === expectedScope
+      );
     });
     if (!match) {
       return outcome(
         FAIL,
-        `No assignment with role \`${assertion.expectedRole}\` exists at \`${expectedScope}\`.`,
+        `No assignment for \`${assertion.expectedRoleDefinitionName}\` (${expectedRoleDefinitionId}) exists at \`${expectedScope}\`.`,
         {
           observed: assignments.slice(0, 20).map((assignment) => ({
-            role: assignment?.role ?? assignment?.roleDefinitionName ?? '',
+            roleDefinitionName: assignment?.roleDefinitionName ?? assignment?.role ?? '',
+            roleDefinitionId: normaliseRoleDefinitionId(assignment?.roleDefinitionId),
             scope: assignment?.scope ?? '',
           })),
         },
@@ -127,8 +138,12 @@ const EVALUATORS = {
     }
     return outcome(
       PASS,
-      `Role \`${assertion.expectedRole}\` is assigned at the intended project scope.`,
-      { role: assertion.expectedRole, scope: expectedScope },
+      `Role \`${match.roleDefinitionName ?? match.role}\` (${expectedRoleDefinitionId}) is assigned at the intended project scope.`,
+      {
+        roleDefinitionName: match.roleDefinitionName ?? match.role,
+        roleDefinitionId: expectedRoleDefinitionId,
+        scope: expectedScope,
+      },
       step.produces?.[0] ? { [step.produces[0]]: true } : {},
     );
   },

@@ -409,6 +409,76 @@ test('MCP assertions independently reject a missing initialized notification', (
   });
 });
 
+test('role-assignment readback requires the exact reviewed id, name, and scope', () => {
+  const scope =
+    '/subscriptions/00000000-1111-2222-3333-444444444444/resourceGroups/rg/providers/Microsoft.CognitiveServices/accounts/aif/projects/proj';
+  const step = (expected, assignment) => {
+    const outputs = new Map([['verify.assignments', [assignment]]]);
+    return evaluateAssertion(
+      {
+        produces: ['granted'],
+        assertion: {
+          kind: 'role-assignment',
+          source: '{{steps.verify.assignments}}',
+          expectedScope: scope,
+          ...expected,
+        },
+      },
+      { outputs, stepResults: [] },
+    );
+  };
+
+  const consumer = {
+    expectedRoleDefinitionName: 'Foundry Agent Consumer',
+    expectedRoleDefinitionNames: ['Foundry Agent Consumer'],
+    expectedRoleDefinitionId: 'eed3b665-ab3a-47b6-8f48-c9382fb1dad6',
+  };
+  const foundryUser = {
+    expectedRoleDefinitionName: 'Foundry User',
+    expectedRoleDefinitionNames: ['Foundry User', 'Azure AI User'],
+    expectedRoleDefinitionId: '53ca6127-db72-4b80-b1b0-d745d6d5456d',
+  };
+
+  assert.equal(
+    step(consumer, {
+      roleDefinitionName: 'Foundry Agent Consumer',
+      roleDefinitionId:
+        '/subscriptions/00000000-1111-2222-3333-444444444444/providers/Microsoft.Authorization/roleDefinitions/eed3b665-ab3a-47b6-8f48-c9382fb1dad6',
+      scope,
+    }).status,
+    'passed',
+  );
+  for (const roleDefinitionName of ['Foundry User', 'Azure AI User']) {
+    assert.equal(
+      step(foundryUser, {
+        roleDefinitionName,
+        roleDefinitionId: '53ca6127-db72-4b80-b1b0-d745d6d5456d',
+        scope,
+      }).status,
+      'passed',
+    );
+  }
+  for (const assignment of [
+    {
+      roleDefinitionName: 'Foundry User',
+      roleDefinitionId: 'eed3b665-ab3a-47b6-8f48-c9382fb1dad6',
+      scope,
+    },
+    {
+      roleDefinitionName: 'Foundry Owner',
+      roleDefinitionId: '53ca6127-db72-4b80-b1b0-d745d6d5456d',
+      scope,
+    },
+    {
+      roleDefinitionName: 'Foundry User',
+      roleDefinitionId: '53ca6127-db72-4b80-b1b0-d745d6d5456d',
+      scope: `${scope}/agents/other`,
+    },
+  ]) {
+    assert.equal(step(foundryUser, assignment).status, 'failed');
+  }
+});
+
 test('the A2A recipe asserts on the JSON-RPC body, not only on the status', () => {
   const { plan } = buildSamplePlan(getSample('a2a-message-send'), makeFixtureReader());
   const send = plan.steps.find((step) => step.id === 'message-send');

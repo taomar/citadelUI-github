@@ -18,6 +18,8 @@
  * `runtime/python/`, never generated source.
  */
 
+import { isApprovedFoundryRoleDefinitionId } from '../core/foundryRoles.mjs';
+
 /** Trailing `-3` becomes `-*` so repeated steps share one registry entry. */
 export function normaliseStepId(stepId) {
   return String(stepId).replace(/-\d+$/, '-*');
@@ -71,6 +73,11 @@ const usageMetricsQuery = argument('bounded usage-metrics KQL query', (value) =>
 const principalId = argument(
   'principal id',
   (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value),
+);
+const foundryRoleDefinitionId = argument(
+  'approved Foundry role definition id',
+  (value) => isApprovedFoundryRoleDefinitionId(value),
+  { allowStepBinding: false },
 );
 const subscriptionId = argument(
   'Azure subscription id',
@@ -312,7 +319,7 @@ export const AZ_OPERATIONS = Object.freeze({
       '--assignee-principal-type',
       'ServicePrincipal',
       '--role',
-      'Foundry Agent Consumer',
+      foundryRoleDefinitionId,
       '--scope',
       armResourceId,
       '--subscription',
@@ -324,7 +331,12 @@ export const AZ_OPERATIONS = Object.freeze({
     summary: 'Create the role assignment.',
     map: (data) => ({
       outputs: { assignmentId: data?.id ?? '' },
-      evidence: { assignmentId: data?.id ?? '', role: data?.roleDefinitionName ?? '', scope: data?.scope ?? '' },
+      evidence: {
+        assignmentId: data?.id ?? '',
+        roleDefinitionName: data?.roleDefinitionName ?? '',
+        roleDefinitionId: data?.roleDefinitionId ?? '',
+        scope: data?.scope ?? '',
+      },
     }),
   },
 
@@ -341,7 +353,7 @@ export const AZ_OPERATIONS = Object.freeze({
       '--scope',
       armResourceId,
       '--query',
-      '[].{role:roleDefinitionName, scope:scope}',
+      '[].{roleDefinitionName:roleDefinitionName, roleDefinitionId:roleDefinitionId, scope:scope}',
       '--subscription',
       subscriptionId,
       '-o',

@@ -277,58 +277,108 @@ test('two candidate services stop the recipe rather than adopting the first', as
   assert.equal(spawn.calls.some((call) => call.args[1] === 'show'), false, 'no service may be read after ambiguous selection');
 });
 
-test('a single discovered identity and account scope feed the role-assignment commands', async () => {
-  const principalId = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
-  const clientId = '22222222-3333-4444-5555-666666666666';
-  const accountId =
-    '/subscriptions/00000000-1111-2222-3333-444444444444/resourceGroups/rg-foundry/providers/Microsoft.CognitiveServices/accounts/aif-citadel-test';
-  const spawn = fakeSpawn([
-    {
-      match: (options) => options.args.slice(0, 2).join(' ') === 'apim show',
-      result: {
-        code: 0,
-        stdout: JSON.stringify({
-          type: 'UserAssigned',
-          userAssignedIdentities: {
-            '/subscriptions/x/resourceGroups/y/providers/Microsoft.ManagedIdentity/userAssignedIdentities/test': {
-              principalId,
-              clientId,
+for (const role of [
+  {
+    selection: 'Foundry Agent Consumer',
+    roleDefinitionName: 'Foundry Agent Consumer',
+    roleDefinitionId: 'eed3b665-ab3a-47b6-8f48-c9382fb1dad6',
+  },
+  {
+    selection: 'Azure AI User',
+    roleDefinitionName: 'Foundry User',
+    roleDefinitionId: '53ca6127-db72-4b80-b1b0-d745d6d5456d',
+  },
+]) {
+  test(`a discovered identity receives the reviewed ${role.roleDefinitionName} definition`, async () => {
+    const principalId = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+    const clientId = '22222222-3333-4444-5555-666666666666';
+    const accountId =
+      '/subscriptions/00000000-1111-2222-3333-444444444444/resourceGroups/rg-foundry/providers/Microsoft.CognitiveServices/accounts/aif-citadel-test';
+    const projectScope = `${accountId}/projects/proj-citadel-test`;
+    const spawn = fakeSpawn([
+      {
+        match: (options) => options.args.slice(0, 2).join(' ') === 'apim show',
+        result: {
+          code: 0,
+          stdout: JSON.stringify({
+            type: 'UserAssigned',
+            userAssignedIdentities: {
+              '/subscriptions/x/resourceGroups/y/providers/Microsoft.ManagedIdentity/userAssignedIdentities/test': {
+                principalId,
+                clientId,
+              },
             },
-          },
-        }),
+          }),
+        },
       },
-    },
-    {
-      match: (options) => options.args.slice(0, 3).join(' ') === 'cognitiveservices account list',
-      result: { code: 0, stdout: accountId },
-    },
-    {
-      match: (options) => options.args.slice(0, 3).join(' ') === 'role assignment create',
-      result: { code: 0, stdout: JSON.stringify({ id: 'assignment-1' }) },
-    },
-    {
-      match: (options) => options.args.slice(0, 3).join(' ') === 'role assignment list',
-      result: {
-        code: 0,
-        stdout: JSON.stringify([{ role: 'Foundry Agent Consumer', scope: `${accountId}/projects/proj-citadel-test` }]),
+      {
+        match: (options) => options.args.slice(0, 3).join(' ') === 'cognitiveservices account list',
+        result: { code: 0, stdout: accountId },
       },
-    },
-  ]);
-  const { result, transports } = await run('apim-foundry-grant', {
-    spawn,
-    overrides: {
-      'foundry.apimIdentityPrincipalId': '',
-      'foundry.apimIdentityClientId': '',
-      'foundry.accountResourceId': '',
-    },
+      {
+        match: (options) => options.args.slice(0, 3).join(' ') === 'role assignment create',
+        result: {
+          code: 0,
+          stdout: JSON.stringify({
+            id: 'assignment-1',
+            roleDefinitionName: role.roleDefinitionName,
+            roleDefinitionId: role.roleDefinitionId,
+            scope: projectScope,
+          }),
+        },
+      },
+      {
+        match: (options) => options.args.slice(0, 3).join(' ') === 'role assignment list',
+        result: {
+          code: 0,
+          stdout: JSON.stringify([
+            {
+              roleDefinitionName: role.roleDefinitionName,
+              roleDefinitionId: `/subscriptions/00000000-1111-2222-3333-444444444444/providers/Microsoft.Authorization/roleDefinitions/${role.roleDefinitionId}`,
+              scope: projectScope,
+            },
+          ]),
+        },
+      },
+    ]);
+    const { result, transports } = await run('apim-foundry-grant', {
+      spawn,
+      overrides: {
+        'foundry.role': role.selection,
+        'foundry.apimIdentityPrincipalId': '',
+        'foundry.apimIdentityClientId': '',
+        'foundry.accountResourceId': '',
+      },
+    });
+    assert.equal(result.state, 'completed');
+    const create = transports.spawn.calls.find((call) => call.args.slice(0, 3).join(' ') === 'role assignment create');
+    assert.equal(create.args[create.args.indexOf('--assignee-object-id') + 1], principalId);
+    assert.equal(create.args[create.args.indexOf('--role') + 1], role.roleDefinitionId);
+    assert.equal(create.args[create.args.indexOf('--scope') + 1], projectScope);
+    assert.equal(
+      create.args[create.args.indexOf('--subscription') + 1],
+      FIXTURE_VALUES['hub.subscriptionId'],
+    );
+    const verify = transports.spawn.calls.find((call) => call.args.slice(0, 3).join(' ') === 'role assignment list');
+    assert.equal(
+      verify.args[verify.args.indexOf('--query') + 1],
+      '[].{roleDefinitionName:roleDefinitionName, roleDefinitionId:roleDefinitionId, scope:scope}',
+    );
+    assert.deepEqual(result.steps.find((step) => step.id === 'assign-role').evidence, {
+      assignmentId: 'assignment-1',
+      roleDefinitionName: role.roleDefinitionName,
+      roleDefinitionId: role.roleDefinitionId,
+      scope: projectScope,
+    });
+    assert.equal(result.configurationUpdates['foundry.apimIdentityPrincipalId'], principalId);
+    assert.equal(result.configurationUpdates['foundry.apimIdentityClientId'], clientId);
+    assert.deepEqual(result.assertions.find((assertion) => assertion.id === 'assert-grant').evidence, {
+      roleDefinitionName: role.roleDefinitionName,
+      roleDefinitionId: role.roleDefinitionId,
+      scope: projectScope,
+    });
   });
-  assert.equal(result.state, 'completed');
-  const create = transports.spawn.calls.find((call) => call.args.slice(0, 3).join(' ') === 'role assignment create');
-  assert.equal(create.args[create.args.indexOf('--assignee-object-id') + 1], principalId);
-  assert.equal(create.args[create.args.indexOf('--scope') + 1], `${accountId}/projects/proj-citadel-test`);
-  assert.equal(result.configurationUpdates['foundry.apimIdentityPrincipalId'], principalId);
-  assert.equal(result.configurationUpdates['foundry.apimIdentityClientId'], clientId);
-});
+}
 
 test('Application Insights selection feeds the metrics query and later configuration', async () => {
   const spawn = fakeSpawn([
