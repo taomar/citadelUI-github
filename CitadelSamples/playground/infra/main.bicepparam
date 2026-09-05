@@ -11,7 +11,8 @@ param relayImage = '<registry-login-server>/citadel-relay:<immutable-tag>'
 param entraTenantId = '<tenant-id>'
 param playgroundEntraClientId = '<playground-app-id>'
 param relayEntraClientId = '<relay-app-id>'
-param relayTokenAudience = 'api://<relay-app-id>'
+param relayTokenResource = 'api://<relay-app-id>'
+param relayRequestedAccessTokenVersion = 2
 param relayAllowedOrigins = [
   'https://<apim-gateway-host>'
 ]

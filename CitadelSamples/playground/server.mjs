@@ -54,6 +54,12 @@ import {
 } from './src/relay/principalAuth.mjs';
 import { parseRelayAllowedSampleIds, rebuildRelayPlan, validateExecuteRequest } from './src/relay/requestSchema.mjs';
 import { mintAcknowledgement, planRequestUrls } from './src/relay/acknowledgement.mjs';
+import {
+  readRelayTokenContract,
+  relayTokenConfigurationError,
+  RelayTokenConfigurationError,
+  validateRelayTokenContract,
+} from './src/relay/tokenContract.mjs';
 import { runSelfTest, SELF_TEST_SCENARIO, validateSelfTestRequest } from './src/server/selfTest.mjs';
 import {
   createLocalSessionAuth,
@@ -141,17 +147,40 @@ export function buildRelayConfig(env = process.env) {
   if (url === '') return Object.freeze({ enabled: false });
 
   const authMode = env.CITADEL_PLAYGROUND_RELAY_AUTH_MODE ?? 'managed-identity';
+  const trustedEntraProxy = env.CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED === 'true';
+  if (trustedEntraProxy && authMode !== 'managed-identity') {
+    throw new RelayTokenConfigurationError(
+      'CITADEL_PLAYGROUND_RELAY_AUTH_MODE must be exactly managed-identity for the hosted playground.',
+    );
+  }
+  const tokenContract = trustedEntraProxy
+    ? readRelayTokenContract(env, {
+        version: 'CITADEL_PLAYGROUND_RELAY_TOKEN_VERSION',
+        issuer: 'CITADEL_PLAYGROUND_RELAY_TOKEN_ISSUER',
+        resource: 'CITADEL_PLAYGROUND_RELAY_RESOURCE',
+        audience: 'CITADEL_PLAYGROUND_RELAY_AUDIENCE',
+        tenantId: 'CITADEL_PLAYGROUND_RELAY_TENANT',
+        clientId: 'CITADEL_PLAYGROUND_RELAY_ENTRA_CLIENT_ID',
+      })
+    : null;
+  if (
+    tokenContract &&
+    env.CITADEL_PLAYGROUND_ENTRA_TENANT_ID !== tokenContract.tenantId
+  ) {
+    throw new RelayTokenConfigurationError(
+      'CITADEL_PLAYGROUND_ENTRA_TENANT_ID must exactly match CITADEL_PLAYGROUND_RELAY_TENANT.',
+    );
+  }
   const credentialProvider =
     authMode === 'static-token'
       ? createStaticTokenCredentialProvider({ token: env.CITADEL_PLAYGROUND_RELAY_TOKEN ?? '' })
       : createManagedIdentityCredentialProvider({
-          resource: env.CITADEL_PLAYGROUND_RELAY_RESOURCE ?? url,
+          resource: tokenContract?.resource ?? env.CITADEL_PLAYGROUND_RELAY_RESOURCE ?? url,
           clientId: env.CITADEL_PLAYGROUND_RELAY_CLIENT_ID || undefined,
           environment: env,
         });
 
   const executeToken = env.CITADEL_PLAYGROUND_EXECUTE_TOKEN ?? '';
-  const trustedEntraProxy = env.CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED === 'true';
   if (
     authMode === 'managed-identity' &&
     trustedEntraProxy &&
@@ -163,7 +192,7 @@ export function buildRelayConfig(env = process.env) {
   // Fail closed: a non-loopback bind with nothing configured refuses every
   // `/api/execute` caller rather than accepting them all.
   const authenticator = trustedEntraProxy
-    ? createContainerAppsEntraAuthenticator({ tenantId: env.CITADEL_PLAYGROUND_ENTRA_TENANT_ID ?? '' })
+    ? createContainerAppsEntraAuthenticator({ tenantId: tokenContract.tenantId })
     : executeToken
       ? createSharedSecretAuthenticator({ token: executeToken })
       : createDenyAllAuthenticator();
@@ -173,7 +202,7 @@ export function buildRelayConfig(env = process.env) {
   // relay that now requires a non-empty caller/tenant on every binding would
   // otherwise reject every forwarded request outright.
   const callerPrincipal = env.CITADEL_PLAYGROUND_RELAY_CALLER_PRINCIPAL || 'citadel-playground-proxy';
-  const tenant = env.CITADEL_PLAYGROUND_RELAY_TENANT || 'default-tenant';
+  const tenant = tokenContract?.tenantId ?? (env.CITADEL_PLAYGROUND_RELAY_TENANT || 'default-tenant');
   const allowedSampleIds = parseRelayAllowedSampleIds(
     env.CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS,
     CATALOGUE,
@@ -190,10 +219,26 @@ export function buildRelayConfig(env = process.env) {
     allowedSampleIds,
     callerPrincipal,
     tenant,
+    hosted: trustedEntraProxy,
+    tokenContract,
   });
 }
 
-const DEFAULT_RELAY_CONFIG = buildRelayConfig();
+function buildDefaultRelayConfig(env = process.env) {
+  try {
+    return buildRelayConfig(env);
+  } catch (error) {
+    if (!(error instanceof RelayTokenConfigurationError)) throw error;
+    return Object.freeze({
+      enabled: true,
+      hosted: true,
+      allowedSampleIds: Object.freeze([]),
+      configurationError: relayTokenConfigurationError(error),
+    });
+  }
+}
+
+const DEFAULT_RELAY_CONFIG = buildDefaultRelayConfig();
 const DEFAULT_PUBLIC_ORIGIN = parseTrustedPublicOrigin(process.env.CITADEL_PLAYGROUND_PUBLIC_ORIGIN);
 
 const MIME = new Map(
@@ -349,17 +394,27 @@ export function capabilitiesPayload({
   sessionAuth = { required: false, state: 'not-required', claimEndpoint: null, message: '' },
 } = {}) {
   const capability = summariseCapability(CATALOGUE.samples, { ...probe, mode });
+  const relayStatus = relayConfigurationStatus(relay);
   const sessionReady = sessionAuth.required !== true || sessionAuth.state === 'claimed';
   const azureControlsAvailable =
     mode === 'execute' && allowSystemAzureLogin === true && sessionReady && relay.enabled !== true;
   const secureLaunchMessage = sessionAuth.message || 'Open the secure launch URL shown in the terminal.';
   return {
-    status: 'ok',
+    status: relayStatus.ok ? 'ok' : 'error',
+    ...(relayStatus.ok ? {} : { code: relayStatus.code, detail: relayStatus.detail }),
     application: 'citadel-publish-playground',
     protocolVersion: EXECUTION_PROTOCOL_VERSION,
     mode,
     capability,
-    executor: !sessionReady
+    executor: !relayStatus.ok
+      ? {
+          kind: 'unavailable',
+          canExecute: false,
+          endpoint: null,
+          supportedStepTypes: [],
+          reason: relayStatus.detail,
+        }
+      : !sessionReady
       ? {
           kind: 'unavailable',
           canExecute: false,
@@ -446,6 +501,18 @@ export function capabilitiesPayload({
       }),
     }),
   };
+}
+
+export function relayConfigurationStatus(relay) {
+  if (!relay?.enabled || relay.hosted !== true) return Object.freeze({ ok: true });
+  if (relay.configurationError) return Object.freeze({ ok: false, ...relay.configurationError });
+  try {
+    validateRelayTokenContract(relay.tokenContract);
+    return Object.freeze({ ok: true });
+  } catch (error) {
+    if (!(error instanceof RelayTokenConfigurationError)) throw error;
+    return Object.freeze({ ok: false, ...relayTokenConfigurationError(error) });
+  }
 }
 
 function send(response, status, headers, body) {
@@ -646,6 +713,16 @@ async function handleExecute(request, response, { port, host, browserHost, publi
       summary: 'Not run — no relay is configured on this server.',
       detail:
         'Set CITADEL_PLAYGROUND_RELAY_URL to attach an approved execution relay, or start the server with `npm run start:execute` to use the local executor instead.',
+    });
+    return;
+  }
+  const relayStatus = relayConfigurationStatus(relay);
+  if (!relayStatus.ok) {
+    sendJson(response, 503, {
+      state: 'blocked',
+      summary: 'Not run - hosted relay authentication configuration is invalid.',
+      code: relayStatus.code,
+      detail: relayStatus.detail,
     });
     return;
   }
@@ -1421,33 +1498,39 @@ export function createPlaygroundServer({
         return;
       }
 
+      if (path === '/api/live') {
+        if (request.method !== 'GET') {
+          sendJson(response, 405, { status: 'error', detail: 'Use GET.' });
+          return;
+        }
+        sendJson(response, 200, { status: 'ok' });
+        return;
+      }
+
       if (path === '/api/health' || path === '/api/capabilities') {
         if (request.method !== 'GET') {
           sendJson(response, 405, { status: 'error', detail: 'Use GET.' });
           return;
         }
-        sendJson(
-          response,
-          200,
-          capabilitiesPayload({
-            mode,
-            probe: runtimeProbe,
-            relay,
-            allowSystemAzureLogin:
-              allowSystemAzureLogin === true &&
-              mode === 'execute' &&
-              isLoopbackHost(host) &&
-              relay.enabled !== true,
-            sessionAuth:
-              localSessionAuth?.describe(request) ??
-              Object.freeze({
-                required: false,
-                state: 'not-required',
-                claimEndpoint: null,
-                message: '',
-              }),
-          }),
-        );
+        const payload = capabilitiesPayload({
+          mode,
+          probe: runtimeProbe,
+          relay,
+          allowSystemAzureLogin:
+            allowSystemAzureLogin === true &&
+            mode === 'execute' &&
+            isLoopbackHost(host) &&
+            relay.enabled !== true,
+          sessionAuth:
+            localSessionAuth?.describe(request) ??
+            Object.freeze({
+              required: false,
+              state: 'not-required',
+              claimEndpoint: null,
+              message: '',
+            }),
+        });
+        sendJson(response, payload.status === 'ok' ? 200 : 503, payload);
         return;
       }
 
@@ -1716,7 +1799,12 @@ if (invokedDirectly) {
       process.stdout.write('Run `npm run start:execute` to attach the local executor.\n');
     }
     if (DEFAULT_RELAY_CONFIG.enabled) {
-      process.stdout.write(`Execution relay: ${DEFAULT_RELAY_CONFIG.url}\n`);
+      const relayStatus = relayConfigurationStatus(DEFAULT_RELAY_CONFIG);
+      process.stdout.write(
+        relayStatus.ok
+          ? `Execution relay: ${DEFAULT_RELAY_CONFIG.url}\n`
+          : `Execution relay unavailable: ${relayStatus.detail}\n`,
+      );
     }
   });
   const shutdown = createSignalShutdownHandler(server);

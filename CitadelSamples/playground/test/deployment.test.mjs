@@ -20,7 +20,10 @@ test('Container Apps deployment keeps public playground and relay boundaries exp
   assert.match(bicep, /resource playgroundAuth 'Microsoft\.App\/containerApps\/authConfigs/);
   assert.match(bicep, /unauthenticatedClientAction: 'Return401'/);
   assert.match(bicep, /unauthenticatedClientAction: 'RedirectToLoginPage'/);
-  assert.match(bicep, /allowedAudiences:[\s\S]*relayTokenAudience/);
+  assert.match(bicep, /allowedAudiences:[\s\S]*relayEntraClientId/);
+  assert.match(bicep, /param relayRequestedAccessTokenVersion int/);
+  assert.match(bicep, /@allowed\(\[\s*2\s*\]\)/);
+  assert.match(bicep, /openIdIssuer: relayTokenIssuer/);
 });
 
 test('deployment grants only image pull and relay Key Vault secret read access', async () => {
@@ -29,7 +32,7 @@ test('deployment grants only image pull and relay Key Vault secret read access',
   assert.match(bicep, /4633458b-17de-408a-b874-0445c86b69e6/);
   assert.match(bicep, /resource relayKeyVaultSecretsUser/);
   assert.doesNotMatch(bicep, /\b(Contributor|Owner)\b/);
-  assert.doesNotMatch(bicep, /CITADEL_PLAYGROUND_RELAY_TOKEN|CITADEL_PLAYGROUND_EXECUTE_TOKEN/);
+  assert.doesNotMatch(bicep, /name: 'CITADEL_PLAYGROUND_RELAY_TOKEN'|CITADEL_PLAYGROUND_EXECUTE_TOKEN/);
   assert.doesNotMatch(bicep, /secretRef\(|clientSecret|password/i);
 });
 
@@ -43,11 +46,20 @@ test('deployment passes managed-identity service authentication and exact relay 
   ]);
   for (const name of [
     'CITADEL_PLAYGROUND_RELAY_RESOURCE',
+    'CITADEL_PLAYGROUND_RELAY_AUDIENCE',
+    'CITADEL_PLAYGROUND_RELAY_TOKEN_VERSION',
+    'CITADEL_PLAYGROUND_RELAY_TOKEN_ISSUER',
+    'CITADEL_PLAYGROUND_RELAY_ENTRA_CLIENT_ID',
     'CITADEL_PLAYGROUND_RELAY_CLIENT_ID',
     'CITADEL_PLAYGROUND_RELAY_CALLER_PRINCIPAL',
     'CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS',
     'CITADEL_PLAYGROUND_PUBLIC_ORIGIN',
     'CITADEL_RELAY_ALLOWED_ORIGINS',
+    'CITADEL_RELAY_TOKEN_VERSION',
+    'CITADEL_RELAY_TOKEN_ISSUER',
+    'CITADEL_RELAY_TOKEN_RESOURCE',
+    'CITADEL_RELAY_TOKEN_AUDIENCE',
+    'CITADEL_RELAY_ENTRA_CLIENT_ID',
     'CITADEL_RELAY_ALLOWED_SAMPLE_IDS',
     'CITADEL_RELAY_REQUEST_POLICY',
     'CITADEL_RELAY_SECRET_MAPPINGS',
@@ -60,7 +72,9 @@ test('deployment passes managed-identity service authentication and exact relay 
   ]) {
     assert.match(bicep, new RegExp(name));
   }
-  assert.match(bicep, /relayTokenAudience/);
+  assert.match(bicep, /relayTokenResource/);
+  assert.match(bicep, /CITADEL_RELAY_TOKEN_AUDIENCE', value: relayEntraClientId/);
+  assert.match(bicep, /CITADEL_PLAYGROUND_RELAY_AUDIENCE', value: relayEntraClientId/);
   assert.match(bicep, /CITADEL_RELAY_ENTRA_AUTHENTICATED', value: 'true'/);
   assert.match(bicep, /CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED', value: 'true'/);
   assert.match(
@@ -84,6 +98,10 @@ test('deployment passes managed-identity service authentication and exact relay 
   assert.match(deploymentGuide, /`IDENTITY_ENDPOINT`/);
   assert.match(deploymentGuide, /`IDENTITY_HEADER`/);
   assert.match(deploymentGuide, /Partial or malformed injection fails/);
+  assert.match(deploymentGuide, /"requestedAccessTokenVersion": 2/);
+  assert.match(deploymentGuide, /relay-token-configuration-invalid/);
+  assert.match(deploymentGuide, /npm run check:relay-app/);
+  assert.match(await read('infra/main.bicepparam'), /relayRequestedAccessTokenVersion = 2/);
 });
 
 test('the example Weather MCP request policy names and authorizes the canonical rebuilt plan exactly', async () => {
@@ -124,10 +142,13 @@ test('Container Apps probes match implemented health endpoints and constrain res
     read('server.mjs'),
     read('src/relay/server.mjs'),
   ]);
+  assert.match(bicep, /path: '\/api\/live'/);
   assert.match(bicep, /path: '\/api\/health'/);
-  assert.match(bicep, /path: '\/healthz'/);
+  assert.match(bicep, /path: '\/livez'/);
   assert.match(bicep, /path: '\/readyz'/);
+  assert.match(playground, /path === '\/api\/live'/);
   assert.match(playground, /path === '\/api\/health'/);
+  assert.match(relay, /requestPath === '\/livez'/);
   assert.match(relay, /requestPath === '\/healthz' \|\| requestPath === '\/readyz'/);
   assert.match(bicep, /cpu: json\('0\.5'\)/);
   assert.match(bicep, /memory: '1Gi'/);

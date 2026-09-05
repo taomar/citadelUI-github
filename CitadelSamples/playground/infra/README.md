@@ -8,10 +8,12 @@ managed environment, registry, and Key Vault in the same resource group:
 | `citadel-playground` | Public (`external: true`) | Container Apps Entra auth requires sign-in. Its user-assigned identity gets only `AcrPull` and requests short-lived tokens for the relay. |
 | `citadel-relay` | Internal (`external: false`) | Container Apps Entra auth accepts only the configured relay audience. Its separate user-assigned identity gets `AcrPull` and Key Vault Secrets User on the configured vault. |
 
-The relay never receives a static shared token. The playground acquires a
-managed-identity token for `relayTokenAudience`; the relay's Entra middleware
-validates it before the process reads the trusted principal header and permits
-only the playground identity's exact principal ID.
+The relay never receives a static shared token. The playground requests a
+managed-identity token for `relayTokenResource` (`api://<relay-app-id>`). A v2
+access token carries the relay application's client-ID GUID in `aud`, so the
+relay's Entra middleware validates `relayEntraClientId`, not the resource URI,
+before the process reads the trusted principal header and permits only the
+playground identity's exact principal ID.
 
 ## Required parameters
 
@@ -34,10 +36,46 @@ copied from an older endpoint shape. The example authorizes the canonical
 values. The existing vault URI is supplied from its resource, and the relay
 resolves values with its assigned identity at runtime.
 
-The Entra applications and application ID URI must already exist. Configure the
-relay application to expose `relayTokenAudience` and allow the playground
-identity to request it. Container Apps authentication is the trusted proxy
-boundary for both apps; never set `CITADEL_PLAYGROUND_EXECUTE_TOKEN`,
+The Entra applications and application ID URI must already exist; this ARM
+template cannot provision or inspect Microsoft Graph application objects.
+The relay resource application must expose the exact
+`relayTokenResource` value `api://<relayEntraClientId>` and its manifest must
+contain the numeric value:
+
+```json
+{
+  "api": {
+    "requestedAccessTokenVersion": 2
+  }
+}
+```
+
+`null`, an omitted value, or `1` is invalid: managed identity then receives a v1
+access token while the Container Apps verifier is pinned to the exact
+tenant-specific v2 issuer. `relayRequestedAccessTokenVersion` is therefore a
+required Bicep parameter whose only accepted value is `2`; it declares the
+validated external prerequisite rather than silently assuming it.
+
+Export the relay application object to a local JSON file, then run the offline
+preflight before deployment. The checker makes no Azure or Graph call:
+
+```powershell
+npm run check:relay-app -- --manifest .\relay-app-registration.json `
+  --tenant-id '<tenant-id>' `
+  --client-id '<relay-app-id>' `
+  --resource 'api://<relay-app-id>' `
+  --audience '<relay-app-id>' `
+  --issuer 'https://login.microsoftonline.com/<tenant-id>/v2.0'
+```
+
+The preflight rejects a missing/default/v1 requested token version, a different
+app ID or identifier URI, non-lowercase or malformed GUIDs, a resource/audience
+mix-up, and any issuer that is not the exact supported-cloud tenant-specific
+`/v2.0` issuer. The checker accepts UTF-8 with or without a BOM and the UTF-16
+JSON files commonly written by Windows PowerShell. After it passes, allow the
+playground identity to request the exposed API. Container Apps authentication
+is the trusted signature/JWKS boundary for both apps; never set
+`CITADEL_PLAYGROUND_EXECUTE_TOKEN`,
 `CITADEL_PLAYGROUND_RELAY_TOKEN`, or
 `CITADEL_PLAYGROUND_RELAY_AUTH_MODE=static-token` in this deployment.
 
@@ -49,6 +87,11 @@ The Bicep is the deployment authority. The hosted relay rejects startup unless
 | Relay variable | Source |
 | --- | --- |
 | `CITADEL_RELAY_TENANT_ID` | `entraTenantId` |
+| `CITADEL_RELAY_TOKEN_VERSION` | `relayRequestedAccessTokenVersion` (must be `2`) |
+| `CITADEL_RELAY_TOKEN_ISSUER` | Exact tenant-specific v2 issuer derived by Bicep |
+| `CITADEL_RELAY_TOKEN_RESOURCE` | `relayTokenResource` (`api://<relayEntraClientId>`) requested from managed identity |
+| `CITADEL_RELAY_TOKEN_AUDIENCE` | `relayEntraClientId`, the GUID carried in a v2 token's `aud` claim |
+| `CITADEL_RELAY_ENTRA_CLIENT_ID` | `relayEntraClientId` |
 | `CITADEL_RELAY_ALLOWED_PRINCIPAL_ID` | Playground managed identity principal ID |
 | `CITADEL_RELAY_MANAGED_IDENTITY_CLIENT_ID` | Relay managed identity client ID |
 | `CITADEL_RELAY_KEY_VAULT_URI` | Existing Key Vault |
@@ -73,11 +116,18 @@ concurrency value limits both burst workers and globally admitted `/execute`
 requests; excess requests fail closed with HTTP 429 before authentication, body
 parsing, secret resolution, or network execution.
 
-The playground receives the private relay URL and token audience from Bicep,
-plus `CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED=true`, the same tenant ID,
+The playground receives the private relay URL plus the same v2 token version,
+issuer, audience, relay app client ID, and tenant contract from Bicep. It also
+receives `CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED=true`,
 `CITADEL_PLAYGROUND_RELAY_CLIENT_ID` for its assigned user-assigned identity, and
-the same serialized `relayAllowedSampleIds` value the relay receives. It does not
-receive a relay token: it obtains one from its managed identity.
+the same serialized `relayAllowedSampleIds` value the relay receives. It does
+not receive a relay token: it obtains one from its managed identity.
+
+Both processes validate this tuple before relay use. An incomplete or
+inconsistent hosted configuration disables execution, reports
+`relay-token-configuration-invalid` through capability/health with HTTP 503, and
+never falls back to v1, a different issuer, a different tenant, or a different
+audience.
 
 Bicep also sets `CITADEL_PLAYGROUND_PUBLIC_ORIGIN` to
 `https://<playground-name>.<managed-environment-default-domain>`, derived from the
@@ -107,15 +157,20 @@ tested here. A future platform-local shape requires an explicit code-level
 validator override; deployment environment values cannot broaden the default to
 an arbitrary remote URL.
 
-Both apps use 0.5 CPU, 1 GiB memory and HTTP probes. The playground uses 1--2
-replicas. The relay scale block fixes each active revision at exactly one replica
+Both apps use 0.5 CPU, 1 GiB memory and HTTP probes. Process-liveness endpoints
+(`/api/live` and `/livez`) remain 200 while the Node process can answer, so a
+static configuration error does not create a restart loop. Configuration health
+and readiness (`/api/health`, `/healthz`, and `/readyz`) return 503 until the
+v2 token contract is valid. The playground uses 1--2 replicas. The relay scale
+block fixes each active revision at exactly one replica
 because direct `/execute` nonce consumption and admission are process-local.
 Horizontal scale-out is prohibited until one actually shared atomic adapter backs
 both controls; configuring two independent in-memory stores is not shared
 durability. Revision transitions and process restarts replace that local state,
 so rollout operators must drain the acknowledgement validity window and treat
 cross-restart replay protection as unproven until the same shared adapter exists.
-The playground serves `/api/health`; the relay serves `/healthz` and `/readyz`.
+The playground serves `/api/live` and `/api/health`; the relay serves `/livez`,
+`/healthz`, and `/readyz`.
 
 ## Offline validation
 
@@ -127,6 +182,8 @@ az bicep lint --file infra/main.bicep
 npm run verify
 ```
 
-The Bicep is statically validated only. A first deployment still must confirm
-the target Container Apps auth API behavior, internal relay DNS/TLS reachability,
-Entra app registration consent, and role-assignment propagation.
+The Bicep and app-registration manifest are statically validated only. A first
+deployment still must confirm the target Container Apps auth API behavior,
+managed identity actually receiving a v2 token for the resource app, internal
+relay DNS/TLS reachability, Entra app registration consent, and role-assignment
+propagation.

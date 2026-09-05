@@ -33,8 +33,14 @@ param playgroundEntraClientId string
 @description('Application (client) ID registered for the internal relay.')
 param relayEntraClientId string
 
-@description('Application ID URI used as the relay managed-identity token audience, for example api://<relay-app-id>.')
-param relayTokenAudience string
+@description('Application ID URI requested from managed identity for the relay resource app, exactly api://<relay-app-id>.')
+param relayTokenResource string
+
+@description('Access-token version required on the existing relay resource app registration. Only Microsoft Entra v2 tokens are supported.')
+@allowed([
+  2
+])
+param relayRequestedAccessTokenVersion int
 
 @description('Exact HTTPS origins the relay may contact. Values are policy, not user input.')
 param relayAllowedOrigins array
@@ -77,6 +83,7 @@ var relayEffectiveRequestTimeoutMs = min(relayRequestTimeoutMs, relayRunTimeoutM
 var acrPullRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
 var keyVaultSecretsUserRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
 var managedEnvironmentName = last(split(managedEnvironmentId, '/'))
+var relayTokenIssuer = '${environment().authentication.loginEndpoint}${entraTenantId}/v2.0'
 
 resource managedEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
   name: managedEnvironmentName
@@ -179,7 +186,7 @@ resource relay 'Microsoft.App/containerApps@2024-03-01' = {
             {
               type: 'Liveness'
               httpGet: {
-                path: '/healthz'
+                path: '/livez'
                 port: 8080
               }
               initialDelaySeconds: 5
@@ -200,6 +207,11 @@ resource relay 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'CITADEL_RELAY_PORT', value: '8080' }
             { name: 'CITADEL_RELAY_HOST', value: '0.0.0.0' }
             { name: 'CITADEL_RELAY_ENTRA_AUTHENTICATED', value: 'true' }
+            { name: 'CITADEL_RELAY_TOKEN_VERSION', value: string(relayRequestedAccessTokenVersion) }
+            { name: 'CITADEL_RELAY_TOKEN_ISSUER', value: relayTokenIssuer }
+            { name: 'CITADEL_RELAY_TOKEN_RESOURCE', value: relayTokenResource }
+            { name: 'CITADEL_RELAY_TOKEN_AUDIENCE', value: relayEntraClientId }
+            { name: 'CITADEL_RELAY_ENTRA_CLIENT_ID', value: relayEntraClientId }
             { name: 'CITADEL_RELAY_TENANT_ID', value: entraTenantId }
             { name: 'CITADEL_RELAY_ALLOWED_PRINCIPAL_ID', value: playgroundIdentity.properties.principalId }
             { name: 'CITADEL_RELAY_MANAGED_IDENTITY_CLIENT_ID', value: relayIdentity.properties.clientId }
@@ -241,11 +253,11 @@ resource relayAuth 'Microsoft.App/containerApps/authConfigs@2024-03-01' = {
         enabled: true
         registration: {
           clientId: relayEntraClientId
-          openIdIssuer: '${environment().authentication.loginEndpoint}${entraTenantId}/v2.0'
+          openIdIssuer: relayTokenIssuer
         }
         validation: {
           allowedAudiences: [
-            relayTokenAudience
+            relayEntraClientId
           ]
         }
       }
@@ -297,7 +309,7 @@ resource playground 'Microsoft.App/containerApps@2024-03-01' = {
             {
               type: 'Liveness'
               httpGet: {
-                path: '/api/health'
+                path: '/api/live'
                 port: 8080
               }
               initialDelaySeconds: 5
@@ -321,7 +333,11 @@ resource playground 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'CITADEL_PLAYGROUND_ENTRA_TENANT_ID', value: entraTenantId }
             { name: 'CITADEL_PLAYGROUND_PUBLIC_ORIGIN', value: playgroundPublicOrigin }
             { name: 'CITADEL_PLAYGROUND_RELAY_URL', value: 'https://${relay.properties.configuration.ingress.fqdn}/execute' }
-            { name: 'CITADEL_PLAYGROUND_RELAY_RESOURCE', value: relayTokenAudience }
+            { name: 'CITADEL_PLAYGROUND_RELAY_RESOURCE', value: relayTokenResource }
+            { name: 'CITADEL_PLAYGROUND_RELAY_AUDIENCE', value: relayEntraClientId }
+            { name: 'CITADEL_PLAYGROUND_RELAY_TOKEN_VERSION', value: string(relayRequestedAccessTokenVersion) }
+            { name: 'CITADEL_PLAYGROUND_RELAY_TOKEN_ISSUER', value: relayTokenIssuer }
+            { name: 'CITADEL_PLAYGROUND_RELAY_ENTRA_CLIENT_ID', value: relayEntraClientId }
             { name: 'CITADEL_PLAYGROUND_RELAY_CLIENT_ID', value: playgroundIdentity.properties.clientId }
             { name: 'CITADEL_PLAYGROUND_RELAY_CALLER_PRINCIPAL', value: playgroundIdentity.properties.principalId }
             { name: 'CITADEL_PLAYGROUND_RELAY_TENANT', value: entraTenantId }
@@ -353,7 +369,7 @@ resource playgroundAuth 'Microsoft.App/containerApps/authConfigs@2024-03-01' = {
         enabled: true
         registration: {
           clientId: playgroundEntraClientId
-          openIdIssuer: '${environment().authentication.loginEndpoint}${entraTenantId}/v2.0'
+          openIdIssuer: relayTokenIssuer
         }
         validation: {
           allowedAudiences: [

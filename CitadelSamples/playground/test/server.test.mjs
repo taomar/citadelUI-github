@@ -984,6 +984,7 @@ function fakeRelay({
     allowedSampleIds,
     callerPrincipal,
     tenant,
+    hosted: false,
   };
 }
 
@@ -1036,10 +1037,15 @@ test('buildRelayConfig binds managed identity to the supplied Container Apps env
     const config = buildRelayConfig({
       CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.internal.example/execute',
       CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS: '["weather-mcp-discovery"]',
-      CITADEL_PLAYGROUND_RELAY_RESOURCE: 'api://relay-app',
+      CITADEL_PLAYGROUND_RELAY_RESOURCE: 'api://22222222-2222-4222-8222-222222222222',
+      CITADEL_PLAYGROUND_RELAY_TOKEN_VERSION: '2',
+      CITADEL_PLAYGROUND_RELAY_TOKEN_ISSUER: 'https://login.microsoftonline.com/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/v2.0',
+      CITADEL_PLAYGROUND_RELAY_ENTRA_CLIENT_ID: '22222222-2222-4222-8222-222222222222',
+      CITADEL_PLAYGROUND_RELAY_AUDIENCE: '22222222-2222-4222-8222-222222222222',
       CITADEL_PLAYGROUND_RELAY_CLIENT_ID: 'playground-user-assigned-id',
+      CITADEL_PLAYGROUND_RELAY_TENANT: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
       CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED: 'true',
-      CITADEL_PLAYGROUND_ENTRA_TENANT_ID: 'tenant-a',
+      CITADEL_PLAYGROUND_ENTRA_TENANT_ID: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
       IDENTITY_ENDPOINT: 'http://localhost:42356/msi/token',
       IDENTITY_HEADER: 'playground-identity-header',
     });
@@ -1059,12 +1065,46 @@ test('the hosted playground requires its deployment-owned user-assigned client i
       buildRelayConfig({
         CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.internal.example/execute',
         CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS: '["weather-mcp-discovery"]',
+        CITADEL_PLAYGROUND_RELAY_RESOURCE: 'api://22222222-2222-4222-8222-222222222222',
+        CITADEL_PLAYGROUND_RELAY_TOKEN_VERSION: '2',
+        CITADEL_PLAYGROUND_RELAY_TOKEN_ISSUER: 'https://login.microsoftonline.com/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/v2.0',
+        CITADEL_PLAYGROUND_RELAY_ENTRA_CLIENT_ID: '22222222-2222-4222-8222-222222222222',
+        CITADEL_PLAYGROUND_RELAY_AUDIENCE: '22222222-2222-4222-8222-222222222222',
+        CITADEL_PLAYGROUND_RELAY_TENANT: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
         CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED: 'true',
-        CITADEL_PLAYGROUND_ENTRA_TENANT_ID: 'tenant-a',
+        CITADEL_PLAYGROUND_ENTRA_TENANT_ID: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
         IDENTITY_ENDPOINT: 'http://localhost:42356/msi/token',
         IDENTITY_HEADER: 'playground-identity-header',
       }),
     /CITADEL_PLAYGROUND_RELAY_CLIENT_ID must be configured/,
+  );
+});
+
+test('the hosted playground permits only managed identity and one exact canonical tenant', () => {
+  const hosted = {
+    CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.internal.example/execute',
+    CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS: '["weather-mcp-discovery"]',
+    CITADEL_PLAYGROUND_RELAY_RESOURCE: 'api://22222222-2222-4222-8222-222222222222',
+    CITADEL_PLAYGROUND_RELAY_AUDIENCE: '22222222-2222-4222-8222-222222222222',
+    CITADEL_PLAYGROUND_RELAY_TOKEN_VERSION: '2',
+    CITADEL_PLAYGROUND_RELAY_TOKEN_ISSUER: 'https://login.microsoftonline.com/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/v2.0',
+    CITADEL_PLAYGROUND_RELAY_ENTRA_CLIENT_ID: '22222222-2222-4222-8222-222222222222',
+    CITADEL_PLAYGROUND_RELAY_CLIENT_ID: 'playground-user-assigned-id',
+    CITADEL_PLAYGROUND_RELAY_TENANT: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED: 'true',
+    CITADEL_PLAYGROUND_ENTRA_TENANT_ID: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  };
+  assert.throws(
+    () => buildRelayConfig({ ...hosted, CITADEL_PLAYGROUND_RELAY_AUTH_MODE: 'static-token' }),
+    /must be exactly managed-identity/,
+  );
+  assert.throws(
+    () =>
+      buildRelayConfig({
+        ...hosted,
+        CITADEL_PLAYGROUND_ENTRA_TENANT_ID: hosted.CITADEL_PLAYGROUND_ENTRA_TENANT_ID.toUpperCase(),
+      }),
+    /must exactly match/,
   );
 });
 
@@ -1440,6 +1480,43 @@ test('the capability payload reports the exact relay allow-list, and nothing wid
   assert.equal(payload.relayConfigured, true);
   const serialized = JSON.stringify(payload);
   assert.ok(!serialized.includes(relay.url), 'the relay URL must never be disclosed to the browser');
+});
+
+test('hosted relay capability and health fail closed on an incomplete v2 token contract', async () => {
+  const relay = {
+    ...fakeRelay(),
+    hosted: true,
+    tokenContract: {
+      version: 1,
+      issuer: 'https://login.microsoftonline.com/11111111-1111-4111-8111-111111111111/v1.0',
+      resource: 'api://22222222-2222-4222-8222-222222222222',
+      audience: 'wrong',
+      tenantId: '11111111-1111-4111-8111-111111111111',
+      clientId: '22222222-2222-4222-8222-222222222222',
+    },
+  };
+  const payload = capabilitiesPayload({ mode: 'preview', relay });
+  assert.equal(payload.status, 'error');
+  assert.equal(payload.code, 'relay-token-configuration-invalid');
+  assert.equal(payload.executor.canExecute, false);
+
+  await withServer({ mode: 'preview', relay }, async ({ call }) => {
+    const live = await call('/api/live');
+    assert.equal(live.status, 200);
+    assert.deepEqual(await live.json(), { status: 'ok' });
+
+    const health = await call('/api/health');
+    assert.equal(health.status, 503);
+    assert.equal((await health.json()).code, 'relay-token-configuration-invalid');
+
+    const execute = await call('/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(WEATHER_MCP_REQUEST),
+    });
+    assert.equal(execute.status, 503);
+    assert.equal((await execute.json()).code, 'relay-token-configuration-invalid');
+  });
 });
 
 test('an explicitly empty relay allow-list is advertised as unavailable without widening or crashing the browser', () => {
