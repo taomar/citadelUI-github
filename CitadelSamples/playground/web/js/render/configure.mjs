@@ -618,7 +618,14 @@ function renderEvidenceSummary(source, sourceValidation, callbacks) {
  */
 export function renderConfigure(
   container,
-  { guide = {}, configure = {}, source = {}, sourceValidation = {}, mode = 'all' } = {},
+  {
+    guide = {},
+    configure = {},
+    source = {},
+    sourceValidation = {},
+    mode = 'all',
+    showExports = null,
+  } = {},
   callbacks = {},
 ) {
   const focusSnapshot = captureFocus(container);
@@ -632,6 +639,7 @@ export function renderConfigure(
     || mode === 'required-inputs'
     || mode === 'credentials-options';
   const showEvidence = mode === 'all';
+  const shouldShowExports = showExports ?? (mode === 'all' || mode === 'credentials-options');
 
   replace(container, [
     el('article', { class: `dossier-configure dossier-configure-${mode}`, 'aria-labelledby': titleId }, [
@@ -653,7 +661,7 @@ export function renderConfigure(
             : chip('Ready to review', contract.ready ? 'success' : 'danger'),
         ]),
         ...contract.sections.map((group) => renderGroup(group, callbacks)),
-        mode === 'all' || mode === 'credentials-options'
+        shouldShowExports
           ? renderExports(configure, callbacks)
           : null,
         el('p', {

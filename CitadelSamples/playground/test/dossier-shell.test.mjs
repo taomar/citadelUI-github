@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { createDossierUrlController } from '../web/js/urlState.mjs';
+import { directoryDependencyStatus } from '../web/js/render/directory.mjs';
 
 const SHELL = fileURLToPath(new URL('../web/js/render/shell.mjs', import.meta.url));
 const DIRECTORY = fileURLToPath(new URL('../web/js/render/directory.mjs', import.meta.url));
@@ -244,6 +245,31 @@ test('beforeunload warns only through the injected ordinary-input predicate', ()
   assert.equal(prevented, false);
 });
 
+test('directory dependency status counts only required dependencies that are actually missing', () => {
+  assert.deepEqual(
+    directoryDependencyStatus({
+      readiness: {
+        dependencyReady: false,
+        dependencies: [
+          { id: 'azure-cli', available: true, optional: false },
+          { id: 'accelerator', available: false, optional: false },
+          { id: 'python', available: false, optional: true },
+        ],
+      },
+    }),
+    { state: 'missing', label: '1 dependency missing' },
+  );
+  assert.deepEqual(
+    directoryDependencyStatus({
+      readiness: {
+        dependencyReady: null,
+        dependencies: [{ id: 'azure-cli', available: false, optional: false }],
+      },
+    }),
+    { state: 'not-checked', label: 'Dependencies not checked' },
+  );
+});
+
 test('the renderer source enforces the dossier shell constraints', async () => {
   const [shell, directory, css] = await Promise.all([
     readFile(SHELL, 'utf8'),
@@ -265,11 +291,11 @@ test('the renderer source enforces the dossier shell constraints', async () => {
   assert.match(shell, /Sign in with Microsoft/);
   assert.match(shell, /Switch Azure account/);
   assert.match(shell, /Account \/ subscription/);
-  assert.match(shell, /text: 'Verify'/);
+  assert.match(shell, /text: 'Refresh Azure CLI Status'/);
   assert.match(shell, /text: 'Set Active'/);
   assert.match(shell, /subscriptions\.find/);
   assert.match(shell, /\|\| !selectedId/);
-  assert.match(shell, /Continue in terminal/);
+  assert.match(shell, /Refresh Azure CLI Status/);
   assert.match(shell, /Active subscription/);
   assert.match(shell, /Intended target/);
   assert.doesNotMatch(source, /device[- ]?code|verificationUrl|userCode/i);

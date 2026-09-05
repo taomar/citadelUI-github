@@ -50,20 +50,41 @@ export const INHERITED_ENVIRONMENT_KEYS = Object.freeze([
   'no_proxy',
 ]);
 
-const EXPLICIT_ENVIRONMENT_KEYS = Object.freeze(['CITADEL_GATEWAY_ACCESS_API_KEY']);
+export const SYSTEM_BROWSER_ENVIRONMENT_KEYS = Object.freeze([
+  'DISPLAY',
+  'WAYLAND_DISPLAY',
+  'XDG_CURRENT_DESKTOP',
+  'XDG_SESSION_TYPE',
+  'XDG_RUNTIME_DIR',
+  'DBUS_SESSION_BUS_ADDRESS',
+]);
+
+const EXPLICIT_ENVIRONMENT_KEYS = Object.freeze([
+  'CITADEL_GATEWAY_ACCESS_API_KEY',
+  'AZURE_CORE_LOGIN_EXPERIENCE_V2',
+  'AZURE_CORE_NO_COLOR',
+  'AZURE_CORE_OUTPUT',
+]);
 
 /**
  * Build the complete child environment. Host credentials and unrelated service
  * settings are not inherited; wrappers may add only reviewed, registry-owned
  * secret variables.
  */
-export function createProcessEnvironment(explicit = {}, source = process.env) {
+export function createProcessEnvironment(explicit = {}, source = process.env, { profile = 'default' } = {}) {
   if (!explicit || typeof explicit !== 'object' || Array.isArray(explicit)) {
     throw new Error('Process environment overrides must be an object.');
   }
+  if (!['default', 'system-browser'].includes(profile)) {
+    throw new Error(`Unknown process environment profile "${profile}".`);
+  }
 
   const result = {};
-  for (const key of INHERITED_ENVIRONMENT_KEYS) {
+  const inheritedKeys =
+    profile === 'system-browser'
+      ? [...INHERITED_ENVIRONMENT_KEYS, ...SYSTEM_BROWSER_ENVIRONMENT_KEYS]
+      : INHERITED_ENVIRONMENT_KEYS;
+  for (const key of inheritedKeys) {
     const value = source[key];
     if (typeof value === 'string' && value !== '' && !value.includes('\0')) result[key] = value;
   }
@@ -160,6 +181,8 @@ function resolveWindowsCommand(executable, { pathValue, pathExt, exists }) {
  * @param {string} options.executable  must be on the allow-list
  * @param {string[]} options.args      passed as an array; never joined
  * @param {(chunk:{stream:'stdout'|'stderr',text:string}) => void} [options.onOutput]
+ * @param {boolean} [options.captureOutput] whether stdout/stderr are retained in the result
+ * @param {'default'|'system-browser'} [options.environmentProfile] reviewed inherited environment profile
  * @returns {Promise<{code:number, stdout:string, stderr:string, timedOut:boolean, aborted:boolean, spawnFailed?:boolean}>}
  */
 export function spawnProcess({
@@ -173,6 +196,8 @@ export function spawnProcess({
   maxOutputBytes = 256 * 1024,
   allowedExecutables = ALLOWED_EXECUTABLES,
   onOutput,
+  captureOutput = true,
+  environmentProfile = 'default',
 }) {
   if (!Array.isArray(allowedExecutables) || !allowedExecutables.includes(executable)) {
     return Promise.reject(new Error(`Refused to spawn "${executable}": it is not on the executable allow-list.`));
@@ -200,9 +225,12 @@ export function spawnProcess({
   if (onOutput !== undefined && typeof onOutput !== 'function') {
     return Promise.reject(new Error('Process output observer must be a function when supplied.'));
   }
+  if (typeof captureOutput !== 'boolean') {
+    return Promise.reject(new Error('Process output capture must be a boolean.'));
+  }
   let childEnv;
   try {
-    childEnv = createProcessEnvironment(env);
+    childEnv = createProcessEnvironment(env, process.env, { profile: environmentProfile });
   } catch (error) {
     return Promise.reject(error);
   }
@@ -234,7 +262,7 @@ export function spawnProcess({
       resolve({
         code: -1,
         stdout: '',
-        stderr: String(error?.message ?? error),
+        stderr: captureOutput ? String(error?.message ?? error) : '',
         timedOut: false,
         aborted: false,
         spawnFailed: true,
@@ -250,6 +278,7 @@ export function spawnProcess({
     let timedOut = false;
     let aborted = false;
     let stdinFailed = false;
+    let spawnFailed = false;
     let termination;
 
     const collect = (chunk, which) => {
@@ -258,14 +287,14 @@ export function spawnProcess({
         const remaining = maxOutputBytes - stdoutBytes;
         if (remaining <= 0) return;
         const accepted = bytes.subarray(0, remaining);
-        stdout.push(accepted);
+        if (captureOutput) stdout.push(accepted);
         stdoutBytes += accepted.byteLength;
         onOutput?.({ stream: 'stdout', text: accepted.toString('utf-8') });
       } else {
         const remaining = maxOutputBytes - stderrBytes;
         if (remaining <= 0) return;
         const accepted = bytes.subarray(0, remaining);
-        stderr.push(accepted);
+        if (captureOutput) stderr.push(accepted);
         stderrBytes += accepted.byteLength;
         onOutput?.({ stream: 'stderr', text: accepted.toString('utf-8') });
       }
@@ -297,16 +326,19 @@ export function spawnProcess({
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
       if (termination) await termination;
-      resolve({
+      const result = {
         code,
-        stdout: decodeCollectedOutput(stdout, stdoutBytes, maxOutputBytes),
-        stderr: decodeCollectedOutput(stderr, stderrBytes, maxOutputBytes),
+        stdout: captureOutput ? decodeCollectedOutput(stdout, stdoutBytes, maxOutputBytes) : '',
+        stderr: captureOutput ? decodeCollectedOutput(stderr, stderrBytes, maxOutputBytes) : '',
         timedOut,
         aborted,
-      });
+      };
+      if (spawnFailed) result.spawnFailed = true;
+      resolve(result);
     };
 
     child.on('error', (error) => {
+      spawnFailed = true;
       collect(String(error?.message ?? error), 'err');
       void finish(-1);
     });

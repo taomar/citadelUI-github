@@ -3,8 +3,10 @@ import { test } from 'node:test';
 
 import { getSample } from '../src/catalogue/index.mjs';
 import {
+  azureAuthCapabilityFromPayload,
   buildExecutionContextProjection,
   createExecutionContextClient,
+  reconcileAzureContextCurrent,
 } from '../web/js/executionContextClient.mjs';
 
 function response(body, { ok = true, status = 200 } = {}) {
@@ -89,17 +91,113 @@ test('the execution-context client sends only the safe per-sample context shape'
   assert.deepEqual(calls[0].options.headers, { Accept: 'application/json', 'Content-Type': 'application/json' });
 });
 
-test('Azure device login uses fixed endpoints and exact request bodies', async () => {
+test('the client preserves a disabled Azure subscription context for recovery controls', async () => {
+  const client = createExecutionContextClient({
+    fetchImpl: async () =>
+      response({
+        context: {
+          kind: 'azure-cli-token',
+          label: 'Azure CLI',
+          summary: 'The active subscription is disabled.',
+          state: 'subscription-disabled',
+          code: 'subscription-disabled',
+          canExecute: false,
+          signedInAccount: {
+            state: 'signed-in',
+            principalName: 'operator@example.test',
+            principalType: 'user',
+            tenantId: 'tenant-1',
+          },
+          executionCredential: { type: 'azure-cli', source: 'azure-cli' },
+          activeCliSubscription: {
+            id: '00000000-1111-2222-3333-444444444444',
+            name: 'Disabled',
+            tenantId: 'tenant-1',
+            state: 'Disabled',
+          },
+          intendedTarget: { subscriptionId: null, matchesActive: null },
+          authorization: { state: 'not-checked', label: 'Authorization Not Checked' },
+          gateway: null,
+          hostedRelay: null,
+          guarantees: { tokensExposed: false, credentialsPersisted: false },
+        },
+        futureHostedProcess: { state: 'deferred' },
+      }),
+  });
+
+  const context = await client.getContext({
+    sampleId: 'azure-context-check',
+    configuredSubscriptionId: null,
+    gateway: null,
+  });
+  assert.equal(context.state, 'subscription-disabled');
+  assert.equal(context.canExecute, false);
+});
+
+test('Azure system login and subscription switching use fixed endpoints and exact request bodies', async () => {
   const calls = [];
   const fetchImpl = async (path, options) => {
     calls.push([path, JSON.parse(options.body)]);
+    if (path.endsWith('/list')) {
+      return response({
+        subscriptions: [
+          {
+            id: '00000000-1111-2222-3333-444444444444',
+            name: 'Sandbox',
+            tenantId: 'tenant-1',
+            user: { name: 'operator@example.test', type: 'user' },
+            isDefault: true,
+          },
+        ],
+        current: {
+          signedInAccount: {
+            state: 'signed-in',
+            principalName: 'operator@example.test',
+            principalType: 'user',
+            tenantId: 'tenant-1',
+          },
+          activeCliSubscription: {
+            id: '00000000-1111-2222-3333-444444444444',
+            name: 'Sandbox',
+            tenantId: 'tenant-1',
+            state: 'Enabled',
+          },
+        },
+        warning: 'Changes the shared Azure CLI default.',
+      });
+    }
+    if (path.endsWith('/activate')) {
+      return response({
+        subscription: {
+          id: '00000000-1111-2222-3333-444444444444',
+          name: 'Sandbox',
+          tenantId: 'tenant-1',
+          user: { name: 'operator@example.test', type: 'user' },
+          isDefault: true,
+        },
+        current: {
+          signedInAccount: {
+            state: 'signed-in',
+            principalName: 'operator@example.test',
+            principalType: 'user',
+            tenantId: 'tenant-1',
+          },
+          activeCliSubscription: {
+            id: '00000000-1111-2222-3333-444444444444',
+            name: 'Sandbox',
+            tenantId: 'tenant-1',
+            state: 'Enabled',
+          },
+        },
+        warning: 'Changes the shared Azure CLI default.',
+      });
+    }
     return response({
       login: {
-        id: 'login-1',
-        state: path.endsWith('/start') ? 'waiting-for-user' : path.endsWith('/cancel') ? 'cancelled' : 'succeeded',
-        verificationUrl: 'https://microsoft.com/devicelogin',
-        userCode: 'ABCD-EFGH',
-        message: 'Continue in the browser.',
+        id: 'azure-system-login',
+        state: path.endsWith('/start') ? 'waiting-system-ui' : path.endsWith('/cancel') ? 'cancelled' : 'ready',
+        message: 'Continue in the system account UI.',
+        accountChange: 'unverified',
         startedAt: new Date(0).toISOString(),
         updatedAt: new Date(0).toISOString(),
         expiresAt: new Date(1).toISOString(),
@@ -109,15 +207,136 @@ test('Azure device login uses fixed endpoints and exact request bodies', async (
   };
   const client = createExecutionContextClient({ fetchImpl });
 
-  await client.startAzureLogin();
-  await client.getAzureLogin('login-1');
-  await client.cancelAzureLogin('login-1');
+  await client.startSystemAzureLogin();
+  await client.getSystemAzureLogin('azure-system-login');
+  await client.cancelSystemAzureLogin('azure-system-login');
+  await client.listAzureSubscriptions();
+  await client.activateAzureSubscription('00000000-1111-2222-3333-444444444444');
 
   assert.deepEqual(calls, [
-    ['/api/azure-login/start', { protocolVersion: 2 }],
-    ['/api/azure-login/status', { protocolVersion: 2, loginId: 'login-1' }],
-    ['/api/azure-login/cancel', { protocolVersion: 2, loginId: 'login-1' }],
+    ['/api/azure-auth/start', { protocolVersion: 2 }],
+    ['/api/azure-auth/status', { protocolVersion: 2, loginId: 'azure-system-login' }],
+    ['/api/azure-auth/cancel', { protocolVersion: 2, loginId: 'azure-system-login' }],
+    ['/api/azure-subscriptions/list', { protocolVersion: 2 }],
+    [
+      '/api/azure-subscriptions/activate',
+      { protocolVersion: 2, subscriptionId: '00000000-1111-2222-3333-444444444444' },
+    ],
   ]);
+});
+
+test('subscription refresh reconciles the account and active default from the server snapshot', () => {
+  const target = '00000000-1111-2222-3333-444444444444';
+  const context = reconcileAzureContextCurrent(
+    {
+      kind: 'azure-cli-management',
+      label: 'Azure CLI',
+      summary: 'Stale summary.',
+      state: 'subscription-mismatch',
+      canExecute: false,
+      signedInAccount: {
+        state: 'signed-in',
+        principalName: 'old@example.test',
+        principalType: 'user',
+        tenantId: 'tenant-old',
+      },
+      executionCredential: { type: 'azure-cli-user', source: 'azure-cli' },
+      activeCliSubscription: {
+        id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        name: 'Old',
+        tenantId: 'tenant-old',
+        state: 'Enabled',
+      },
+      intendedTarget: { subscriptionId: target, matchesActive: false },
+      authorization: { state: 'not-checked', label: 'Authorization Not Checked' },
+    },
+    {
+      signedInAccount: {
+        state: 'signed-in',
+        principalName: 'new@example.test',
+        principalType: 'user',
+        tenantId: 'tenant-new',
+      },
+      activeCliSubscription: {
+        id: target,
+        name: 'Fresh',
+        tenantId: 'tenant-new',
+        state: 'Enabled',
+      },
+    },
+    { sampleId: 'publish-assets' },
+  );
+  assert.equal(context.state, 'ready-to-attempt');
+  assert.equal(context.canExecute, true);
+  assert.equal(context.signedInAccount.principalName, 'new@example.test');
+  assert.equal(context.executionCredential.principalName, 'new@example.test');
+  assert.equal(context.activeCliSubscription.id, target);
+  assert.equal(context.intendedTarget.matchesActive, true);
+  assert.match(context.summary, /Ready to Attempt/);
+});
+
+test('subscription refresh cannot re-enable a disabled active subscription', () => {
+  const context = reconcileAzureContextCurrent(
+    {
+      kind: 'azure-cli-management',
+      label: 'Azure CLI',
+      summary: 'Disabled.',
+      state: 'subscription-disabled',
+      code: 'subscription-disabled',
+      canExecute: false,
+      signedInAccount: {
+        state: 'signed-in',
+        principalName: 'operator@example.test',
+        principalType: 'user',
+        tenantId: 'tenant-1',
+      },
+      executionCredential: { type: 'azure-cli-user', source: 'azure-cli' },
+      activeCliSubscription: {
+        id: '00000000-1111-2222-3333-444444444444',
+        name: 'Disabled',
+        tenantId: 'tenant-1',
+        state: 'Disabled',
+      },
+      intendedTarget: { subscriptionId: null, matchesActive: null },
+      authorization: { state: 'not-checked', label: 'Authorization Not Checked' },
+    },
+    {
+      signedInAccount: {
+        state: 'signed-in',
+        principalName: 'operator@example.test',
+        principalType: 'user',
+        tenantId: 'tenant-1',
+      },
+      activeCliSubscription: {
+        id: '00000000-1111-2222-3333-444444444444',
+        name: 'Disabled',
+        tenantId: 'tenant-1',
+        state: 'Disabled',
+      },
+    },
+  );
+  assert.equal(context.state, 'subscription-disabled');
+  assert.equal(context.canExecute, false);
+});
+
+test('Azure auth capability adapter exposes stable system-login and subscription flags', () => {
+  assert.deepEqual(
+    azureAuthCapabilityFromPayload({
+      azureAuth: {
+        systemLogin: { available: true, loginId: 'azure-system-login' },
+        subscriptions: { available: true, warning: 'Shared CLI warning.' },
+      },
+    }),
+    {
+      systemLoginAllowed: true,
+      systemLoginState: 'available',
+      loginId: 'azure-system-login',
+      accountSwitchLabel: 'Switch Azure account',
+      subscriptionsAvailable: true,
+      warning: 'Shared CLI warning.',
+    },
+  );
+  assert.equal(azureAuthCapabilityFromPayload({}).systemLoginState, 'login-disabled');
 });
 
 test('the execution-context client rejects success-shaped invalid responses', async () => {
@@ -156,31 +375,29 @@ test('Azure login refusal preserves the production summary and reconciles the in
       response(
         {
           state: 'blocked',
-          summary: 'An Azure CLI device-code login is already in progress.',
+          summary: 'An Azure CLI system sign-in is already in progress.',
           code: 'login-in-progress',
           login: {
-            id: 'azure-login-0042',
-            state: 'waiting-for-user',
-            verificationUrl: 'https://microsoft.com/devicelogin',
-            userCode: 'RETRY-1234',
+            id: 'azure-system-login',
+            state: 'waiting-system-ui',
             message: 'Continue the current sign-in.',
+            accountChange: 'unverified',
           },
           context: null,
         },
         { ok: false, status: 409 },
       ),
   });
-  await assert.rejects(() => client.startAzureLogin(), (error) => {
+  await assert.rejects(() => client.startSystemAzureLogin(), (error) => {
     assert.equal(error.status, 409);
     assert.equal(error.code, 'login-in-progress');
     assert.match(error.message, /already in progress/);
     assert.deepEqual(error.login, {
-      id: 'azure-login-0042',
-      state: 'waiting-for-user',
-      verificationUrl: 'https://microsoft.com/devicelogin',
-      userCode: 'RETRY-1234',
+      id: 'azure-system-login',
+      state: 'waiting-system-ui',
       message: 'Continue the current sign-in.',
-      loginId: 'azure-login-0042',
+      accountChange: 'unverified',
+      loginId: 'azure-system-login',
       context: null,
     });
     return true;

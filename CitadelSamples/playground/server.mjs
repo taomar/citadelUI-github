@@ -36,6 +36,8 @@ import {
   createExecutionContextManager,
   validateLoginStartRequest,
   validateLoginTargetRequest,
+  validateSubscriptionActivateRequest,
+  validateSubscriptionListRequest,
 } from './src/server/executionContextManager.mjs';
 import { createCodeValidationManager, CODE_VALIDATION_SCENARIO } from './src/server/codeValidation.mjs';
 import { validateSourceSampleId } from './src/server/recipeRequest.mjs';
@@ -62,7 +64,6 @@ import {
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const SERVED_ROOTS = ['web', 'src'].map((dir) => resolve(ROOT, dir));
 
-const PORT = Number(process.env.CITADEL_PLAYGROUND_PORT ?? 4173);
 const HOST = process.env.CITADEL_PLAYGROUND_HOST ?? '127.0.0.1';
 const PYTHON = process.env.CITADEL_PLAYGROUND_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
 
@@ -72,6 +73,12 @@ const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 export function isLoopbackHost(host) {
   return LOOPBACK_HOSTS.has(String(host).replace(/^\[|\]$/g, ''));
 }
+
+export function resolvePlaygroundPort(host, configuredPort) {
+  return Number(configuredPort ?? (isLoopbackHost(host) ? 0 : 4173));
+}
+
+const PORT = resolvePlaygroundPort(HOST, process.env.CITADEL_PLAYGROUND_PORT);
 
 /** Parse one canonical HTTPS origin; paths, credentials, query, and fragments are never trusted. */
 export function parseTrustedPublicOrigin(rawValue, { name = 'CITADEL_PLAYGROUND_PUBLIC_ORIGIN' } = {}) {
@@ -338,11 +345,13 @@ export function capabilitiesPayload({
   mode = 'preview',
   probe = {},
   relay = DEFAULT_RELAY_CONFIG,
-  loginAvailable = mode === 'execute',
+  allowSystemAzureLogin = false,
   sessionAuth = { required: false, state: 'not-required', claimEndpoint: null, message: '' },
 } = {}) {
   const capability = summariseCapability(CATALOGUE.samples, { ...probe, mode });
   const sessionReady = sessionAuth.required !== true || sessionAuth.state === 'claimed';
+  const azureControlsAvailable =
+    mode === 'execute' && allowSystemAzureLogin === true && sessionReady && relay.enabled !== true;
   const secureLaunchMessage = sessionAuth.message || 'Open the secure launch URL shown in the terminal.';
   return {
     status: 'ok',
@@ -418,11 +427,22 @@ export function capabilitiesPayload({
     }),
     executionContext: Object.freeze({
       endpoint: sessionReady ? '/api/execution-context' : null,
-      login: Object.freeze({
-        startEndpoint: '/api/azure-login/start',
-        statusEndpoint: '/api/azure-login/status',
-        cancelEndpoint: '/api/azure-login/cancel',
-        available: loginAvailable && sessionReady,
+    }),
+    azureAuth: Object.freeze({
+      systemLogin: Object.freeze({
+        available: azureControlsAvailable,
+        state: azureControlsAvailable ? 'available' : 'login-disabled',
+        loginId: 'azure-system-login',
+        startEndpoint: azureControlsAvailable ? '/api/azure-auth/start' : null,
+        statusEndpoint: azureControlsAvailable ? '/api/azure-auth/status' : null,
+        cancelEndpoint: azureControlsAvailable ? '/api/azure-auth/cancel' : null,
+      }),
+      subscriptions: Object.freeze({
+        available: azureControlsAvailable,
+        listEndpoint: azureControlsAvailable ? '/api/azure-subscriptions/list' : null,
+        activateEndpoint: azureControlsAvailable ? '/api/azure-subscriptions/activate' : null,
+        warning:
+          'Changing the active subscription updates the shared Azure CLI default for other terminals and tools on this machine.',
       }),
     }),
   };
@@ -480,7 +500,13 @@ function monitorClientDisconnect(request, response, { signal } = {}) {
  */
 export function checkStateChangingRequest(
   request,
-  { port = PORT, host = HOST, publicOrigin = DEFAULT_PUBLIC_ORIGIN, requireOrigin = false } = {},
+  {
+    port = PORT,
+    host = HOST,
+    browserHost = null,
+    publicOrigin = DEFAULT_PUBLIC_ORIGIN,
+    requireOrigin = false,
+  } = {},
 ) {
   const site = request.headers['sec-fetch-site'];
   if (site && site !== 'same-origin' && site !== 'none') {
@@ -492,11 +518,15 @@ export function checkStateChangingRequest(
       return { ok: false, status: 403, message: 'Refused a request without an Origin header.' };
     }
     const effectivePort = request.socket?.localPort ?? port;
-    const expected = new Set([
-      httpOrigin(host, effectivePort),
-      httpOrigin('localhost', effectivePort),
-      httpOrigin('127.0.0.1', effectivePort),
-    ]);
+    const expected = new Set(
+      browserHost
+        ? [httpOrigin(browserHost, effectivePort)]
+        : [
+            httpOrigin(host, effectivePort),
+            httpOrigin('localhost', effectivePort),
+            httpOrigin('127.0.0.1', effectivePort),
+          ],
+    );
     if (publicOrigin) expected.add(publicOrigin);
     if (origin && !expected.has(origin)) {
       return { ok: false, status: 403, message: `Refused a request from origin ${origin}.` };
@@ -532,7 +562,7 @@ function requireLocalSession(request, response, localSessionAuth) {
   return false;
 }
 
-async function handleSessionClaim(request, response, { localSessionAuth, port, host, publicOrigin }) {
+async function handleSessionClaim(request, response, { localSessionAuth, port, host, browserHost, publicOrigin }) {
   if (!localSessionAuth) {
     send(response, 404, securityHeaders('text/plain; charset=utf-8'), 'Not found');
     return;
@@ -540,6 +570,7 @@ async function handleSessionClaim(request, response, { localSessionAuth, port, h
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
     publicOrigin,
     requireOrigin: true,
   });
@@ -597,10 +628,11 @@ function httpOrigin(host, port) {
   return url.origin;
 }
 
-async function handleExecute(request, response, { port, host, publicOrigin, relay }) {
+async function handleExecute(request, response, { port, host, browserHost, publicOrigin, relay }) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
     publicOrigin,
     requireOrigin: isLoopbackHost(host),
   });
@@ -822,10 +854,11 @@ async function handleStatic(request, response) {
   }
 }
 
-async function handleRun(request, response, { mode, manager, port, host, publicOrigin, shutdownSignal }) {
+async function handleRun(request, response, { mode, manager, port, host, browserHost, publicOrigin, shutdownSignal }) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
     publicOrigin,
     requireOrigin: isLoopbackHost(host),
   });
@@ -910,10 +943,11 @@ async function handleRun(request, response, { mode, manager, port, host, publicO
   }
 }
 
-async function handleExecutionContext(request, response, { manager, port, host, publicOrigin }) {
+async function handleExecutionContext(request, response, { manager, port, host, browserHost, publicOrigin }) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
     publicOrigin,
     requireOrigin: isLoopbackHost(host),
   });
@@ -944,10 +978,11 @@ async function handleExecutionContext(request, response, { manager, port, host, 
   }
 }
 
-async function handleAzureLogin(request, response, { action, manager, port, host, publicOrigin }) {
+async function handleAzureLogin(request, response, { action, manager, port, host, browserHost, publicOrigin }) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
     publicOrigin,
     requireOrigin: isLoopbackHost(host),
   });
@@ -959,7 +994,7 @@ async function handleAzureLogin(request, response, { action, manager, port, host
   const cancelDisconnectedStart = () => {
     if (action !== 'start' || !startedLoginId || response.writableEnded) return;
     try {
-      manager.cancelLogin(startedLoginId);
+      manager.cancelSystemLogin(startedLoginId);
     } catch {
       // The login may already have reached a terminal state.
     }
@@ -971,23 +1006,38 @@ async function handleAzureLogin(request, response, { action, manager, port, host
     let result;
     if (action === 'start') {
       validateLoginStartRequest(payload);
-      result = manager.startLogin();
+      result = manager.startSystemLogin();
       startedLoginId = result.login.id;
     } else {
       const loginId = validateLoginTargetRequest(payload);
-      result = action === 'status' ? manager.statusLogin(loginId) : manager.cancelLogin(loginId);
+      result =
+        action === 'status'
+          ? manager.statusSystemLogin(loginId)
+          : manager.cancelSystemLogin(loginId);
     }
     sendJson(response, action === 'start' ? 202 : 200, result);
   } catch (error) {
     if (error instanceof RequestRefused) {
       const current =
-        error.code === 'login-in-progress' && typeof manager.currentLogin === 'function'
-          ? manager.currentLogin()
+        error.code === 'login-in-progress' && typeof manager.currentSystemLogin === 'function'
+          ? manager.currentSystemLogin()
           : null;
       sendJson(response, error.status, {
         state: 'blocked',
         summary: error.message,
         code: error.code,
+        ...(error.code === 'login-disabled'
+          ? {
+              login: {
+                id: 'azure-system-login',
+                state: 'login-disabled',
+                code: 'login-disabled',
+                message: error.message,
+                accountChange: 'unverified',
+              },
+              context: null,
+            }
+          : {}),
         ...(current ?? {}),
       });
       return;
@@ -999,10 +1049,55 @@ async function handleAzureLogin(request, response, { action, manager, port, host
   }
 }
 
-async function handleCancel(request, response, { manager, port, host, publicOrigin }) {
+async function handleAzureSubscriptions(request, response, { action, manager, port, host, browserHost, publicOrigin }) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
+    publicOrigin,
+    requireOrigin: isLoopbackHost(host),
+  });
+  if (!guard.ok) {
+    sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
+    return;
+  }
+  const disconnect = monitorClientDisconnect(request, response);
+  try {
+    const payload = JSON.parse(await readBody(request, 4096));
+    let result;
+    if (action === 'list') {
+      validateSubscriptionListRequest(payload);
+      result = await manager.listSubscriptions({ signal: disconnect.signal });
+    } else {
+      const subscriptionId = validateSubscriptionActivateRequest(payload);
+      result = await manager.activateSubscription(subscriptionId, { signal: disconnect.signal });
+    }
+    if (response.destroyed) return;
+    sendJson(response, 200, result);
+  } catch (error) {
+    if (disconnect.signal.aborted && response.destroyed) return;
+    if (error instanceof RequestRefused) {
+      sendJson(response, error.status, {
+        state: 'blocked',
+        summary: error.message,
+        code: error.code,
+      });
+      return;
+    }
+    sendJson(response, 500, {
+      state: 'failed',
+      summary: 'The Azure CLI subscription request could not be completed.',
+    });
+  } finally {
+    disconnect.dispose();
+  }
+}
+
+async function handleCancel(request, response, { manager, port, host, browserHost, publicOrigin }) {
+  const guard = checkStateChangingRequest(request, {
+    port,
+    host,
+    browserHost,
     publicOrigin,
     requireOrigin: isLoopbackHost(host),
   });
@@ -1034,10 +1129,11 @@ async function handleCancel(request, response, { manager, port, host, publicOrig
  * guarded exactly like every other state-changing endpoint even though it
  * changes nothing, so it cannot be triggered from a cross-site page.
  */
-async function handleSelfTest(request, response, { mode, port, host, publicOrigin }) {
+async function handleSelfTest(request, response, { mode, port, host, browserHost, publicOrigin }) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
     publicOrigin,
     requireOrigin: isLoopbackHost(host),
   });
@@ -1117,10 +1213,19 @@ async function handleProtectedSource(response, sampleId) {
   }
 }
 
-async function handleSourceValidation(request, response, { mode, manager, sampleId, port, host, publicOrigin }) {
+async function handleSourceValidation(request, response, {
+  mode,
+  manager,
+  sampleId,
+  port,
+  host,
+  browserHost,
+  publicOrigin,
+}) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
+    browserHost,
     publicOrigin,
     requireOrigin: isLoopbackHost(host),
   });
@@ -1250,6 +1355,7 @@ export function createPlaygroundServer({
   publicOrigin = DEFAULT_PUBLIC_ORIGIN,
   testBootstrapCapability,
   secureSessionCookie = false,
+  allowSystemAzureLogin = false,
 } = {}) {
   publicOrigin =
     publicOrigin === null
@@ -1258,15 +1364,22 @@ export function createPlaygroundServer({
   const localSessionAuth = isLoopbackHost(host)
     ? createLocalSessionAuth({
         bootstrapCapability: testBootstrapCapability,
+        browserHost: testBootstrapCapability == null ? undefined : String(host).replace(/^\[|\]$/g, ''),
         secureCookie: secureSessionCookie,
       })
     : null;
+  const browserHost = localSessionAuth?.browserHost ?? null;
   const identityManager =
     executionContextManager ??
     createExecutionContextManager({
       playgroundRoot: ROOT,
       mode: mode === 'execute' && isLoopbackHost(host) ? 'execute' : 'preview',
       relay,
+      allowSystemAzureLogin:
+        allowSystemAzureLogin === true &&
+        mode === 'execute' &&
+        isLoopbackHost(host) &&
+        relay.enabled !== true,
     });
   const manager =
     mode === 'execute'
@@ -1298,7 +1411,13 @@ export function createPlaygroundServer({
           sendJson(response, 405, { state: 'blocked', summary: 'Use POST.', code: 'method-not-allowed' });
           return;
         }
-        await handleSessionClaim(request, response, { localSessionAuth, port, host, publicOrigin });
+        await handleSessionClaim(request, response, {
+          localSessionAuth,
+          port,
+          host,
+          browserHost,
+          publicOrigin,
+        });
         return;
       }
 
@@ -1314,7 +1433,11 @@ export function createPlaygroundServer({
             mode,
             probe: runtimeProbe,
             relay,
-            loginAvailable: mode === 'execute' && isLoopbackHost(host),
+            allowSystemAzureLogin:
+              allowSystemAzureLogin === true &&
+              mode === 'execute' &&
+              isLoopbackHost(host) &&
+              relay.enabled !== true,
             sessionAuth:
               localSessionAuth?.describe(request) ??
               Object.freeze({
@@ -1342,6 +1465,7 @@ export function createPlaygroundServer({
           manager,
           port,
           host,
+          browserHost,
           publicOrigin,
           shutdownSignal: shutdownController.signal,
         });
@@ -1353,7 +1477,7 @@ export function createPlaygroundServer({
           sendJson(response, 405, { cancelled: false, reason: 'Use POST.' });
           return;
         }
-        await handleCancel(request, response, { manager, port, host, publicOrigin });
+        await handleCancel(request, response, { manager, port, host, browserHost, publicOrigin });
         return;
       }
 
@@ -1362,11 +1486,17 @@ export function createPlaygroundServer({
           sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
           return;
         }
-        await handleExecutionContext(request, response, { manager: identityManager, port, host, publicOrigin });
+        await handleExecutionContext(request, response, {
+          manager: identityManager,
+          port,
+          host,
+          browserHost,
+          publicOrigin,
+        });
         return;
       }
 
-      const loginRoute = /^\/api\/azure-login\/(start|status|cancel)$/.exec(path);
+      const loginRoute = /^\/api\/azure-auth\/(start|status|cancel)$/.exec(path);
       if (loginRoute) {
         if (request.method !== 'POST') {
           sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
@@ -1377,6 +1507,33 @@ export function createPlaygroundServer({
           manager: identityManager,
           port,
           host,
+          browserHost,
+          publicOrigin,
+        });
+        return;
+      }
+
+      if (/^\/api\/azure-login\/(?:start|status|cancel)$/.test(path)) {
+        sendJson(response, 410, {
+          state: 'gone',
+          summary: 'The former Azure login API is no longer available. Use the system-login capability advertised by `/api/capabilities`.',
+          code: 'legacy-login-gone',
+        });
+        return;
+      }
+
+      const subscriptionRoute = /^\/api\/azure-subscriptions\/(list|activate)$/.exec(path);
+      if (subscriptionRoute) {
+        if (request.method !== 'POST') {
+          sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
+          return;
+        }
+        await handleAzureSubscriptions(request, response, {
+          action: subscriptionRoute[1],
+          manager: identityManager,
+          port,
+          host,
+          browserHost,
           publicOrigin,
         });
         return;
@@ -1387,7 +1544,7 @@ export function createPlaygroundServer({
           sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
           return;
         }
-        await handleExecute(request, response, { port, host, publicOrigin, relay });
+        await handleExecute(request, response, { port, host, browserHost, publicOrigin, relay });
         return;
       }
 
@@ -1396,7 +1553,13 @@ export function createPlaygroundServer({
           sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
           return;
         }
-        await handleSelfTest(request, response, { mode, port, host, publicOrigin });
+        await handleSelfTest(request, response, {
+          mode,
+          port: request.socket?.localPort ?? port,
+          host,
+          browserHost,
+          publicOrigin,
+        });
         return;
       }
 
@@ -1412,6 +1575,7 @@ export function createPlaygroundServer({
           sampleId: decodeSampleId(validationRoute[1]),
           port,
           host,
+          browserHost,
           publicOrigin,
         });
         return;
@@ -1512,6 +1676,7 @@ const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === resolve(
 
 if (invokedDirectly) {
   const wantsExecution = process.argv.includes('--execute');
+  const allowSystemAzureLogin = process.argv.includes('--allow-system-azure-login');
   if (wantsExecution && !isLoopbackHost(HOST)) {
     process.stderr.write(
       `Refusing to attach the local executor on ${HOST}. Local execution spawns processes and writes files, so it is allowed only when the server is bound to loopback.\n` +
@@ -1520,9 +1685,11 @@ if (invokedDirectly) {
     process.exit(1);
   }
   const mode = wantsExecution ? 'execute' : 'preview';
-  const server = createPlaygroundServer({ mode });
+  const server = createPlaygroundServer({ mode, allowSystemAzureLogin });
   server.listen(PORT, HOST, async () => {
-    const origin = httpOrigin(HOST, PORT);
+    const address = server.address();
+    const actualPort = typeof address === 'object' && address ? address.port : PORT;
+    const origin = httpOrigin(HOST, actualPort);
     process.stdout.write(
       server.localSessionAuth
         ? `Citadel Publish Playground secure launch URL: ${server.localSessionAuth.launchUrl(origin)}\n`
@@ -1539,6 +1706,11 @@ if (invokedDirectly) {
       const { capability } = capabilitiesPayload({ mode, probe, relay: DEFAULT_RELAY_CONFIG });
       process.stdout.write(`Local execution: ${capability.label} (${capability.ready}/${capability.total} samples ready)\n`);
       process.stdout.write('Risk gates still apply. Nothing runs without a fresh acknowledgement.\n');
+      process.stdout.write(
+        allowSystemAzureLogin
+          ? 'System Azure sign-in and subscription switching: enabled for this secure browser launch.\n'
+          : 'System Azure sign-in and subscription switching: disabled. Add --allow-system-azure-login to opt in for this launch.\n',
+      );
     } else {
       process.stdout.write('Preview only — plans are generated and inspected, and nothing is executed.\n');
       process.stdout.write('Run `npm run start:execute` to attach the local executor.\n');

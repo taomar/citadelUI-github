@@ -6,13 +6,17 @@ import {
 
 export const TEST_BOOTSTRAP_CAPABILITY = 'A'.repeat(43);
 
-export async function claimLocalSession(baseUrl, bootstrapCapability = TEST_BOOTSTRAP_CAPABILITY) {
+export async function claimLocalSession(
+  baseUrl,
+  bootstrapCapability = TEST_BOOTSTRAP_CAPABILITY,
+  { origin = baseUrl } = {},
+) {
   const response = await fetch(new URL(LOCAL_SESSION_CLAIM_PATH, baseUrl), {
     method: 'POST',
     headers: {
       Accept: 'application/json',
       'Content-Type': 'application/json',
-      Origin: baseUrl,
+      Origin: origin,
       'Sec-Fetch-Site': 'same-origin',
       [LOCAL_SESSION_BOOTSTRAP_HEADER]: bootstrapCapability,
     },

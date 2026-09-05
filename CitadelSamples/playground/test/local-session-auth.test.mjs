@@ -292,16 +292,25 @@ test('a restart rotates both bootstrap admission and the session cookie', async 
   const first = await startServer();
   const firstLaunch = new URL(first.server.localSessionAuth.launchUrl(first.baseUrl));
   const firstBootstrap = new URLSearchParams(firstLaunch.hash.slice(1)).get('bootstrap');
-  const firstClaim = await claimLocalSession(first.baseUrl, firstBootstrap);
+  assert.equal((await claimRequest(first.baseUrl, firstBootstrap)).status, 403);
+  const firstClaim = await claimLocalSession(first.baseUrl, firstBootstrap, { origin: firstLaunch.origin });
   await first.close();
 
   const second = await startServer();
   try {
     const secondLaunch = new URL(second.server.localSessionAuth.launchUrl(second.baseUrl));
     const secondBootstrap = new URLSearchParams(secondLaunch.hash.slice(1)).get('bootstrap');
+    assert.match(firstLaunch.hostname, /^citadel-[a-f0-9]{32}\.localhost$/);
+    assert.match(secondLaunch.hostname, /^citadel-[a-f0-9]{32}\.localhost$/);
+    assert.notEqual(secondLaunch.hostname, firstLaunch.hostname);
     assert.notEqual(secondBootstrap, firstBootstrap);
-    assert.equal((await claimRequest(second.baseUrl, firstBootstrap)).status, 401);
-    const secondClaim = await claimLocalSession(second.baseUrl, secondBootstrap);
+    assert.equal(
+      (await claimRequest(second.baseUrl, firstBootstrap, {
+        headers: { Origin: secondLaunch.origin },
+      })).status,
+      401,
+    );
+    const secondClaim = await claimLocalSession(second.baseUrl, secondBootstrap, { origin: secondLaunch.origin });
     assert.notEqual(secondClaim.cookie, firstClaim.cookie);
 
     const staleSession = await second.rawCall('/api/self-test', {
@@ -340,9 +349,11 @@ test('every privileged local POST is denied before managers, spawns, or relay cr
     },
     executionContextManager: {
       describe: async () => record('identity.describe', {}),
-      startLogin: () => record('identity.startLogin', {}),
-      statusLogin: () => record('identity.statusLogin', {}),
-      cancelLogin: () => record('identity.cancelLogin', {}),
+      startSystemLogin: () => record('identity.startSystemLogin', {}),
+      statusSystemLogin: () => record('identity.statusSystemLogin', {}),
+      cancelSystemLogin: () => record('identity.cancelSystemLogin', {}),
+      listSubscriptions: () => record('identity.listSubscriptions', {}),
+      activateSubscription: () => record('identity.activateSubscription', {}),
       cancelAll() {},
     },
     relay: {
@@ -371,9 +382,23 @@ test('every privileged local POST is denied before managers, spawns, or relay cr
           gateway: null,
         }),
       ],
-      ['/api/azure-login/start', JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION })],
-      ['/api/azure-login/status', JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION, loginId: 'login-0001' })],
-      ['/api/azure-login/cancel', JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION, loginId: 'login-0001' })],
+      ['/api/azure-auth/start', JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION })],
+      [
+        '/api/azure-auth/status',
+        JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION, loginId: 'azure-system-login' }),
+      ],
+      [
+        '/api/azure-auth/cancel',
+        JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION, loginId: 'azure-system-login' }),
+      ],
+      ['/api/azure-subscriptions/list', JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION })],
+      [
+        '/api/azure-subscriptions/activate',
+        JSON.stringify({
+          protocolVersion: EXECUTION_PROTOCOL_VERSION,
+          subscriptionId: '00000000-1111-2222-3333-444444444444',
+        }),
+      ],
       ['/api/execute', '{}'],
       ['/api/self-test', JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION })],
       ['/api/source/azure-context-check/validate', JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION })],

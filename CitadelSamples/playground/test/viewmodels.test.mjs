@@ -34,7 +34,7 @@ import { FAKE_API_KEY, FIXTURE_SECRETS, makeEmptyReader, makeFixtureReader } fro
 const capability = createUnavailableExecutor().describeCapability();
 const read = makeFixtureReader();
 
-test('execution identity stays honest while unavailable and maps safe ready context', () => {
+test('execution identity stays honest while unavailable and maps the separated Azure context', () => {
   const unavailable = buildExecutionIdentityModel({
     contextState: { status: 'unavailable', message: 'Start with npm run start:execute.' },
   });
@@ -42,31 +42,92 @@ test('execution identity stays honest while unavailable and maps safe ready cont
   assert.equal(unavailable.canSignIn, false);
   assert.match(unavailable.summary, /start:execute/);
 
-  const ready = buildExecutionIdentityModel({
-    contextState: {
+  const refreshingAzure = buildExecutionIdentityModel({
+    sampleId: 'azure-context-check',
+    contextState: { status: 'loading' },
+    loginState: {
       status: 'ready',
-      context: {
+      login: {
+        loginId: 'azure-system-login',
+        state: 'waiting-system-ui',
+        message: 'Complete sign-in in the system account UI.',
+      },
+    },
+    azureAuthCapability: { systemLoginAllowed: true },
+  });
+  assert.equal(refreshingAzure.login.cancelAvailable, true);
+
+  const failedStart = buildExecutionIdentityModel({
+    sampleId: 'azure-context-check',
+    contextState: {
+      status: 'stale',
+      message: 'Execution identity must be refreshed after Azure sign-in finishes.',
+    },
+    loginState: {
+      status: 'error',
+      message: 'Azure sign-in start could not be confirmed.',
+    },
+    azureAuthCapability: { systemLoginAllowed: true },
+  });
+  assert.equal(failedStart.canSignIn, true);
+  assert.equal(failedStart.canRefresh, true);
+  assert.equal(failedStart.login.cancelAvailable, false);
+
+  const azureContext = {
         kind: 'azure-cli-management',
         label: 'Azure CLI user',
         summary: 'Signed in for this local operator run.',
-        state: 'ready',
+        state: 'ready-to-attempt',
         canExecute: true,
-        authority: {
-          type: 'azure-cli-user',
+        signedInAccount: {
+          state: 'signed-in',
           principalName: 'Ada Lovelace',
           principalType: 'user',
           tenantId: 'tenant-1',
         },
-        subscription: { activeId: 'sub-1', activeName: 'Sandbox', configuredId: 'sub-1', matches: true },
+        executionCredential: { type: 'azure-cli-user', source: 'azure-cli' },
+        activeCliSubscription: { id: 'sub-1', name: 'Sandbox', tenantId: 'tenant-1' },
+        intendedTarget: { subscriptionId: 'sub-1', matchesActive: true },
+        authorization: { state: 'not-checked', label: 'Authorization Not Checked' },
         guarantees: { tokensExposed: false, credentialsPersisted: false },
-      },
+  };
+  const azureAuthCapability = {
+    systemLoginAllowed: true,
+    subscriptionsAvailable: true,
+    accountSwitchLabel: 'Switch Azure account',
+    warning: 'Changes the shared CLI default.',
+  };
+  const ready = buildExecutionIdentityModel({
+    contextState: {
+      status: 'ready',
+      context: azureContext,
     },
+    azureAuthCapability,
   });
   assert.equal(ready.runsAs, 'Ada Lovelace');
-  assert.equal(ready.credentialSource, 'Azure CLI device sign-in');
-  assert.equal(ready.subscription.matches, true);
+  assert.equal(ready.credentialSource, 'Local Azure CLI credential cache');
+  assert.equal(ready.intendedTarget.matchesActive, true);
+  assert.equal(ready.badge.label, 'Ready to Attempt');
   assert.equal(ready.canSignIn, true);
+  assert.equal(ready.canRefresh, true);
   assert.equal(ready.signInLabel, 'Switch Azure account');
+  assert.equal(ready.subscriptionControl.status, 'idle');
+  assert.equal(ready.subscriptionControl.canRefresh, true);
+  assert.equal(ready.subscriptionControl.canSelect, true);
+
+  const subscriptionsLoading = buildExecutionIdentityModel({
+    contextState: { status: 'ready', context: azureContext },
+    azureAuthCapability,
+    subscriptionsState: {
+      status: 'loading',
+      subscriptions: [{ id: 'sub-1', name: 'Sandbox' }],
+      selectedId: 'sub-1',
+    },
+  });
+  assert.equal(subscriptionsLoading.subscriptionControl.busy, true);
+  assert.equal(subscriptionsLoading.subscriptionControl.canRefresh, false);
+  assert.equal(subscriptionsLoading.subscriptionControl.canSelect, false);
+  assert.equal(subscriptionsLoading.subscriptionControl.canActivate, false);
 });
 
 test('execution identity offers account switching for a subscription mismatch', () => {
@@ -79,22 +140,25 @@ test('execution identity offers account switching for a subscription mismatch', 
         summary: 'The active subscription does not match.',
         state: 'subscription-mismatch',
         canExecute: false,
-        authority: {
-          type: 'azure-cli-user',
+        signedInAccount: {
+          state: 'signed-in',
           principalName: 'Ada Lovelace',
           principalType: 'user',
           tenantId: 'tenant-1',
         },
-        subscription: { activeId: 'sub-1', activeName: 'Sandbox', configuredId: 'sub-2', matches: false },
+        executionCredential: { type: 'azure-cli-user', source: 'azure-cli' },
+        activeCliSubscription: { id: 'sub-1', name: 'Sandbox', tenantId: 'tenant-1' },
+        intendedTarget: { subscriptionId: 'sub-2', matchesActive: false },
       },
     },
+    azureAuthCapability: { systemLoginAllowed: true, accountSwitchLabel: 'Switch Azure account' },
   });
 
   assert.equal(model.canSignIn, true);
   assert.equal(model.signInLabel, 'Switch Azure account');
 });
 
-test('execution identity exposes device login without treating it as ready', () => {
+test('execution identity exposes system login without device fields', () => {
   const model = buildExecutionIdentityModel({
     contextState: {
       status: 'ready',
@@ -104,27 +168,28 @@ test('execution identity exposes device login without treating it as ready', () 
         summary: 'Sign in before this sample can run.',
         state: 'signed-out',
         canExecute: false,
+        signedInAccount: { state: 'signed-out', principalName: null, principalType: null, tenantId: null },
+        executionCredential: { type: 'azure-cli-user', source: 'azure-cli' },
       },
     },
     loginState: {
       status: 'ready',
       login: {
-        loginId: 'login-1',
-        state: 'waiting-for-user',
-        verificationUrl: 'https://microsoft.com/devicelogin',
-        userCode: 'ABCD-EFGH',
-        message: 'Enter this code.',
+        loginId: 'azure-system-login',
+        state: 'waiting-system-ui',
+        message: 'Complete sign-in in the system account UI.',
       },
     },
+    azureAuthCapability: { systemLoginAllowed: true, loginId: 'azure-system-login' },
   });
 
   assert.equal(model.canSignIn, false);
   assert.equal(model.login.active, true);
-  assert.equal(model.login.userCode, 'ABCD-EFGH');
-  assert.notEqual(model.badge.label, 'Ready');
+  assert.equal('userCode' in model.login, false);
+  assert.notEqual(model.badge.label, 'Ready to Attempt');
 });
 
-test('a failed in-flight login remains cancellable and must be cancelled before retry', () => {
+test('a terminal failed login can be retried and is not presented as cancellable', () => {
   const model = buildExecutionIdentityModel({
     contextState: {
       status: 'ready',
@@ -134,62 +199,88 @@ test('a failed in-flight login remains cancellable and must be cancelled before 
         summary: 'Sign in before this sample can run.',
         state: 'signed-out',
         canExecute: false,
+        signedInAccount: { state: 'signed-out', principalName: null, principalType: null, tenantId: null },
+        executionCredential: { type: 'azure-cli-user', source: 'azure-cli' },
       },
     },
     loginState: {
       status: 'ready',
       login: {
-        loginId: 'azure-login-0001',
+        loginId: 'azure-system-login',
         state: 'failed',
         message: 'Status could not be refreshed.',
       },
     },
+    azureAuthCapability: { systemLoginAllowed: true, loginId: 'azure-system-login' },
   });
-  assert.equal(model.canSignIn, false);
-  assert.equal(model.login.cancelAvailable, true);
-  assert.equal(model.login.id, 'azure-login-0001');
+  assert.equal(model.canSignIn, true);
+  assert.equal(model.login.cancelAvailable, false);
+  assert.equal(model.login.id, 'azure-system-login');
 });
 
-test('execution identity names gateway, offline Python, hosted, and deferred credential sources', () => {
-  const modelFor = (context) =>
-    buildExecutionIdentityModel({ contextState: { status: 'ready', context: { canExecute: false, ...context } } });
+test('gateway, offline Python, hosted, and deferred contexts expose no local Azure controls', () => {
+  const modelFor = (context, loginState = {}) =>
+    buildExecutionIdentityModel({
+      contextState: { status: 'ready', context: { canExecute: false, ...context } },
+      loginState,
+      azureAuthCapability: { systemLoginAllowed: true, subscriptionsAvailable: true },
+    });
+  const activeLogin = {
+    status: 'ready',
+    login: {
+      loginId: 'azure-system-login',
+      state: 'waiting-system-ui',
+      message: 'Complete sign-in in the system account UI.',
+    },
+  };
+  const terminalLogin = {
+    status: 'ready',
+    login: {
+      loginId: 'azure-system-login',
+      state: 'ready',
+      message: 'Azure sign-in completed.',
+    },
+  };
 
-  assert.equal(
-    modelFor({
+  for (const context of [
+    {
       kind: 'gateway-key',
       label: 'Gateway key',
       summary: 'A key is required.',
       state: 'missing-key',
       gateway: { keyPresent: false, headerName: 'api-key' },
-    }).credentialSource,
-    'APIM subscription key held in this browser tab',
-  );
-  assert.equal(
-    modelFor({
+    },
+    {
       kind: 'offline-python',
       label: 'Offline Python parser',
       summary: 'No cloud contact.',
       state: 'ready',
-    }).runsAs,
-    'Local parser only',
-  );
-  assert.equal(
-    modelFor({
+    },
+    {
       kind: 'hosted-relay',
       label: 'Hosted relay',
       summary: 'Managed identity.',
       state: 'ready',
-    }).credentialSource,
-    'Hosted managed identity',
-  );
-  assert.equal(
-    modelFor({
+    },
+    {
       kind: 'future-hosted-process',
       label: 'Future hosted process',
       summary: 'No isolated worker exists yet.',
       state: 'deferred',
-    }).runsAs,
-    'No hosted process identity',
+    },
+  ]) {
+    for (const loginState of [activeLogin, terminalLogin]) {
+      const model = modelFor(context, loginState);
+      assert.equal(model.canSignIn, false);
+      assert.equal(model.canRefresh, false);
+      assert.equal(model.login, null);
+      assert.equal(model.subscriptionControl, null);
+    }
+  }
+  assert.equal(modelFor({ kind: 'offline-python', label: 'Offline', summary: '', state: 'ready' }).runsAs, 'Local parser only');
+  assert.equal(
+    modelFor({ kind: 'hosted-relay', label: 'Hosted', summary: '', state: 'ready' }).credentialSource,
+    'Hosted managed identity',
   );
 });
 

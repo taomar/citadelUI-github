@@ -115,7 +115,8 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
     ?? subscriptions[0]?.id
     ?? '';
   const signedIn = identity.state === 'ready' || Boolean(identity.account);
-  const busy = ['starting', 'waiting-system-ui', 'verifying'].includes(identity.state);
+  const loginBusy = ['starting', 'waiting-system-ui', 'verifying', 'cancel-requested'].includes(identity.state);
+  const busy = loginBusy || identity.subscriptionBusy === true;
 
   let body;
   if (kind === 'gateway-key') {
@@ -164,6 +165,7 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
             autocomplete: 'off',
             disabled:
               subscriptions.length === 0
+              || identity.canSelectSubscription === false
               || typeof callbacks.onIdentitySubscriptionChange !== 'function',
             onchange: (event) => {
               selectedId = event.target.value;
@@ -190,7 +192,7 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
             || identity.verifying === true
             || typeof callbacks.onIdentityVerify !== 'function',
           'aria-busy': identity.verifying === true ? 'true' : undefined,
-          text: 'Verify',
+          text: 'Refresh Azure CLI Status',
           onclick: () => callbacks.onIdentityVerify?.(),
         }),
         el('button', {
@@ -203,7 +205,7 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
           text: 'Set Active',
           onclick: () => callbacks.onIdentitySetActive?.(selectedId),
         }),
-        busy && identity.canCancel === true
+        loginBusy && identity.canCancel === true
           ? el('button', {
               type: 'button',
               class: 'dossier-identity-action',
@@ -220,20 +222,18 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
     ];
   } else if (localAuthContext(identity)) {
     body = [
-      identityFact('System sign-in', 'Unavailable in this adapter'),
+      identityFact('System sign-in', 'Disabled for this launch'),
       el('p', {
         class: 'dossier-terminal-fallback-note',
         text: identity.terminalFallback?.message
-          ?? 'Continue in the terminal, then return here and verify the active account.',
+          ?? 'Run az login in a trusted terminal, then refresh Azure CLI status here.',
       }),
       el('button', {
         type: 'button',
         class: 'dossier-identity-action',
-        disabled:
-          identity.terminalFallback?.available === false
-          || typeof callbacks.onIdentityTerminalFallback !== 'function',
-        text: 'Continue in terminal',
-        onclick: () => callbacks.onIdentityTerminalFallback?.(),
+        disabled: identity.canVerify !== true || typeof callbacks.onIdentityVerify !== 'function',
+        text: 'Refresh Azure CLI Status',
+        onclick: () => callbacks.onIdentityVerify?.(),
       }),
     ];
   } else {

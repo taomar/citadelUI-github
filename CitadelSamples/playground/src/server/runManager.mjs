@@ -78,7 +78,15 @@ export function createRunManager({
     let contract;
     let activeRun;
     let executionStarted = false;
+    let releaseIdentityLease = () => {};
     try {
+      if (typeof identity.acquireRunLease === 'function') {
+        const release = identity.acquireRunLease();
+        if (typeof release !== 'function') {
+          throw new Error('The execution-context run lease did not return a release function.');
+        }
+        releaseIdentityLease = release;
+      }
       throwIfStartAborted(controller.signal);
       request = validateRunRequest(payload, catalogue);
       reservation.sampleId = request.sample.id;
@@ -96,6 +104,7 @@ export function createRunManager({
                   headerName: resolvedInputs['gatewayAccess.subscriptionKeyHeader'],
                 }
               : null,
+          reviewedIdentity: request.reviewedIdentity,
         },
         { signal: controller.signal },
       );
@@ -178,6 +187,7 @@ export function createRunManager({
       if (cancelled) throw cancelledBeforeStart();
       throw error;
     } finally {
+      releaseIdentityLease();
       reservations.delete(reservation);
       signal?.removeEventListener('abort', abortFromCaller);
       resolveDone();

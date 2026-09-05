@@ -142,6 +142,7 @@ test('the Output contract contains only Transcript, Evidence, and Artifacts with
   const container = new FakeNode('div');
   renderOutput(container, baseModel());
 
+  assert.equal(container.childNodes[0].attributes.get('id'), 'dossier-output');
   const tablists = byRole(container, 'tablist');
   const tabs = byRole(container, 'tab');
   const panels = byRole(container, 'tabpanel');

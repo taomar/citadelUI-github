@@ -1094,6 +1094,53 @@ test('an unknown sample, input key, secret key or protocol version is refused', 
   );
 });
 
+test('reviewed identity has one exact safe shape and is Azure-only', () => {
+  const valid = {
+    protocolVersion: EXECUTION_PROTOCOL_VERSION,
+    sampleId: 'azure-context-check',
+    inputs: {},
+    reviewedIdentity: {
+      principalName: 'operator@example.test',
+      principalType: 'user',
+      tenantId: 'tenant-1',
+      subscriptionId: '00000000-1111-2222-3333-444444444444',
+    },
+  };
+  assert.deepEqual(validateRunRequest(valid, CATALOGUE).reviewedIdentity, valid.reviewedIdentity);
+  assert.throws(
+    () => validateRunRequest({
+      ...valid,
+      reviewedIdentity: { ...valid.reviewedIdentity, command: 'az login' },
+    }, CATALOGUE),
+    (error) => error instanceof RequestRefused && error.code === 'invalid-reviewed-identity',
+  );
+  for (const principalType of ['service-principal', 'managed-identity']) {
+    assert.equal(
+      validateRunRequest({
+        ...valid,
+        reviewedIdentity: { ...valid.reviewedIdentity, principalType },
+      }, CATALOGUE).reviewedIdentity.principalType,
+      principalType,
+    );
+  }
+  assert.throws(
+    () => validateRunRequest({
+      ...valid,
+      sampleId: 'weather-mcp-discovery',
+    }, CATALOGUE),
+    (error) => error instanceof RequestRefused && error.code === 'unexpected-reviewed-identity',
+  );
+  assert.throws(
+    () => validateRunRequest({
+      protocolVersion: EXECUTION_PROTOCOL_VERSION,
+      sampleId: 'weather-mcp-discovery',
+      inputs: {},
+      reviewedIdentity: null,
+    }, CATALOGUE),
+    (error) => error instanceof RequestRefused && error.code === 'unexpected-reviewed-identity',
+  );
+});
+
 test('a secret sent as an ordinary input is refused', () => {
   assert.throws(
     () =>

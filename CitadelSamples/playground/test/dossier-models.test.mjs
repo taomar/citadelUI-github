@@ -21,12 +21,14 @@ test('the account control supports the complete launch-gated state vocabulary', 
     'starting',
     'waiting-system-ui',
     'verifying',
+    'cancel-requested',
     'device-fallback-blocked',
     'status-unknown',
     'cancelled',
     'failed',
     'timed-out',
     'ready',
+    'subscription-disabled',
     'subscription-mismatch',
   ]);
 });
@@ -41,6 +43,8 @@ test('account switching fails closed without an advertised system-browser launch
     canCancel: false,
     canVerify: false,
     canSetActive: false,
+    canSelect: false,
+    subscriptionsBusy: false,
     activeAccountId: '',
     activeSubscriptionId: '',
     intendedSubscriptionId: '',
@@ -52,6 +56,10 @@ test('account switching fails closed without an advertised system-browser launch
   assert.equal(normalizeAccountControlState({ state: 'unknown-state', canLaunch: true }).state, 'login-disabled');
   assert.equal(
     normalizeAccountControlState({ state: 'subscription-mismatch', canSetActive: true }).canSetActive,
+    true,
+  );
+  assert.equal(
+    normalizeAccountControlState({ state: 'subscription-disabled', canSetActive: true }).canSetActive,
     true,
   );
   assert.equal(
@@ -69,6 +77,42 @@ test('identity fails closed when neither execution context nor account adapter r
   assert.equal(identity.authorization.ready, false);
   assert.equal(identity.authorization.label, 'Not Ready');
   assert.match(identity.authorization.detail, /system-browser launch capability/i);
+});
+
+test('the dossier consumes the separated signed-in account and subscription context', () => {
+  const identity = buildDossierIdentityModel({
+    contextState: {
+      status: 'ready',
+      context: {
+        kind: 'azure-cli-management',
+        label: 'Local Azure CLI user',
+        summary: 'Ready to attempt.',
+        state: 'ready-to-attempt',
+        canExecute: true,
+        signedInAccount: {
+          state: 'signed-in',
+          principalName: 'operator@example.test',
+          principalType: 'user',
+          tenantId: 'tenant-1',
+        },
+        executionCredential: { type: 'azure-cli-user', source: 'azure-cli' },
+        activeCliSubscription: { id: 'sub-active', name: 'Active', tenantId: 'tenant-1' },
+        intendedTarget: { subscriptionId: 'sub-target', matchesActive: false },
+        authorization: { state: 'not-checked', label: 'Authorization Not Checked' },
+      },
+    },
+  });
+  assert.equal(identity.human, 'operator@example.test');
+  assert.equal(identity.runsAs, 'operator@example.test');
+  assert.equal(identity.tenantId, 'tenant-1');
+  assert.deepEqual(identity.subscription, {
+    activeId: 'sub-active',
+    activeName: 'Active',
+    intendedId: 'sub-target',
+    matches: false,
+  });
+  assert.equal(identity.authorization.label, 'Ready to Attempt');
+  assert.equal(identity.accountControl.visible, true);
 });
 
 test('gateway identity has no Azure account switcher and never overclaims authorization', () => {
@@ -95,6 +139,27 @@ test('gateway identity has no Azure account switcher and never overclaims author
   assert.equal(identity.human, 'Browser Session');
   assert.equal(identity.accountControl.visible, false);
   assert.equal(identity.authorization.label, 'Ready to Attempt');
+});
+
+test('offline identity never exposes local Azure account controls', () => {
+  const identity = buildDossierIdentityModel({
+    contextState: {
+      status: 'ready',
+      context: {
+        kind: 'offline-python',
+        state: 'ready',
+        canExecute: true,
+        label: 'Local parser',
+        summary: 'No cloud contact.',
+      },
+    },
+    accountControlState: {
+      state: 'ready',
+      canLaunch: true,
+      launchMode: 'system-browser',
+    },
+  });
+  assert.equal(identity.accountControl.visible, false);
 });
 
 test('hosted identity exposes the complete relay authority chain', () => {

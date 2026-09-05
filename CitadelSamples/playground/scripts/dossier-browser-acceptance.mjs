@@ -11,10 +11,14 @@ import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { createPlaygroundServer } from '../server.mjs';
+import { createExecutionContextManager } from '../src/server/executionContextManager.mjs';
 import { createCheckReporter, launchBrowserHarness } from './browser-harness.mjs';
 
 const ARTIFACT_DIRECTORY = fileURLToPath(new URL('../.artifacts/dossier/', import.meta.url));
+const PLAYGROUND_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SECRET = 'DOSSIER-ACCEPTANCE-SECRET';
+const ACTIVE_SUBSCRIPTION_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+const ALTERNATE_SUBSCRIPTION_ID = '00000000-1111-2222-3333-444444444444';
 
 export const DOSSIER_ACCEPTANCE_SCENARIOS = Object.freeze([
   Object.freeze({
@@ -441,6 +445,23 @@ async function navigateToRecipe(harness, recipeId, stepId = 'account-target') {
   await installTestExecutor(harness);
 }
 
+async function malformedWizardUrlSnapshot(harness) {
+  await harness.evaluate("globalThis.__dossierNavigationMarker = 'pending'");
+  const url = new URL(harness.baseUrl);
+  url.searchParams.set('testExecutor', '');
+  url.searchParams.set('recipe', 'publish-assets');
+  await harness.page.send('Page.navigate', { url: `${url.href}#step=%` });
+  await harness.waitFor(
+    "globalThis.__dossierNavigationMarker !== 'pending'",
+    { timeoutMs: 30_000, label: 'malformed wizard URL navigation' },
+  );
+  await waitForWizard(harness, 'publish-assets');
+  return harness.evaluate(`(() => ({
+    step: document.querySelector('[data-wizard-step]')?.dataset.wizardStep ?? '',
+    hash: location.hash,
+  }))()`);
+}
+
 async function setValues(harness, values) {
   await harness.evaluate(`(() => {
     const values = ${JSON.stringify(values)};
@@ -590,7 +611,7 @@ async function wizardSnapshot(harness) {
       identityKind: document.querySelector('.execution-context-bar')?.dataset.identityKind ?? '',
       azureAccountControls: /Sign in with Microsoft|Switch Azure account|Account \\/ subscription|Set Active/
         .test(document.body.textContent ?? ''),
-      terminalFallback: /Continue in terminal/.test(document.body.textContent ?? ''),
+      terminalFallback: /Refresh Azure CLI Status/.test(document.body.textContent ?? ''),
       deviceFlowContent: /device\\s*code|microsoft\\.com\\/devicelogin/i.test(document.body.textContent ?? ''),
       futureStepDisabled: [...document.querySelectorAll('.wizard-step-link')]
         .filter((button) => button.getAttribute('aria-current') !== 'step')
@@ -1523,6 +1544,7 @@ async function runScenario(harness, reporter, scenario) {
       reporter.check(
         `${scenario.name}: unsupported browser login fails closed to terminal handoff`,
         wizard.terminalFallback && !wizard.azureAccountControls,
+        JSON.stringify(wizard),
       );
     }
   }
@@ -1654,6 +1676,171 @@ async function runScenario(harness, reporter, scenario) {
   }
 
   await captureScreenshot(harness, scenario);
+}
+
+function fakeAzureIdentityManager() {
+  let activeSubscriptionId = ACTIVE_SUBSCRIPTION_ID;
+  const account = () =>
+    JSON.stringify({
+      id: activeSubscriptionId,
+      name:
+        activeSubscriptionId === ACTIVE_SUBSCRIPTION_ID
+          ? 'Acceptance subscription'
+          : 'Alternate subscription',
+      tenantId: 'tenant-acceptance',
+      user: { name: 'operator@example.test', type: 'user' },
+      isDefault: true,
+      state: 'Enabled',
+    });
+  const subscriptions = () =>
+    JSON.stringify(
+      [
+        [ACTIVE_SUBSCRIPTION_ID, 'Acceptance subscription'],
+        [ALTERNATE_SUBSCRIPTION_ID, 'Alternate subscription'],
+      ].map(([id, name]) => ({
+        id,
+        name,
+        tenantId: 'tenant-acceptance',
+        user: { name: 'operator@example.test', type: 'user' },
+        isDefault: id === activeSubscriptionId,
+        state: 'Enabled',
+      })),
+    );
+  const spawn = async (options) => {
+    if (options.args[0] === 'login') {
+      return new Promise((resolvePromise) => {
+        options.signal.addEventListener(
+          'abort',
+          () => resolvePromise({ code: -1, stdout: '', stderr: '', timedOut: false, aborted: true }),
+          { once: true },
+        );
+      });
+    }
+    if (options.args[0] === 'account' && options.args[1] === 'show') {
+      return { code: 0, stdout: account(), stderr: '', timedOut: false, aborted: false };
+    }
+    if (options.args[0] === 'account' && options.args[1] === 'list') {
+      return { code: 0, stdout: subscriptions(), stderr: '', timedOut: false, aborted: false };
+    }
+    if (options.args[0] === 'account' && options.args[1] === 'set') {
+      await new Promise((done) => setTimeout(done, 75));
+      activeSubscriptionId = options.args[3];
+      return { code: 0, stdout: '', stderr: '', timedOut: false, aborted: false };
+    }
+    throw new Error(`Unexpected fake Azure CLI command: ${options.args.join(' ')}`);
+  };
+  return createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    allowSystemAzureLogin: true,
+    transports: { spawn },
+  });
+}
+
+async function checkSystemAzureIdentityControls(reporter) {
+  const harness = await launchBrowserHarness({
+    browserPath: argumentValue('--chrome'),
+    createServer: ({ port, testBootstrapCapability }) =>
+      createPlaygroundServer({
+        port,
+        mode: 'execute',
+        publicOrigin: null,
+        allowSystemAzureLogin: true,
+        executionContextManager: fakeAzureIdentityManager(),
+        testBootstrapCapability,
+      }),
+    path: '/',
+  });
+  try {
+    await harness.waitFor(
+      "document.querySelector('[data-wizard-step]') && document.querySelector('.dossier-current-id')?.textContent === 'azure-context-check'",
+      { timeoutMs: 30_000, label: 'Azure identity wizard' },
+    );
+    await harness.waitFor(
+      "document.querySelectorAll('#dossier-account-subscription option').length === 2",
+      { label: 'server-enumerated Azure subscriptions' },
+    );
+    const initial = await harness.evaluate(`(() => ({
+      signIn: document.querySelector('.dossier-identity-action-primary')?.textContent ?? '',
+      options: [...document.querySelectorAll('#dossier-account-subscription option')].map((option) => option.value),
+      selected: document.getElementById('dossier-account-subscription')?.value ?? '',
+      configurationExports: Boolean(document.querySelector('.configure-exports')),
+      deviceMaterial: /device\\s*code|verificationUrl|userCode|devicelogin/i.test(document.documentElement.outerHTML),
+    }))()`);
+    reporter.check(
+      'the wizard consumes the advertised system login and subscription capabilities',
+      initial.signIn === 'Switch Azure account' &&
+        initial.options.length === 2 &&
+        initial.selected === ACTIVE_SUBSCRIPTION_ID &&
+        initial.configurationExports &&
+        !initial.deviceMaterial,
+      JSON.stringify(initial),
+    );
+
+    await harness.evaluate("document.querySelector('.dossier-identity-action-primary')?.click()");
+    await harness.waitFor(
+      "[...document.querySelectorAll('.dossier-identity-action')].some((button) => button.textContent === 'Cancel sign-in')",
+      { label: 'cancellable system Azure login' },
+    );
+    const pending = await harness.evaluate(`(() => ({
+      cancel: [...document.querySelectorAll('.dossier-identity-action')].some((button) => button.textContent === 'Cancel sign-in'),
+      deviceMaterial: /device\\s*code|verificationUrl|userCode|devicelogin/i.test(document.documentElement.outerHTML),
+    }))()`);
+    reporter.check(
+      'system Azure login is cancellable without exposing device-flow material',
+      pending.cancel && !pending.deviceMaterial,
+      JSON.stringify(pending),
+    );
+    await harness.evaluate(
+      "[...document.querySelectorAll('.dossier-identity-action')].find((button) => button.textContent === 'Cancel sign-in')?.click()",
+    );
+    await harness.waitFor(
+      "document.querySelector('.dossier-identity-action-primary')?.textContent === 'Switch Azure account'",
+      { label: 'cancelled login recovery' },
+    );
+
+    await harness.evaluate(`(() => {
+      const select = document.getElementById('dossier-account-subscription');
+      select.value = ${JSON.stringify(ALTERNATE_SUBSCRIPTION_ID)};
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`);
+    await harness.waitFor(
+      "[...document.querySelectorAll('.dossier-identity-action')].some((button) => button.textContent === 'Set Active' && !button.disabled)",
+      { label: 'enabled Azure subscription activation' },
+    );
+    const recipeDuringActivation = await harness.evaluate(`(async () => {
+      [...document.querySelectorAll('.dossier-identity-action')]
+        .find((button) => button.textContent === 'Set Active' && !button.disabled)?.click();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      document.querySelector('[data-recipe-id="weather-mcp-discovery"]')?.click();
+      return document.querySelector('.dossier-current-id')?.textContent ?? '';
+    })()`);
+    reporter.equal(
+      'recipe navigation is locked while the shared Azure subscription changes',
+      recipeDuringActivation,
+      'azure-context-check',
+    );
+    await harness.waitFor(
+      `document.getElementById('dossier-account-subscription')?.value === ${JSON.stringify(ALTERNATE_SUBSCRIPTION_ID)} &&
+       [...document.querySelectorAll('.dossier-identity-action')]
+         .find((button) => button.textContent === 'Set Active')?.disabled === true`,
+      { label: 'verified Azure subscription activation' },
+    );
+    reporter.check(
+      'subscription activation reconciles the wizard to the verified shared CLI default',
+      await harness.evaluate(
+        `document.getElementById('dossier-account-subscription')?.value === ${JSON.stringify(ALTERNATE_SUBSCRIPTION_ID)}`,
+      ),
+    );
+    reporter.check(
+      'the system Azure capability flow reported no uncaught browser errors',
+      harness.pageErrors.length === 0,
+      harness.pageErrors.join('; '),
+    );
+  } finally {
+    await harness.close();
+  }
 }
 
 async function main() {
@@ -1923,6 +2110,13 @@ async function main() {
       JSON.stringify(blurRerender),
     );
 
+    const malformedUrl = await malformedWizardUrlSnapshot(harness);
+    reporter.check(
+      'a malformed wizard step fails closed without breaking startup',
+      malformedUrl.step === 'account-target' && malformedUrl.hash === '#step=account-target',
+      JSON.stringify(malformedUrl),
+    );
+
     reportIssues(
       reporter,
       'the browser attempted no Azure or live request',
@@ -1944,6 +2138,7 @@ async function main() {
     await harness.close();
   }
 
+  await checkSystemAzureIdentityControls(reporter);
   const outcome = reporter.finish();
   if (!outcome.ok) process.exitCode = 1;
 }

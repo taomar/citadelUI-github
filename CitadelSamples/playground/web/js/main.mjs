@@ -13,7 +13,12 @@ import {
 import { createRunProgress, reduceRunProgress } from '../../src/view/runProgress.mjs';
 import { buildDossierModel } from '../../src/view/dossierModels.mjs';
 import { claimBrowserSession, consumeBootstrapCapability } from './sessionAuth.mjs';
-import { buildExecutionContextProjection, createExecutionContextClient } from './executionContextClient.mjs';
+import {
+  azureAuthCapabilityFromPayload,
+  buildExecutionContextProjection,
+  createExecutionContextClient,
+  reconcileAzureContextCurrent,
+} from './executionContextClient.mjs';
 import { createLocalExecutorClient } from './localClient.mjs';
 import { renderShell } from './render/shell.mjs';
 import {
@@ -28,7 +33,7 @@ import {
 import { renderOutput } from './render/output.mjs';
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
-const ACCOUNT_BUSY_STATES = new Set(['starting', 'waiting-system-ui', 'verifying']);
+const ACCOUNT_BUSY_STATES = new Set(['starting', 'waiting-system-ui', 'verifying', 'cancel-requested']);
 const TEST_SUBSCRIPTION_ID = '00000000-1111-2222-3333-444444444444';
 const SERVER_RESOLVED_CREDENTIAL = 'server-resolved-credential';
 const WIZARD_STEP_DEFINITIONS = Object.freeze([
@@ -58,6 +63,7 @@ const state = {
   capabilities: null,
   executionContext: null,
   accountUi: null,
+  azureSubscriptions: { status: 'idle', subscriptions: [], message: '' },
   selectedSubscriptionId: '',
   selfTests: null,
   progress: null,
@@ -94,6 +100,13 @@ state.completedWizardStepsByRecipe.set(state.sample.id, state.completedWizardSte
 
 let appReady = false;
 let dialogReturnFocus = null;
+let azureLoginPollTimer = null;
+let azureLoginController = null;
+let azureLoginGeneration = 0;
+let azureLoginCancelRequested = false;
+let azureSubscriptionController = null;
+let azureSubscriptionGeneration = 0;
+let historyNavigationGeneration = 0;
 
 function replace(container, children) {
   container.replaceChildren(...children.filter(Boolean));
@@ -140,12 +153,28 @@ function safeMessage(error, fallback) {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+const WIZARD_HISTORY_INDEX_KEY = '__citadelWizardIndex';
+let wizardHistoryIndex = Number.isSafeInteger(history.state?.[WIZARD_HISTORY_INDEX_KEY])
+  ? history.state[WIZARD_HISTORY_INDEX_KEY]
+  : 0;
+let restoringWizardHistory = false;
+
+function decodeWizardStep(hash) {
+  if (!hash.startsWith('#step=')) return null;
+  try {
+    return decodeURIComponent(hash.slice('#step='.length));
+  } catch {
+    return null;
+  }
+}
+
 function readWizardUrl() {
   const url = new URL(location.href);
   const requestedRecipe = url.searchParams.get('recipe');
   const recipeId = sampleById.has(requestedRecipe) ? requestedRecipe : recipeIds[0];
-  const requestedStep = url.hash.startsWith('#step=')
-    ? decodeURIComponent(url.hash.slice('#step='.length))
+  const decodedStep = decodeWizardStep(url.hash);
+  const requestedStep = decodedStep
+    ? decodedStep
     : url.hash === '#stage=review'
       ? 'review-approve'
       : ['#stage=run', '#stage=result'].includes(url.hash)
@@ -168,7 +197,35 @@ function writeWizardUrl({ replaceHistory = false } = {}) {
   if (testExecutor && isTestExecutorAllowed()) url.searchParams.set('testExecutor', '');
   if (state.activeRunId) url.searchParams.set('run', state.activeRunId);
   url.hash = `step=${encodeURIComponent(state.wizardStep)}`;
-  history[replaceHistory ? 'replaceState' : 'pushState'](null, '', `${url.pathname}${url.search}${url.hash}`);
+  if (!replaceHistory) wizardHistoryIndex += 1;
+  history[replaceHistory ? 'replaceState' : 'pushState'](
+    { [WIZARD_HISTORY_INDEX_KEY]: wizardHistoryIndex },
+    '',
+    `${url.pathname}${url.search}${url.hash}`,
+  );
+}
+
+function restoreRejectedHistoryNavigation(event) {
+  const targetIndex = Number.isSafeInteger(event.state?.[WIZARD_HISTORY_INDEX_KEY])
+    ? event.state[WIZARD_HISTORY_INDEX_KEY]
+    : wizardHistoryIndex;
+  const delta = wizardHistoryIndex - targetIndex;
+  if (delta !== 0 && typeof history.go === 'function') {
+    restoringWizardHistory = true;
+    history.go(delta);
+    return;
+  }
+  writeWizardUrl({ replaceHistory: true });
+}
+
+function applyWizardRun(runId) {
+  if (runId === state.activeRunId) return;
+  state.activeRunId = runId;
+  if (state.progress?.meta?.runId !== runId) {
+    state.progress = null;
+    state.lastRevealedRunId = null;
+    state.completedWizardSteps.delete('run-result');
+  }
 }
 
 async function selectRecipeFromUi(id) {
@@ -177,13 +234,19 @@ async function selectRecipeFromUi(id) {
     announce('Cancel the active run before changing recipes.');
     return false;
   }
+  if (state.azureSubscriptions.status === 'activating') {
+    announce('Wait for Azure subscription activation to finish before changing recipes.');
+    return false;
+  }
   if (
     playgroundState.hasUnsavedChanges
     && !window.confirm('Change recipes and discard unsaved input changes? Credentials are never persisted.')
   ) {
     return false;
   }
+  const navigationGeneration = ++historyNavigationGeneration;
   await selectSample(id);
+  if (navigationGeneration !== historyNavigationGeneration) return false;
   writeWizardUrl();
   return true;
 }
@@ -199,6 +262,11 @@ function executionContextFingerprint(contextState) {
     kind: context.kind,
     state: context.state,
     canExecute: context.canExecute,
+    signedInAccount: context.signedInAccount ?? null,
+    executionCredential: context.executionCredential ?? null,
+    activeCliSubscription: context.activeCliSubscription ?? null,
+    intendedTarget: context.intendedTarget ?? null,
+    authorization: context.authorization ?? null,
     authority: context.authority ?? null,
     subscription: context.subscription ?? null,
     gateway: context.gateway ?? null,
@@ -246,10 +314,87 @@ function effectiveExecutorCapability() {
 }
 
 function accountControlState(contextState) {
-  return contextState?.accountControl
-    ?? contextState?.context?.accountControl
-    ?? contextState?.context?.systemBrowserAzureLogin
-    ?? {};
+  const descriptor = sampleExecutionContext(state.sample.id);
+  if (!isAzureCliContext(descriptor.kind)) return {};
+  const capability = azureAuthCapabilityFromPayload(state.capabilities);
+  const context = contextState?.status === 'ready' ? contextState.context : null;
+  const signedIn = context?.signedInAccount?.state === 'signed-in' || Boolean(context?.authority?.principalName);
+  const principal = signedIn
+    ? {
+        principalName: context?.signedInAccount?.principalName || context?.authority?.principalName,
+        principalType: context?.signedInAccount?.principalType || context?.authority?.principalType || 'user',
+        tenantId: context?.signedInAccount?.tenantId || context?.authority?.tenantId,
+      }
+    : null;
+  const accountId = principal
+    ? `${principal.principalType}:${principal.tenantId}:${principal.principalName}`
+    : '';
+  const login = state.accountUi?.login ?? null;
+  const loginState = state.accountUi?.state;
+  const contextStateName =
+    context?.state === 'ready-to-attempt'
+      ? 'ready'
+      : context?.state === 'subscription-disabled'
+        ? 'subscription-disabled'
+      : context?.state === 'subscription-mismatch'
+        ? 'subscription-mismatch'
+        : context?.state === 'signed-out'
+          ? 'signed-out'
+          : 'status-unknown';
+  const controlState = loginState || contextStateName;
+  const loginBusy = ACCOUNT_BUSY_STATES.has(controlState);
+  const subscriptionsBusy = ['loading', 'activating'].includes(state.azureSubscriptions.status);
+  const activeSubscriptionId =
+    context?.activeCliSubscription?.id ?? context?.subscription?.activeId ?? '';
+  const selectedSubscriptionId =
+    state.selectedSubscriptionId ||
+    context?.intendedTarget?.subscriptionId ||
+    context?.subscription?.configuredId ||
+    activeSubscriptionId;
+  const subscriptions = state.azureSubscriptions.subscriptions.map((subscription) => ({
+    id: subscription.id,
+    name: subscription.name,
+    tenantId: subscription.tenantId,
+    accountId,
+    enabled: true,
+  }));
+  return {
+    state: controlState,
+    message: state.accountUi?.message || state.azureSubscriptions.message || context?.summary || '',
+    systemBrowserAzureLogin: capability.systemLoginAllowed,
+    launchMode: capability.systemLoginAllowed ? 'system-browser' : null,
+    sessionId: login?.loginId ?? capability.loginId,
+    canLaunch:
+      capability.systemLoginAllowed &&
+      !loginBusy &&
+      !subscriptionsBusy &&
+      state.progress?.state !== 'running',
+    canCancel: loginBusy && Boolean(login?.loginId),
+    canVerify: !loginBusy && !subscriptionsBusy,
+    canSetActive:
+      capability.subscriptionsAvailable &&
+      state.azureSubscriptions.status === 'ready' &&
+      Boolean(selectedSubscriptionId) &&
+      selectedSubscriptionId.toLowerCase() !== activeSubscriptionId.toLowerCase(),
+    canSelect: !loginBusy && !subscriptionsBusy,
+    subscriptionsBusy,
+    activeAccountId: accountId,
+    activeSubscriptionId,
+    intendedSubscriptionId:
+      context?.intendedTarget?.subscriptionId ?? context?.subscription?.configuredId ?? '',
+    accounts: principal
+      ? [
+          {
+            id: accountId,
+            name: principal.principalName,
+            username: principal.principalName,
+            tenantId: principal.tenantId,
+            enabled: true,
+          },
+        ]
+      : [],
+    subscriptions,
+  };
 }
 
 function currentModels() {
@@ -307,6 +452,7 @@ function activeAccount(accountControl) {
 function shellIdentity(models) {
   const identity = models.dossier.identity;
   const contextKind = models.context?.context?.kind;
+  const expectedKind = sampleExecutionContext(state.sample.id).kind;
   const projectedContext = buildExecutionContextProjection({
     sample: state.sample,
     read: (path) => playgroundState.read(path),
@@ -317,6 +463,22 @@ function shellIdentity(models) {
   const account = activeAccount(accountControl);
   const activeSubscription =
     accountControl.subscriptions?.find((subscription) => subscription.id === accountControl.activeSubscriptionId)
+    ?? (models.context?.context?.activeCliSubscription
+      ? {
+          id: models.context.context.activeCliSubscription.id,
+          label:
+            models.context.context.activeCliSubscription.name ||
+            models.context.context.activeCliSubscription.id,
+        }
+      : null)
+    ?? (models.context?.context?.subscription?.activeId
+      ? {
+          id: models.context.context.subscription.activeId,
+          label:
+            models.context.context.subscription.activeName ||
+            models.context.context.subscription.activeId,
+        }
+      : null)
     ?? null;
   const isUnclaimed = models.capabilities?.sessionAuth?.state === 'unclaimed';
   const accountState = state.accountUi?.state ?? accountControl.state;
@@ -332,9 +494,11 @@ function shellIdentity(models) {
         ? 'hosted-relay'
         : gatewayRecipe || contextKind === 'gateway-key'
           ? 'gateway-key'
-          : !isUnclaimed
+          : (isAzureCliContext(contextKind) || isAzureCliContext(expectedKind)) && !isUnclaimed
             ? 'local-operator'
-            : 'unavailable',
+            : contextKind === 'offline-python'
+              ? 'offline-python'
+              : 'unavailable',
     state: accountState,
     account: account
       ? {
@@ -349,6 +513,8 @@ function shellIdentity(models) {
     canVerify: accountControl.canVerify && !ACCOUNT_BUSY_STATES.has(accountState),
     canSetActive: accountControl.canSetActive && !ACCOUNT_BUSY_STATES.has(accountState),
     canCancel: accountControl.canCancel,
+    subscriptionBusy: accountControl.subscriptionsBusy,
+    canSelectSubscription: accountControl.canSelect,
     subscriptions: accountControl.subscriptions,
     selectedSubscriptionId,
     activeSubscription,
@@ -359,7 +525,7 @@ function shellIdentity(models) {
   };
   if (
     !isUnclaimed
-    && identity.kind === 'local-operator'
+    && base.kind === 'local-operator'
     && accountControl.launchMode !== 'system-browser'
   ) {
     base.terminalFallback = {
@@ -604,7 +770,7 @@ function openDiagnostics() {
             node('li', { 'data-state': check.ok ? 'pass' : 'fail', text: `${check.ok ? 'Pass' : 'Fail'} — ${check.name}` }),
           ))
         : node('p', { text: 'Offline diagnostics are unavailable for this browser session.' }),
-      !capabilities?.executionContext?.systemBrowserAzureLogin?.available
+      capabilities?.azureAuth?.systemLogin?.available !== true
         && capabilities?.sessionAuth?.state !== 'unclaimed'
         ? node('div', { class: 'terminal-handoff' }, [
             node('h3', { text: 'Terminal fallback' }),
@@ -701,6 +867,7 @@ function fieldsForWizardStep(configure, stepId) {
     blockingCount: blocking.length,
     invalid,
     invalidCount: invalid.length,
+    errorCount: invalid.length,
     satisfied: blocking.length === 0 && invalid.length === 0,
   };
 }
@@ -1072,6 +1239,10 @@ function render() {
     },
     onFocusFirstBlocker: () => {},
   };
+  const configurationStepIds = steps
+    .map((step) => step.id)
+    .filter((stepId) => ['account-target', 'required-inputs', 'credentials-options'].includes(stepId));
+  const showConfigurationExports = configurationStepIds.at(-1) === state.wizardStep;
   if (state.wizardStep === 'account-target') {
     renderConfigure(stepHost, {
       guide: models.guide,
@@ -1079,6 +1250,7 @@ function render() {
       source: models.dossier.source,
       sourceValidation: models.dossier.sourceValidation,
       mode: 'account-target',
+      showExports: showConfigurationExports,
     }, configureCallbacks);
   } else if (state.wizardStep === 'required-inputs' || state.wizardStep === 'credentials-options') {
     renderConfigure(stepHost, {
@@ -1087,6 +1259,7 @@ function render() {
       source: models.dossier.source,
       sourceValidation: models.dossier.sourceValidation,
       mode: state.wizardStep,
+      showExports: showConfigurationExports,
     }, configureCallbacks);
   } else if (state.wizardStep === 'review-approve') {
     renderReview(stepHost, models.dossier.reviewDecision, {
@@ -1281,8 +1454,13 @@ async function fetchCapabilities() {
   }
 }
 
-async function refreshExecutionContext() {
+async function refreshExecutionContext({ refreshSubscriptions = false } = {}) {
   if (state.testExecutor) {
+    render();
+    return;
+  }
+  if (state.accountUi?.operation === 'login' && ACCOUNT_BUSY_STATES.has(state.accountUi.state)) {
+    invalidateExecutionIdentity('Execution identity must be refreshed after Azure sign-in finishes.');
     render();
     return;
   }
@@ -1318,12 +1496,16 @@ async function refreshExecutionContext() {
   state.executionContext = response;
   if (priorFingerprint !== state.contextFingerprint) return;
   updateContextFingerprint(response);
-  const activeId = response?.context?.subscription?.id;
+  const activeId = response?.context?.activeCliSubscription?.id;
   if (activeId && !state.selectedSubscriptionId) state.selectedSubscriptionId = activeId;
-  if (state.accountUi && !ACCOUNT_BUSY_STATES.has(response?.context?.systemBrowserAzureLogin?.state)) {
-    state.accountUi = null;
-  }
   render();
+  if (
+    refreshSubscriptions &&
+    response?.context?.signedInAccount?.state === 'signed-in' &&
+    azureAuthCapabilityFromPayload(state.capabilities).subscriptionsAvailable
+  ) {
+    await refreshAzureSubscriptions();
+  }
 }
 
 async function runDiagnostics() {
@@ -1362,7 +1544,6 @@ async function selectSample(id) {
   state.activeRunToken = null;
   state.contextFingerprint = null;
   state.directoryQuery = '';
-  state.accountUi = null;
   state.selectedSubscriptionId = '';
   state.destructiveArmed = false;
   state.lastRevealedRunId = null;
@@ -1374,7 +1555,7 @@ async function selectSample(id) {
   updateDossierStage();
   if (window.innerWidth < 1200) state.directoryOpen = false;
   render();
-  await Promise.allSettled([loadSource(), refreshExecutionContext()]);
+  await Promise.allSettled([loadSource(), refreshExecutionContext({ refreshSubscriptions: true })]);
 }
 
 async function startSystemBrowserLogin() {
@@ -1382,75 +1563,263 @@ async function startSystemBrowserLogin() {
   const control = models.dossier.identity.accountControl;
   if (!control.canLaunch || control.launchMode !== 'system-browser') return;
   invalidateApproval({ returnToReview: true });
+  invalidateExecutionIdentity('Execution identity must be refreshed after Azure sign-in finishes.');
+  clearTimeout(azureLoginPollTimer);
+  azureLoginController?.abort();
+  azureSubscriptionController?.abort();
+  azureSubscriptionGeneration += 1;
+  const controller = new AbortController();
+  azureLoginController = controller;
+  const generation = ++azureLoginGeneration;
+  azureLoginCancelRequested = false;
+  state.azureSubscriptions = { status: 'idle', subscriptions: [], message: '' };
   state.accountUi = {
     state: 'starting',
     message: control.accounts?.length ? 'Opening Microsoft account switching in the system browser.' : 'Opening Microsoft sign-in in the system browser.',
+    login: null,
+    operation: 'login',
   };
   render();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
   try {
-    const response = await executionContextClient.startSystemBrowserLogin({
-      switchAccount: Boolean(control.accounts?.length),
-    });
+    const login = await executionContextClient.startSystemAzureLogin({ signal: controller.signal });
+    if (generation !== azureLoginGeneration) return;
+    if (azureLoginCancelRequested) {
+      state.accountUi = { state: login.state, message: login.message, login };
+      await cancelSystemBrowserLogin();
+      return;
+    }
+    await applySystemAzureLogin(login, generation);
+  } catch (error) {
+    if (generation !== azureLoginGeneration) return;
+    if (error?.code === 'login-in-progress' && error.login) {
+      await applySystemAzureLogin(error.login, generation);
+      return;
+    }
     state.accountUi = {
-      state: response.state || 'waiting-system-ui',
-      message: response.message || 'Complete sign-in in the trusted system window, then verify here.',
+      state: 'failed',
+      message: safeMessage(error, 'Microsoft sign-in could not be started.'),
+      login: null,
+      operation: 'login',
     };
     render();
-    if (response.state === 'ready') await refreshExecutionContext();
-  } catch (error) {
-    state.accountUi = { state: 'failed', message: safeMessage(error, 'Microsoft sign-in could not be started.') };
+  } finally {
+    clearTimeout(timeout);
+    if (azureLoginController === controller) azureLoginController = null;
+  }
+}
+
+async function applySystemAzureLogin(login, generation = azureLoginGeneration) {
+  if (generation !== azureLoginGeneration) return;
+  clearTimeout(azureLoginPollTimer);
+  state.accountUi = {
+    state: login.state,
+    message: login.message || 'Azure system sign-in status was updated.',
+    login,
+    operation: 'login',
+  };
+  render();
+  if (ACCOUNT_BUSY_STATES.has(login.state)) {
+    azureLoginPollTimer = setTimeout(() => pollSystemAzureLogin(generation), 2_000);
+    return;
+  }
+  if (login.state === 'ready') {
+    await refreshExecutionContext({ refreshSubscriptions: true });
+    if (state.accountUi?.login === login) state.accountUi = null;
     render();
+    return;
+  }
+  if (login.state === 'cancelled') {
+    await refreshExecutionContext({ refreshSubscriptions: true });
+    if (state.accountUi?.login === login) state.accountUi = null;
+    render();
+  }
+}
+
+async function pollSystemAzureLogin(generation = azureLoginGeneration) {
+  if (generation !== azureLoginGeneration) return;
+  const loginId = state.accountUi?.login?.loginId;
+  if (!loginId) return;
+  azureLoginController?.abort();
+  const controller = new AbortController();
+  azureLoginController = controller;
+  try {
+    const login = await executionContextClient.getSystemAzureLogin(loginId, { signal: controller.signal });
+    await applySystemAzureLogin(login, generation);
+  } catch (error) {
+    if (generation !== azureLoginGeneration) return;
+    state.accountUi = {
+      state: 'status-unknown',
+      message: safeMessage(error, 'Azure sign-in status could not be refreshed.'),
+      login: state.accountUi?.login ?? null,
+      operation: 'login',
+    };
+    render();
+  } finally {
+    if (azureLoginController === controller) azureLoginController = null;
   }
 }
 
 async function verifySystemBrowserLogin() {
   invalidateApproval({ returnToReview: true });
-  state.accountUi = { state: 'verifying', message: 'Verifying the Azure account and subscription.' };
+  state.accountUi = {
+    state: 'verifying',
+    message: 'Refreshing the Azure CLI account and subscriptions.',
+    login: null,
+    operation: 'refresh',
+  };
   render();
   try {
-    const response = await executionContextClient.verifySystemBrowserLogin();
-    state.accountUi = {
-      state: response.state || 'status-unknown',
-      message: response.message || 'Azure account status was refreshed.',
-    };
-    await refreshExecutionContext();
+    await refreshExecutionContext({ refreshSubscriptions: true });
+    state.accountUi = null;
+    render();
   } catch (error) {
-    state.accountUi = { state: 'failed', message: safeMessage(error, 'Azure account verification failed.') };
+    state.accountUi = {
+      state: 'failed',
+      message: safeMessage(error, 'Azure account verification failed.'),
+      login: null,
+      operation: 'refresh',
+    };
     render();
   }
 }
 
 async function cancelSystemBrowserLogin() {
   invalidateApproval({ returnToReview: true });
+  clearTimeout(azureLoginPollTimer);
+  const loginId =
+    state.accountUi?.login?.loginId ??
+    azureAuthCapabilityFromPayload(state.capabilities).loginId;
+  if (!state.accountUi?.login) azureLoginCancelRequested = true;
+  azureLoginController?.abort();
+  const controller = new AbortController();
+  azureLoginController = controller;
+  const generation = ++azureLoginGeneration;
+  state.accountUi = {
+    ...state.accountUi,
+    state: 'cancel-requested',
+    message: 'Cancellation requested. Azure CLI account status is being rechecked.',
+    operation: 'login',
+  };
+  render();
   try {
-    const response = await executionContextClient.cancelSystemBrowserLogin();
-    state.accountUi = {
-      state: response.state || 'cancelled',
-      message: response.message || 'Microsoft sign-in was cancelled.',
-    };
+    const login = await executionContextClient.cancelSystemAzureLogin(loginId, {
+      signal: controller.signal,
+    });
+    await applySystemAzureLogin(login, generation);
   } catch (error) {
-    state.accountUi = { state: 'failed', message: safeMessage(error, 'Sign-in cancellation failed.') };
+    state.accountUi = {
+      state: 'failed',
+      message: safeMessage(error, 'Sign-in cancellation failed.'),
+      login: state.accountUi?.login ?? null,
+      operation: 'login',
+    };
+    render();
+  } finally {
+    if (azureLoginController === controller) azureLoginController = null;
+  }
+}
+
+async function setActiveSubscription(subscriptionId) {
+  if (!subscriptionId || state.azureSubscriptions.status !== 'ready') return;
+  invalidateApproval({ returnToReview: true });
+  invalidateExecutionIdentity('Execution identity must be refreshed after the Azure subscription changes.');
+  azureSubscriptionController?.abort();
+  const controller = new AbortController();
+  azureSubscriptionController = controller;
+  const generation = ++azureSubscriptionGeneration;
+  state.azureSubscriptions = {
+    ...state.azureSubscriptions,
+    status: 'activating',
+    message: 'Changing and verifying the shared Azure CLI default subscription.',
+  };
+  render();
+  try {
+    const response = await executionContextClient.activateAzureSubscription(subscriptionId, {
+      signal: controller.signal,
+    });
+    if (generation !== azureSubscriptionGeneration) return;
+    state.selectedSubscriptionId = response.current.activeCliSubscription.id;
+    state.azureSubscriptions = {
+      ...state.azureSubscriptions,
+      status: 'ready',
+      message: response.warning,
+    };
+    await refreshExecutionContext();
+    await refreshAzureSubscriptions();
+  } catch (error) {
+    if (generation !== azureSubscriptionGeneration) return;
+    state.azureSubscriptions = {
+      ...state.azureSubscriptions,
+      status: 'error',
+      message: safeMessage(error, 'The Azure CLI default subscription could not be changed.'),
+    };
+    await refreshExecutionContext();
+    render();
+  } finally {
+    if (azureSubscriptionController === controller) azureSubscriptionController = null;
+  }
+}
+
+async function refreshAzureSubscriptions() {
+  const capability = azureAuthCapabilityFromPayload(state.capabilities);
+  if (!capability.subscriptionsAvailable || state.azureSubscriptions.status === 'activating') return;
+  azureSubscriptionController?.abort();
+  const controller = new AbortController();
+  azureSubscriptionController = controller;
+  const generation = ++azureSubscriptionGeneration;
+  state.azureSubscriptions = {
+    ...state.azureSubscriptions,
+    status: 'loading',
+    message: 'Refreshing enabled Azure subscriptions.',
+  };
+  render();
+  try {
+    const response = await executionContextClient.listAzureSubscriptions({ signal: controller.signal });
+    if (generation !== azureSubscriptionGeneration) return;
+    state.azureSubscriptions = {
+      status: 'ready',
+      subscriptions: response.subscriptions,
+      message:
+        response.subscriptions.length > 0
+          ? `${response.subscriptions.length} enabled subscription${response.subscriptions.length === 1 ? '' : 's'} available.`
+          : 'No enabled subscriptions are available for the current Azure CLI account and tenant.',
+    };
+    const selectedCandidates = [
+      state.selectedSubscriptionId,
+      state.executionContext?.context?.intendedTarget?.subscriptionId,
+      response.current.activeCliSubscription.id,
+    ].filter((id) => typeof id === 'string');
+    const selectedSubscription = response.subscriptions.find((subscription) =>
+      selectedCandidates.some((id) => id.toLowerCase() === subscription.id.toLowerCase()));
+    state.selectedSubscriptionId = selectedSubscription?.id ?? response.subscriptions[0]?.id ?? '';
+    if (state.executionContext?.status === 'ready') {
+      state.executionContext = {
+        ...state.executionContext,
+        context: reconcileAzureContextCurrent(state.executionContext.context, response.current, {
+          sampleId: state.sample.id,
+        }),
+      };
+      updateContextFingerprint(state.executionContext);
+    }
+  } catch (error) {
+    if (generation !== azureSubscriptionGeneration) return;
+    state.azureSubscriptions = {
+      status: 'error',
+      subscriptions: [],
+      message: safeMessage(error, 'Azure subscriptions could not be refreshed.'),
+    };
+  } finally {
+    if (azureSubscriptionController === controller) azureSubscriptionController = null;
   }
   render();
 }
 
-async function setActiveSubscription(subscriptionId) {
-  if (!subscriptionId) return;
-  invalidateApproval({ returnToReview: true });
-  state.accountUi = { state: 'verifying', message: 'Changing and verifying the shared Azure CLI default subscription.' };
-  render();
-  try {
-    const response = await executionContextClient.setActiveSubscription(subscriptionId);
-    state.selectedSubscriptionId = subscriptionId;
-    state.accountUi = {
-      state: response.state || 'verifying',
-      message: response.message || 'The Azure CLI default subscription was changed; verifying the execution context.',
-    };
-    await refreshExecutionContext();
-  } catch (error) {
-    state.accountUi = { state: 'failed', message: safeMessage(error, 'The Azure CLI default subscription could not be changed.') };
-    render();
-  }
+function invalidateExecutionIdentity(message) {
+  clearTimeout(state.contextRefreshTimer);
+  state.contextRequest += 1;
+  state.contextFingerprint = null;
+  state.executionContext = { status: 'unavailable', message };
 }
 
 function publicInputsFor(sample) {
@@ -1532,6 +1901,28 @@ function readCurrentValue(path) {
     : playgroundState.read(path);
 }
 
+function reviewedAzureIdentity() {
+  const context = effectiveContext()?.context;
+  if (!context?.kind?.startsWith('azure-cli-')) return null;
+  const account = context.signedInAccount;
+  const subscription = context.activeCliSubscription;
+  if (
+    account?.state !== 'signed-in'
+    || !account.principalName
+    || !account.principalType
+    || !account.tenantId
+    || !subscription?.id
+  ) {
+    return null;
+  }
+  return {
+    principalName: account.principalName,
+    principalType: account.principalType,
+    tenantId: account.tenantId,
+    subscriptionId: subscription.id,
+  };
+}
+
 async function startRun({ confirmed = false } = {}) {
   const models = currentModels();
   const { ledger, reviewDecision } = models.dossier;
@@ -1575,6 +1966,7 @@ async function startRun({ confirmed = false } = {}) {
       secrets: runSecrets,
       acknowledgement,
       acknowledgementPayload: acknowledged ? { accepted: true, sampleId: runSample.id } : null,
+      reviewedIdentity: reviewedAzureIdentity(),
       validation,
       onProgress: (event) => applyRunProgress(runToken, runSample.id, event),
     });
@@ -1731,6 +2123,7 @@ async function boot() {
   await fetchCapabilities();
   const initial = readWizardUrl();
   await selectSample(initial.recipeId);
+  applyWizardRun(initial.runId);
   state.wizardStep = initial.stepId;
   wizardSteps(currentModels());
   updateDossierStage();
@@ -1741,12 +2134,22 @@ async function boot() {
   render();
 }
 
-window.addEventListener('popstate', async () => {
+window.addEventListener('popstate', async (event) => {
   if (!appReady) return;
+  if (restoringWizardHistory) {
+    restoringWizardHistory = false;
+    return;
+  }
+  const navigationGeneration = ++historyNavigationGeneration;
   const next = readWizardUrl();
   if (state.progress?.state === 'running') {
-    writeWizardUrl({ replaceHistory: true });
+    restoreRejectedHistoryNavigation(event);
     announce('Cancel the active run before leaving Run & result.');
+    return;
+  }
+  if (state.azureSubscriptions.status === 'activating') {
+    restoreRejectedHistoryNavigation(event);
+    announce('Wait for Azure subscription activation to finish before navigating history.');
     return;
   }
   if (
@@ -1754,10 +2157,15 @@ window.addEventListener('popstate', async () => {
     && playgroundState.hasUnsavedChanges
     && !window.confirm('Change recipes and discard unsaved input changes? Credentials are never persisted.')
   ) {
-    writeWizardUrl({ replaceHistory: true });
+    restoreRejectedHistoryNavigation(event);
     return;
   }
+  wizardHistoryIndex = Number.isSafeInteger(event.state?.[WIZARD_HISTORY_INDEX_KEY])
+    ? event.state[WIZARD_HISTORY_INDEX_KEY]
+    : wizardHistoryIndex;
   if (next.recipeId !== state.sample.id) await selectSample(next.recipeId);
+  if (navigationGeneration !== historyNavigationGeneration) return;
+  applyWizardRun(next.runId);
   if (!navigateWizardStep(next.stepId, { replaceHistory: true })) {
     writeWizardUrl({ replaceHistory: true });
     render();

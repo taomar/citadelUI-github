@@ -35,16 +35,27 @@ function readinessFor(sample) {
   return statusDescriptor(sample.readiness, { state: 'not-checked', label: 'Readiness not checked' });
 }
 
-function dependenciesFor(sample) {
-  if (Number(sample.missingDependencyCount) > 0) {
-    const count = Number(sample.missingDependencyCount);
+export function directoryDependencyStatus(sample) {
+  const readiness = sample.readiness && typeof sample.readiness === 'object'
+    ? sample.readiness
+    : {};
+  const missing = Array.isArray(readiness.dependencies)
+    ? readiness.dependencies.filter((dependency) =>
+        dependency
+        && typeof dependency === 'object'
+        && dependency.available === false
+        && dependency.optional !== true)
+    : [];
+  if (readiness.dependencyReady === false) {
     return {
       state: 'missing',
-      label: `${count} dependenc${count === 1 ? 'y' : 'ies'} missing`,
+      label: missing.length > 0
+        ? `${missing.length} dependenc${missing.length === 1 ? 'y' : 'ies'} missing`
+        : 'Dependency missing',
     };
   }
-  if (sample.dependenciesReady === true) return { state: 'ready', label: 'Dependencies ready' };
-  return statusDescriptor(sample.dependencies, {
+  if (readiness.dependencyReady === true) return { state: 'ready', label: 'Dependencies ready' };
+  return statusDescriptor(readiness.dependencies, {
     state: 'not-checked',
     label: 'Dependencies not checked',
   });
@@ -62,7 +73,7 @@ function statusChip(descriptor, className) {
 
 function renderSample(sample, onSelect) {
   const readiness = readinessFor(sample);
-  const dependencies = dependenciesFor(sample);
+  const dependencies = directoryDependencyStatus(sample);
   const recommendedNext = sample.recommendedNext === true || sample.recommended === true;
 
   return el('li', { class: 'recipe-directory-entry' }, [

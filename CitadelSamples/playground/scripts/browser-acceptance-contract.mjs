@@ -256,7 +256,7 @@ export function validateValidationPayload(payload, { sampleId, expectedSource })
   issue(issues, payload?.executionContext?.kind === 'offline-python', 'validation identity must be offline-python');
   issue(
     issues,
-    payload?.executionContext?.authority?.type === 'local-python-parser',
+    payload?.executionContext?.executionCredential?.type === 'local-python-parser',
     'validation identity must be the local Python parser',
   );
   issue(

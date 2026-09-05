@@ -1,5 +1,5 @@
 import { chip, el, replace } from './dom.mjs';
-import { DOSSIER_OUTPUT_VIEWS } from './dossier-contract.mjs';
+import { DOSSIER_IDS, DOSSIER_OUTPUT_VIEWS } from './dossier-contract.mjs';
 
 const OUTPUT_VIEW_LABELS = Object.freeze({
   transcript: 'Transcript',
@@ -201,6 +201,7 @@ function createOutputMount(container, state) {
   const root = el(
     'section',
     {
+      id: DOSSIER_IDS.output,
       class: 'output-shell',
       'aria-labelledby': `${prefix}-heading`,
     },

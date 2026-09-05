@@ -5,18 +5,26 @@ import { fileURLToPath } from 'node:url';
 
 import { CATALOGUE } from '../src/catalogue/index.mjs';
 import {
+  AZURE_CLI_PRINCIPAL_TYPES,
+  EXECUTION_CONTEXT_STATES,
   classifiedSampleIds,
   configuredSubscriptionForSample,
   sampleExecutionContext,
 } from '../src/core/executionContext.mjs';
 import { EXECUTION_PROTOCOL_VERSION } from '../src/core/types.mjs';
 import {
+  ACCOUNT_LIST_ARGS,
   ACCOUNT_SHOW_ARGS,
-  DEVICE_CODE_LOGIN_ARGS,
+  SYSTEM_AZURE_LOGIN_ARGS,
+  SYSTEM_AZURE_LOGIN_ENV,
+  SYSTEM_AZURE_LOGIN_ID,
+  containsDeviceFallback,
   createExecutionContextManager,
   validateExecutionContextRequest,
   validateLoginStartRequest,
   validateLoginTargetRequest,
+  validateSubscriptionActivateRequest,
+  validateSubscriptionListRequest,
 } from '../src/server/executionContextManager.mjs';
 import { createRunManager } from '../src/server/runManager.mjs';
 import { RequestRefused } from '../src/server/runRequest.mjs';
@@ -40,6 +48,8 @@ const account = (id = ACTIVE_SUBSCRIPTION) =>
     name: 'Operator Subscription',
     tenantId: 'tenant-0001',
     user: { name: 'operator@example.test', type: 'user' },
+    isDefault: true,
+    state: 'Enabled',
   });
 
 const contextRequest = (sampleId, overrides = {}) => ({
@@ -62,7 +72,7 @@ function recordingSpawn(handler) {
 
 async function waitForLogin(manager, loginId, state) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const current = manager.statusLogin(loginId);
+    const current = manager.statusSystemLogin(loginId);
     if (current.login.state === state) return current;
     await new Promise((done) => setTimeout(done, 2));
   }
@@ -95,6 +105,8 @@ test('every catalogue sample has exactly one typed execution-context classificat
   assert.equal(sampleExecutionContext('foundry-enable-a2a').kind, 'azure-cli-foundry-token');
   assert.equal(sampleExecutionContext('agent-framework-hr-question').kind, 'gateway-key');
   assert.match(sampleExecutionContext('access-contract-deploy').summary, /AzureCliCredential/);
+  assert.ok(EXECUTION_CONTEXT_STATES.includes('subscription-disabled'));
+  assert.deepEqual(AZURE_CLI_PRINCIPAL_TYPES, ['user', 'service-principal', 'managed-identity']);
   assert.equal(
     configuredSubscriptionForSample('access-contract-kv-verify', {
       'hub.subscriptionId': CONFIGURED_SUBSCRIPTION,
@@ -147,10 +159,27 @@ test('execution-context requests have an exact safe schema', () => {
   );
   assert.doesNotThrow(() => validateLoginStartRequest({ protocolVersion: EXECUTION_PROTOCOL_VERSION }));
   assert.doesNotThrow(() =>
-    validateLoginTargetRequest({ protocolVersion: EXECUTION_PROTOCOL_VERSION, loginId: 'azure-login-0001' }),
+    validateLoginTargetRequest({ protocolVersion: EXECUTION_PROTOCOL_VERSION, loginId: SYSTEM_AZURE_LOGIN_ID }),
   );
   assert.throws(
     () => validateLoginStartRequest({ protocolVersion: EXECUTION_PROTOCOL_VERSION, args: ['--debug'] }),
+    /accepts exactly/,
+  );
+  assert.doesNotThrow(() => validateSubscriptionListRequest({ protocolVersion: EXECUTION_PROTOCOL_VERSION }));
+  assert.equal(
+    validateSubscriptionActivateRequest({
+      protocolVersion: EXECUTION_PROTOCOL_VERSION,
+      subscriptionId: CONFIGURED_SUBSCRIPTION.toUpperCase(),
+    }),
+    CONFIGURED_SUBSCRIPTION,
+  );
+  assert.throws(
+    () =>
+      validateSubscriptionActivateRequest({
+        protocolVersion: EXECUTION_PROTOCOL_VERSION,
+        subscriptionId: CONFIGURED_SUBSCRIPTION,
+        name: 'browser-controlled',
+      }),
     /accepts exactly/,
   );
 });
@@ -191,7 +220,8 @@ test('signed-out Azure CLI context is blocked and returns no CLI output', async 
   assert.deepEqual(spawn.calls[0].args, ACCOUNT_SHOW_ARGS);
   assert.equal(result.context.state, 'signed-out');
   assert.equal(result.context.code, 'signed-out');
-  assert.equal(result.context.authority.principalName, null);
+  assert.equal(result.context.signedInAccount.state, 'signed-out');
+  assert.equal(result.context.executionCredential.source, 'azure-cli');
   assert.equal(JSON.stringify(result).includes(JWT), false);
 });
 
@@ -203,6 +233,7 @@ test('signed-in Azure CLI context exposes only the safe principal and subscripti
       name: 'Operator\u0000 Subscription',
       tenantId: 'tenant-0001',
       user: { name: 'operator@example.test', type: 'user' },
+      state: 'Enabled',
       accessToken: JWT,
     }),
     stderr: '',
@@ -219,15 +250,149 @@ test('signed-in Azure CLI context exposes only the safe principal and subscripti
     CATALOGUE,
   );
   assert.equal(result.context.kind, 'azure-cli-python-management');
-  assert.equal(result.context.state, 'ready');
-  assert.equal(result.context.authority.principalName, 'operator@example.test');
-  assert.equal(result.context.authority.principalType, 'user');
-  assert.equal(result.context.authority.tenantId, 'tenant-0001');
-  assert.equal(result.context.subscription.activeName, 'Operator Subscription');
-  assert.equal(result.context.subscription.matches, true);
+  assert.equal(result.context.state, 'ready-to-attempt');
+  assert.equal(result.context.signedInAccount.principalName, 'operator@example.test');
+  assert.equal(result.context.signedInAccount.principalType, 'user');
+  assert.equal(result.context.signedInAccount.tenantId, 'tenant-0001');
+  assert.equal(result.context.activeCliSubscription.name, 'Operator Subscription');
+  assert.equal(result.context.intendedTarget.matchesActive, true);
+  assert.equal(result.context.authorization.label, 'Authorization Not Checked');
   assert.equal(result.context.guarantees.tokensExposed, false);
   assert.equal(result.context.guarantees.credentialsPersisted, false);
   assert.equal(JSON.stringify(result).includes(JWT), false);
+});
+
+test('run admission binds the reviewed Azure principal, tenant, and subscription', async () => {
+  const spawn = recordingSpawn(async () => ({
+    code: 0,
+    stdout: account(ACTIVE_SUBSCRIPTION),
+    stderr: '',
+    timedOut: false,
+    aborted: false,
+  }));
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    transports: { spawn },
+  });
+  await assert.rejects(
+    () => manager.forRun({ sampleId: 'publish-assets' }),
+    (error) => error instanceof RequestRefused && error.code === 'reviewed-identity-required',
+  );
+  await assert.rejects(
+    () =>
+      manager.forRun({
+        sampleId: 'publish-assets',
+        reviewedIdentity: {
+          principalName: 'other@example.test',
+          principalType: 'user',
+          tenantId: 'tenant-0001',
+          subscriptionId: ACTIVE_SUBSCRIPTION,
+        },
+      }),
+    (error) => error instanceof RequestRefused && error.code === 'reviewed-identity-changed',
+  );
+  const context = await manager.forRun({
+    sampleId: 'publish-assets',
+    reviewedIdentity: {
+      principalName: 'operator@example.test',
+      principalType: 'user',
+      tenantId: 'tenant-0001',
+      subscriptionId: ACTIVE_SUBSCRIPTION.toUpperCase(),
+    },
+  });
+  assert.equal(context.canExecute, true);
+});
+
+test('run admission uses canonical service-principal and managed-identity types', async () => {
+  for (const [cliType, principalType] of [
+    ['servicePrincipal', 'service-principal'],
+    ['managedIdentity', 'managed-identity'],
+  ]) {
+    const spawn = recordingSpawn(async () => ({
+      code: 0,
+      stdout: JSON.stringify({
+        id: ACTIVE_SUBSCRIPTION,
+        name: 'Active subscription',
+        tenantId: 'tenant-0001',
+        user: { name: 'automation-principal', type: cliType },
+        state: 'Enabled',
+      }),
+      stderr: '',
+      timedOut: false,
+      aborted: false,
+    }));
+    const manager = createExecutionContextManager({
+      playgroundRoot: PLAYGROUND_ROOT,
+      mode: 'execute',
+      transports: { spawn },
+    });
+    const context = await manager.forRun({
+      sampleId: 'publish-assets',
+      reviewedIdentity: {
+        principalName: 'automation-principal',
+        principalType,
+        tenantId: 'tenant-0001',
+        subscriptionId: ACTIVE_SUBSCRIPTION,
+      },
+    });
+    assert.equal(context.signedInAccount.principalType, principalType);
+  }
+});
+
+test('a disabled active Azure CLI subscription cannot execute', async () => {
+  const spawn = recordingSpawn(async () => ({
+    code: 0,
+    stdout: JSON.stringify({
+      ...JSON.parse(account()),
+      state: 'Disabled',
+    }),
+    stderr: '',
+    timedOut: false,
+    aborted: false,
+  }));
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    transports: { spawn },
+  });
+  const result = await manager.describe(contextRequest('publish-assets'), CATALOGUE);
+  assert.equal(result.context.state, 'subscription-disabled');
+  assert.equal(result.context.code, 'subscription-disabled');
+  assert.equal(result.context.canExecute, false);
+  await assert.rejects(
+    () => manager.forRun({ sampleId: 'publish-assets' }),
+    (error) => error instanceof RequestRefused && error.code === 'subscription-disabled',
+  );
+});
+
+test('an incomplete Azure CLI account projection is unavailable and cannot execute', async () => {
+  for (const projection of [
+    { id: ACTIVE_SUBSCRIPTION },
+    {
+      id: ACTIVE_SUBSCRIPTION,
+      tenantId: 'tenant-0001',
+      user: { name: 'operator@example.test', type: 'unexpected-principal-type' },
+    },
+  ]) {
+    const spawn = recordingSpawn(async () => ({
+      code: 0,
+      stdout: JSON.stringify(projection),
+      stderr: '',
+      timedOut: false,
+      aborted: false,
+    }));
+    const manager = createExecutionContextManager({
+      playgroundRoot: PLAYGROUND_ROOT,
+      mode: 'execute',
+      transports: { spawn },
+    });
+    const result = await manager.describe(contextRequest('publish-assets'), CATALOGUE);
+    assert.equal(result.context.state, 'unavailable');
+    assert.equal(result.context.code, 'account-context-invalid');
+    assert.equal(result.context.canExecute, false);
+    assert.equal(result.context.signedInAccount.state, 'status-unknown');
+  }
 });
 
 test('a configured subscription mismatch blocks Azure CLI and AzureCliCredential samples', async () => {
@@ -352,7 +517,7 @@ test('gateway context reports only key presence and the configured header name',
     }),
     CATALOGUE,
   );
-  assert.equal(ready.context.state, 'ready');
+  assert.equal(ready.context.state, 'ready-to-attempt');
   assert.deepEqual(ready.context.gateway, {
     keyPresent: true,
     headerName: 'Ocp-Apim-Subscription-Key',
@@ -408,133 +573,183 @@ test('a configured relay never changes the authority used by a direct local run'
     gateway: { keyPresent: true, headerName: 'api-key' },
   });
   assert.equal(localGateway.kind, 'gateway-key');
-  assert.equal(localGateway.state, 'ready');
+  assert.equal(localGateway.state, 'ready-to-attempt');
 
   const localManagement = await manager.forRun({
     sampleId: 'publish-assets',
     configuredSubscriptionId: ACTIVE_SUBSCRIPTION,
+    reviewedIdentity: {
+      principalName: 'operator@example.test',
+      principalType: 'user',
+      tenantId: 'tenant-0001',
+      subscriptionId: ACTIVE_SUBSCRIPTION,
+    },
   });
   assert.equal(localManagement.kind, 'azure-cli-management');
-  assert.equal(localManagement.state, 'ready');
+  assert.equal(localManagement.state, 'ready-to-attempt');
 });
 
-test('device-code login publishes safe instructions, permits one flight, and refreshes account context', async () => {
+test('system login uses exact command and environment, permits one flight, and reports a switched account', async () => {
   let releaseLogin;
   const held = new Promise((resolvePromise) => {
     releaseLogin = resolvePromise;
   });
+  let accountReads = 0;
   const spawn = recordingSpawn(async (options) => {
-    if (options.args[0] === 'login') {
-      options.onOutput?.({
-        stream: 'stderr',
-        text: `Open https://microsoft.com/devicelogin and enter the code ABCD-EFGH to authenticate. ${JWT}`,
-      });
-      await held;
-      return { code: 0, stdout: '[{"name":"ignored"}]', stderr: '', timedOut: false, aborted: false };
+    if (options.args[0] === 'account' && options.args[1] === 'show') {
+      accountReads += 1;
+      return accountReads === 1
+        ? { code: 1, stdout: '', stderr: 'signed out', timedOut: false, aborted: false }
+        : { code: 0, stdout: account(ACTIVE_SUBSCRIPTION), stderr: '', timedOut: false, aborted: false };
     }
-    return { code: 0, stdout: account(ACTIVE_SUBSCRIPTION), stderr: '', timedOut: false, aborted: false };
+    if (options.args[0] === 'login') {
+      await held;
+      return { code: 0, stdout: JWT, stderr: '', timedOut: false, aborted: false };
+    }
+    assert.fail(`unexpected command ${options.args.join(' ')}`);
   });
   const manager = createExecutionContextManager({
     playgroundRoot: PLAYGROUND_ROOT,
     mode: 'execute',
+    allowSystemAzureLogin: true,
     transports: { spawn },
   });
 
-  const started = manager.startLogin();
-  assert.deepEqual(spawn.calls[0].args, DEVICE_CODE_LOGIN_ARGS);
-  assert.equal(started.login.state, 'waiting-for-user');
-  assert.equal(started.login.verificationUrl, 'https://microsoft.com/devicelogin');
-  assert.equal(started.login.userCode, 'ABCD-EFGH');
+  const started = manager.startSystemLogin();
+  assert.equal(started.login.id, SYSTEM_AZURE_LOGIN_ID);
+  await waitForLogin(manager, started.login.id, 'waiting-system-ui');
+  assert.deepEqual(spawn.calls[0].args, ACCOUNT_SHOW_ARGS);
+  assert.deepEqual(spawn.calls[1].args, SYSTEM_AZURE_LOGIN_ARGS);
+  assert.deepEqual(spawn.calls[1].env, SYSTEM_AZURE_LOGIN_ENV);
+  assert.equal(spawn.calls[1].captureOutput, false);
+  assert.equal(spawn.calls[1].environmentProfile, 'system-browser');
   assert.equal(JSON.stringify(started).includes(JWT), false);
   assert.throws(
-    () => manager.startLogin(),
+    () => manager.startSystemLogin(),
     (error) => error instanceof RequestRefused && error.code === 'login-in-progress',
   );
 
   releaseLogin();
-  const succeeded = await waitForLogin(manager, started.login.id, 'succeeded');
-  assert.equal(succeeded.context.principalName, 'operator@example.test');
-  assert.equal(succeeded.context.subscription.activeId, ACTIVE_SUBSCRIPTION);
-  assert.equal(JSON.stringify(succeeded).includes(JWT), false);
-  assert.deepEqual(spawn.calls[1].args, ACCOUNT_SHOW_ARGS);
+  const ready = await waitForLogin(manager, started.login.id, 'ready');
+  assert.equal(ready.login.accountChange, 'switched');
+  assert.equal(ready.context.signedInAccount.principalName, 'operator@example.test');
+  assert.equal(ready.context.activeCliSubscription.id, ACTIVE_SUBSCRIPTION);
+  assert.equal(JSON.stringify(ready).includes(JWT), false);
+  assert.deepEqual(spawn.calls[2].args, ACCOUNT_SHOW_ARGS);
 });
 
-test('device-code login reports failure without returning process output', async () => {
+test('system login blocks a CLI device fallback immediately without returning URL, code, or output', async () => {
+  const fallbackOutput = `To sign in, use a web browser to open https://microsoft.com/devicelogin and enter the code ABCD-EFGH. ${JWT}`;
+  let accountReads = 0;
   const spawn = recordingSpawn(async (options) => {
-    options.onOutput?.({ stream: 'stderr', text: `internal failure ${JWT}` });
-    return { code: 2, stdout: '', stderr: `internal failure ${JWT}`, timedOut: false, aborted: false };
+    if (options.args[0] === 'account') {
+      accountReads += 1;
+      return { code: 1, stdout: '', stderr: '', timedOut: false, aborted: false };
+    }
+    options.onOutput?.({ stream: 'stderr', text: fallbackOutput.slice(0, 40) });
+    options.onOutput?.({ stream: 'stderr', text: fallbackOutput.slice(40) });
+    assert.equal(options.signal.aborted, true);
+    return { code: -1, stdout: fallbackOutput, stderr: fallbackOutput, timedOut: false, aborted: true };
   });
   const manager = createExecutionContextManager({
     playgroundRoot: PLAYGROUND_ROOT,
     mode: 'execute',
+    allowSystemAzureLogin: true,
     transports: { spawn },
   });
-  const started = manager.startLogin();
-  const failed = await waitForLogin(manager, started.login.id, 'failed');
-  assert.equal(failed.login.code, 'login-failed');
-  assert.equal(JSON.stringify(failed).includes('internal failure'), false);
-  assert.equal(JSON.stringify(failed).includes(JWT), false);
-});
-
-test('device-code login supports exact cancellation', async () => {
-  const spawn = recordingSpawn(
-    (options) =>
-      new Promise((resolvePromise) => {
-        options.onOutput?.({
-          stream: 'stderr',
-          text: 'Open https://microsoft.com/devicelogin and enter the code WXYZ-1234 to authenticate.',
-        });
-        options.signal.addEventListener(
-          'abort',
-          () => resolvePromise({ code: -1, stdout: '', stderr: '', timedOut: false, aborted: true }),
-          { once: true },
-        );
-      }),
+  const started = manager.startSystemLogin();
+  const blocked = await waitForLogin(manager, started.login.id, 'device-fallback-blocked');
+  assert.equal(blocked.login.code, 'device-fallback-blocked');
+  assert.match(blocked.login.message, /run `az login` in a terminal/i);
+  assert.equal(JSON.stringify(blocked).includes('devicelogin'), false);
+  assert.equal(JSON.stringify(blocked).includes('ABCD-EFGH'), false);
+  assert.equal(JSON.stringify(blocked).includes(JWT), false);
+  assert.equal(accountReads, 1);
+  assert.equal(containsDeviceFallback(fallbackOutput), true);
+  assert.equal(
+    containsDeviceFallback(
+      'A web browser has been opened at https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize. ' +
+        'Please continue the login in the web browser. If no web browser is available, use device code flow with `az login --use-device-code`.',
+    ),
+    false,
   );
+});
+
+test('system login detects a device fallback split across one output stream despite interleaved output', async () => {
+  const spawn = recordingSpawn(async (options) => {
+    if (options.args[0] === 'account') {
+      return { code: 1, stdout: '', stderr: '', timedOut: false, aborted: false };
+    }
+    options.onOutput?.({
+      stream: 'stderr',
+      text: 'To sign in, use a web browser to open https://microsoft.com/devi',
+    });
+    options.onOutput?.({ stream: 'stdout', text: 'unrelated Azure CLI status' });
+    options.onOutput?.({ stream: 'stderr', text: 'celogin and enter the code ABCD-EFGH.' });
+    assert.equal(options.signal.aborted, true);
+    return { code: -1, stdout: '', stderr: '', timedOut: false, aborted: true };
+  });
   const manager = createExecutionContextManager({
     playgroundRoot: PLAYGROUND_ROOT,
     mode: 'execute',
+    allowSystemAzureLogin: true,
     transports: { spawn },
   });
-  const started = manager.startLogin();
-  assert.throws(
-    () => manager.cancelLogin('azure-login-9999'),
-    (error) => error instanceof RequestRefused && error.code === 'unknown-login',
-  );
-  const cancelled = manager.cancelLogin(started.login.id);
-  assert.equal(cancelled.login.state, 'cancelled');
-  assert.equal(cancelled.login.code, 'login-cancelled');
-  assert.equal((await waitForLogin(manager, started.login.id, 'cancelled')).login.state, 'cancelled');
+
+  const started = manager.startSystemLogin();
+  const blocked = await waitForLogin(manager, started.login.id, 'device-fallback-blocked');
+  assert.equal(blocked.login.code, 'device-fallback-blocked');
+  assert.equal(JSON.stringify(blocked).includes('devicelogin'), false);
+  assert.equal(JSON.stringify(blocked).includes('ABCD-EFGH'), false);
 });
 
-test('device-code login reports timeout distinctly', async () => {
-  const spawn = recordingSpawn(async () => ({
-    code: -1,
-    stdout: '',
-    stderr: '',
-    timedOut: true,
-    aborted: false,
-  }));
+test('shutdown drains a login process after device fallback reaches a terminal state', async () => {
+  let releaseLogin;
+  const heldLogin = new Promise((resolvePromise) => {
+    releaseLogin = resolvePromise;
+  });
+  const fallbackOutput =
+    'To sign in, use a web browser to open https://microsoft.com/devicelogin and enter the code ABCD-EFGH.';
+  const spawn = recordingSpawn(async (options) => {
+    if (options.args[0] === 'account') {
+      return { code: 1, stdout: '', stderr: '', timedOut: false, aborted: false };
+    }
+    options.onOutput?.({ stream: 'stderr', text: fallbackOutput });
+    await heldLogin;
+    return { code: -1, stdout: fallbackOutput, stderr: '', timedOut: false, aborted: true };
+  });
   const manager = createExecutionContextManager({
     playgroundRoot: PLAYGROUND_ROOT,
     mode: 'execute',
+    allowSystemAzureLogin: true,
     transports: { spawn },
   });
-  const started = manager.startLogin();
-  const timedOut = await waitForLogin(manager, started.login.id, 'timed-out');
-  assert.equal(timedOut.login.code, 'login-timeout');
+  const started = manager.startSystemLogin();
+  await waitForLogin(manager, started.login.id, 'device-fallback-blocked');
+
+  let drained = false;
+  const drain = manager.cancelAll().then(() => {
+    drained = true;
+  });
+  await new Promise((done) => setTimeout(done, 10));
+  assert.equal(drained, false);
+  releaseLogin();
+  await drain;
+  assert.equal(drained, true);
 });
 
-test('cancelling during the post-login account refresh cannot flip back to succeeded', async () => {
-  let accountStarted;
-  const sawAccount = new Promise((resolvePromise) => {
-    accountStarted = resolvePromise;
-  });
+test('shutdown aborts an in-flight post-login account verification', async () => {
+  let accountReads = 0;
+  let verificationSignal = null;
   const spawn = recordingSpawn(async (options) => {
     if (options.args[0] === 'login') {
       return { code: 0, stdout: '', stderr: '', timedOut: false, aborted: false };
     }
-    accountStarted();
+    accountReads += 1;
+    if (accountReads === 1) {
+      return { code: 1, stdout: '', stderr: '', timedOut: false, aborted: false };
+    }
+    verificationSignal = options.signal;
     return new Promise((resolvePromise) => {
       options.signal.addEventListener(
         'abort',
@@ -546,34 +761,642 @@ test('cancelling during the post-login account refresh cannot flip back to succe
   const manager = createExecutionContextManager({
     playgroundRoot: PLAYGROUND_ROOT,
     mode: 'execute',
+    allowSystemAzureLogin: true,
     transports: { spawn },
   });
-  const started = manager.startLogin();
-  await sawAccount;
-  const cancelled = manager.cancelLogin(started.login.id);
-  assert.equal(cancelled.login.state, 'cancelled');
-  await new Promise((done) => setTimeout(done, 5));
-  const final = manager.statusLogin(started.login.id);
-  assert.equal(final.login.state, 'cancelled');
-  assert.equal(final.context, null);
+
+  const started = manager.startSystemLogin();
+  await waitForLogin(manager, started.login.id, 'verifying');
+  assert.equal(verificationSignal?.aborted, false);
+  await manager.cancelAll();
+  assert.equal(verificationSignal.aborted, true);
 });
 
-test('a post-login account refresh timeout reports a refresh failure, not signed-out', async () => {
-  const spawn = recordingSpawn(async (options) =>
-    options.args[0] === 'login'
-      ? { code: 0, stdout: '', stderr: '', timedOut: false, aborted: false }
-      : { code: -1, stdout: '', stderr: '', timedOut: true, aborted: false },
-  );
+test('shutdown aborts and drains subscription mutation and rejects new mutations', async () => {
+  let activationSignal = null;
+  const spawn = recordingSpawn(async (options) => {
+    activationSignal = options.signal;
+    return new Promise((resolvePromise) => {
+      options.signal.addEventListener(
+        'abort',
+        () => resolvePromise({ code: -1, stdout: '', stderr: '', timedOut: false, aborted: true }),
+        { once: true },
+      );
+    });
+  });
   const manager = createExecutionContextManager({
     playgroundRoot: PLAYGROUND_ROOT,
     mode: 'execute',
+    allowSystemAzureLogin: true,
     transports: { spawn },
   });
-  const started = manager.startLogin();
-  const failed = await waitForLogin(manager, started.login.id, 'failed');
-  assert.equal(failed.login.code, 'login-failed');
-  assert.match(failed.login.message, /refreshing the active account timed out/);
-  assert.doesNotMatch(failed.login.message, /sign in/i);
+  const activation = manager.activateSubscription(CONFIGURED_SUBSCRIPTION);
+  const rejected = assert.rejects(
+    activation,
+    (error) => error instanceof RequestRefused && error.code === 'status-unknown',
+  );
+  await new Promise((done) => setTimeout(done, 10));
+  assert.equal(activationSignal?.aborted, false);
+  await manager.cancelAll();
+  await rejected;
+  assert.equal(activationSignal.aborted, true);
+  assert.throws(
+    () => manager.startSystemLogin(),
+    (error) => error instanceof RequestRefused && error.code === 'identity-manager-closed',
+  );
+  assert.throws(
+    () => manager.acquireRunLease(),
+    (error) => error instanceof RequestRefused && error.code === 'identity-manager-closed',
+  );
+  await assert.rejects(
+    () => manager.activateSubscription(CONFIGURED_SUBSCRIPTION),
+    (error) => error instanceof RequestRefused && error.code === 'identity-manager-closed',
+  );
+});
+
+test('subscription reads block identity mutation and are aborted and drained during shutdown', async () => {
+  let readSignal = null;
+  const spawn = recordingSpawn(async (options) => {
+    readSignal = options.signal;
+    return new Promise((resolvePromise) => {
+      options.signal.addEventListener(
+        'abort',
+        () => resolvePromise({ code: -1, stdout: '', stderr: '', timedOut: false, aborted: true }),
+        { once: true },
+      );
+    });
+  });
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    allowSystemAzureLogin: true,
+    transports: { spawn },
+  });
+
+  const read = manager.listSubscriptions();
+  const rejected = assert.rejects(
+    read,
+    (error) => error instanceof RequestRefused && error.code === 'status-unknown',
+  );
+  await new Promise((done) => setTimeout(done, 10));
+  assert.equal(readSignal?.aborted, false);
+  assert.throws(
+    () => manager.startSystemLogin(),
+    (error) => error instanceof RequestRefused && error.code === 'subscription-read-in-progress',
+  );
+  await assert.rejects(
+    () => manager.activateSubscription(CONFIGURED_SUBSCRIPTION),
+    (error) => error instanceof RequestRefused && error.code === 'subscription-read-in-progress',
+  );
+
+  await manager.cancelAll();
+  await rejected;
+  assert.equal(readSignal.aborted, true);
+  await assert.rejects(
+    () => manager.listSubscriptions(),
+    (error) => error instanceof RequestRefused && error.code === 'identity-manager-closed',
+  );
+});
+
+test('system login cancellation rechecks the account and reports an authentication race honestly', async () => {
+  let accountReads = 0;
+  const spawn = recordingSpawn(async (options) => {
+    if (options.args[0] === 'account') {
+      accountReads += 1;
+      return accountReads === 1
+        ? { code: 1, stdout: '', stderr: '', timedOut: false, aborted: false }
+        : { code: 0, stdout: account(ACTIVE_SUBSCRIPTION), stderr: '', timedOut: false, aborted: false };
+    }
+    return new Promise((resolvePromise) => {
+      options.signal.addEventListener(
+        'abort',
+        () => resolvePromise({ code: 0, stdout: '', stderr: '', timedOut: false, aborted: true }),
+        { once: true },
+      );
+    });
+  });
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    allowSystemAzureLogin: true,
+    transports: { spawn },
+  });
+  const started = manager.startSystemLogin();
+  await waitForLogin(manager, started.login.id, 'waiting-system-ui');
+  assert.throws(
+    () => manager.cancelSystemLogin('azure-login-9999'),
+    (error) => error instanceof RequestRefused && error.code === 'unknown-login',
+  );
+  const cancelling = manager.cancelSystemLogin(started.login.id);
+  assert.equal(cancelling.login.state, 'cancel-requested');
+  const ready = await waitForLogin(manager, started.login.id, 'ready');
+  assert.equal(ready.login.accountChange, 'switched');
+  assert.match(ready.login.message, /account changed/);
+});
+
+test('cancelling an unknown pre-login account probe cannot invent an account switch', async () => {
+  let accountReads = 0;
+  const spawn = recordingSpawn(async (options) => {
+    if (options.args[0] !== 'account') {
+      assert.fail('az login must not start after immediate cancellation');
+    }
+    accountReads += 1;
+    if (accountReads === 1) {
+      return new Promise((resolvePromise) => {
+        options.signal.addEventListener(
+          'abort',
+          () => resolvePromise({ code: -1, stdout: '', stderr: '', timedOut: false, aborted: true }),
+          { once: true },
+        );
+      });
+    }
+    return { code: 0, stdout: account(ACTIVE_SUBSCRIPTION), stderr: '', timedOut: false, aborted: false };
+  });
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    allowSystemAzureLogin: true,
+    transports: { spawn },
+  });
+  const started = manager.startSystemLogin();
+  manager.cancelSystemLogin(started.login.id);
+  const cancelled = await waitForLogin(manager, started.login.id, 'cancelled');
+  assert.equal(cancelled.login.accountChange, 'unverified');
+  assert.match(cancelled.login.message, /cancelled/i);
+  assert.equal(cancelled.context.signedInAccount.principalName, 'operator@example.test');
+});
+
+test('system login reports cancellation, timeout, failure, unchanged account, and unknown status distinctly', async () => {
+  const scenarios = [
+    {
+      name: 'cancelled',
+      before: { code: 0, stdout: account(ACTIVE_SUBSCRIPTION), stderr: '', timedOut: false, aborted: false },
+      login: { code: -1, stdout: '', stderr: '', timedOut: false, aborted: true },
+      after: { code: 0, stdout: account(ACTIVE_SUBSCRIPTION), stderr: '', timedOut: false, aborted: false },
+      cancel: true,
+      state: 'cancelled',
+      accountChange: 'unchanged',
+    },
+    {
+      name: 'cancelled at timeout boundary',
+      before: { code: 0, stdout: account(ACTIVE_SUBSCRIPTION), stderr: '', timedOut: false, aborted: false },
+      login: { code: -1, stdout: '', stderr: '', timedOut: true, aborted: true },
+      after: { code: 0, stdout: account(ACTIVE_SUBSCRIPTION), stderr: '', timedOut: false, aborted: false },
+      cancel: true,
+      state: 'cancelled',
+      accountChange: 'unchanged',
+    },
+    {
+      name: 'timed out',
+      before: { code: 1, stdout: '', stderr: '', timedOut: false, aborted: false },
+      login: { code: -1, stdout: '', stderr: '', timedOut: true, aborted: false },
+      state: 'timed-out',
+      accountChange: 'unverified',
+    },
+    {
+      name: 'failed',
+      before: { code: 1, stdout: '', stderr: '', timedOut: false, aborted: false },
+      login: { code: 2, stdout: JWT, stderr: `internal failure ${JWT}`, timedOut: false, aborted: false },
+      after: { code: 1, stdout: '', stderr: '', timedOut: false, aborted: false },
+      state: 'failed',
+      accountChange: 'unverified',
+    },
+    {
+      name: 'Azure CLI unavailable',
+      before: { code: 1, stdout: '', stderr: '', timedOut: false, aborted: false },
+      login: {
+        code: -1,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+        aborted: false,
+        spawnFailed: true,
+      },
+      after: { code: 1, stdout: '', stderr: '', timedOut: false, aborted: false },
+      state: 'failed',
+      code: 'azure-cli-unavailable',
+      accountChange: 'unverified',
+    },
+    {
+      name: 'unchanged',
+      before: { code: 0, stdout: account(ACTIVE_SUBSCRIPTION), stderr: '', timedOut: false, aborted: false },
+      login: { code: 0, stdout: '', stderr: '', timedOut: false, aborted: false },
+      after: { code: 0, stdout: account(ACTIVE_SUBSCRIPTION), stderr: '', timedOut: false, aborted: false },
+      state: 'ready',
+      accountChange: 'unchanged',
+    },
+    {
+      name: 'status unknown',
+      before: { code: 1, stdout: '', stderr: '', timedOut: false, aborted: false },
+      login: { code: 0, stdout: '', stderr: '', timedOut: false, aborted: false },
+      after: { code: -1, stdout: '', stderr: '', timedOut: true, aborted: false },
+      state: 'status-unknown',
+      accountChange: 'unverified',
+    },
+  ];
+  for (const scenario of scenarios) {
+    let accountReads = 0;
+    const spawn = recordingSpawn(async (options) => {
+      if (options.args[0] === 'account') {
+        accountReads += 1;
+        return accountReads === 1 ? scenario.before : scenario.after;
+      }
+      if (scenario.cancel) {
+        return new Promise((resolvePromise) => {
+          options.signal.addEventListener('abort', () => resolvePromise(scenario.login), { once: true });
+        });
+      }
+      return scenario.login;
+    });
+    const manager = createExecutionContextManager({
+      playgroundRoot: PLAYGROUND_ROOT,
+      mode: 'execute',
+      allowSystemAzureLogin: true,
+      transports: { spawn },
+    });
+    const started = manager.startSystemLogin();
+    if (scenario.cancel) {
+      await waitForLogin(manager, started.login.id, 'waiting-system-ui');
+      manager.cancelSystemLogin(started.login.id);
+    }
+    const final = await waitForLogin(manager, started.login.id, scenario.state);
+    assert.equal(final.login.accountChange, scenario.accountChange, scenario.name);
+    if (scenario.code) assert.equal(final.login.code, scenario.code, scenario.name);
+    assert.equal(JSON.stringify(final).includes(JWT), false, scenario.name);
+  }
+});
+
+test('system login is disabled unless the server launch explicitly enables it', () => {
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+  });
+  assert.throws(
+    () => manager.startSystemLogin(),
+    (error) => error instanceof RequestRefused && error.code === 'login-disabled',
+  );
+});
+
+test('run leases serialize Azure CLI mutation against execution', async () => {
+  let releaseLogin;
+  const heldLogin = new Promise((resolvePromise) => {
+    releaseLogin = resolvePromise;
+  });
+  const spawn = recordingSpawn(async (options) => {
+    if (options.args[0] === 'account') {
+      return { code: 1, stdout: '', stderr: '', timedOut: false, aborted: false };
+    }
+    options.signal.addEventListener(
+      'abort',
+      () => releaseLogin({ code: -1, stdout: '', stderr: '', timedOut: false, aborted: true }),
+      { once: true },
+    );
+    return heldLogin;
+  });
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    allowSystemAzureLogin: true,
+    transports: { spawn },
+  });
+
+  const releaseRun = manager.acquireRunLease();
+  assert.throws(
+    () => manager.startSystemLogin(),
+    (error) => error instanceof RequestRefused && error.code === 'run-in-progress',
+  );
+  await assert.rejects(
+    () => manager.activateSubscription(CONFIGURED_SUBSCRIPTION),
+    (error) => error instanceof RequestRefused && error.code === 'run-in-progress',
+  );
+  releaseRun();
+
+  const started = manager.startSystemLogin();
+  await waitForLogin(manager, started.login.id, 'waiting-system-ui');
+  assert.throws(
+    () => manager.acquireRunLease(),
+    (error) => error instanceof RequestRefused && error.code === 'azure-identity-mutation-in-progress',
+  );
+  manager.cancelSystemLogin(started.login.id);
+  await waitForLogin(manager, started.login.id, 'cancelled');
+});
+
+test('subscription list returns only enabled records for the current principal and tenant', async () => {
+  const enabled = {
+    id: ACTIVE_SUBSCRIPTION,
+    name: 'Operator Subscription',
+    tenantId: 'tenant-0001',
+    user: { name: 'operator@example.test', type: 'user' },
+    isDefault: true,
+    state: 'Enabled',
+  };
+  const spawn = recordingSpawn(async (options) => {
+    if (options.args[1] === 'show') {
+      return { code: 0, stdout: account(ACTIVE_SUBSCRIPTION), stderr: '', timedOut: false, aborted: false };
+    }
+    assert.deepEqual(options.args, ACCOUNT_LIST_ARGS);
+    return {
+      code: 0,
+      stdout: JSON.stringify([
+        enabled,
+        { ...enabled, id: CONFIGURED_SUBSCRIPTION, state: 'Disabled' },
+        { ...enabled, id: '11111111-2222-3333-4444-555555555555', tenantId: 'tenant-0002' },
+        { ...enabled, id: '22222222-3333-4444-5555-666666666666', user: { name: 'other@example.test', type: 'user' } },
+        { ...enabled, id: 'not-a-guid' },
+      ]),
+      stderr: '',
+      timedOut: false,
+      aborted: false,
+    };
+  });
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    allowSystemAzureLogin: true,
+    transports: { spawn },
+  });
+  const result = await manager.listSubscriptions();
+  assert.deepEqual(result.subscriptions, [
+    {
+      id: ACTIVE_SUBSCRIPTION,
+      name: 'Operator Subscription',
+      tenantId: 'tenant-0001',
+      user: { name: 'operator@example.test', type: 'user' },
+      isDefault: true,
+    },
+  ]);
+  assert.match(result.warning, /shared Azure CLI default/);
+});
+
+test('subscription list accepts the complete bounded 500-record inventory', async () => {
+  const records = Array.from({ length: 500 }, (_, index) => {
+    const suffix = index.toString(16).padStart(12, '0');
+    return {
+      id: `00000000-1111-2222-3333-${suffix}`,
+      name: `Subscription ${index}`,
+      tenantId: 'tenant-0001',
+      user: { name: 'operator@example.test', type: 'user' },
+      isDefault: index === 0,
+      state: 'Enabled',
+    };
+  });
+  const inventory = JSON.stringify(records);
+  const spawn = recordingSpawn(async (options) => {
+    if (options.args[1] === 'show') {
+      return {
+        code: 0,
+        stdout: account(records[0].id),
+        stderr: '',
+        timedOut: false,
+        aborted: false,
+      };
+    }
+    assert.ok(options.maxOutputBytes >= Buffer.byteLength(inventory));
+    return { code: 0, stdout: inventory, stderr: '', timedOut: false, aborted: false };
+  });
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    allowSystemAzureLogin: true,
+    transports: { spawn },
+  });
+  const result = await manager.listSubscriptions();
+  assert.equal(result.subscriptions.length, 500);
+});
+
+test('subscription activation refreshes, sets one exact enabled ID, and verifies readback', async () => {
+  let accountReads = 0;
+  const spawn = recordingSpawn(async (options) => {
+    if (options.args[1] === 'show') {
+      accountReads += 1;
+      return {
+        code: 0,
+        stdout: account(accountReads === 1 ? ACTIVE_SUBSCRIPTION : CONFIGURED_SUBSCRIPTION),
+        stderr: '',
+        timedOut: false,
+        aborted: false,
+      };
+    }
+    if (options.args[1] === 'list') {
+      assert.deepEqual(options.args, ACCOUNT_LIST_ARGS);
+      return {
+        code: 0,
+        stdout: JSON.stringify([
+          {
+            id: CONFIGURED_SUBSCRIPTION,
+            name: 'Configured Subscription',
+            tenantId: 'tenant-0001',
+            user: { name: 'operator@example.test', type: 'user' },
+            isDefault: false,
+            state: 'Enabled',
+          },
+        ]),
+        stderr: '',
+        timedOut: false,
+        aborted: false,
+      };
+    }
+    assert.deepEqual(options.args, ['account', 'set', '--subscription', CONFIGURED_SUBSCRIPTION]);
+    return { code: 0, stdout: '', stderr: '', timedOut: false, aborted: false };
+  });
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    allowSystemAzureLogin: true,
+    transports: { spawn },
+  });
+  const result = await manager.activateSubscription(CONFIGURED_SUBSCRIPTION);
+  assert.equal(result.subscription.id, CONFIGURED_SUBSCRIPTION);
+  assert.equal(result.subscription.isDefault, true);
+  assert.deepEqual(spawn.calls.map((call) => call.args), [
+    ACCOUNT_SHOW_ARGS,
+    ACCOUNT_LIST_ARGS,
+    ['account', 'set', '--subscription', CONFIGURED_SUBSCRIPTION],
+    ACCOUNT_SHOW_ARGS,
+  ]);
+});
+
+test('subscription activation aborts its Azure CLI process when the caller disconnects', async () => {
+  let setSignal;
+  let notifySetStarted;
+  const setStarted = new Promise((resolvePromise) => {
+    notifySetStarted = resolvePromise;
+  });
+  const spawn = recordingSpawn(async (options) => {
+    if (options.args[1] === 'show') {
+      return { code: 0, stdout: account(ACTIVE_SUBSCRIPTION), stderr: '', timedOut: false, aborted: false };
+    }
+    if (options.args[1] === 'list') {
+      return {
+        code: 0,
+        stdout: JSON.stringify([
+          {
+            id: CONFIGURED_SUBSCRIPTION,
+            name: 'Configured Subscription',
+            tenantId: 'tenant-0001',
+            user: { name: 'operator@example.test', type: 'user' },
+            isDefault: false,
+            state: 'Enabled',
+          },
+        ]),
+        stderr: '',
+        timedOut: false,
+        aborted: false,
+      };
+    }
+    setSignal = options.signal;
+    notifySetStarted();
+    return new Promise((resolvePromise) => {
+      options.signal.addEventListener('abort', () => {
+        resolvePromise({ code: null, stdout: '', stderr: '', timedOut: false, aborted: true });
+      }, { once: true });
+    });
+  });
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    allowSystemAzureLogin: true,
+    transports: { spawn },
+  });
+  const controller = new AbortController();
+  const pending = manager.activateSubscription(CONFIGURED_SUBSCRIPTION, { signal: controller.signal });
+  await setStarted;
+  controller.abort();
+  await assert.rejects(
+    pending,
+    (error) => error instanceof RequestRefused && error.code === 'subscription-set-failed',
+  );
+  assert.equal(setSignal.aborted, true);
+});
+
+test('subscription activation rejects unsafe readback after set', async () => {
+  for (const scenario of [
+    { state: 'Disabled', isDefault: true, code: 'subscription-readback-disabled' },
+    { state: 'Enabled', isDefault: false, code: 'subscription-readback-mismatch' },
+    { id: ACTIVE_SUBSCRIPTION, state: 'Enabled', isDefault: true, code: 'subscription-readback-mismatch' },
+    { tenantId: 'tenant-0002', state: 'Enabled', isDefault: true, code: 'subscription-context-changed' },
+    {
+      user: { name: 'other@example.test', type: 'user' },
+      state: 'Enabled',
+      isDefault: true,
+      code: 'subscription-context-changed',
+    },
+  ]) {
+    let accountReads = 0;
+    const spawn = recordingSpawn(async (options) => {
+      if (options.args[1] === 'show') {
+        accountReads += 1;
+        const parsed = JSON.parse(account(accountReads === 1 ? ACTIVE_SUBSCRIPTION : CONFIGURED_SUBSCRIPTION));
+        if (accountReads > 1) {
+          if (scenario.id) parsed.id = scenario.id;
+          if (scenario.tenantId) parsed.tenantId = scenario.tenantId;
+          if (scenario.user) parsed.user = scenario.user;
+          parsed.state = scenario.state;
+          parsed.isDefault = scenario.isDefault;
+        }
+        return { code: 0, stdout: JSON.stringify(parsed), stderr: '', timedOut: false, aborted: false };
+      }
+      if (options.args[1] === 'list') {
+        return {
+          code: 0,
+          stdout: JSON.stringify([
+            {
+              id: CONFIGURED_SUBSCRIPTION,
+              name: 'Configured Subscription',
+              tenantId: 'tenant-0001',
+              user: { name: 'operator@example.test', type: 'user' },
+              isDefault: false,
+              state: 'Enabled',
+            },
+          ]),
+          stderr: '',
+          timedOut: false,
+          aborted: false,
+        };
+      }
+      return { code: 0, stdout: '', stderr: '', timedOut: false, aborted: false };
+    });
+    const manager = createExecutionContextManager({
+      playgroundRoot: PLAYGROUND_ROOT,
+      mode: 'execute',
+      allowSystemAzureLogin: true,
+      transports: { spawn },
+    });
+    await assert.rejects(
+      () => manager.activateSubscription(CONFIGURED_SUBSCRIPTION),
+      (error) => error instanceof RequestRefused && error.code === scenario.code,
+    );
+    assert.equal(spawn.calls.some((call) => call.args[1] === 'set'), true);
+  }
+});
+
+test('subscription activation rejects stale, wrong-tenant, disabled, malformed, and smuggled requests before set', async () => {
+  const cases = [
+    { code: 'subscription-not-available', records: [] },
+    {
+      code: 'subscription-tenant-mismatch',
+      records: [
+        {
+          id: CONFIGURED_SUBSCRIPTION,
+          name: 'Wrong tenant',
+          tenantId: 'tenant-0002',
+          user: { name: 'operator@example.test', type: 'user' },
+          isDefault: false,
+          state: 'Enabled',
+        },
+      ],
+    },
+    {
+      code: 'subscription-disabled',
+      records: [
+        {
+          id: CONFIGURED_SUBSCRIPTION,
+          name: 'Disabled',
+          tenantId: 'tenant-0001',
+          user: { name: 'operator@example.test', type: 'user' },
+          isDefault: false,
+          state: 'Disabled',
+        },
+      ],
+    },
+    {
+      code: 'subscription-record-invalid',
+      records: [
+        {
+          id: CONFIGURED_SUBSCRIPTION,
+          name: '',
+          tenantId: 'tenant-0001',
+          user: { name: 'operator@example.test', type: 'user' },
+          isDefault: false,
+          state: 'Enabled',
+        },
+      ],
+    },
+  ];
+  for (const scenario of cases) {
+    const spawn = recordingSpawn(async (options) =>
+      options.args[1] === 'show'
+        ? { code: 0, stdout: account(ACTIVE_SUBSCRIPTION), stderr: '', timedOut: false, aborted: false }
+        : {
+            code: 0,
+            stdout: JSON.stringify(scenario.records),
+            stderr: '',
+            timedOut: false,
+            aborted: false,
+          },
+    );
+    const manager = createExecutionContextManager({
+      playgroundRoot: PLAYGROUND_ROOT,
+      mode: 'execute',
+      allowSystemAzureLogin: true,
+      transports: { spawn },
+    });
+    await assert.rejects(
+      () => manager.activateSubscription(CONFIGURED_SUBSCRIPTION),
+      (error) => error instanceof RequestRefused && error.code === scenario.code,
+    );
+    assert.equal(spawn.calls.some((call) => call.args[1] === 'set'), false);
+  }
 });
 
 test('Python management run admission stops before a wrapper when CLI auth is absent or mismatched', async () => {
@@ -624,6 +1447,52 @@ test('Python management run admission stops before a wrapper when CLI auth is ab
   }
 });
 
+test('run admission rejects an Azure identity changed after browser review before creating a workspace', async () => {
+  const spawn = recordingSpawn(async () => ({
+    code: 0,
+    stdout: account(ACTIVE_SUBSCRIPTION),
+    stderr: '',
+    timedOut: false,
+    aborted: false,
+  }));
+  const filesystem = fakeFileSystem({ realReadRoots: [ACCELERATOR_ROOT] });
+  const identity = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    transports: { spawn },
+  });
+  const manager = createRunManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    transports: {
+      spawn,
+      fetch: async () => {
+        throw new Error('network must not be reached');
+      },
+      writeFile: filesystem.writeFile,
+      access: filesystem.access,
+    },
+    fs: filesystem.fs,
+    executionContextManager: identity,
+  });
+  await assert.rejects(
+    () =>
+      manager.start({
+        protocolVersion: EXECUTION_PROTOCOL_VERSION,
+        sampleId: 'azure-context-check',
+        inputs: { 'hub.subscriptionId': ACTIVE_SUBSCRIPTION },
+        reviewedIdentity: {
+          principalName: 'previous@example.test',
+          principalType: 'user',
+          tenantId: 'tenant-0001',
+          subscriptionId: ACTIVE_SUBSCRIPTION,
+        },
+      }),
+    (error) => error instanceof RequestRefused && error.code === 'reviewed-identity-changed',
+  );
+  assert.equal(spawn.calls.length, 1, 'only the post-lease Azure CLI account probe may run');
+  assert.equal(filesystem.files.size, 0);
+});
+
 test('the read-only Azure context diagnostic still runs so it can report a subscription mismatch', async () => {
   const spawn = recordingSpawn(async () => ({
     code: 0,
@@ -656,6 +1525,12 @@ test('the read-only Azure context diagnostic still runs so it can report a subsc
     protocolVersion: EXECUTION_PROTOCOL_VERSION,
     sampleId: 'azure-context-check',
     inputs: { 'hub.subscriptionId': CONFIGURED_SUBSCRIPTION },
+    reviewedIdentity: {
+      principalName: 'operator@example.test',
+      principalType: 'user',
+      tenantId: 'tenant-0001',
+      subscriptionId: ACTIVE_SUBSCRIPTION,
+    },
   });
   assert.equal(result.executionContext.state, 'subscription-mismatch');
   assert.equal(result.executionContext.canExecute, true);
@@ -663,7 +1538,7 @@ test('the read-only Azure context diagnostic still runs so it can report a subsc
   assert.equal(spawn.calls.length, 2, 'one admission probe and one registered diagnostic command should run');
 });
 
-test('server exposes the exact context and login endpoints with same-origin preview containment', async () => {
+test('server advertises disabled system login by default and retires the former endpoint', async () => {
   const spawn = recordingSpawn(() => {
     throw new Error('preview must not spawn');
   });
@@ -675,6 +1550,8 @@ test('server exposes the exact context and login endpoints with same-origin prev
   await withServer({ mode: 'preview', executionContextManager: identity }, async ({ call }) => {
     const capabilities = await (await call('/api/capabilities')).json();
     assert.equal(capabilities.executionContext.endpoint, '/api/execution-context');
+    assert.equal(capabilities.azureAuth.systemLogin.state, 'login-disabled');
+    assert.equal(capabilities.azureAuth.systemLogin.startEndpoint, null);
     assert.equal(capabilities.sourceValidation.executionIdentity, 'local-python-parser');
 
     const contextResponse = await call('/api/execution-context', {
@@ -692,36 +1569,65 @@ test('server exposes the exact context and login endpoints with same-origin prev
     });
     assert.equal(crossSite.status, 403);
 
-    const login = await call('/api/azure-login/start', {
+    const login = await call('/api/azure-auth/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
     });
-    assert.equal(login.status, 501);
-    assert.equal((await login.json()).code, 'preview-unavailable');
+    assert.equal(login.status, 409);
+    assert.equal((await login.json()).login.state, 'login-disabled');
+    const gone = await call('/api/azure-login/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
+    });
+    assert.equal(gone.status, 410);
+    assert.equal((await gone.json()).code, 'legacy-login-gone');
     assert.equal(spawn.calls.length, 0);
   });
 });
 
-test('server device-code endpoints start, poll, and return refreshed context without tokens', async () => {
+test('server system-login and subscription endpoints use fixed authenticated schemas without tokens', async () => {
   let releaseLogin;
   const held = new Promise((resolvePromise) => {
     releaseLogin = resolvePromise;
   });
+  let accountReads = 0;
   const spawn = recordingSpawn(async (options) => {
+    if (options.args[1] === 'show') {
+      accountReads += 1;
+      return accountReads === 1
+        ? { code: 1, stdout: '', stderr: '', timedOut: false, aborted: false }
+        : { code: 0, stdout: account(ACTIVE_SUBSCRIPTION), stderr: '', timedOut: false, aborted: false };
+    }
+    if (options.args[1] === 'list') {
+      return {
+        code: 0,
+        stdout: JSON.stringify([
+          {
+            id: ACTIVE_SUBSCRIPTION,
+            name: 'Operator Subscription',
+            tenantId: 'tenant-0001',
+            user: { name: 'operator@example.test', type: 'user' },
+            isDefault: true,
+            state: 'Enabled',
+          },
+        ]),
+        stderr: '',
+        timedOut: false,
+        aborted: false,
+      };
+    }
     if (options.args[0] === 'login') {
-      options.onOutput?.({
-        stream: 'stderr',
-        text: 'Open https://microsoft.com/devicelogin and enter the code SRVR-1234 to authenticate.',
-      });
       await held;
       return { code: 0, stdout: '', stderr: '', timedOut: false, aborted: false };
     }
-    return { code: 0, stdout: account(ACTIVE_SUBSCRIPTION), stderr: '', timedOut: false, aborted: false };
+    assert.fail(`unexpected command ${options.args.join(' ')}`);
   });
   const identity = createExecutionContextManager({
     playgroundRoot: PLAYGROUND_ROOT,
     mode: 'execute',
+    allowSystemAzureLogin: true,
     transports: { spawn },
   });
   const runManager = {
@@ -732,18 +1638,22 @@ test('server device-code endpoints start, poll, and return refreshed context wit
     cancelAll: () => {},
   };
   await withServer(
-    { mode: 'execute', executionContextManager: identity, runManager },
+    { mode: 'execute', executionContextManager: identity, runManager, allowSystemAzureLogin: true },
     async ({ call }) => {
-      const start = await call('/api/azure-login/start', {
+      const capabilities = await (await call('/api/capabilities')).json();
+      assert.equal(capabilities.azureAuth.systemLogin.available, true);
+      assert.equal(capabilities.azureAuth.subscriptions.available, true);
+
+      const start = await call('/api/azure-auth/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
       });
       assert.equal(start.status, 202);
       const started = await start.json();
-      assert.equal(started.login.state, 'waiting-for-user');
+      assert.equal(started.login.id, SYSTEM_AZURE_LOGIN_ID);
 
-      const duplicate = await call('/api/azure-login/start', {
+      const duplicate = await call('/api/azure-auth/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
@@ -752,20 +1662,76 @@ test('server device-code endpoints start, poll, and return refreshed context wit
       const inProgress = await duplicate.json();
       assert.equal(inProgress.code, 'login-in-progress');
       assert.equal(inProgress.login.id, started.login.id);
-      assert.equal(inProgress.login.state, 'waiting-for-user');
 
       releaseLogin();
-      await waitForLogin(identity, started.login.id, 'succeeded');
-      const status = await call('/api/azure-login/status', {
+      await waitForLogin(identity, started.login.id, 'ready');
+      const status = await call('/api/azure-auth/status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION, loginId: started.login.id }),
       });
       assert.equal(status.status, 200);
       const completed = await status.json();
-      assert.equal(completed.login.state, 'succeeded');
-      assert.equal(completed.context.subscription.activeName, 'Operator Subscription');
+      assert.equal(completed.login.state, 'ready');
+      assert.equal(completed.context.activeCliSubscription.name, 'Operator Subscription');
       assert.equal(JSON.stringify(completed).includes(JWT), false);
+      assert.equal('verificationUrl' in completed.login, false);
+      assert.equal('userCode' in completed.login, false);
+
+      const subscriptions = await call('/api/azure-subscriptions/list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
+      });
+      assert.equal(subscriptions.status, 200);
+      assert.equal((await subscriptions.json()).subscriptions.length, 1);
+    },
+  );
+});
+
+test('server aborts a subscription operation when its authenticated browser request disconnects', async () => {
+  let operationSignal;
+  let notifyStarted;
+  const started = new Promise((resolvePromise) => {
+    notifyStarted = resolvePromise;
+  });
+  const identity = {
+    listSubscriptions: ({ signal }) => {
+      operationSignal = signal;
+      notifyStarted();
+      return new Promise((resolvePromise, rejectPromise) => {
+        signal.addEventListener('abort', () => {
+          rejectPromise(new RequestRefused('Subscription request cancelled.', {
+            status: 409,
+            code: 'subscription-request-cancelled',
+          }));
+        }, { once: true });
+      });
+    },
+    cancelAll: () => {},
+  };
+  const runManager = {
+    start: async () => {
+      throw new Error('not used');
+    },
+    cancel: () => ({ cancelled: false }),
+    cancelAll: () => {},
+  };
+  await withServer(
+    { mode: 'execute', executionContextManager: identity, runManager, allowSystemAzureLogin: true },
+    async ({ call }) => {
+      const controller = new AbortController();
+      const request = call('/api/azure-subscriptions/list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
+        signal: controller.signal,
+      });
+      await started;
+      controller.abort();
+      await assert.rejects(request, (error) => error?.name === 'AbortError');
+      await new Promise((done) => setTimeout(done, 10));
+      assert.equal(operationSignal.aborted, true);
     },
   );
 });

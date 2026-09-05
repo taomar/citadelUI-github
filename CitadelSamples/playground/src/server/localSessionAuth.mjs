@@ -70,6 +70,7 @@ function readSessionCookie(request, cookieName) {
 
 export function createLocalSessionAuth({
   bootstrapCapability,
+  browserHost,
   cookieName = LOCAL_SESSION_COOKIE_NAME,
   secureCookie = false,
   random = randomBytes,
@@ -83,6 +84,13 @@ export function createLocalSessionAuth({
   }
   let bootstrap = injected?.value ?? Buffer.from(random(TOKEN_BYTES));
   if (bootstrap.length !== TOKEN_BYTES) throw new TypeError(`The random source must return ${TOKEN_BYTES} bytes.`);
+  const launchHost = browserHost ?? `citadel-${digest(bootstrap).subarray(0, 16).toString('hex')}.localhost`;
+  if (
+    !['127.0.0.1', '::1', 'localhost'].includes(launchHost)
+    && !/^citadel-[a-f0-9]{32}\.localhost$/.test(launchHost)
+  ) {
+    throw new TypeError('The local browser host is invalid.');
+  }
   let claimed = false;
   let sessionDigest = null;
 
@@ -96,11 +104,13 @@ export function createLocalSessionAuth({
   }
 
   return Object.freeze({
+    browserHost: launchHost,
     cookieName,
 
     launchUrl(origin) {
       if (!bootstrap) throw new Error('The bootstrap capability has already been consumed.');
       const url = new URL('/', origin);
+      url.hostname = launchHost.includes(':') ? `[${launchHost}]` : launchHost;
       url.hash = `bootstrap=${encodeURIComponent(encodeToken(bootstrap))}`;
       return url.href;
     },

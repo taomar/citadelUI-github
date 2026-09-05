@@ -137,8 +137,11 @@ Open the secure launch URL printed in the terminal. Its one-time URL fragment is
 removed immediately and exchanged for an HttpOnly local session cookie. Preview
 mode lets you select all 19 samples, complete their configuration, export JSON
 or `.env.example`, and inspect the exact protected source and generated plan. It
-executes nothing. Opening the plain `http://127.0.0.1:4173/` URL is read-only and
-cannot invoke self-test, validation, identity, login, relay, or execution APIs.
+executes nothing. Local startup selects a cryptographically unique `*.localhost`
+browser hostname and a fresh loopback port for each launch, isolating the
+host-only session cookie from other loopback services and older service workers.
+Opening the plain bind-address URL is read-only and cannot invoke self-test,
+validation, identity, login, relay, or execution APIs.
 
 The diagnostics drawer includes an **Offline self-test** — a fixed, local
 demonstration that needs no Azure subscription, no credential, and no network.
@@ -179,7 +182,7 @@ Environment variables:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `CITADEL_PLAYGROUND_PORT` | `4173` | Listening port |
+| `CITADEL_PLAYGROUND_PORT` | Fresh loopback port locally; `4173` on non-loopback binds | Explicit listening port override |
 | `CITADEL_PLAYGROUND_HOST` | `127.0.0.1` | Bind address; local execution accepts loopback only |
 | `CITADEL_PLAYGROUND_PYTHON` | `python` on Windows, `python3` elsewhere | Approved Python interpreter |
 | `CITADEL_PLAYGROUND_PUBLIC_ORIGIN` | *(unset)* | Exact canonical HTTPS browser origin required by every state-changing JSON route on a non-loopback bind |

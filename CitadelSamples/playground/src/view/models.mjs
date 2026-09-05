@@ -20,6 +20,7 @@ import { previewPlan, previewSteps } from '../core/preview.mjs';
 import { errorsOf, warningsOf } from '../core/validation.mjs';
 import { buildConfigurationDocument, buildEnvExample, configurationFileNames, serializeConfiguration } from '../core/configuration.mjs';
 import { describeSampleCapability } from '../core/capability.mjs';
+import { sampleExecutionContext } from '../core/executionContext.mjs';
 import { EXECUTION_PROTOCOL_VERSION } from '../core/types.mjs';
 
 const RISK_TONE = Object.freeze({
@@ -82,6 +83,7 @@ export function buildExecutionEnvironmentModel(capability) {
 
 const EXECUTION_CONTEXT_TONE = Object.freeze({
   ready: { tone: 'success', label: 'Ready' },
+  'ready-to-attempt': { tone: 'success', label: 'Ready to Attempt' },
   unavailable: { tone: 'warning', label: 'Unavailable' },
   'signed-out': { tone: 'warning', label: 'Sign-in required' },
   'subscription-mismatch': { tone: 'danger', label: 'Subscription mismatch' },
@@ -94,8 +96,8 @@ function credentialSource(context) {
   if (context.kind === 'offline-python') return 'Local Python parser; no cloud credential';
   if (context.kind === 'hosted-relay') return 'Hosted managed identity';
   if (context.gateway) return 'APIM subscription key held in this browser tab';
-  if (context.kind?.startsWith('azure-cli-') || context.authority?.type === 'azure-cli-user') {
-    return 'Azure CLI device sign-in';
+  if (context.kind?.startsWith('azure-cli-') || context.executionCredential?.type === 'azure-cli-user') {
+    return 'Local Azure CLI credential cache';
   }
   if (context.state === 'deferred') return 'No credential source is attached';
   return context.label;
@@ -103,7 +105,7 @@ function credentialSource(context) {
 
 function runsAs(context) {
   if (!context) return 'Not reported';
-  if (context.authority?.principalName) return context.authority.principalName;
+  if (context.signedInAccount?.principalName) return context.signedInAccount.principalName;
   if (context.kind === 'offline-python') return 'Local parser only';
   if (context.gateway) return 'Gateway caller';
   if (context.state === 'signed-out') return 'No Azure CLI user signed in';
@@ -111,31 +113,44 @@ function runsAs(context) {
   return context.label;
 }
 
-export function buildExecutionIdentityModel({ contextState = {}, loginState = {} } = {}) {
+export function buildExecutionIdentityModel({
+  sampleId = null,
+  contextState = {},
+  loginState = {},
+  azureAuthCapability = {},
+  subscriptionsState = {},
+  runInFlight = false,
+} = {}) {
   const context = contextState.status === 'ready' ? contextState.context : null;
   const login =
     loginState.status === 'ready'
       ? loginState.login
       : loginState.status === 'starting'
         ? {
-            loginId: '',
+            loginId: azureAuthCapability.loginId ?? 'azure-system-login',
             state: 'starting',
-            message: loginState.message ?? 'Starting Azure device sign-in…',
+            message: loginState.message ?? 'Starting Azure system sign-in…',
           }
         : loginState.status === 'error'
           ? { loginId: '', state: 'failed', message: loginState.message ?? 'Azure sign-in could not be completed.' }
           : null;
-  const loginActive = login && ['starting', 'waiting-for-user'].includes(login.state);
+  const expectedKind = sampleId ? sampleExecutionContext(sampleId).kind : null;
+  const contextKind = context?.kind ?? expectedKind;
+  const azureLoginCapable =
+    contextKind?.startsWith('azure-cli-') || context?.executionCredential?.type === 'azure-cli-user';
+  const loginActive =
+    login && ['starting', 'waiting-system-ui', 'verifying', 'cancel-requested'].includes(login.state);
+  const loginRecoverable = Boolean(login) && !loginActive;
   const loginModel = login
     ? {
         id: login.loginId,
         state: login.state,
         active: loginActive,
         cancelAvailable:
-          loginActive || (Boolean(login.loginId) && !['succeeded', 'cancelled', 'timed-out'].includes(login.state)),
-        verificationUrl: login.verificationUrl ?? '',
-        userCode: login.userCode ?? '',
+          Boolean(login.loginId) &&
+          ['starting', 'waiting-system-ui', 'verifying'].includes(login.state),
         message: login.message ?? '',
+        accountChange: login.accountChange ?? 'unverified',
       }
     : null;
   if (!context) {
@@ -152,20 +167,56 @@ export function buildExecutionIdentityModel({ contextState = {}, loginState = {}
       runsAs: 'Not reported',
       credentialSource: 'Not reported',
       authority: null,
-      subscription: null,
+      signedInAccount: null,
+      executionCredential: null,
+      activeCliSubscription: null,
+      intendedTarget: null,
+      authorization: null,
       gateway: null,
       guarantees: [],
-      canSignIn: false,
-      signInLabel: 'Sign In to Azure',
-      canRefresh: !loginActive,
+      canSignIn:
+        azureLoginCapable &&
+        azureAuthCapability.systemLoginAllowed === true &&
+        loginRecoverable &&
+        !loginModel?.cancelAvailable &&
+        !runInFlight,
+      signInLabel: 'Sign in with system browser',
+      canRefresh: azureLoginCapable && loginRecoverable,
       refreshing: loading,
-      login: loginModel,
+      login: azureLoginCapable ? loginModel : null,
+      subscriptionControl: null,
     };
   }
 
   const state = context.state;
-  const azureLoginCapable =
-    context.kind?.startsWith('azure-cli-') || context.authority?.type === 'azure-cli-user';
+  const signedIn = context.signedInAccount?.state === 'signed-in';
+  const subscriptions = Array.isArray(subscriptionsState.subscriptions)
+    ? subscriptionsState.subscriptions
+    : [];
+  const selectedSubscriptionId =
+    subscriptionsState.selectedId ||
+    context.activeCliSubscription?.id ||
+    subscriptions[0]?.id ||
+    '';
+  const subscriptionControl =
+    azureLoginCapable && azureAuthCapability.subscriptionsAvailable === true && signedIn
+      ? {
+          status: subscriptionsState.status ?? 'idle',
+          subscriptions,
+          selectedId: selectedSubscriptionId,
+          busy: ['loading', 'activating'].includes(subscriptionsState.status),
+          canRefresh: !['loading', 'activating'].includes(subscriptionsState.status) && !runInFlight,
+          canSelect: !['loading', 'activating'].includes(subscriptionsState.status) && !runInFlight,
+          canActivate:
+            subscriptionsState.status === 'ready' &&
+            !runInFlight &&
+            Boolean(selectedSubscriptionId) &&
+            selectedSubscriptionId.toLowerCase() !==
+              String(context.activeCliSubscription?.id ?? '').toLowerCase(),
+          message: subscriptionsState.message ?? '',
+          warning: azureAuthCapability.warning ?? '',
+        }
+      : null;
   return {
     state,
     code: context.code ?? '',
@@ -174,8 +225,11 @@ export function buildExecutionIdentityModel({ contextState = {}, loginState = {}
     summary: context.summary,
     runsAs: runsAs(context),
     credentialSource: credentialSource(context),
-    authority: context.authority ?? null,
-    subscription: context.subscription ?? null,
+    signedInAccount: context.signedInAccount ?? null,
+    executionCredential: context.executionCredential ?? null,
+    activeCliSubscription: context.activeCliSubscription ?? null,
+    intendedTarget: context.intendedTarget ?? null,
+    authorization: context.authorization ?? null,
     gateway: context.gateway ?? null,
     hostedRelay: context.hostedRelay ?? null,
     guarantees: Array.isArray(context.guarantees)
@@ -188,13 +242,19 @@ export function buildExecutionIdentityModel({ contextState = {}, loginState = {}
     canExecute: context.canExecute === true,
     canSignIn:
       azureLoginCapable &&
-      ['signed-out', 'ready', 'subscription-mismatch'].includes(state) &&
+      azureAuthCapability.systemLoginAllowed === true &&
+      ['signed-out', 'ready-to-attempt', 'subscription-mismatch'].includes(state) &&
       !loginActive &&
-      !loginModel?.cancelAvailable,
-    signInLabel: state === 'signed-out' ? 'Sign In to Azure' : 'Switch Azure account',
-    canRefresh: !loginActive,
+      !loginModel?.cancelAvailable &&
+      !runInFlight,
+    signInLabel:
+      state === 'signed-out'
+        ? 'Sign in with system browser'
+        : azureAuthCapability.accountSwitchLabel ?? 'Switch Azure account',
+    canRefresh: azureLoginCapable && !loginActive,
     refreshing: false,
-    login: loginModel,
+    login: azureLoginCapable ? loginModel : null,
+    subscriptionControl,
   };
 }
 
@@ -510,11 +570,17 @@ function directoryReadiness(sample, { read, hasSecret, runtimeProbe, resultFor }
       label: 'Dependency needed',
       detail: runtime.reasons[0] ?? '',
       blockingCount: 0,
-      dependencies,
-      dependencyReady: false,
+      dependencies: [...runtime.dependencies],
+      dependencyReady: runtime.state === 'preview-only' ? null : false,
     };
   }
-  return { state: 'ready', label: 'Ready', blockingCount: 0, dependencies, dependencyReady: true };
+  return {
+    state: 'ready',
+    label: 'Ready',
+    blockingCount: 0,
+    dependencies: [...runtime.dependencies],
+    dependencyReady: true,
+  };
 }
 
 export function buildDirectoryModel({

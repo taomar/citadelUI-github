@@ -79,9 +79,12 @@ inputs. Do not introduce a general-purpose editable notebook.
   required, conditional, secret, defaulted, and generated inputs.
 - Azure management, Python management, and Foundry samples identify the local
   Azure CLI principal, tenant, and active/configured subscription match before
-  execution. Account switching is exposed only when the server advertises its
-  launch-gated system-browser capability; otherwise the UI fails closed to an
-  explicit terminal handoff.
+  execution. Per-launch system sign-in is disabled by default, invokes only
+  `az login` when explicitly enabled, blocks any short-code fallback, and never
+  returns tokens or raw CLI output to the browser. Subscription switching is
+  fixed-command, principal/tenant-bound, and readback-verified. The wizard
+  exposes switching only when the server advertises that launch-gated
+  capability; otherwise it fails closed to an explicit terminal handoff.
 - Gateway samples identify the memory-only APIM subscription-key context without
   exposing the key. Offline validation and hosted relay samples use separately
   labelled local-parser and managed-identity contexts.

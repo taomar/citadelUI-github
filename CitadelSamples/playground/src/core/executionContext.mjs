@@ -16,11 +16,19 @@ export const EXECUTION_CONTEXT_KINDS = Object.freeze([
 
 export const EXECUTION_CONTEXT_STATES = Object.freeze([
   'ready',
+  'ready-to-attempt',
   'unavailable',
   'signed-out',
   'subscription-mismatch',
+  'subscription-disabled',
   'missing-key',
   'deferred',
+]);
+
+export const AZURE_CLI_PRINCIPAL_TYPES = Object.freeze([
+  'user',
+  'service-principal',
+  'managed-identity',
 ]);
 
 const AZURE_CLI_MANAGEMENT = Object.freeze({
@@ -132,13 +140,17 @@ export function offlinePythonContext({ available }) {
     state: available ? 'ready' : 'unavailable',
     code: available ? null : 'preview-unavailable',
     canExecute: Boolean(available),
-    authority: Object.freeze({
+    signedInAccount: null,
+    executionCredential: Object.freeze({
       type: 'local-python-parser',
+      source: 'local-process',
       principalName: null,
       principalType: null,
       tenantId: null,
     }),
-    subscription: emptySubscription(),
+    activeCliSubscription: null,
+    intendedTarget: null,
+    authorization: authorizationNotChecked(),
     gateway: null,
     hostedRelay: null,
     guarantees: guarantees(),
@@ -155,13 +167,17 @@ export function hostedRelayContext({ available }) {
     state: available ? 'ready' : 'unavailable',
     code: available ? null : 'relay-sample-unavailable',
     canExecute: Boolean(available),
-    authority: Object.freeze({
+    signedInAccount: null,
+    executionCredential: Object.freeze({
       type: 'entra-caller-and-managed-identity',
+      source: 'hosted-relay',
       principalName: null,
       principalType: null,
       tenantId: null,
     }),
-    subscription: emptySubscription(),
+    activeCliSubscription: null,
+    intendedTarget: null,
+    authorization: authorizationNotChecked(),
     gateway: null,
     hostedRelay: Object.freeze({
       callerAuthorization: 'entra',
@@ -180,13 +196,20 @@ export function unavailableSampleContext(descriptor) {
     state: 'unavailable',
     code: 'preview-unavailable',
     canExecute: false,
-    authority: Object.freeze({
+    signedInAccount: null,
+    executionCredential: Object.freeze({
       type: descriptor.authorityType,
+      source: 'unavailable',
       principalName: null,
       principalType: null,
       tenantId: null,
     }),
-    subscription: emptySubscription(),
+    activeCliSubscription: null,
+    intendedTarget: Object.freeze({
+      subscriptionId: null,
+      matchesActive: null,
+    }),
+    authorization: authorizationNotChecked(),
     gateway: descriptor.kind === 'gateway-key' ? Object.freeze({ keyPresent: false, headerName: '' }) : null,
     hostedRelay: null,
     guarantees: guarantees(),
@@ -200,12 +223,10 @@ export function guarantees() {
   });
 }
 
-export function emptySubscription() {
+export function authorizationNotChecked() {
   return Object.freeze({
-    activeId: null,
-    activeName: null,
-    configuredId: null,
-    matches: null,
+    state: 'not-checked',
+    label: 'Authorization Not Checked',
   });
 }
 

@@ -111,7 +111,7 @@ test('system-browser account controls are capability-gated with a terminal fallb
   assert.match(shell, /identity\.systemBrowser\?\.available === true/);
   assert.match(shell, /identity\.launchCapability === 'system-browser'/);
   assert.match(shell, /identity\.launchCapability === 'wam'/);
-  assert.match(shell, /Continue in terminal/);
+  assert.match(shell, /Refresh Azure CLI Status/);
   assert.match(main, /accountControl\.launchMode !== 'system-browser'/);
 });
 

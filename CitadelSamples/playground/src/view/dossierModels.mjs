@@ -6,17 +6,25 @@ export const ACCOUNT_CONTROL_STATES = Object.freeze([
   'starting',
   'waiting-system-ui',
   'verifying',
+  'cancel-requested',
   'device-fallback-blocked',
   'status-unknown',
   'cancelled',
   'failed',
   'timed-out',
   'ready',
+  'subscription-disabled',
   'subscription-mismatch',
 ]);
 
 const ACCOUNT_CONTROL_STATE_SET = new Set(ACCOUNT_CONTROL_STATES);
-const TERMINAL_ACCOUNT_STATES = new Set(['cancelled', 'failed', 'timed-out']);
+const TERMINAL_ACCOUNT_STATES = new Set([
+  'device-fallback-blocked',
+  'status-unknown',
+  'cancelled',
+  'failed',
+  'timed-out',
+]);
 const TARGET_PATH = /(subscriptionId|resourceGroupName|apimName|gatewayUrl|endpoint|keyVault|foundry|project)/i;
 
 function safeText(value, fallback = '') {
@@ -60,7 +68,7 @@ export function normalizeAccountControlState(value = {}) {
   const state = ACCOUNT_CONTROL_STATE_SET.has(requestedState) ? requestedState : 'login-disabled';
   const launchAdvertised =
     value.systemBrowserAzureLogin === true || value.launchMode === 'system-browser';
-  const active = ['starting', 'waiting-system-ui', 'verifying'].includes(state);
+  const active = ['starting', 'waiting-system-ui', 'verifying', 'cancel-requested'].includes(state);
   const accounts = safeList(value.accounts, safeAccount);
   const subscriptions = safeList(value.subscriptions, safeSubscription);
 
@@ -76,7 +84,11 @@ export function normalizeAccountControlState(value = {}) {
     canLaunch: launchAdvertised && value.canLaunch === true && !active,
     canCancel: value.canCancel === true && active && Boolean(safeText(value.sessionId)),
     canVerify: value.canVerify === true && !active,
-    canSetActive: value.canSetActive === true && ['ready', 'subscription-mismatch'].includes(state),
+    canSetActive:
+      value.canSetActive === true
+      && ['ready', 'subscription-disabled', 'subscription-mismatch'].includes(state),
+    canSelect: value.canSelect === true && !active,
+    subscriptionsBusy: value.subscriptionsBusy === true,
     activeAccountId: safeText(value.activeAccountId),
     activeSubscriptionId: safeText(value.activeSubscriptionId),
     intendedSubscriptionId: safeText(value.intendedSubscriptionId),
@@ -105,6 +117,7 @@ function humanLabel(context, account) {
   if (context?.kind === 'gateway-key') return 'Browser Session';
   if (context?.kind === 'hosted-relay') return 'Entra Caller';
   return (
+    context?.signedInAccount?.principalName ||
     context?.authority?.principalName ||
     account.accounts.find((entry) => entry.id === account.activeAccountId)?.username ||
     account.accounts.find((entry) => entry.id === account.activeAccountId)?.name ||
@@ -117,7 +130,12 @@ function runsAsLabel(context) {
   if (context.kind === 'gateway-key') return 'Gateway Caller';
   if (context.kind === 'hosted-relay') return 'Tenant-Scoped Managed Identity';
   if (context.kind === 'offline-python') return 'Local Python Parser';
-  return context.authority?.principalName || context.label || 'Local Azure CLI Principal';
+  return (
+    context.signedInAccount?.principalName ||
+    context.authority?.principalName ||
+    context.label ||
+    'Local Azure CLI Principal'
+  );
 }
 
 function authorizationModel(context, contextState, account) {
@@ -140,7 +158,37 @@ export function buildDossierIdentityModel({ contextState = {}, accountControlSta
   const account = normalizeAccountControlState(accountControlState);
   const isGateway = context?.kind === 'gateway-key';
   const isHosted = context?.kind === 'hosted-relay';
-  const subscription = context?.subscription ?? null;
+  const isAzure = context?.kind?.startsWith('azure-cli-') === true;
+  const activeSubscription =
+    context?.activeCliSubscription ??
+    (context?.subscription
+      ? {
+          id: context.subscription.activeId,
+          name: context.subscription.activeName,
+        }
+      : null);
+  const intendedTarget =
+    context?.intendedTarget ??
+    (context?.subscription
+      ? {
+          subscriptionId: context.subscription.configuredId,
+          matchesActive: context.subscription.matches,
+        }
+      : null);
+  const subscription =
+    activeSubscription || intendedTarget
+      ? {
+          activeId: safeText(activeSubscription?.id),
+          activeName: safeText(activeSubscription?.name),
+          configuredId: safeText(intendedTarget?.subscriptionId),
+          matches:
+            intendedTarget?.matchesActive === true
+              ? true
+              : intendedTarget?.matchesActive === false
+                ? false
+                : null,
+        }
+      : null;
   const target =
     subscription?.configuredId ||
     subscription?.activeName ||
@@ -153,7 +201,7 @@ export function buildDossierIdentityModel({ contextState = {}, accountControlSta
     runsAs: runsAsLabel(context),
     credential: credentialLabel(context),
     target,
-    tenantId: safeText(context?.authority?.tenantId),
+    tenantId: safeText(context?.signedInAccount?.tenantId || context?.authority?.tenantId),
     subscription: subscription
       ? Object.freeze({
           activeId: safeText(subscription.activeId),
@@ -165,7 +213,7 @@ export function buildDossierIdentityModel({ contextState = {}, accountControlSta
     authorization: authorizationModel(context, contextState, account),
     accountControl: Object.freeze({
       ...account,
-      visible: !isGateway && !isHosted,
+      visible: isAzure && !isGateway && !isHosted,
     }),
     gateway: context?.gateway
       ? Object.freeze({

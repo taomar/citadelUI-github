@@ -259,6 +259,7 @@ export async function runPlan(executor, plan, context = {}) {
     inputs: context.inputs ?? {},
     secrets: context.secrets ?? {},
     acknowledgement: context.acknowledgementPayload ?? null,
+    reviewedIdentity: context.reviewedIdentity ?? null,
     signal: context.signal,
     onProgress: context.onProgress,
   });
