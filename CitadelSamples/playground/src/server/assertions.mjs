@@ -14,6 +14,7 @@
  */
 
 import { extractToolCallText, extractToolNames, interpretJsonRpc, parseWeatherPayload } from '../core/parsing.mjs';
+import { isCompatibleMcpProtocolVersion } from '../core/types.mjs';
 
 const PASS = 'passed';
 const FAIL = 'failed';
@@ -30,6 +31,8 @@ function inspectMcpHandshake(outputs, stepResults) {
   }
   const sessionId = outputs.get('mcp-initialize.sessionId');
   const sessionCaptured = typeof sessionId === 'string' && sessionId.trim() !== '';
+  const protocolVersion = outputs.get('mcp-initialize.protocolVersion');
+  const protocolCompatible = isCompatibleMcpProtocolVersion(protocolVersion);
   const verdict = interpretJsonRpc({
     status: outputs.get('mcp-initialize.status'),
     body: initialize.jsonRpcBody,
@@ -48,7 +51,27 @@ function inspectMcpHandshake(outputs, stepResults) {
       evidence: { sessionCaptured: false },
     };
   }
-  return { status: PASS, detail: verdict.reason, evidence: { sessionCaptured: true } };
+  if (!protocolCompatible) {
+    return {
+      status: FAIL,
+      detail: 'The MCP initialize response did not negotiate protocol version 2025-06-18.',
+      evidence: { sessionCaptured: true, protocolCompatible: false },
+    };
+  }
+  const initialized = stepResults.find((step) => step.id === 'mcp-initialized');
+  const notificationAccepted = initialized?.state === 'completed';
+  if (!notificationAccepted) {
+    return {
+      status: FAIL,
+      detail: 'The mandatory notifications/initialized request did not complete successfully.',
+      evidence: { sessionCaptured: true, protocolCompatible: true, notificationAccepted: false },
+    };
+  }
+  return {
+    status: PASS,
+    detail: verdict.reason,
+    evidence: { sessionCaptured: true, protocolCompatible: true, notificationAccepted: true },
+  };
 }
 
 /** `{{steps.x.y}}` -> the recorded output, or undefined. */

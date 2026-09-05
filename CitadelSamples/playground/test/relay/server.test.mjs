@@ -44,8 +44,9 @@ const ALLOWED = computeRelayAllowedSampleIds(CATALOGUE, { buildSamplePlan, requi
 
 /**
  * `weather-mcp-discovery`'s single literal request URL under the fixture
- * inputs, for a given gateway origin. Both of its http steps (`initialize`
- * and `tools/list`) hit the same MCP endpoint path, so a bare origin no
+ * inputs, for a given gateway origin. All three of its http steps
+ * (`initialize`, `notifications/initialized`, and `tools/list`) hit the same
+ * MCP endpoint path, so a bare origin no
  * longer suffices as an acknowledgement target now that the acknowledgement
  * binds to `planRequestUrls` (literal URLs), not `planDestinationOrigins`.
  */
@@ -114,6 +115,14 @@ function mcpFetch() {
         status: 200,
         headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'session-abc' },
         text: JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-06-18' } }),
+      },
+    },
+    {
+      match: (_url, init) => JSON.parse(init.body).method === 'notifications/initialized',
+      response: {
+        status: 204,
+        headers: {},
+        text: '',
       },
     },
     {

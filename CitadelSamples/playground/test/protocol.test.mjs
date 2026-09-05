@@ -7,8 +7,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { buildSamplePlan, getSample } from '../src/catalogue/index.mjs';
-import { MCP_PROTOCOL_VERSION, MCP_SESSION_HEADER } from '../src/core/types.mjs';
-import { mcpCallStep, mcpInitializeStep, mcpPayload } from '../src/core/mcp.mjs';
+import {
+  MCP_PROTOCOL_HEADER,
+  MCP_PROTOCOL_VERSION,
+  MCP_SESSION_HEADER,
+} from '../src/core/types.mjs';
+import {
+  mcpCallStep,
+  mcpInitializedStep,
+  mcpInitializeStep,
+  mcpNotificationPayload,
+  mcpPayload,
+} from '../src/core/mcp.mjs';
 import {
   extractToolCallText,
   extractToolNames,
@@ -26,10 +36,25 @@ const ENDPOINT = 'https://gw.test/mcp/weather-tool-mcp/mcp';
 
 /* ------------------------------------------------------- session binding */
 
-test('the initialize step captures the session header and later steps consume it', () => {
+test('the MCP handshake captures and binds the negotiated session and protocol', () => {
   const init = mcpInitializeStep({ endpoint: ENDPOINT });
   assert.equal(init.request.capture.sessionId, `response.headers['${MCP_SESSION_HEADER}']`);
+  assert.equal(init.request.capture.protocolVersion, 'response.jsonrpc.result.protocolVersion');
   assert.ok(init.produces.includes('sessionId'));
+  assert.ok(init.produces.includes('protocolVersion'));
+
+  const initialized = mcpInitializedStep({ endpoint: ENDPOINT });
+  assert.deepEqual(initialized.request.body, {
+    jsonrpc: '2.0',
+    method: 'notifications/initialized',
+  });
+  assert.equal(Object.hasOwn(initialized.request.body, 'id'), false);
+  assert.equal(initialized.request.headers[MCP_SESSION_HEADER], '{{steps.mcp-initialize.sessionId}}');
+  assert.equal(initialized.request.headers[MCP_PROTOCOL_HEADER], '{{steps.mcp-initialize.protocolVersion}}');
+  assert.deepEqual(initialized.consumes, [
+    'mcp-initialize.sessionId',
+    'mcp-initialize.protocolVersion',
+  ]);
 
   const list = mcpCallStep({
     id: 'tools-list',
@@ -39,23 +64,39 @@ test('the initialize step captures the session header and later steps consume it
     jsonRpcId: 2,
   });
   assert.equal(list.request.headers[MCP_SESSION_HEADER], '{{steps.mcp-initialize.sessionId}}');
-  assert.deepEqual(list.consumes, ['mcp-initialize.sessionId']);
+  assert.equal(list.request.headers[MCP_PROTOCOL_HEADER], '{{steps.mcp-initialize.protocolVersion}}');
+  assert.deepEqual(list.consumes, [
+    'mcp-initialize.sessionId',
+    'mcp-initialize.protocolVersion',
+  ]);
 });
 
 test('the JSON-RPC id must be an integer, because APIM rejects string ids', () => {
   assert.throws(() => mcpPayload({ id: 'a-uuid', method: 'initialize' }), /must be an integer/);
   assert.throws(() => mcpPayload({ id: 1.5, method: 'initialize' }), /must be an integer/);
   assert.deepEqual(mcpPayload({ id: 1, method: 'initialize' }), { jsonrpc: '2.0', id: 1, method: 'initialize' });
+  assert.deepEqual(mcpNotificationPayload({ method: 'notifications/initialized' }), {
+    jsonrpc: '2.0',
+    method: 'notifications/initialized',
+  });
 });
 
-test('every MCP recipe pins the protocol version and sends both accepted media types', () => {
+test('every MCP recipe emits initialize, initialized, then the tool request with required headers', () => {
   for (const id of ['weather-mcp-discovery', 'learn-mcp-discovery', 'weather-tools-call']) {
     const { plan } = buildSamplePlan(getSample(id), makeFixtureReader());
     const init = plan.steps.find((step) => step.id === 'mcp-initialize');
     assert.equal(init.request.body.params.protocolVersion, MCP_PROTOCOL_VERSION, `${id} pins the wrong version`);
     assert.equal(init.request.headers.Accept, 'application/json, text/event-stream', `${id} accepts the wrong types`);
-    const follow = plan.steps.find((step) => step.id !== 'mcp-initialize' && step.type === 'http');
+    const initialized = plan.steps.find((step) => step.id === 'mcp-initialized');
+    const follow = plan.steps.find((step) => ['tools-list', 'tools-call'].includes(step.id));
+    assert.ok(plan.steps.indexOf(init) < plan.steps.indexOf(initialized), `${id} initializes out of order`);
+    assert.ok(plan.steps.indexOf(initialized) < plan.steps.indexOf(follow), `${id} sends the tool request too early`);
+    assert.equal(initialized.request.body.method, 'notifications/initialized');
+    assert.equal(Object.hasOwn(initialized.request.body, 'id'), false);
+    assert.equal(initialized.request.headers[MCP_SESSION_HEADER], '{{steps.mcp-initialize.sessionId}}');
+    assert.equal(initialized.request.headers[MCP_PROTOCOL_HEADER], '{{steps.mcp-initialize.protocolVersion}}');
     assert.equal(follow.request.headers[MCP_SESSION_HEADER], '{{steps.mcp-initialize.sessionId}}');
+    assert.equal(follow.request.headers[MCP_PROTOCOL_HEADER], '{{steps.mcp-initialize.protocolVersion}}');
     assert.equal(follow.request.body.id, 2, `${id} does not increment the JSON-RPC id`);
   }
 });
@@ -315,6 +356,57 @@ test('MCP assertions cannot pass when initialize returns a matching JSON-RPC err
   );
   assert.equal(tools.status, 'failed');
   assert.equal(weather.status, 'failed');
+});
+
+test('MCP assertions independently reject a mismatched negotiated protocol version', () => {
+  const outputs = new Map([
+    ['mcp-initialize.status', 200],
+    ['mcp-initialize.sessionId', 'session-abc'],
+    ['mcp-initialize.protocolVersion', '2024-11-05'],
+    ['tools-list.status', 200],
+  ]);
+  const stepResults = [
+    {
+      id: 'mcp-initialize',
+      state: 'completed',
+      jsonRpcBody: { jsonrpc: '2.0', id: 1, result: { protocolVersion: '2024-11-05' } },
+    },
+    { id: 'mcp-initialized', state: 'completed' },
+    { id: 'tools-list', state: 'completed', jsonRpcBody: { jsonrpc: '2.0', id: 2, result: { tools: [] } } },
+  ];
+  const result = evaluateAssertion(
+    { assertion: { kind: 'mcp-tools' }, produces: [] },
+    { outputs, stepResults },
+  );
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(result.evidence, { sessionCaptured: true, protocolCompatible: false });
+});
+
+test('MCP assertions independently reject a missing initialized notification', () => {
+  const outputs = new Map([
+    ['mcp-initialize.status', 200],
+    ['mcp-initialize.sessionId', 'session-abc'],
+    ['mcp-initialize.protocolVersion', MCP_PROTOCOL_VERSION],
+    ['tools-list.status', 200],
+  ]);
+  const stepResults = [
+    {
+      id: 'mcp-initialize',
+      state: 'completed',
+      jsonRpcBody: { jsonrpc: '2.0', id: 1, result: { protocolVersion: MCP_PROTOCOL_VERSION } },
+    },
+    { id: 'tools-list', state: 'completed', jsonRpcBody: { jsonrpc: '2.0', id: 2, result: { tools: [] } } },
+  ];
+  const result = evaluateAssertion(
+    { assertion: { kind: 'mcp-tools' }, produces: [] },
+    { outputs, stepResults },
+  );
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(result.evidence, {
+    sessionCaptured: true,
+    protocolCompatible: true,
+    notificationAccepted: false,
+  });
 });
 
 test('the A2A recipe asserts on the JSON-RPC body, not only on the status', () => {

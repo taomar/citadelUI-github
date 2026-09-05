@@ -106,12 +106,13 @@ test('required step types match the steps actually present', () => {
 
 /* ------------------------------------------------------------- goldens */
 
-test('golden: the Weather MCP handshake binds the session header', () => {
+test('golden: the Weather MCP handshake initializes, notifies, then lists tools', () => {
   const plan = planFor('weather-mcp-discovery');
   assert.deepEqual(
     plan.steps.map((step) => [step.id, step.type]),
     [
       ['mcp-initialize', 'http'],
+      ['mcp-initialized', 'http'],
       ['tools-list', 'http'],
       ['assert-tools', 'assertion'],
     ],
@@ -126,13 +127,35 @@ test('golden: the Weather MCP handshake binds the session header', () => {
   assert.equal(init.request.body.method, 'initialize');
   assert.equal(init.request.body.params.protocolVersion, '2025-06-18');
   assert.equal(init.request.capture.sessionId, "response.headers['Mcp-Session-Id']");
+  assert.equal(init.request.capture.protocolVersion, 'response.jsonrpc.result.protocolVersion');
   assert.ok(init.produces.includes('sessionId'));
+  assert.ok(init.produces.includes('protocolVersion'));
 
-  const list = plan.steps[1];
+  const initialized = plan.steps[1];
+  assert.equal(initialized.request.method, 'POST');
+  assert.equal(initialized.request.url, init.request.url);
+  assert.deepEqual(initialized.request.body, {
+    jsonrpc: '2.0',
+    method: 'notifications/initialized',
+  });
+  assert.equal(initialized.request.headers.Accept, 'application/json, text/event-stream');
+  assert.equal(initialized.request.headers['Content-Type'], 'application/json');
+  assert.equal(initialized.request.headers['Mcp-Session-Id'], '{{steps.mcp-initialize.sessionId}}');
+  assert.equal(initialized.request.headers['MCP-Protocol-Version'], '{{steps.mcp-initialize.protocolVersion}}');
+  assert.deepEqual(initialized.consumes, [
+    'mcp-initialize.sessionId',
+    'mcp-initialize.protocolVersion',
+  ]);
+
+  const list = plan.steps[2];
   assert.equal(list.request.body.id, 2);
   assert.equal(list.request.body.method, 'tools/list');
   assert.equal(list.request.headers['Mcp-Session-Id'], '{{steps.mcp-initialize.sessionId}}');
-  assert.deepEqual(list.consumes, ['mcp-initialize.sessionId']);
+  assert.equal(list.request.headers['MCP-Protocol-Version'], '{{steps.mcp-initialize.protocolVersion}}');
+  assert.deepEqual(list.consumes, [
+    'mcp-initialize.sessionId',
+    'mcp-initialize.protocolVersion',
+  ]);
 });
 
 test('golden: the Learn MCP endpoint carries no trailing /mcp', () => {
@@ -342,8 +365,15 @@ test('golden: an empty endpoint-secret list is inconclusive rather than vacuousl
 
 test('golden: the weather tool call asserts the unit branch per city', () => {
   const celsius = planFor('weather-tools-call');
+  assert.deepEqual(celsius.steps.slice(0, 3).map((step) => step.id), [
+    'mcp-initialize',
+    'mcp-initialized',
+    'tools-call',
+  ]);
   const call = celsius.steps.find((step) => step.id === 'tools-call');
   assert.equal(call.request.body.method, 'tools/call');
+  assert.equal(call.request.headers['Mcp-Session-Id'], '{{steps.mcp-initialize.sessionId}}');
+  assert.equal(call.request.headers['MCP-Protocol-Version'], '{{steps.mcp-initialize.protocolVersion}}');
   assert.deepEqual(call.request.body.params, { name: 'get-weather', arguments: { city: 'London' } });
   const celsiusAssertion = celsius.steps.at(-1).assertion;
   assert.equal(celsiusAssertion.expectedUnit, 'Celsius');

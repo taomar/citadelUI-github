@@ -17,7 +17,12 @@
  * them is the failure mode this module exists to prevent.
  */
 
-import { executableIdentity, isAllowedExecutable } from '../core/types.mjs';
+import {
+  executableIdentity,
+  isAllowedExecutable,
+  isCompatibleMcpProtocolVersion,
+  MCP_SESSION_HEADER,
+} from '../core/types.mjs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { isSecretRef } from '../core/secrets.mjs';
 import { interpretJsonRpc, jsonRpcRequestId, parseHttpResponse, readHeader } from '../core/parsing.mjs';
@@ -73,10 +78,26 @@ function requiredOutput(outputs, stepId, output) {
   return bound;
 }
 
-function capturesMcpSession(request) {
-  return Object.values(request.capture ?? {}).some(
-    (source) => String(source).toLowerCase() === "response.headers['mcp-session-id']",
-  );
+function isMcpInitializeRequest(body) {
+  return Boolean(body && typeof body === 'object' && !Array.isArray(body) && body.method === 'initialize');
+}
+
+function inspectMcpInitialization({ status, body, headers }) {
+  const verdict = interpretJsonRpc({ status, body });
+  if (verdict.outcome !== 'success') {
+    return {
+      state: verdict.outcome === 'failure' ? 'failed' : 'inconclusive',
+      detail: 'MCP initialization did not return a successful matching JSON-RPC response.',
+    };
+  }
+  const sessionId = readHeader(headers, MCP_SESSION_HEADER);
+  if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+    return { state: 'failed', detail: `MCP initialization did not return ${MCP_SESSION_HEADER}.` };
+  }
+  if (!isCompatibleMcpProtocolVersion(body?.result?.protocolVersion)) {
+    return { state: 'failed', detail: 'MCP initialization did not negotiate protocol version 2025-06-18.' };
+  }
+  return { state: 'completed', detail: 'MCP initialization established a compatible session.' };
 }
 
 /** Resolve `{{steps.x.y}}` tokens and `SecretRef`s into live values. */
@@ -389,20 +410,15 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
     }
     const ok = response.status >= 200 && response.status < 300;
     const matchedJsonRpc = !expectsJsonRpc || parsed.jsonRpc?.matched === true;
-    const initializationVerdict =
-      capturesMcpSession(request) && matchedJsonRpc
-        ? interpretJsonRpc({ status: response.status, body: jsonRpcBody })
+    const initialization =
+      isMcpInitializeRequest(resolvedBody) && matchedJsonRpc
+        ? inspectMcpInitialization({ status: response.status, body: jsonRpcBody, headers: response.headers })
         : null;
-    const initializationSucceeded = !initializationVerdict || initializationVerdict.outcome === 'success';
     const state = !ok
       ? 'failed'
       : !matchedJsonRpc
         ? 'inconclusive'
-        : initializationSucceeded
-          ? 'completed'
-          : initializationVerdict.outcome === 'failure'
-            ? 'failed'
-            : 'inconclusive';
+        : initialization?.state ?? 'completed';
     return {
       id: step.id,
       kind: 'http',
@@ -413,8 +429,8 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
       detail:
         ok && !matchedJsonRpc
           ? `HTTP ${response.status} · ${parsed.format} · no valid JSON-RPC response matched the request id`
-          : ok && !initializationSucceeded
-            ? `HTTP ${response.status} · ${parsed.format} · MCP initialization did not succeed`
+          : initialization && initialization.state !== 'completed'
+            ? `HTTP ${response.status} · ${parsed.format} · ${initialization.detail}`
             : `HTTP ${response.status} · ${parsed.format}`,
       jsonRpcBody,
       evidence: redactor.value({
@@ -422,7 +438,7 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
         method: request.method ?? 'GET',
         status: response.status,
         format: parsed.format,
-        sessionCaptured: Boolean(readHeader(response.headers, 'Mcp-Session-Id')),
+        sessionCaptured: Boolean(readHeader(response.headers, MCP_SESSION_HEADER)),
         bodyPreview: clip(parsed.text, 2000).text,
       }),
     };
@@ -752,6 +768,7 @@ function captureFrom(source, { response, parsed, jsonRpcBody }) {
   if (spec === 'response.body') return clip(parsed.text, 4000).text;
   if (spec === 'response.json') return parsed.data;
   if (spec === 'response.jsonrpc.result') return jsonRpcBody?.result ?? undefined;
+  if (spec === 'response.jsonrpc.result.protocolVersion') return jsonRpcBody?.result?.protocolVersion ?? undefined;
   if (spec === 'response.jsonrpc.error') return jsonRpcBody?.error ?? undefined;
   const header = spec.match(/^response\.headers\['(.+)'\]$/);
   if (header) {

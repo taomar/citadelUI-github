@@ -221,8 +221,15 @@ export const MCP_PROTOCOL_VERSION = '2025-06-18';
 /** Header APIM returns and the client must echo on every follow-up MCP call. */
 export const MCP_SESSION_HEADER = 'Mcp-Session-Id';
 
+/** Header every post-initialize MCP request must carry. */
+export const MCP_PROTOCOL_HEADER = 'MCP-Protocol-Version';
+
 /** `Accept` the notebook sends so APIM may answer with JSON or SSE. */
 export const MCP_ACCEPT = 'application/json, text/event-stream';
+
+export function isCompatibleMcpProtocolVersion(value) {
+  return value === MCP_PROTOCOL_VERSION;
+}
 
 /** The upstream notebook, recorded once and asserted by the provenance test. */
 export const SOURCE_NOTEBOOK = Object.freeze({

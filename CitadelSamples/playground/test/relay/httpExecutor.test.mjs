@@ -54,7 +54,7 @@ function minimalPlan(overrides = {}) {
 
 /* --------------------------------------------------------------- happy path */
 
-test('a real allow-listed sample runs end to end against a mocked gateway', async () => {
+test('a real allow-listed JSON/SSE sample sends the exact MCP initialization sequence', async () => {
   const sample = getSample('weather-mcp-discovery');
   const inputs = fixtureInputsFor(sample);
   const { plan } = rebuildRelayPlan({ sample, inputs }, CATALOGUE, { buildSamplePlan, requirementsFor });
@@ -66,6 +66,14 @@ test('a real allow-listed sample runs end to end against a mocked gateway', asyn
         status: 200,
         headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'session-abc' },
         text: JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-06-18' } }),
+      },
+    },
+    {
+      match: (_url, init) => JSON.parse(init.body).method === 'notifications/initialized',
+      response: {
+        status: 204,
+        headers: {},
+        text: '',
       },
     },
     {
@@ -86,13 +94,36 @@ test('a real allow-listed sample runs end to end against a mocked gateway', asyn
   const result = await executor.execute(plan, { secrets: FIXTURE_SECRETS });
 
   assert.equal(result.state, 'completed');
-  assert.equal(fetch.calls.length, 2);
-  assert.equal(fetch.calls[1].headers['Mcp-Session-Id'], 'session-abc');
+  assert.equal(fetch.calls.length, 3);
+  const [initialize, initialized, toolsList] = fetch.calls;
+  assert.deepEqual(
+    fetch.calls.map((call) => JSON.parse(call.body).method),
+    ['initialize', 'notifications/initialized', 'tools/list'],
+  );
+  assert.equal(JSON.parse(initialize.body).id, 1);
+  assert.deepEqual(JSON.parse(initialized.body), {
+    jsonrpc: '2.0',
+    method: 'notifications/initialized',
+  });
+  assert.equal(JSON.parse(toolsList.body).id, 2);
+  for (const call of fetch.calls) {
+    assert.equal(call.method, 'POST');
+    assert.equal(call.headers.Accept, 'application/json, text/event-stream');
+    assert.equal(call.headers['Content-Type'], 'application/json');
+    assert.equal(call.headers['api-key'], FAKE_API_KEY);
+    assert.equal(call.redirect, 'error');
+  }
+  assert.equal(initialize.headers['Mcp-Session-Id'], undefined);
+  assert.equal(initialize.headers['MCP-Protocol-Version'], undefined);
+  for (const call of [initialized, toolsList]) {
+    assert.equal(call.headers['Mcp-Session-Id'], 'session-abc');
+    assert.equal(call.headers['MCP-Protocol-Version'], '2025-06-18');
+  }
   const tools = result.assertions.find((assertion) => assertion.id === 'assert-tools');
   assert.equal(tools.status, 'passed');
 });
 
-test('a missing MCP session header blocks the relay follow-up before transport and cannot pass', async () => {
+test('a missing MCP session header stops the relay handshake before notification', async () => {
   const sample = getSample('weather-mcp-discovery');
   const inputs = fixtureInputsFor(sample);
   const { plan } = rebuildRelayPlan({ sample, inputs }, CATALOGUE, { buildSamplePlan, requirementsFor });
@@ -112,9 +143,67 @@ test('a missing MCP session header blocks the relay follow-up before transport a
 
   assert.equal(fetch.calls.length, 1);
   assert.equal(result.state, 'failed');
-  assert.equal(result.steps.at(-1).id, 'tools-list');
-  assert.match(result.steps.at(-1).detail, /required output "mcp-initialize\.sessionId" was not produced/i);
+  assert.equal(result.steps.at(-1).id, 'mcp-initialize');
+  assert.equal(result.steps.at(-1).detail, 'The MCP initialization response did not establish a compatible session.');
   assert.equal(result.assertions.some((assertion) => assertion.status === 'passed'), false);
+});
+
+for (const [label, protocolVersion] of [
+  ['missing', undefined],
+  ['mismatched', '2024-11-05'],
+]) {
+  test(`a ${label} negotiated MCP protocol version stops the relay handshake before notification`, async () => {
+    const resultBody = {};
+    if (protocolVersion !== undefined) resultBody.protocolVersion = protocolVersion;
+    const sample = getSample('weather-mcp-discovery');
+    const inputs = fixtureInputsFor(sample);
+    const { plan } = rebuildRelayPlan({ sample, inputs }, CATALOGUE, { buildSamplePlan, requirementsFor });
+    const fetch = fakeFetch([
+      {
+        match: (_url, init) => JSON.parse(init.body).method === 'initialize',
+        response: {
+          status: 200,
+          headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'session-abc' },
+          text: JSON.stringify({ jsonrpc: '2.0', id: 1, result: resultBody }),
+        },
+      },
+    ]);
+
+    const executor = createRelayHttpExecutor({ fetchImpl: fetch, allowlist: allowlist(), requestPolicy: allowAllRequestPolicy() });
+    const result = await executor.execute(plan, { secrets: FIXTURE_SECRETS });
+
+    assert.equal(fetch.calls.length, 1);
+    assert.equal(result.state, 'failed');
+    assert.equal(result.steps.at(-1).id, 'mcp-initialize');
+    assert.equal(result.steps.at(-1).detail, 'The MCP initialization response did not establish a compatible session.');
+  });
+}
+
+test('a failed initialized notification stops the relay handshake before tools/list', async () => {
+  const sample = getSample('weather-mcp-discovery');
+  const inputs = fixtureInputsFor(sample);
+  const { plan } = rebuildRelayPlan({ sample, inputs }, CATALOGUE, { buildSamplePlan, requirementsFor });
+  const fetch = fakeFetch([
+    {
+      match: (_url, init) => JSON.parse(init.body).method === 'initialize',
+      response: {
+        status: 200,
+        headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'session-abc' },
+        text: JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-06-18' } }),
+      },
+    },
+    {
+      match: (_url, init) => JSON.parse(init.body).method === 'notifications/initialized',
+      response: { status: 503, headers: { 'content-type': 'text/plain' }, text: 'not accepted' },
+    },
+  ]);
+
+  const executor = createRelayHttpExecutor({ fetchImpl: fetch, allowlist: allowlist(), requestPolicy: allowAllRequestPolicy() });
+  const result = await executor.execute(plan, { secrets: FIXTURE_SECRETS });
+
+  assert.equal(fetch.calls.length, 2);
+  assert.equal(result.state, 'failed');
+  assert.equal(result.steps.at(-1).id, 'mcp-initialized');
 });
 
 test('an MCP initialize stream with no matching response stops before the relay follow-up without reflecting ignored content', async () => {
@@ -206,6 +295,10 @@ test('a policy-approved endpoint cannot exfiltrate a secret by reflecting a tran
         headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'session-abc' },
         text: JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-06-18', serverInfo: { name: seededMarker } } }),
       },
+    },
+    {
+      match: (_url, init) => JSON.parse(init.body).method === 'notifications/initialized',
+      response: { status: 202, headers: {}, text: '' },
     },
     {
       match: (_url, init) => JSON.parse(init.body).method === 'tools/list',

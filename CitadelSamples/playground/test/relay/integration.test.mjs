@@ -54,7 +54,7 @@ const RELAY_CALLER = 'citadel-playground-proxy-integration';
 const RELAY_SHARED_TOKEN = 'integration-relay-token-do-not-use-elsewhere';
 const ALLOWED_SAMPLE_IDS = Object.freeze(computeRelayAllowedSampleIds(CATALOGUE, { buildSamplePlan, requirementsFor }));
 
-/** The relay's canned answer for the two MCP calls `weather-mcp-discovery` makes — the mocked gateway boundary. */
+/** The relay's canned answer for the three MCP requests `weather-mcp-discovery` makes. */
 function gatewayFetch() {
   return fakeFetch([
     {
@@ -63,6 +63,14 @@ function gatewayFetch() {
         status: 200,
         headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'session-integration' },
         text: JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-06-18' } }),
+      },
+    },
+    {
+      match: (_url, init) => JSON.parse(init.body).method === 'notifications/initialized',
+      response: {
+        status: 204,
+        headers: {},
+        text: '',
       },
     },
     {
@@ -167,7 +175,7 @@ test('a real request round-trips proxy -> relay -> (mocked gateway) over real lo
         body.assertions?.some((assertion) => assertion.id === 'assert-tools' && assertion.status === 'passed'),
         'the relay actually ran the sample through its real assertion core and reported a passing result, not a stub',
       );
-      assert.equal(body.steps?.length, 3, 'both MCP calls and the assertion step all ran for real');
+      assert.equal(body.steps?.length, 4, 'all three MCP requests and the assertion step ran for real');
     } finally {
       await proxy.close();
     }

@@ -17,6 +17,7 @@
  */
 
 import { isSecretRef } from '../core/secrets.mjs';
+import { isCompatibleMcpProtocolVersion, MCP_SESSION_HEADER } from '../core/types.mjs';
 import { interpretJsonRpc, jsonRpcRequestId, parseHttpResponse, readHeader } from '../core/parsing.mjs';
 import { evaluateAssertion } from '../server/assertions.mjs';
 import { clip, createRedactor } from '../server/redaction.mjs';
@@ -41,10 +42,23 @@ function requiredOutput(outputs, stepId, output) {
   return bound;
 }
 
-function capturesMcpSession(request) {
-  return Object.values(request.capture ?? {}).some(
-    (source) => String(source).toLowerCase() === "response.headers['mcp-session-id']",
-  );
+function isMcpInitializeRequest(body) {
+  return Boolean(body && typeof body === 'object' && !Array.isArray(body) && body.method === 'initialize');
+}
+
+function inspectMcpInitialization({ status, body, headers }) {
+  const verdict = interpretJsonRpc({ status, body });
+  if (verdict.outcome !== 'success') {
+    return { state: verdict.outcome === 'failure' ? 'failed' : 'inconclusive' };
+  }
+  const sessionId = readHeader(headers, MCP_SESSION_HEADER);
+  if (typeof sessionId !== 'string' || sessionId.trim() === '') {
+    return { state: 'failed' };
+  }
+  if (!isCompatibleMcpProtocolVersion(body?.result?.protocolVersion)) {
+    return { state: 'failed' };
+  }
+  return { state: 'completed' };
 }
 
 /** Resolve `{{steps.x.y}}` tokens and `SecretRef`s into live values. */
@@ -80,6 +94,7 @@ function captureFrom(source, { response, parsed, jsonRpcBody }) {
   if (spec === 'response.body') return clip(parsed.text, 4000).text;
   if (spec === 'response.json') return parsed.data;
   if (spec === 'response.jsonrpc.result') return jsonRpcBody?.result ?? undefined;
+  if (spec === 'response.jsonrpc.result.protocolVersion') return jsonRpcBody?.result?.protocolVersion ?? undefined;
   if (spec === 'response.jsonrpc.error') return jsonRpcBody?.error ?? undefined;
   const header = spec.match(/^response\.headers\['(.+)'\]$/);
   if (header) {
@@ -313,20 +328,15 @@ export function createRelayHttpExecutor({ fetchImpl, allowlist, requestPolicy, l
     }
     const ok = response.status >= 200 && response.status < 300;
     const matchedJsonRpc = !expectsJsonRpc || parsed.jsonRpc?.matched === true;
-    const initializationVerdict =
-      capturesMcpSession(request) && matchedJsonRpc
-        ? interpretJsonRpc({ status: response.status, body: jsonRpcBody })
+    const initialization =
+      isMcpInitializeRequest(resolvedBody) && matchedJsonRpc
+        ? inspectMcpInitialization({ status: response.status, body: jsonRpcBody, headers: response.headers })
         : null;
-    const initializationSucceeded = !initializationVerdict || initializationVerdict.outcome === 'success';
     const state = !ok
       ? 'failed'
       : !matchedJsonRpc
         ? 'inconclusive'
-        : initializationSucceeded
-          ? 'completed'
-          : initializationVerdict.outcome === 'failure'
-            ? 'failed'
-            : 'inconclusive';
+        : initialization?.state ?? 'completed';
     return {
       id: step.id,
       kind: 'http',
@@ -342,9 +352,9 @@ export function createRelayHttpExecutor({ fetchImpl, allowlist, requestPolicy, l
       detail: !ok
         ? 'The request did not complete successfully.'
         : matchedJsonRpc
-          ? initializationSucceeded
-            ? 'The request completed.'
-            : 'The MCP initialization response did not establish a usable session.'
+          ? initialization && initialization.state !== 'completed'
+            ? 'The MCP initialization response did not establish a compatible session.'
+            : 'The request completed.'
           : 'The response did not contain a valid JSON-RPC message matching the request.',
       jsonRpcBody,
       evidence: publicHttpEvidence(request),
