@@ -160,6 +160,7 @@ function renderAcknowledgement(model, callbacks) {
     el('label', { class: 'review-check' }, [
       el('input', {
         type: 'checkbox',
+        'data-acknowledgement': 'true',
         checked: acknowledgement.satisfied === true,
         onchange: (event) => callbacks.onAcknowledge?.(event.target.checked),
       }),
@@ -398,6 +399,7 @@ export function renderLedger(container, model, callbacks = {}) {
     type: 'button',
     class: 'btn btn-primary ledger-primary',
     'data-primary-action': action.kind,
+    'data-dossier-action': action.kind,
     disabled: action.disabled || destructiveHandlerMissing,
     'aria-busy': model.running === true ? 'true' : undefined,
     text: action.label,
