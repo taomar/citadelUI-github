@@ -37,12 +37,12 @@ export function createSessions(config, { now = Date.now } = {}) {
   const invalidators = new Set();
   let loginWindow = 0;
   let logins = 0;
-  function removeTransaction(tx) {
+  function removeTransaction(tx, reason) {
     tx.invalidated = true;
-    tx.onCancel?.();
+    tx.onCancel?.(reason);
     if (tx.method !== 'device-code' || tx.settled) transactions.delete(tx.state);
   }
-  function revoke(session) {
+  function revoke(session, reason) {
     if (!session) return;
     session.controller.abort();
     session.contextController.abort();
@@ -57,17 +57,17 @@ export function createSessions(config, { now = Date.now } = {}) {
     session.account = null;
     sessions.delete(session.id);
     pending.delete(session.id);
-    for (const transaction of transactions.values()) if (transaction.sessionId === session.id) removeTransaction(transaction);
+    for (const transaction of transactions.values()) if (transaction.sessionId === session.id) removeTransaction(transaction, reason);
   }
   function sweep() {
     const time = now();
     for (const session of [...sessions.values(), ...pending.values()]) {
       if (time - session.touched >= config.idleMs || time - session.created >= config.absoluteMs
         || (pending.has(session.id) && time - session.created >= config.transactionMs)
-        || (session.claims && session.claims.exp * 1000 <= time)) revoke(session);
+        || (session.claims && session.claims.exp * 1000 <= time)) revoke(session, 'expired');
     }
     for (const tx of transactions.values()) if (tx.expires <= time) {
-      removeTransaction(tx);
+      removeTransaction(tx, 'expired');
       const owner = sessions.get(tx.sessionId);
       if (owner) owner.authPending = false;
     }

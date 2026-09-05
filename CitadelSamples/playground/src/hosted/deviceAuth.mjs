@@ -137,9 +137,10 @@ export function createDeviceAuth(config, sessions, auth, { testVerificationUris 
       for (const old of flows.values()) if (old.owner === owner && old.tx.settled && terminal.has(old.state)) flows.delete(old.tx.state);
       const flow = { tx, owner, state: 'starting', deadlineAt: tx.expires, expiresAt: tx.expires,
         controller: new AbortController(), display: null, verified: null };
-      tx.onCancel = () => {
+      tx.onCancel = (reason) => {
         if (flow.committing || flow.controller.signal.aborted) return;
-        fence(flow);
+        if (reason === 'expired') fence(flow, 'expired', 'device-expired');
+        else fence(flow);
       };
       flows.set(tx.state, flow);
       return { session: owner, ...view(flow) };
