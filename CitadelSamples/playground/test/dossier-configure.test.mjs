@@ -159,6 +159,7 @@ test('the new slice contains no device-code surface and declares coarse target h
 
   assert.doesNotMatch(moduleText, /device[\s-]*(code|sign[\s-]*in)|devicelogin/i);
   assert.doesNotMatch(moduleText, /start-azure-login|cancel-azure-login/i);
+  assert.doesNotMatch(moduleText, /Identity, target & authorization/i);
   assert.match(css, /@media \(pointer: coarse\)/);
   assert.match(css, /min-height: 2\.75rem/);
   assert.match(css, /\.dossier-configure\s*\{[\s\S]*?overflow: visible/);

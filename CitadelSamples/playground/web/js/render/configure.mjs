@@ -208,52 +208,7 @@ function renderPrerequisite(prerequisite, index) {
   ]);
 }
 
-function targetSummary(identity) {
-  if (identity?.gateway) {
-    return identity.gateway.headerName
-      ? `Gateway request using header ${identity.gateway.headerName}`
-      : 'Gateway request; key header is not configured';
-  }
-  const subscription = identity?.subscription;
-  if (subscription?.activeName && subscription?.activeId) return `${subscription.activeName} · ${subscription.activeId}`;
-  if (subscription?.activeId) return subscription.activeId;
-  if (subscription?.configuredId) return subscription.configuredId;
-  if (identity?.hostedRelay) return 'Hosted relay target selected by the global identity control';
-  return 'Target is determined by the recipe inputs';
-}
-
-function authorizationSummary(identity) {
-  if (identity?.gateway) {
-    const keyState = identity.gateway.keyPresent ? 'Key is present in memory' : 'Key is still needed';
-    const header = identity.gateway.headerName ? ` under ${identity.gateway.headerName}` : '';
-    return `${keyState}${header}`;
-  }
-  if (identity?.hostedRelay) return 'Caller authorization and relay identity are managed outside this document';
-  if (identity?.authority?.type === 'azure-cli-user') return 'Azure CLI user selected in the global identity control';
-  if (identity?.authority?.type === 'local-python-parser') return 'Local parser only; no cloud authorization';
-  return 'Authorization is reported by the global identity control';
-}
-
-function renderIdentityReference(identity = {}) {
-  const titleId = 'configure-identity-title';
-  return el('section', { class: 'configure-section configure-identity', 'aria-labelledby': titleId }, [
-    el('div', { class: 'configure-section-head' }, [
-      heading(2, titleId, 'Identity, target & authorization', 'configure-section-title'),
-      identity.badge ? chip(identity.badge.label, identity.badge.tone) : null,
-    ]),
-    el('p', {
-      class: 'configure-help-copy',
-      text: 'Identity is global. This document references the selected context without adding another account control.',
-    }),
-    definitionList([
-      ['Identity', text(identity.runsAs, text(identity.label, 'Not reported'))],
-      ['Target', targetSummary(identity), { mono: Boolean(identity?.gateway?.headerName || identity?.subscription?.activeId) }],
-      ['Authorization', authorizationSummary(identity)],
-    ]),
-  ]);
-}
-
-function renderContext(guide = {}, identity = {}) {
+function renderContext(guide = {}) {
   const purposeId = 'configure-purpose-title';
   const contextId = 'configure-context-title';
   const prerequisitesId = 'configure-prerequisites-title';
@@ -306,7 +261,6 @@ function renderContext(guide = {}, identity = {}) {
           ),
         ])
       : null,
-    renderIdentityReference(identity),
   ]);
 }
 
@@ -595,7 +549,7 @@ function renderEvidenceSummary(source, sourceValidation, callbacks) {
  */
 export function renderConfigure(
   container,
-  { guide = {}, configure = {}, identity = {}, source = {}, sourceValidation = {} } = {},
+  { guide = {}, configure = {}, source = {}, sourceValidation = {} } = {},
   callbacks = {},
 ) {
   const focusSnapshot = captureFocus(container);
@@ -617,7 +571,7 @@ export function renderConfigure(
         heading(1, titleId, text(guide.title, 'Configure this run'), 'configure-title'),
         guide.summary ? el('p', { class: 'configure-summary', text: guide.summary }) : null,
       ]),
-      renderContext(guide, identity),
+      renderContext(guide),
       el('section', { id: DOSSIER_IDS.inputs, class: 'configure-inputs', 'aria-labelledby': 'configure-inputs-title' }, [
         el('div', { class: 'configure-inputs-head' }, [
           el('div', {}, [
