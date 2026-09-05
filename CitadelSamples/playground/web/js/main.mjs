@@ -28,6 +28,7 @@ import {
 } from './render/configure.mjs';
 import {
   createDestructiveConfirmationController,
+  renderOperationDisclosure,
   renderReview,
 } from './render/review.mjs';
 import { renderOutput } from './render/output.mjs';
@@ -40,7 +41,7 @@ const WIZARD_STEP_DEFINITIONS = Object.freeze([
   Object.freeze({ id: 'account-target', title: 'Account & target' }),
   Object.freeze({ id: 'required-inputs', title: 'Required inputs' }),
   Object.freeze({ id: 'credentials-options', title: 'Credentials & options' }),
-  Object.freeze({ id: 'review-approve', title: 'Review & approve' }),
+  Object.freeze({ id: 'review-approve', title: 'Confirm & run' }),
   Object.freeze({ id: 'run-result', title: 'Run & result' }),
 ]);
 const recipeIds = CATALOGUE.samples.map((sample) => sample.id);
@@ -71,6 +72,7 @@ const state = {
   outputView: 'transcript',
   autoFollow: true,
   directoryOpen: window.innerWidth >= 1200,
+  directoryModal: window.innerWidth < 1200,
   directoryQuery: '',
   stage: 'configure',
   wizardStep: 'account-target',
@@ -770,7 +772,10 @@ function openDiagnostics() {
       ]),
       checks.length
         ? node('ul', { class: 'diagnostic-list' }, checks.map((check) =>
-            node('li', { 'data-state': check.ok ? 'pass' : 'fail', text: `${check.ok ? 'Pass' : 'Fail'} — ${check.name}` }),
+            node('li', {
+              'data-state': check.passed === true || check.ok === true ? 'pass' : 'fail',
+              text: `${check.passed === true || check.ok === true ? 'Pass' : 'Fail'} — ${check.label ?? check.name ?? check.id ?? 'Unnamed check'}`,
+            }),
           ))
         : node('p', { text: 'Offline diagnostics are unavailable for this browser session.' }),
       capabilities?.azureAuth?.systemLogin?.available !== true
@@ -810,7 +815,7 @@ function shellModel(models) {
     execution: shellExecution(models),
     stage: state.stage,
     directoryOpen: state.directoryOpen,
-    directoryModal: window.innerWidth < 1200,
+    directoryModal: state.directoryModal,
     directory: {
       ...models.directory,
       groups: models.directory.groups.map((group) => ({
@@ -904,7 +909,20 @@ function wizardSteps(models) {
     .filter((step) => step.id !== 'account-target' || identityKind)
     .filter((step) => step.id !== 'required-inputs' || required.groups.length > 0)
     .filter((step) => step.id !== 'credentials-options' || options.groups.length > 0)
+    .filter(
+      (step) =>
+        step.id !== 'review-approve'
+        || models.dossier.reviewDecision.acknowledgement?.required === true,
+    )
     .map((step) => step.id === 'account-target' ? { ...step, title: identityStepTitle() } : step);
+  if (
+    state.wizardStep === 'run-result'
+    && !state.progress
+    && models.dossier.reviewDecision.acknowledgement?.required !== true
+    && models.dossier.ledger.canRun !== true
+  ) {
+    state.wizardStep = definitions[0].id;
+  }
   if (!definitions.some((step) => step.id === state.wizardStep)) {
     state.wizardStep = definitions[0].id;
   }
@@ -928,7 +946,7 @@ function wizardDescription(stepId) {
   return {
     'required-inputs': 'Supply only the values that block this recipe now.',
     'credentials-options': 'Add ephemeral credentials, then review defaults, generated values, and advanced options.',
-    'review-approve': 'Make the decision from identity, target, effect, reversibility, and the exact operation.',
+    'review-approve': 'Confirm the target and impact. Open the exact operation only if you need it.',
     'run-result': 'Follow the attempt, cancel if needed, and inspect transcript, evidence, and artifacts.',
   }[stepId] ?? '';
 }
@@ -967,10 +985,6 @@ function renderWizardHeading(container, steps) {
   const current = steps[currentIndex] ?? steps[0];
   container.append(
     node('header', { class: 'wizard-heading' }, [
-      node('p', {
-        class: 'review-eyebrow',
-        text: `Step ${currentIndex + 1} of ${steps.length}`,
-      }),
       node('h1', { id: 'wizard-step-title', tabindex: '-1', text: current.title }),
       node('p', { class: 'wizard-step-summary', text: wizardDescription(current.id) }),
     ]),
@@ -1099,6 +1113,9 @@ function renderWizardActions(container, models, steps) {
     }));
   }
   const target = models.dossier.reviewDecision.target.actionLabel;
+  const requiresConfirmation =
+    models.dossier.reviewDecision.acknowledgement?.required === true;
+  const next = steps[currentIndex + 1];
   if (current.id === 'review-approve') {
     const destructive = models.dossier.reviewDecision.risk?.level === 'destructive';
     const acknowledgement = models.dossier.reviewDecision.acknowledgement ?? {};
@@ -1108,12 +1125,28 @@ function renderWizardActions(container, models, steps) {
       type: 'button',
       class: 'btn btn-primary wizard-primary',
       disabled: models.dossier.ledger.canRun !== true || acknowledgementMissing,
-      text: `Run sample${target ? ` on ${target}` : ''}`,
+      text: `Run Sample${target ? ` on ${target}` : ''}`,
       onclick: () =>
         destructive
           ? openDestructiveConfirmation(primary, models.dossier.reviewDecision)
           : startRun(),
     });
+    if (acknowledgementMissing) {
+      bar.append(node('button', {
+        type: 'button',
+        class: 'wizard-action-gate',
+        text: 'Acknowledge Impact to Enable Run',
+        onclick: () => focusWorkspaceTarget(
+          document.querySelector('[data-acknowledgement="true"]'),
+          { block: 'center' },
+        ),
+      }));
+    } else if (models.dossier.ledger.canRun !== true && models.dossier.reviewDecision.runBlockedReason) {
+      bar.append(node('p', {
+        class: 'wizard-action-reason',
+        text: models.dossier.reviewDecision.runBlockedReason,
+      }));
+    }
     bar.append(primary);
   } else if (current.id === 'run-result') {
     if (running) {
@@ -1122,27 +1155,66 @@ function renderWizardActions(container, models, steps) {
         type: 'button',
         class: 'btn wizard-primary',
         disabled: !canCancel || state.cancelling,
-        text: state.cancelling ? 'Cancelling...' : canCancel ? 'Cancel run' : 'Cancellation unavailable',
+        text: state.cancelling ? 'Cancelling…' : canCancel ? 'Cancel Run' : 'Cancellation Unavailable',
         onclick: canCancel ? cancelRun : undefined,
+      }));
+    } else if (!state.progress && !requiresConfirmation) {
+      if (models.dossier.ledger.canRun !== true && models.dossier.reviewDecision.runBlockedReason) {
+        bar.append(node('p', {
+          class: 'wizard-action-reason',
+          text: models.dossier.reviewDecision.runBlockedReason,
+        }));
+      }
+      bar.append(node('button', {
+        type: 'button',
+        class: 'btn btn-primary wizard-primary',
+        disabled: models.dossier.ledger.canRun !== true,
+        text: 'Run Check',
+        onclick: startRun,
       }));
     } else {
       const recommended = models.directory.flat.find((sample) => sample.recommendedNext);
       bar.append(node('button', {
         type: 'button',
         class: 'btn btn-primary wizard-primary',
-        text: recommended ? `Next: ${recommended.title}` : 'Review this recipe',
+        text: recommended
+          ? `Next: ${recommended.title}`
+          : !requiresConfirmation
+            ? 'Run Check Again'
+            : 'Review This Recipe',
         onclick: () => {
           if (recommended) selectRecipeFromUi(recommended.id);
+          else if (!requiresConfirmation) startRun();
           else navigateWizardStep('review-approve', { force: true });
         },
       }));
     }
   } else {
+    const directReadOnlyRun =
+      !requiresConfirmation
+      && next?.id === 'run-result';
+    if (
+      directReadOnlyRun
+      && models.dossier.ledger.canRun !== true
+      && models.dossier.reviewDecision.runBlockedReason
+    ) {
+      bar.append(node('p', {
+        class: 'wizard-action-reason',
+        text: models.dossier.reviewDecision.runBlockedReason,
+      }));
+    }
     bar.append(node('button', {
       type: 'button',
       class: 'btn btn-primary wizard-primary',
-      text: 'Continue',
-      onclick: () => continueWizard(models, steps),
+      disabled: directReadOnlyRun && models.dossier.ledger.canRun !== true,
+      text: directReadOnlyRun
+        ? 'Run Check'
+        : next?.id === 'review-approve'
+          ? 'Review Sample'
+          : next
+            ? `Next: ${next.title}`
+            : 'Continue',
+      onclick: directReadOnlyRun ? startRun : () => continueWizard(models, steps),
     }));
   }
   container.append(bar);
@@ -1251,6 +1323,9 @@ function render() {
     .map((step) => step.id)
     .filter((stepId) => ['account-target', 'required-inputs', 'credentials-options'].includes(stepId));
   const showConfigurationExports = configurationStepIds.at(-1) === state.wizardStep;
+  const showReadOnlyOperation =
+    showConfigurationExports
+    && models.dossier.reviewDecision.acknowledgement?.required !== true;
   if (state.wizardStep === 'account-target') {
     renderConfigure(stepHost, {
       guide: models.guide,
@@ -1260,6 +1335,9 @@ function render() {
       mode: 'account-target',
       showExports: showConfigurationExports,
     }, configureCallbacks);
+    if (showReadOnlyOperation) {
+      stepHost.append(renderOperationDisclosure(models.dossier.reviewDecision));
+    }
   } else if (state.wizardStep === 'required-inputs' || state.wizardStep === 'credentials-options') {
     renderConfigure(stepHost, {
       guide: models.guide,
@@ -1269,6 +1347,9 @@ function render() {
       mode: state.wizardStep,
       showExports: showConfigurationExports,
     }, configureCallbacks);
+    if (showReadOnlyOperation) {
+      stepHost.append(renderOperationDisclosure(models.dossier.reviewDecision));
+    }
   } else if (state.wizardStep === 'review-approve') {
     renderReview(stepHost, models.dossier.reviewDecision, {
       onAcknowledge(value) {
@@ -1534,7 +1615,7 @@ async function runDiagnostics() {
   } catch (error) {
     state.selfTests = {
       ok: false,
-      checks: [{ name: safeMessage(error, 'Offline diagnostics failed.'), ok: false }],
+      checks: [{ label: safeMessage(error, 'Offline diagnostics failed.'), passed: false }],
     };
   }
   render();
@@ -1939,7 +2020,7 @@ async function startRun({ confirmed = false } = {}) {
   if (confirmed) playgroundState.setAcknowledged(state.sample.id, true);
   const acknowledged = playgroundState.isAcknowledged(state.sample.id);
   const runSample = state.sample;
-  const acknowledgement = acknowledgementFor(runSample, acknowledged);
+  const acknowledgement = acknowledgementFor(runSample, acknowledged, readCurrentValue);
   if (acknowledgement.required && !acknowledgement.satisfied) {
     announce('Acknowledge the effect before running this recipe.');
     return;
@@ -1949,6 +2030,13 @@ async function startRun({ confirmed = false } = {}) {
   const runSecrets = secretsFor(runSample);
   const { plan, validation } = buildSamplePlan(runSample, readCurrentValue);
   if (!plan || !ledger.canRun) return;
+  if (
+    reviewDecision.risk?.requiresAcknowledgement !== true
+    && ['account-target', 'required-inputs', 'credentials-options'].includes(state.wizardStep)
+    && fieldsForWizardStep(models.configure, state.wizardStep).satisfied
+  ) {
+    state.completedWizardSteps.add(state.wizardStep);
+  }
   state.completedWizardSteps.add('review-approve');
   state.wizardStep = 'run-result';
   state.stage = 'run';
@@ -2197,8 +2285,10 @@ window.addEventListener('beforeunload', (event) => {
 });
 
 window.addEventListener('resize', () => {
-  const shouldOpen = window.innerWidth >= 1200;
-  if (shouldOpen !== state.directoryOpen) {
+  const directoryModal = window.innerWidth < 1200;
+  const shouldOpen = !directoryModal;
+  if (directoryModal !== state.directoryModal || shouldOpen !== state.directoryOpen) {
+    state.directoryModal = directoryModal;
     state.directoryOpen = shouldOpen;
     render();
   }

@@ -353,6 +353,10 @@ test('the directory lists every recipe under its group, in operating order', () 
   );
   assert.equal(model.flat.length, 19);
   assert.equal(model.empty, false);
+  assert.equal(
+    model.flat.find((sample) => sample.id === 'a2a-message-send').risk.label,
+    'Billed interaction',
+  );
 });
 
 test('search matches name, group, risk and notebook cell, and all terms must match', () => {
@@ -580,7 +584,10 @@ test('a mustEqual guard is blocking until its required value is satisfied', () =
   const path = 'samples.cleanup.confirmNonProduction';
   const unconfirmed = buildConfigureModel({
     sample,
-    read: makeFixtureReader({ [path]: false }),
+    read: makeFixtureReader({
+      [path]: false,
+      'samples.cleanup.deleteWeatherSourceApi': true,
+    }),
     hasSecret: () => true,
     isTouched: () => true,
   });
@@ -591,7 +598,10 @@ test('a mustEqual guard is blocking until its required value is satisfied', () =
 
   const confirmed = buildConfigureModel({
     sample,
-    read: makeFixtureReader({ [path]: true }),
+    read: makeFixtureReader({
+      [path]: true,
+      'samples.cleanup.deleteWeatherSourceApi': true,
+    }),
     hasSecret: () => true,
     isTouched: () => true,
   });
@@ -910,16 +920,18 @@ test('the Code tab counts the parameter values still missing, and nothing else',
 });
 
 test('a risky recipe cannot be run until it is acknowledged, and then only if a runtime exists', () => {
-  const unacknowledged = workbench('cleanup');
+  const values = { 'samples.cleanup.deleteWeatherSourceApi': true };
+  const unacknowledged = workbench('cleanup', { values });
   assert.equal(unacknowledged.canRun, false);
   assert.match(unacknowledged.runBlockedReason, /Acknowledge/);
 
-  const acknowledged = workbench('cleanup', { acknowledged: true });
+  const acknowledged = workbench('cleanup', { acknowledged: true, values });
   assert.equal(acknowledged.canRun, false, 'preview mode is not a runtime');
   assert.match(acknowledged.runBlockedReason, /preview mode/i);
 
   const ready = workbench('cleanup', {
     acknowledged: true,
+    values,
     runtimeProbe: { mode: 'execute', azureCli: { available: true }, accelerator: { available: true } },
   });
   assert.equal(ready.canRun, true, 'with the CLI present and consent given, cleanup is runnable');

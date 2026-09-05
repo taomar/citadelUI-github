@@ -216,12 +216,22 @@ export function warningsOf(issues) {
 }
 
 /**
- * Guard a risky recipe. A `state-changing`, `load-generating` or `destructive`
- * recipe must carry a fresh acknowledgement for THIS run before an executor is
- * allowed to see it — whether or not an executor is configured.
+ * Guard a risky recipe. A `state-changing`, `load-generating`, `destructive`,
+ * or explicitly acknowledgement-required recipe must carry fresh consent for
+ * THIS run before an executor is allowed to see it.
  */
-export function checkAcknowledgement(sample, { acknowledged = false } = {}) {
-  const required = ACKNOWLEDGED_RISK_LEVELS.includes(sample?.risk?.level);
+export function acknowledgementRequired(sample, { read = () => undefined } = {}) {
+  if (sample?.risk?.acknowledgementWhen) {
+    return evaluateCondition(sample.risk.acknowledgementWhen, read);
+  }
+  return (
+    ACKNOWLEDGED_RISK_LEVELS.includes(sample?.risk?.level)
+    || sample?.risk?.requiresAcknowledgement === true
+  );
+}
+
+export function checkAcknowledgement(sample, { acknowledged = false, read } = {}) {
+  const required = acknowledgementRequired(sample, { read });
   if (!required) return { required: false, satisfied: true, issues: [] };
   if (acknowledged) return { required: true, satisfied: true, issues: [] };
   return {

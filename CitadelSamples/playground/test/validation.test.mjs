@@ -257,10 +257,13 @@ test('coercion handles integers, booleans and lists from raw form values', () =>
 
 /* --------------------------------------------------- acknowledgement gate */
 
-test('read-only recipes need no acknowledgement; the other eight do', () => {
+test('risk level or an explicit cost/history flag requires acknowledgement', () => {
   for (const sample of CATALOGUE.samples) {
-    const gate = acknowledgementFor(sample, false);
-    if (sample.risk.level === 'read-only') {
+    const gate = acknowledgementFor(sample, false, makeEmptyReader());
+    const expected = sample.risk.acknowledgementWhen
+      ? false
+      : sample.risk.requiresAcknowledgement === true;
+    if (!expected) {
       assert.equal(gate.required, false, `${sample.id} should not require acknowledgement`);
       assert.equal(gate.satisfied, true);
     } else {
@@ -269,6 +272,17 @@ test('read-only recipes need no acknowledgement; the other eight do', () => {
       assert.ok(gate.issues[0].message.length > 30);
     }
   }
+  for (const id of ['a2a-message-send', 'agent-framework-hr-question']) {
+    const sample = getSample(id);
+    assert.equal(sample.risk.level, 'read-only');
+    assert.equal(acknowledgementFor(sample, false).required, true);
+  }
+  const cleanup = getSample('cleanup');
+  assert.equal(acknowledgementFor(cleanup, false, makeEmptyReader()).required, false);
+  const deleting = makeEmptyReader({
+    'samples.cleanup.deleteWeatherSourceApi': true,
+  });
+  assert.equal(acknowledgementFor(cleanup, false, deleting).required, true);
 });
 
 test('a risky plan is blocked without acknowledgement, even with a capable executor', async () => {
@@ -281,10 +295,13 @@ test('a risky plan is blocked without acknowledgement, even with a capable execu
     },
   };
   const sample = getSample('cleanup');
-  const { plan, validation } = buildSamplePlan(sample, makeFixtureReader());
+  const read = makeFixtureReader({
+    'samples.cleanup.deleteWeatherSourceApi': true,
+  });
+  const { plan, validation } = buildSamplePlan(sample, read);
   const result = await runPlan(capable, plan, {
     validation,
-    acknowledgement: acknowledgementFor(sample, false),
+    acknowledgement: acknowledgementFor(sample, false, read),
   });
   assert.equal(result.state, 'blocked');
   assert.equal(result.meta.reason, 'acknowledgement');
@@ -315,11 +332,17 @@ test('the non-production confirmation must be true, not merely present', () => {
     const sample = getSample(id);
     const path = `samples.${id}.confirmNonProduction`;
 
-    const unconfirmed = validateSample(sample, makeFixtureReader({ [path]: false }));
+    const overrides = id === 'cleanup'
+      ? { [path]: false, 'samples.cleanup.deleteWeatherSourceApi': true }
+      : { [path]: false };
+    const unconfirmed = validateSample(sample, makeFixtureReader(overrides));
     assert.equal(unconfirmed.satisfied, false, `${id} must not be runnable unconfirmed`);
     assert.ok(errorsOf(unconfirmed.issues).some((issue) => issue.path === path));
 
-    const confirmed = validateSample(sample, makeFixtureReader({ [path]: true }));
+    const confirmedOverrides = id === 'cleanup'
+      ? { [path]: true, 'samples.cleanup.deleteWeatherSourceApi': true }
+      : { [path]: true };
+    const confirmed = validateSample(sample, makeFixtureReader(confirmedOverrides));
     assert.equal(confirmed.satisfied, true, `${id} should be satisfied once confirmed`);
   }
 });

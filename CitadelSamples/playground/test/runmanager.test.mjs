@@ -225,6 +225,7 @@ test('the manager refuses a risky sample without a fresh acknowledgement, and sp
           'hub.resourceGroupName': 'rg-test',
           'hub.apimName': 'apim-test',
           'samples.cleanup.confirmNonProduction': true,
+          'samples.cleanup.deleteWeatherSourceApi': true,
         }),
       ),
     (error) => error instanceof RequestRefused && error.code === 'acknowledgement-required',
@@ -232,7 +233,7 @@ test('the manager refuses a risky sample without a fresh acknowledgement, and sp
   assert.equal(spawn.calls.length, 0);
 });
 
-test('a destructive run with both switches off deletes nothing and still reports the residue', async () => {
+test('cleanup with every deletion switch off needs no acknowledgement and only reports residue', async () => {
   const spawn = fakeSpawn([{ match: () => true, result: { code: 0, stdout: '{}' } }]);
   const { instance } = manager({ spawn });
   const result = await instance.start(
@@ -244,7 +245,6 @@ test('a destructive run with both switches off deletes nothing and still reports
         'hub.apimName': 'apim-test',
         'samples.cleanup.confirmNonProduction': true,
       },
-      { acknowledgement: { accepted: true, sampleId: 'cleanup' } },
     ),
   );
   assert.equal(spawn.calls.length, 0, 'no deletion may be attempted with both switches off');
@@ -266,6 +266,7 @@ test('the non-production confirmation is a hard precondition the server re-check
             'hub.resourceGroupName': 'rg-test',
             'hub.apimName': 'apim-test',
             'samples.cleanup.confirmNonProduction': false,
+            'samples.cleanup.deleteWeatherSourceApi': true,
           },
           { acknowledgement: { accepted: true, sampleId: 'cleanup' } },
         ),

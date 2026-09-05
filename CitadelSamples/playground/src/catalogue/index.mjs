@@ -21,7 +21,14 @@ import { EXERCISE_SAMPLES } from './samples/exercise.mjs';
 import { OBSERVE_SAMPLES } from './samples/observe.mjs';
 import { POLICY_SAMPLES } from './samples/policy.mjs';
 import { CLEANUP_RESIDUE, LIFECYCLE_SAMPLES } from './samples/lifecycle.mjs';
-import { checkAcknowledgement, coerceValue, hasErrors, isBlank, validateFields } from '../core/validation.mjs';
+import {
+  checkAcknowledgement,
+  coerceValue,
+  evaluateCondition,
+  hasErrors,
+  isBlank,
+  validateFields,
+} from '../core/validation.mjs';
 
 const RAW_SAMPLES = [
   ...DISCOVER_SAMPLES,
@@ -72,7 +79,9 @@ function decorate(sample) {
   if (!group) throw new Error(`Sample ${sample.id} declares unknown group ${sample.group}`);
   const risk = Object.freeze({
     ...sample.risk,
-    requiresAcknowledgement: isRiskAcknowledgementRequired(sample.risk.level),
+    requiresAcknowledgement:
+      isRiskAcknowledgementRequired(sample.risk.level)
+      || sample.risk.requiresAcknowledgement === true,
   });
   const fields = (sample.fields ?? []).map((field) =>
     Object.freeze({ ...field, path: sampleFieldPath(sample.id, field.name) }),
@@ -208,6 +217,7 @@ export function validateSample(sample, read) {
   // `mustEqual` guards (the non-production confirmations).
   for (const field of sample.fields) {
     if (!Object.prototype.hasOwnProperty.call(field, 'mustEqual')) continue;
+    if (field.mustEqualWhen && !evaluateCondition(field.mustEqualWhen, read)) continue;
     const value = coerceValue(field, read(field.path));
     if (value !== field.mustEqual) {
       issues.push({
@@ -302,8 +312,8 @@ export function buildSamplePlan(sample, read, { requireValid = true } = {}) {
 }
 
 /** Risk gate, re-exported so the UI and the tests use one implementation. */
-export function acknowledgementFor(sample, acknowledged) {
-  return checkAcknowledgement(sample, { acknowledged });
+export function acknowledgementFor(sample, acknowledged, read) {
+  return checkAcknowledgement(sample, { acknowledged, read });
 }
 
 /** Every code cell a recipe cites, deduplicated and sorted. */

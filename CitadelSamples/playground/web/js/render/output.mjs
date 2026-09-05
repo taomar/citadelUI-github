@@ -373,7 +373,7 @@ function renderTranscript(panel, context, state, runId) {
   }
   const { note, followButton, history, announcements, log } = state.transcriptMount;
   note.textContent = state.autoFollow
-    ? 'Auto-follow is on. New run entries request a parent-controlled scroll.'
+    ? 'Following new run updates.'
     : 'Auto-follow is paused. New entries remain in the transcript.';
   followButton.setAttribute('aria-pressed', state.autoFollow ? 'true' : 'false');
   followButton.setAttribute('aria-label', `${pauseLabel} transcript auto-follow`);
@@ -797,7 +797,7 @@ function createRedactor(model, supplied = []) {
 
 function collectSecretValues(value, key, values, depth) {
   if (depth > 8 || value === null || value === undefined) return;
-  if (SECRET_KEY.test(key)) {
+  if (SECRET_KEY.test(key) && key !== 'secretUpdateCount') {
     collectStrings(value, values, depth);
     return;
   }

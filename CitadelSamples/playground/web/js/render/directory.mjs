@@ -92,9 +92,6 @@ function renderSample(sample, onSelect) {
       },
       [
         el('span', { class: 'recipe-directory-title', text: sample.title }),
-        sample.summary
-          ? el('span', { class: 'recipe-directory-summary', text: sample.summary })
-          : null,
         el('span', { class: 'recipe-directory-states' }, [
           recommendedNext
             ? el('span', {
@@ -104,7 +101,9 @@ function renderSample(sample, onSelect) {
               })
             : null,
           statusChip(readiness, 'recipe-state-readiness'),
-          statusChip(dependencies, 'recipe-state-dependencies'),
+          dependencies.state === 'missing'
+            ? statusChip(dependencies, 'recipe-state-dependencies')
+            : null,
         ]),
         el('span', { class: 'recipe-directory-meta' }, [
           sample.risk?.label
@@ -112,12 +111,6 @@ function renderSample(sample, onSelect) {
                 class: 'recipe-risk',
                 'data-risk': sample.riskLevel ?? 'unknown',
                 text: sample.risk.label,
-              })
-            : null,
-          sample.cells?.length
-            ? el('span', {
-                translate: 'no',
-                text: `cell ${sample.cells.join(', ')}`,
               })
             : null,
         ]),
@@ -241,7 +234,7 @@ export function renderDirectory({
         type: 'search',
         class: 'recipe-directory-search-input',
         value: model.query ?? '',
-        placeholder: 'Search recipes',
+        placeholder: 'Search recipes…',
         autocomplete: 'off',
         spellcheck: 'false',
         oninput: (event) => onQuery?.(event.currentTarget.value),

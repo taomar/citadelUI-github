@@ -81,20 +81,27 @@ Its steps are derived from the selected recipe rather than repeated mechanically
 1. the applicable Azure account, gateway connection, or hosted execution context;
 2. required and active conditional inputs;
 3. ephemeral credentials plus optional, generated, and advanced values;
-4. review and risk-specific approval; and
+4. risk-specific confirmation only when the recipe changes state, generates load,
+   deletes resources, incurs a billed agent inference, or may retain conversation
+   history; and
 5. the active run and its result.
 
 Steps that do not apply are omitted and the displayed count is renumbered
-honestly. The current recipe and step are URL-owned so browser history restores
-the operator's place without persisting secrets. Protected source, guide content,
-provenance, and diagnostics are secondary inspectors: they remain attributable
-and immutable, but they never displace an actionable blocker.
+honestly. Read-only recipes run directly after their required configuration is
+complete instead of forcing a separate review page. The current recipe and step
+are URL-owned so browser history restores the operator's place without persisting
+secrets. Protected source, guide content, provenance, diagnostics, and exact
+operations are secondary disclosures: they remain attributable and immutable,
+but they never displace an actionable blocker.
 
-The trust boundary stays visible through separate **Identity**, **Target**, and
-**Authorization** facts. Authorization uses **Ready to Attempt** when the known
-gates pass; it never claims that Azure or the target has authorized an operation
-before the attempt. Primary controls say **Review Sample**, **Run Sample**, and
-**Cancel Run**. Output alone may use internal **Transcript**, **Evidence**, and
+The trust boundary remains available through **Execution Details**, which is
+expanded on wide screens and collapsed on constrained screens. Risky confirmation
+summarizes the execution identity, exact target, authorization state, effect,
+blast radius, and recovery without rendering empty facts. Authorization uses
+**Ready to Attempt** when the known gates pass; it never claims that Azure or the
+target has authorized an operation before the attempt. Primary controls say
+**Run Check**, **Review Sample**, **Run Sample**, and **Cancel Run** according to
+risk. Output alone may use internal **Transcript**, **Evidence**, and
 **Artifacts** tabs.
 
 ## Operating Context

@@ -1557,9 +1557,9 @@ test('a risky sample is refused without a fresh acknowledgement naming it', () =
   const payload = {
     protocolVersion: EXECUTION_PROTOCOL_VERSION,
     sampleId: 'cleanup',
-    inputs: {},
+    inputs: { 'samples.cleanup.deleteWeatherSourceApi': true },
   };
-  assert.throws(() => validateRunRequest(payload, CATALOGUE), /A fresh acknowledgement naming this sample is required/);
+  assert.throws(() => validateRunRequest(payload, CATALOGUE), /requires a fresh acknowledgement naming this sample/);
   assert.throws(
     () => validateRunRequest({ ...payload, acknowledgement: { accepted: true, sampleId: 'apim-discovery' } }, CATALOGUE),
     /acknowledgement/,

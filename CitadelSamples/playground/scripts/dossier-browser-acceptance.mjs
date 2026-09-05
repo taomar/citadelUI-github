@@ -291,9 +291,23 @@ export function viewportContractIssues(snapshot, scenario) {
     if (snapshot.minimumControlHeight < 39.5) {
       issues.push(`desktop controls are only ${snapshot.minimumControlHeight}px high`);
     }
+    if (!snapshot.contextDisclosureOpen || snapshot.contextSummaryVisible) {
+      issues.push('desktop must expose execution context without a redundant disclosure row');
+    }
   } else {
     if (snapshot.directoryVisible || !snapshot.drawerControlVisible) {
       issues.push('compact layouts must replace the recipe rail with one picker control');
+    }
+    if (!snapshot.drawerControlText.startsWith('Browse Recipes')) {
+      issues.push('compact recipe navigation does not clearly say Browse Recipes');
+    }
+    if (['phone', 'zoom'].includes(scenario.breakpoint) && snapshot.viewportHeight >= 480) {
+      if (snapshot.drawerControlWidth < snapshot.workspaceContentWidth - 2) {
+        issues.push('narrow recipe navigation does not own the full workspace row');
+      }
+      if (snapshot.stepSelectorTop < snapshot.drawerControlBottom - 1) {
+        issues.push('narrow recipe navigation still competes horizontally with the step selector');
+      }
     }
     if (snapshot.stepNavVisible || !snapshot.stepSelectorVisible) {
       issues.push('compact layouts must use the current-step selector');
@@ -307,6 +321,12 @@ export function viewportContractIssues(snapshot, scenario) {
     }
     if (snapshot.contextHorizontalOverflow) {
       issues.push('compact execution context requires horizontal scrolling');
+    }
+    if (snapshot.contextDisclosureOpen || !snapshot.contextSummaryVisible) {
+      issues.push('compact layouts must collapse execution detail behind one visible summary');
+    }
+    if (!snapshot.contextSummaryTargetVisible) {
+      issues.push('compact execution summary must keep the target visible');
     }
   }
   return issues;
@@ -476,8 +496,7 @@ async function setValues(harness, values) {
 async function clickContinue(harness) {
   const before = await harness.evaluate("document.querySelector('[data-wizard-step]')?.dataset.wizardStep");
   const clicked = await harness.evaluate(`(() => {
-    const button = [...document.querySelectorAll('#wizard-action-bar button')]
-      .find((candidate) => candidate.textContent.trim() === 'Continue');
+    const button = document.querySelector('#wizard-action-bar .btn-primary');
     button?.click();
     return Boolean(button);
   })()`);
@@ -494,6 +513,21 @@ async function advanceToReview(harness) {
   for (let index = 0; index < 5; index += 1) {
     const step = await harness.evaluate("document.querySelector('[data-wizard-step]')?.dataset.wizardStep");
     if (step === 'review-approve') return true;
+    if (!(await clickContinue(harness))) return false;
+  }
+  return false;
+}
+
+async function advanceToReadOnlyRun(harness) {
+  for (let index = 0; index < 5; index += 1) {
+    const action = await harness.evaluate(`(() => {
+      const button = document.querySelector('#wizard-action-bar .btn-primary');
+      return {
+        label: button?.textContent.trim() ?? '',
+        enabled: Boolean(button && !button.disabled),
+      };
+    })()`);
+    if (action.label === 'Run Check') return action.enabled;
     if (!(await clickContinue(harness))) return false;
   }
   return false;
@@ -548,7 +582,10 @@ async function openDiagnostics(harness) {
     label: 'diagnostics drawer',
   });
   await settle(harness);
-  return true;
+  return harness.evaluate(`(() => {
+    const text = document.getElementById('diagnostics-drawer')?.textContent ?? '';
+    return !/Fail\\s*[—-]\\s*undefined/i.test(text);
+  })()`);
 }
 
 async function prepareCleanupReview(harness) {
@@ -557,6 +594,7 @@ async function prepareCleanupReview(harness) {
     'hub.resourceGroupName': 'rg-wizard-acceptance',
     'hub.apimName': 'apim-wizard-acceptance',
     'samples.cleanup.confirmNonProduction': true,
+    'samples.cleanup.deleteWeatherSourceApi': true,
   });
   return advanceToReview(harness);
 }
@@ -604,6 +642,8 @@ async function wizardSnapshot(harness) {
       title: document.getElementById('wizard-step-title')?.textContent ?? '',
       stepProgress: document.querySelector('.dossier-stage-progress > span')?.textContent.trim() ?? '',
       stepCount: document.querySelectorAll('.wizard-step-link').length,
+      hasReviewStep: [...document.querySelectorAll('.wizard-step-link')]
+        .some((button) => /Confirm & run/i.test(button.textContent ?? '')),
       wizardCount: document.querySelectorAll('.recipe-wizard').length,
       currentStepCount: document.querySelectorAll('[data-wizard-step]').length,
       topLevelTabs: [...document.querySelectorAll('[role="tab"]')]
@@ -633,8 +673,12 @@ async function viewportSnapshot(harness) {
     const shell = document.getElementById('dossier-shell');
     const masthead = document.getElementById('masthead');
     const contextGrid = document.querySelector('.execution-context-grid');
+    const contextDisclosure = document.querySelector('.execution-context-disclosure');
+    const contextSummary = document.querySelector('.execution-context-summary');
     const directory = document.getElementById('recipe-directory');
     const drawerControl = document.querySelector('.dossier-directory-toggle');
+    const workspaceBar = document.querySelector('.dossier-workspace-bar');
+    const workspaceStyle = workspaceBar ? getComputedStyle(workspaceBar) : null;
     const stepNav = document.querySelector('.wizard-step-nav');
     const stepSelector = document.querySelector('.dossier-stage-progress select');
     const actionBar = document.getElementById('wizard-action-bar');
@@ -669,6 +713,7 @@ async function viewportSnapshot(harness) {
       .map((element) => element.getAttribute('aria-label') || element.textContent.trim());
     return {
       viewportWidth: document.documentElement.clientWidth,
+      viewportHeight: document.documentElement.clientHeight,
       documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
       documentClientHeight: document.documentElement.clientHeight,
       documentScrollHeight: document.documentElement.scrollHeight,
@@ -679,6 +724,17 @@ async function viewportSnapshot(harness) {
       clippedMastheadControlLabels,
       contextHorizontalOverflow:
         Boolean(contextGrid) && contextGrid.scrollWidth > contextGrid.clientWidth + 1,
+      contextDisclosureOpen: contextDisclosure?.open === true,
+      contextSummaryVisible: visible(contextSummary),
+      contextSummaryTargetVisible: (() => {
+        const target = document.querySelector('.execution-context-summary-target');
+        return Boolean(
+          target
+          && target.getClientRects().length > 0
+          && getComputedStyle(target).display !== 'none'
+          && getComputedStyle(target).visibility !== 'hidden'
+        );
+      })(),
       mainOverflowY: mainStyle?.overflowY ?? '',
       mainClientHeight: main?.clientHeight ?? 0,
       mainScrollHeight: main?.scrollHeight ?? 0,
@@ -691,8 +747,18 @@ async function viewportSnapshot(harness) {
       visibleStepContents: [...document.querySelectorAll('.wizard-step-content')].filter(visible).length,
       directoryVisible: visible(directory),
       drawerControlVisible: visible(drawerControl),
+      drawerControlText: drawerControl?.textContent.trim() ?? '',
+      drawerControlWidth: drawerControl?.getBoundingClientRect().width ?? 0,
+      drawerControlBottom: drawerControl?.getBoundingClientRect().bottom ?? 0,
+      workspaceBarWidth: workspaceBar?.clientWidth ?? 0,
+      workspaceContentWidth: workspaceBar
+        ? workspaceBar.clientWidth
+          - Number.parseFloat(workspaceStyle.paddingLeft || '0')
+          - Number.parseFloat(workspaceStyle.paddingRight || '0')
+        : 0,
       stepNavVisible: visible(stepNav),
       stepSelectorVisible: visible(stepSelector),
+      stepSelectorTop: stepSelector?.getBoundingClientRect().top ?? 0,
       actionBarPosition: actionBar ? getComputedStyle(actionBar).position : '',
       primaryActionCount: [...document.querySelectorAll('#wizard-action-bar .btn-primary')].filter(visible).length,
       safeAreaRule,
@@ -866,8 +932,7 @@ async function sourceSnapshot(harness) {
 async function validationFocusSnapshot(harness) {
   const before = await harness.evaluate("document.querySelector('[data-wizard-step]')?.dataset.wizardStep");
   await harness.evaluate(`(() => {
-    const button = [...document.querySelectorAll('#wizard-action-bar button')]
-      .find((candidate) => candidate.textContent.trim() === 'Continue');
+    const button = document.querySelector('#wizard-action-bar .btn-primary');
     button?.click();
     return true;
   })()`);
@@ -968,13 +1033,14 @@ async function longActionLabelSnapshot(harness) {
     'hub.resourceGroupName': 'rg-wizard-acceptance',
     'hub.apimName': targetName,
     'samples.cleanup.confirmNonProduction': true,
+    'samples.cleanup.deleteWeatherSourceApi': true,
   });
   const reachedReview = await advanceToReview(harness);
   const snapshot = await harness.evaluate(`(() => {
     const shell = document.getElementById('dossier-shell');
     const action = document.getElementById('wizard-action-bar');
     const button = [...action?.querySelectorAll('button') ?? []]
-      .find((candidate) => /^Run sample/.test(candidate.textContent.trim()));
+      .find((candidate) => /^Run Sample/.test(candidate.textContent.trim()));
     const actionRect = action?.getBoundingClientRect();
     const buttonRect = button?.getBoundingClientRect();
     return {
@@ -1095,7 +1161,7 @@ async function acknowledgementGateSnapshot(harness) {
   if (!(await preparePublishReview(harness))) return { reachedReview: false };
   const before = await harness.evaluate(`(() => {
     const run = [...document.querySelectorAll('#wizard-action-bar button')]
-      .find((candidate) => /^Run sample/.test(candidate.textContent.trim()));
+      .find((candidate) => /^Run Sample/.test(candidate.textContent.trim()));
     const acknowledgement = document.querySelector('#dossier-review input[type="checkbox"]');
     return {
       runDisabled: run?.disabled === true,
@@ -1113,7 +1179,7 @@ async function acknowledgementGateSnapshot(harness) {
     ...before,
     runEnabledAfterAcknowledgement: await harness.evaluate(`(() => {
       const run = [...document.querySelectorAll('#wizard-action-bar button')]
-        .find((candidate) => /^Run sample/.test(candidate.textContent.trim()));
+        .find((candidate) => /^Run Sample/.test(candidate.textContent.trim()));
       return run?.disabled === false;
     })()`),
   };
@@ -1217,9 +1283,11 @@ async function crossRecipeHistorySnapshot(harness) {
 }
 
 async function destructiveDialogSnapshot(harness) {
+  await harness.setViewport({ width: 390, height: 844, mobile: true });
+  await settle(harness);
   const opened = await harness.evaluate(`(() => {
     const button = [...document.querySelectorAll('#wizard-action-bar button')]
-      .find((candidate) => /^Run sample/.test(candidate.textContent.trim()));
+      .find((candidate) => /^Run Sample/.test(candidate.textContent.trim()));
     button?.focus();
     button?.click();
     return Boolean(button && !button.disabled);
@@ -1230,9 +1298,19 @@ async function destructiveDialogSnapshot(harness) {
   });
   const snapshot = await harness.evaluate(`(() => {
     const dialog = document.getElementById('destructive-run-dialog');
+    const footer = dialog?.querySelector('.destructive-confirmation-actions');
+    const dialogRect = dialog?.getBoundingClientRect();
+    const footerRect = footer?.getBoundingClientRect();
     return {
       opened: dialog?.open === true,
       focusInside: dialog?.contains(document.activeElement) === true,
+      footerVisible: Boolean(
+        dialogRect
+        && footerRect
+        && footerRect.top >= dialogRect.top - 1
+        && footerRect.bottom <= dialogRect.bottom + 1
+        && footerRect.bottom <= innerHeight + 1
+      ),
       text: dialog?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
       requiredText: dialog?.querySelector('input')?.getAttribute('data-required-text') ??
         dialog?.querySelector('input')?.getAttribute('placeholder') ?? '',
@@ -1328,21 +1406,20 @@ async function gatewayKeyNavigationSnapshot(harness) {
     'hub.gatewayUrl': 'https://gateway.example.test',
     'gatewayAccess.apiKey': SECRET,
   });
-  if (!(await advanceToReview(harness))) return { reachedReview: false };
   const clicked = await harness.evaluate(`(() => {
     const button = [...document.querySelectorAll('button')]
       .find((candidate) => candidate.textContent.trim() === 'Manage gateway key');
     button?.click();
     return Boolean(button);
   })()`);
-  if (!clicked) return { reachedReview: true, clicked: false };
+  if (!clicked) return { readyToRun: false, clicked: false };
   await harness.waitFor(
     "document.querySelector('[data-wizard-step]')?.dataset.wizardStep === 'account-target'",
     { label: 'Gateway connection after Manage gateway key' },
   );
   await settle(harness);
   return harness.evaluate(`(() => ({
-    reachedReview: true,
+    readyToRun: true,
     clicked: true,
     step: document.querySelector('[data-wizard-step]')?.dataset.wizardStep,
     activePath: document.activeElement?.closest('[data-parameter-path]')?.dataset.parameterPath ?? '',
@@ -1355,7 +1432,7 @@ async function destructiveInvalidationSnapshot(harness) {
   if (!(await prepareCleanupReview(harness))) return { reachedReview: false };
   const opened = await harness.evaluate(`(() => {
     const button = [...document.querySelectorAll('#wizard-action-bar button')]
-      .find((candidate) => /^Run sample/.test(candidate.textContent.trim()));
+      .find((candidate) => /^Run Sample/.test(candidate.textContent.trim()));
     button?.click();
     return document.getElementById('destructive-run-dialog')?.open === true;
   })()`);
@@ -1444,7 +1521,7 @@ async function activeRunIsolationSnapshot(harness) {
       }
     });
     const button = [...document.querySelectorAll('#wizard-action-bar button')]
-      .find((candidate) => /^Run sample/.test(candidate.textContent.trim()));
+      .find((candidate) => /^Run Sample/.test(candidate.textContent.trim()));
     button?.click();
     return Boolean(button && !button.disabled);
   })()`);
@@ -1475,7 +1552,7 @@ async function activeRunIsolationSnapshot(harness) {
   }))()`);
   const cancelClicked = await harness.evaluate(`(() => {
     const button = [...document.querySelectorAll('#wizard-action-bar button')]
-      .find((candidate) => candidate.textContent.trim() === 'Cancel run');
+      .find((candidate) => candidate.textContent.trim() === 'Cancel Run');
     button?.click();
     return Boolean(button);
   })()`);
@@ -1498,7 +1575,7 @@ async function runScenario(harness, reporter, scenario) {
   await navigateToRecipe(harness, scenario.recipeId);
 
   if (scenario.review) {
-    reporter.check(`${scenario.name}: reached Review & approve`, await prepareCleanupReview(harness));
+    reporter.check(`${scenario.name}: reached Confirm & run`, await prepareCleanupReview(harness));
   }
   if (scenario.openHelpPath) {
     reporter.check(`${scenario.name}: opened concise field help`, await openFieldHelp(harness, scenario.openHelpPath));
@@ -1537,7 +1614,11 @@ async function runScenario(harness, reporter, scenario) {
     if (scenario.recipeId === 'weather-mcp-discovery') {
       reporter.equal(`${scenario.name}: gateway identity is explicit`, wizard.identityKind, 'gateway-key');
       reporter.check(`${scenario.name}: gateway recipe has no Azure account controls`, !wizard.azureAccountControls);
-      reporter.includes(`${scenario.name}: gateway step title is correct`, wizard.title, 'Gateway connection');
+      reporter.check(
+        `${scenario.name}: gateway task is direct and skips low-risk review`,
+        wizard.title.includes('Gateway connection') && wizard.hasReviewStep === false,
+        JSON.stringify(wizard),
+      );
     }
     if (scenario.recipeId === 'apim-discovery') {
       reporter.includes(`${scenario.name}: Azure step title is correct`, wizard.title, 'Azure account & target');
@@ -1909,22 +1990,21 @@ async function checkHostedRelayReadiness(reporter) {
         .find((candidate) => candidate.dataset.parameterPath === 'hub.gatewayUrl');
       const input = row?.querySelector('input');
       if (!input) return false;
+      input.focus();
       input.value = 'https://gateway.example.test';
       input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      const continueButton = [...document.querySelectorAll('#wizard-action-bar button')]
-        .find((candidate) => candidate.textContent.trim() === 'Continue');
-      continueButton?.click();
+      input.blur();
       return true;
     })()`);
     await harness.waitFor(
-      "document.querySelector('.wizard-step-content')?.textContent.includes('nothing missing')",
-      { label: 'hosted weather input readiness' },
+      "document.querySelector('#wizard-action-bar .btn-primary')?.disabled === false",
+      { label: 'hosted weather setup action' },
     );
-    const reachedReview = await advanceToReview(harness);
+    await settle(harness);
+    const directRunReady = await advanceToReadOnlyRun(harness);
     const beforeRun = await harness.evaluate(`(() => {
       const run = [...document.querySelectorAll('#wizard-action-bar button')]
-        .find((candidate) => /^Run sample/.test(candidate.textContent.trim()));
+        .find((candidate) => candidate.textContent.trim() === 'Run Check');
       return {
         runner: document.querySelector('.dossier-masthead-status')?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
         identityKind: document.querySelector('.execution-context-bar')?.dataset.identityKind ?? '',
@@ -1933,13 +2013,15 @@ async function checkHostedRelayReadiness(reporter) {
           item.textContent.replace(/\\s+/g, ' ').trim()
         ),
         gatewayKeyField: Boolean(document.querySelector('[data-parameter-path="gatewayAccess.apiKey"]')),
+        operationPreview: [...document.querySelectorAll('.review-operation-details > summary')]
+          .some((summary) => summary.textContent.trim() === 'Preview Exact Operation'),
         runPresent: Boolean(run),
         runEnabled: Boolean(run && !run.disabled),
       };
     })()`);
     reporter.check(
       'the real preview capability enables the allowlisted hosted weather run',
-      reachedReview &&
+      directRunReady &&
         beforeRun.runner.includes('Hosted relay') &&
         !beforeRun.runner.includes('Preview only') &&
         beforeRun.identityKind === 'hosted-relay' &&
@@ -1947,6 +2029,7 @@ async function checkHostedRelayReadiness(reporter) {
         beforeRun.context.includes('Hosted relay gateway runs do not use this browser session') &&
         beforeRun.chain.length === 5 &&
         !beforeRun.gatewayKeyField &&
+        beforeRun.operationPreview &&
         beforeRun.runPresent &&
         beforeRun.runEnabled,
       JSON.stringify(beforeRun),
@@ -1954,7 +2037,7 @@ async function checkHostedRelayReadiness(reporter) {
 
     await harness.evaluate(`(() => {
       const run = [...document.querySelectorAll('#wizard-action-bar button')]
-        .find((candidate) => /^Run sample/.test(candidate.textContent.trim()));
+        .find((candidate) => candidate.textContent.trim() === 'Run Check');
       run?.click();
       return Boolean(run && !run.disabled);
     })()`);
@@ -1966,13 +2049,22 @@ async function checkHostedRelayReadiness(reporter) {
       runner: document.querySelector('.dossier-masthead-status')?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
       output: document.getElementById('dossier-output')?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
     }))()`);
+    await harness.evaluate('history.back()');
+    await harness.waitFor(
+      "document.querySelector('[data-wizard-step]')?.dataset.wizardStep !== 'run-result'",
+      { label: 'validated read-only setup step after browser Back' },
+    );
+    result.backStep = await harness.evaluate(
+      "document.querySelector('[data-wizard-step]')?.dataset.wizardStep ?? ''",
+    );
     reporter.check(
       'hosted relay progress and results remain live-capable rather than preview evidence',
       result.runner.includes('Hosted relay') &&
         !result.runner.includes('Preview only') &&
         result.output.includes('Hosted relay') &&
         result.output.includes('Live target evidence') &&
-        !result.output.includes('Preview only'),
+        !result.output.includes('Preview only') &&
+        ['account-target', 'required-inputs', 'credentials-options'].includes(result.backStep),
       JSON.stringify(result),
     );
     reporter.check(
@@ -2089,7 +2181,7 @@ async function main() {
 
     await navigateToRecipe(harness, 'weather-mcp-discovery');
     const gatewayWizard = await wizardSnapshot(harness);
-    reporter.equal('gateway recipes dynamically skip the Required inputs step', gatewayWizard.stepCount, 4);
+    reporter.equal('gateway recipes skip unused input and low-risk review steps', gatewayWizard.stepCount, 3);
 
     await navigateToRecipe(harness, 'publish-assets');
     reporter.check('Publish Assets can reach its approval step', await preparePublishReview(harness));
@@ -2157,6 +2249,7 @@ async function main() {
       'destructive confirmation owns focus, repeats context, closes with Escape, and returns focus',
       destructive.opened &&
         destructive.focusInside &&
+        destructive.footerVisible &&
         /apim-wizard-acceptance|DELETE/i.test(destructive.text) &&
         destructive.focusReturned,
       JSON.stringify(destructive),
@@ -2190,7 +2283,7 @@ async function main() {
     const gatewayKeyNavigation = await gatewayKeyNavigationSnapshot(harness);
     reporter.check(
       'Manage gateway key returns to Gateway connection and focuses the masked control',
-      gatewayKeyNavigation.reachedReview &&
+      gatewayKeyNavigation.readyToRun &&
         gatewayKeyNavigation.clicked &&
         gatewayKeyNavigation.step === 'account-target' &&
         gatewayKeyNavigation.activePath === 'gatewayAccess.apiKey' &&
@@ -2225,7 +2318,7 @@ async function main() {
         !activeRun.foreignProgressVisible &&
         activeRun.cancelClicked &&
         activeRun.cancelCalls === 1 &&
-        activeRun.actionText !== 'Cancel run',
+        activeRun.actionText !== 'Cancel Run',
       JSON.stringify(activeRun),
     );
 

@@ -153,11 +153,18 @@ inputs. Do not introduce a general-purpose editable notebook.
 
 - `npm run check` — 147 modules, 0 dependencies, nothing outside
   `CitadelSamples`;
-- `node --test` — 991/991 passing;
-- `npm run smoke` — 22/22 passing.
+- `node --test` — 992/992 passing;
+- `npm run smoke` — 23/23 passing.
 
 The wizard browser acceptance passed 139/139 checks and regenerated 15 responsive
 screenshots. The Impeccable detector returned no findings.
+
+The final UX simplification removed the mandatory review page from read-only
+recipes, reduced risky confirmation to the target, impact, recovery, and
+one-run acknowledgement, collapsed execution details on constrained screens,
+made the recipe picker prominent and focus-contained, and reduced directory
+rows to decision-relevant status. Exact operations and technical provenance
+remain available on demand.
 
 The final integrated correctness pass also proves that hosted relay recipes remain
 runnable while the public container is in preview mode, Azure China validates the

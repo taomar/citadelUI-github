@@ -289,7 +289,7 @@ function hostedIdentityPath(execution = {}) {
   );
 }
 
-function renderContextBar(execution = {}, identity = {}) {
+function renderContextBar(execution = {}, identity = {}, { collapsed = false } = {}) {
   const authorization = authorizationContext(execution.authorization);
   const gateway = identity.kind === 'gateway-key';
   const runsAs = gateway ? 'Gateway caller' : modelValue(execution.runsAs);
@@ -298,11 +298,7 @@ function renderContextBar(execution = {}, identity = {}) {
     : execution.runsAs?.credential ?? execution.credential;
   const activeSubscription = execution.activeSubscription ?? identity.activeSubscription ?? {};
 
-  return el('section', {
-    class: 'execution-context-bar',
-    'aria-label': 'Execution context',
-    'data-identity-kind': identity.kind ?? 'unavailable',
-  }, [
+  const body = el('div', { class: 'execution-context-body' }, [
     el('div', { class: 'execution-context-grid' }, [
       contextItem(
         'Human / account',
@@ -331,6 +327,58 @@ function renderContextBar(execution = {}, identity = {}) {
     ]),
     identity.kind === 'hosted-relay' ? hostedIdentityPath(execution) : null,
   ]);
+
+  return el('section', {
+    class: 'execution-context-bar',
+    'aria-label': 'Execution context',
+    'data-identity-kind': identity.kind ?? 'unavailable',
+  }, [
+    el('details', {
+      class: 'execution-context-disclosure',
+      open: collapsed ? undefined : true,
+    }, [
+      el('summary', { class: 'execution-context-summary' }, [
+        el('span', { class: 'execution-context-summary-label', text: 'Execution Details' }),
+        el('span', {
+          class: 'execution-context-summary-target',
+          text: modelValue(execution.target) || runsAs || 'Not configured',
+        }),
+        el('span', {
+          class: 'execution-context-summary-state',
+          'data-context-state': authorization.state,
+          text: authorization.label,
+        }),
+      ]),
+      body,
+    ]),
+  ]);
+}
+
+function trapModalFocus(event, container, onClose) {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation?.();
+    onClose?.();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const focusable = [...container.querySelectorAll(
+    'button:not([disabled]):not([tabindex="-1"]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], summary',
+  )].filter((element) => element.getClientRects().length > 0);
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  const active = container.ownerDocument?.activeElement;
+  if (!container.contains(active)) {
+    event.preventDefault();
+    first.focus();
+  } else if (event.shiftKey && active === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function stageProgress(wizard = {}, onStageChange) {
@@ -416,6 +464,11 @@ export function renderShell({
   const identity = model.identity ?? {};
   const directoryOpen = model.directoryOpen === true;
   const directoryModal = model.directoryModal === true;
+  const directoryCount = Number.isFinite(model.directory?.catalogueTotal)
+    ? model.directory.catalogueTotal
+    : Number.isFinite(model.directory?.total)
+      ? model.directory.total
+      : 0;
   const wizard = model.wizard ?? {};
   const ownerDocument = container.ownerDocument ?? globalThis.document;
   const priorActive = ownerDocument?.activeElement ?? null;
@@ -448,12 +501,15 @@ export function renderShell({
     role: directoryOpen && directoryModal ? 'dialog' : undefined,
     'aria-modal': directoryOpen && directoryModal ? 'true' : undefined,
     'aria-label': directoryOpen && directoryModal ? 'Recipe picker' : undefined,
+    onkeydown: directoryOpen && directoryModal
+      ? (event) => trapModalFocus(event, drawer, () => onDirectoryToggle?.(false))
+      : undefined,
   }, [
     el('button', {
       type: 'button',
       class: 'dossier-drawer-scrim',
       'aria-label': 'Close recipe picker',
-      tabindex: directoryOpen && directoryModal ? '0' : '-1',
+      tabindex: '-1',
       onclick: () => onDirectoryToggle?.(false),
     }),
     directory,
@@ -557,7 +613,7 @@ export function renderShell({
       renderIdentitySurface(identity, identityCallbacks),
     ]),
   ]);
-  const contextBar = renderContextBar(model.execution, identity);
+  const contextBar = renderContextBar(model.execution, identity, { collapsed: directoryModal });
   if (directoryOpen && directoryModal) contextBar.setAttribute('inert', '');
   const workspaceBar = el('div', {
     class: 'dossier-workspace-bar',
@@ -568,9 +624,33 @@ export function renderShell({
       class: 'dossier-directory-toggle',
       'aria-controls': DOSSIER_IDS.recipeDrawer,
       'aria-expanded': directoryOpen ? 'true' : 'false',
-      text: 'Recipes',
+      'aria-label': directoryCount > 0
+        ? `Browse all ${directoryCount} recipes. Current recipe: ${recipe.title ?? 'none selected'}`
+        : `Browse recipes. Current recipe: ${recipe.title ?? 'none selected'}`,
       onclick: () => onDirectoryToggle?.(!directoryOpen),
-    }),
+    }, [
+      el('span', {
+        class: 'dossier-directory-toggle-icon',
+        'aria-hidden': 'true',
+      }),
+      el('span', { class: 'dossier-directory-toggle-copy' }, [
+        el('span', {
+          class: 'dossier-directory-toggle-label',
+          text: 'Browse Recipes',
+        }),
+        el('span', {
+          class: 'dossier-directory-toggle-current',
+          text: recipe.title ?? 'Choose a recipe',
+        }),
+      ]),
+      directoryCount > 0
+        ? el('span', {
+            class: 'dossier-directory-toggle-count',
+            'aria-hidden': 'true',
+            text: String(directoryCount),
+          })
+        : null,
+    ]),
     stageProgress(wizard, onStageChange),
   ]);
 

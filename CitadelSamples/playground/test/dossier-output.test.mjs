@@ -267,6 +267,31 @@ test('secret-bearing fields and duplicated secret values never reach text, marku
   assert.match(markup, /1 secret-bearing evidence field withheld/);
   assert.ok(!markup.includes('apiKey'));
   assert.ok(!markup.includes('accessToken'));
+
+  const zeroContainer = new FakeNode('div');
+  renderOutput(
+    zeroContainer,
+    baseModel({
+      runId: 'run-0010',
+      summary: 'Protocol 2 completed with 0 secret updates.',
+      secretUpdateCount: 0,
+    }),
+    { activeRunId: 'run-0010' },
+  );
+  const zeroMarkup = serialize(zeroContainer);
+  assert.match(zeroMarkup, /run-0010/);
+  assert.match(zeroMarkup, /Protocol 2 completed with 0 secret updates/);
+  assert.ok(!zeroMarkup.includes('run-[redacted]'));
+
+  const numericSecretContainer = new FakeNode('div');
+  renderOutput(
+    numericSecretContainer,
+    baseModel({
+      summary: 'PIN 123456 was accepted.',
+      credential: { password: 123456 },
+    }),
+  );
+  assert.doesNotMatch(serialize(numericSecretContainer), /123456/);
 });
 
 test('not-evaluated assertions remain not evaluated rather than becoming inconclusive', () => {

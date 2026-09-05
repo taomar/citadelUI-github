@@ -658,8 +658,12 @@ export function buildDirectoryModel({
           title: sample.shortTitle ?? sample.title,
           fullTitle: sample.title,
           summary: sample.summary,
-          risk: riskBadge(sample.risk.level),
+          risk:
+            sample.risk.level === 'read-only' && sample.risk.requiresAcknowledgement === true
+              ? { tone: 'warning', label: 'Billed interaction' }
+              : riskBadge(sample.risk.level),
           riskLevel: sample.risk.level,
+          requiresAcknowledgement: sample.risk.requiresAcknowledgement === true,
           cells: sample.sourceCells.filter((cell) => CATALOGUE.sourceNotebook.codeCellIndexes.includes(cell)),
           selected: sample.id === selectedSampleId,
           readiness: directoryReadiness(sample, { read, hasSecret, runtimeProbe, resultFor }),
@@ -924,7 +928,7 @@ function buildExportBundle({ sample, manifest, plan, capability }) {
 /** The Request tab. */
 export function buildRequestModel({ sample, read, acknowledged = false, secrets = {} }) {
   const { plan, validation } = buildSamplePlan(sample, read);
-  const acknowledgement = acknowledgementFor(sample, acknowledged);
+  const acknowledgement = acknowledgementFor(sample, acknowledged, read);
   if (!plan) {
     return {
       sampleId: sample.id,

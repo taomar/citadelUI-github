@@ -66,12 +66,11 @@ async function main() {
     reporter.check('the bootstrap capability is removed immediately', !initial.bootstrapInUrl);
 
     const validation = await harness.evaluate(`(() => {
-      const button = [...document.querySelectorAll('#wizard-action-bar button')]
-        .find((candidate) => candidate.textContent.trim() === 'Continue');
+      const button = document.querySelector('#wizard-action-bar .btn-primary');
       button?.click();
       return true;
     })()`);
-    reporter.check('the Continue action is present', validation);
+    reporter.check('the primary setup action is present', validation);
     await settle(harness);
     const focused = await harness.evaluate(`(() => ({
       step: document.querySelector('[data-wizard-step]')?.dataset.wizardStep,
@@ -143,18 +142,83 @@ async function main() {
       const controls = [...document.querySelectorAll(
         '#dossier-shell button:not([disabled]), #dossier-shell input:not([disabled]), #dossier-shell select:not([disabled]), #dossier-shell summary'
       )].filter(visible);
+      const picker = document.querySelector('.dossier-directory-toggle');
+      const workspace = document.querySelector('.dossier-workspace-bar');
+      const workspaceStyle = workspace ? getComputedStyle(workspace) : null;
+      const stepSelector = document.querySelector('.dossier-stage-progress select');
       return {
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: document.documentElement.clientWidth,
         recipeRailVisible: visible(document.getElementById('recipe-directory')),
-        recipePickerVisible: visible(document.querySelector('.dossier-directory-toggle')),
-        stepSelectorVisible: visible(document.querySelector('.dossier-stage-progress select')),
+        recipePickerVisible: visible(picker),
+        recipePickerText: picker?.textContent.trim() ?? '',
+        recipePickerWidth: picker?.getBoundingClientRect().width ?? 0,
+        recipePickerBottom: picker?.getBoundingClientRect().bottom ?? 0,
+        workspaceWidth: workspace?.clientWidth ?? 0,
+        workspaceContentWidth: workspace
+          ? workspace.clientWidth
+            - Number.parseFloat(workspaceStyle.paddingLeft || '0')
+            - Number.parseFloat(workspaceStyle.paddingRight || '0')
+          : 0,
+        stepSelectorVisible: visible(stepSelector),
+        stepSelectorTop: stepSelector?.getBoundingClientRect().top ?? 0,
         actionPosition: getComputedStyle(document.getElementById('wizard-action-bar')).position,
         minimumControlHeight: Math.min(...controls.map((element) => element.getBoundingClientRect().height)),
       };
     })()`);
     reporter.check('320x480 has no page-level horizontal overflow', narrow.documentWidth <= narrow.viewportWidth);
-    reporter.check('320x480 uses one recipe picker instead of the rail', !narrow.recipeRailVisible && narrow.recipePickerVisible);
+    reporter.check(
+      '320x480 makes recipe navigation a full-width row above the step selector',
+      !narrow.recipeRailVisible
+        && narrow.recipePickerVisible
+        && narrow.recipePickerText.startsWith('Browse Recipes')
+        && narrow.recipePickerWidth >= narrow.workspaceContentWidth - 2
+        && narrow.stepSelectorTop >= narrow.recipePickerBottom - 1,
+      JSON.stringify(narrow),
+    );
+    const drawerKeyboard = await harness.evaluate(`new Promise((resolve) => {
+      const picker = document.querySelector('.dossier-directory-toggle');
+      picker?.click();
+      requestAnimationFrame(() => {
+        const search = document.getElementById('recipe-directory-search');
+        const close = document.querySelector('.recipe-directory-close');
+        const items = [...document.querySelectorAll('.recipe-directory-item:not([disabled])')];
+        const last = items.at(-1);
+        last?.focus();
+        last?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+        const wrapsForward = document.activeElement === close;
+        close?.focus();
+        close?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
+        const wrapsBackward = document.activeElement === last;
+        last?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        requestAnimationFrame(() => resolve({
+          wrapsForward,
+          wrapsBackward,
+          closed: document.querySelector('.dossier-directory-toggle')?.getAttribute('aria-expanded') === 'false',
+          focusReturned: document.activeElement === document.querySelector('.dossier-directory-toggle'),
+        }));
+      });
+    })`);
+    await harness.evaluate("document.querySelector('.dossier-directory-toggle')?.click()");
+    await harness.setViewport({ width: 1300, height: 800, mobile: false });
+    await settle(harness);
+    drawerKeyboard.desktopTransition = await harness.evaluate(`(() => ({
+      directoryVisible: document.getElementById('recipe-directory')?.getClientRects().length > 0,
+      modal: document.getElementById('recipe-drawer')?.getAttribute('aria-modal') === 'true',
+      dossierInert: document.getElementById('run-dossier')?.hasAttribute('inert') === true,
+    }))()`);
+    narrow.drawerKeyboard = drawerKeyboard;
+    reporter.check(
+      'the recipe picker contains focus and becomes a normal rail when the viewport widens',
+      drawerKeyboard.wrapsForward
+        && drawerKeyboard.wrapsBackward
+        && drawerKeyboard.closed
+        && drawerKeyboard.focusReturned
+        && drawerKeyboard.desktopTransition.directoryVisible
+        && !drawerKeyboard.desktopTransition.modal
+        && !drawerKeyboard.desktopTransition.dossierInert,
+      JSON.stringify(drawerKeyboard),
+    );
     reporter.check('320x480 exposes the current-step selector', narrow.stepSelectorVisible);
     reporter.check(
       '320x480 pins the wizard actions',

@@ -539,18 +539,22 @@ dialog :focus-visible {
   }
 
   .dossier-workspace-bar {
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
   }
 
   .dossier-stage-progress {
-    flex: 1 1 auto;
-    justify-content: flex-end;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    width: 100%;
+    margin-inline-start: 0;
   }
 
   .dossier-stage-progress select {
     display: block;
     min-inline-size: 0;
-    inline-size: min(12rem, 52vw);
+    inline-size: 100%;
   }
 
   .execution-context-grid {
@@ -585,6 +589,16 @@ dialog :focus-visible {
     border: 0;
     border-radius: 0;
   }
+
+  #destructive-run-dialog .destructive-confirmation-form {
+    block-size: 100%;
+    max-block-size: 100%;
+  }
+
+  #destructive-run-dialog .destructive-confirmation-scroll {
+    min-block-size: 0;
+    overflow-y: auto;
+  }
 }
 
 @media (max-width: 22rem), (max-height: 30rem) {
@@ -610,7 +624,7 @@ dialog :focus-visible {
 
 }
 
-@media (max-height: 30rem) {
+@media (max-height: 29.999rem) {
   :root {
     --dossier-context-size: 2.5rem;
   }
@@ -629,7 +643,23 @@ dialog :focus-visible {
   }
 
   .dossier-workspace-bar {
+    grid-template-columns: minmax(0, 1fr) minmax(9rem, 45vw);
+    align-items: center;
     padding-block: var(--sp-1);
+  }
+
+  .dossier-directory-toggle-current,
+  .dossier-stage-progress > span {
+    display: none;
+  }
+
+  .dossier-stage-progress {
+    display: flex;
+    width: auto;
+  }
+
+  .dossier-stage-progress select {
+    width: 100%;
   }
 
   .wizard-action-bar {

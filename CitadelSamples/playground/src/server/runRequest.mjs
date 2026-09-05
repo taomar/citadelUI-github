@@ -21,7 +21,7 @@ import {
   isAzureCliContext,
   sampleExecutionContext,
 } from '../core/executionContext.mjs';
-import { coerceValue, isBlank } from '../core/validation.mjs';
+import { acknowledgementRequired, coerceValue, isBlank } from '../core/validation.mjs';
 import { isWellFormedUnicode } from '../core/identifiers.mjs';
 
 export const MAX_INPUT_KEYS = 80;
@@ -133,10 +133,17 @@ export function validateRunRequest(payload, catalogue) {
   }
 
   const acknowledgement = payload.acknowledgement ?? null;
-  if (sample.risk.requiresAcknowledgement) {
+  const requiresAcknowledgement = acknowledgementRequired(sample, {
+    read: (path) => (
+      Object.prototype.hasOwnProperty.call(inputs, path)
+        ? inputs[path]
+        : secrets[path]
+    ),
+  });
+  if (requiresAcknowledgement) {
     if (!acknowledgement || acknowledgement.accepted !== true || acknowledgement.sampleId !== sample.id) {
       throw new RequestRefused(
-        `"${sample.title}" is ${sample.risk.level}. A fresh acknowledgement naming this sample is required before it will run.`,
+        `"${sample.title}" requires a fresh acknowledgement naming this sample before it will run.`,
         { code: 'acknowledgement-required', status: 409 },
       );
     }

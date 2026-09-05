@@ -241,7 +241,9 @@ test('every risk level is one of the declared four and acknowledgement follows f
     assert.ok(sample.risk.effect, `${sample.id} does not describe its effect`);
     assert.ok(sample.risk.blastRadius, `${sample.id} does not describe its blast radius`);
     assert.ok(sample.risk.reversibility, `${sample.id} does not describe reversibility`);
-    const expected = sample.risk.level !== 'read-only';
+    const expected =
+      sample.risk.level !== 'read-only'
+      || ['a2a-message-send', 'agent-framework-hr-question'].includes(sample.id);
     assert.equal(sample.risk.requiresAcknowledgement, expected, `${sample.id} acknowledgement flag is wrong`);
     if (expected) {
       assert.ok(sample.risk.acknowledgementPrompt, `${sample.id} needs an acknowledgement prompt`);
@@ -252,7 +254,9 @@ test('every risk level is one of the declared four and acknowledgement follows f
 test('the risky recipes are exactly the ones expected', () => {
   const risky = SAMPLES.filter((sample) => sample.risk.requiresAcknowledgement).map((sample) => sample.id).sort();
   assert.deepEqual(risky, [
+    'a2a-message-send',
     'access-contract-deploy',
+    'agent-framework-hr-question',
     'agent-rate-limit-burst',
     'apim-foundry-grant',
     'cleanup',

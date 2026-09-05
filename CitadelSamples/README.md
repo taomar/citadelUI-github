@@ -202,8 +202,12 @@ matched exactly; forwarded host and protocol headers do not broaden it.
 
 Every sample declares its configuration explicitly. The wizard derives only the
 steps that recipe needs: Azure account and target, gateway connection, hosted
-context, required inputs, credentials and options, review, and run/result.
-Inapplicable steps are omitted and the displayed step count is renumbered.
+context, required inputs, credentials and options, risk confirmation, and
+run/result. Read-only recipes proceed directly to **Run Check** once their
+required configuration is complete. State-changing, load-generating,
+destructive, billed-agent, and potentially history-retaining recipes retain a
+concise **Confirm & run** step. Inapplicable steps are omitted and the displayed
+step count is renumbered.
 
 | Group | Meaning |
 | --- | --- |
@@ -488,9 +492,9 @@ mistake, they have not arrived.
 ## Tests
 
 ```
-npm test                 991/991 pass, node --test, no dependencies
+npm test                 992/992 pass, node --test, no dependencies
 npm run check            147 modules, 0 dependencies, nothing outside scope
-npm run smoke            22/22 headless-browser interaction checks
+npm run smoke            23/23 headless-browser interaction checks
 npm run acceptance:dossier  139/139 browser checks, 15 screenshots
 npm run verify           all three, in order
 ```

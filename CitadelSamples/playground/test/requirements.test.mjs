@@ -141,6 +141,8 @@ function activate(condition, into = {}) {
  * gateway is actually in.
  */
 const CONDITION_PROBES = new Map([
+  ['cleanup/hub.resourceGroupName', { 'samples.cleanup.deleteWeatherSourceApi': true }],
+  ['cleanup/hub.apimName', { 'samples.cleanup.deleteWeatherSourceApi': true }],
   ['cleanup/policy.candidateLlmApis', { 'foundry.enableA2aAsset': false }],
   ['cleanup/samples.access-contract-deploy.existingLlmApis', { 'foundry.enableA2aAsset': false }],
 ]);

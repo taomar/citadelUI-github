@@ -734,10 +734,13 @@ export const EXERCISE_SAMPLES = [
     },
     risk: {
       level: 'read-only',
+      requiresAcknowledgement: true,
       effect:
         'Sends one message to a live agent. No Azure resource changes, but the agent runs an inference and the call is billed and logged.',
       blastRadius: 'One agent invocation.',
       reversibility: 'Not applicable. The agent may retain the interaction in its own thread history.',
+      acknowledgementPrompt:
+        'Acknowledge that this sends a billed agent message that may remain in the agent thread history.',
     },
     sourceCells: [21, 22],
     sourceNote: 'Cell 22 posts `message/send` and records `results["hr-chat-agent-rpc"]` from the status code alone.',
@@ -970,9 +973,12 @@ export const EXERCISE_SAMPLES = [
     },
     risk: {
       level: 'read-only',
+      requiresAcknowledgement: true,
       effect: 'Runs one agent turn. No Azure resource changes; the inference is billed and logged.',
       blastRadius: 'One agent invocation plus one card fetch.',
       reversibility: 'Not applicable.',
+      acknowledgementPrompt:
+        'Acknowledge that this runs a billed agent inference and records the interaction in service telemetry.',
     },
     sourceCells: [27, 28],
     sourceNote:

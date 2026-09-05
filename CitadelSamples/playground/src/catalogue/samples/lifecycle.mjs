@@ -7,14 +7,17 @@
  */
 
 import { step, createExecutionPlan } from '../../core/plan.mjs';
-import { conditional, guard, mandatory, optional } from '../requirements.mjs';
+import { conditional, mandatory, optional } from '../requirements.mjs';
 import { LINKS } from '../profiles.mjs';
 import { buildPublishAssets, classifyContract } from './publish.mjs';
 
 /** Machine forms of the two deletion switches, used by the contract below. */
 const WHEN_DELETING_CONTRACT = { field: 'samples.cleanup.deleteAccessContract', equals: true };
 const WHEN_DELETING_ASSETS = { field: 'samples.cleanup.deletePublishedAssets', equals: true };
-const ANY_DELETION = { any: [WHEN_DELETING_CONTRACT, WHEN_DELETING_ASSETS] };
+const WHEN_DELETING_WEATHER = { field: 'samples.cleanup.deleteWeatherSourceApi', equals: true };
+const ANY_DELETION = {
+  any: [WHEN_DELETING_CONTRACT, WHEN_DELETING_ASSETS, WHEN_DELETING_WEATHER],
+};
 
 /** Everything the notebook's cleanup does not remove, and where it came from. */
 export const CLEANUP_RESIDUE = Object.freeze([
@@ -137,6 +140,7 @@ export const LIFECYCLE_SAMPLES = [
         classification: 'required',
         default: false,
         mustEqual: true,
+        mustEqualWhen: ANY_DELETION,
         mustEqualMessage:
           'Confirm the target gateway is a non-production environment before generating a cleanup plan. Deleting a product revokes the key for every consumer holding it.',
         help: 'Deletion is not reversible from here. The product, its subscriptions and the published APIs are removed outright.',
@@ -179,9 +183,11 @@ export const LIFECYCLE_SAMPLES = [
       },
     ],
     configuration: [
-      guard(
+      conditional(
         'self:confirmNonProduction',
         'A hard precondition, checked before any deletion is composed. The executor re-checks it server-side and refuses the run when it is not true.',
+        'A deletion switch is on.',
+        ANY_DELETION,
       ),
       mandatory('hub.resourceGroupName', 'Named in the target summary and in every deletion this recipe can compose.'),
       mandatory('hub.apimName', 'The API Management service the product, subscription, APIs and backends would be deleted from.'),
@@ -255,6 +261,7 @@ export const LIFECYCLE_SAMPLES = [
     },
     risk: {
       level: 'destructive',
+      acknowledgementWhen: ANY_DELETION,
       effect:
         'Deletes an APIM product, its subscriptions and the published APIs and backends. Deleting the product revokes the shared api-key for every consumer holding it.',
       blastRadius:
@@ -315,8 +322,13 @@ export const LIFECYCLE_SAMPLES = [
       const apim = ctx.get('hub.apimName');
       const assets = buildPublishAssets(ctx);
       const contract = classifyContract(ctx, assets);
-      const steps = [
-        step.assertion({
+      const deleting =
+        ctx.self('deleteAccessContract')
+        || ctx.self('deletePublishedAssets')
+        || ctx.self('deleteWeatherSourceApi');
+      const steps = [];
+      if (deleting) {
+        steps.push(step.assertion({
           id: 'confirm-target',
           title: 'Confirm the target is not production',
           detail: 'Checked before any deletion is composed.',
@@ -331,8 +343,8 @@ export const LIFECYCLE_SAMPLES = [
             ],
           },
           produces: ['confirmed'],
-        }),
-      ];
+        }));
+      }
 
       if (ctx.self('deleteAccessContract')) {
         steps.push(

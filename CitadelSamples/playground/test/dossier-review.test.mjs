@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   createDestructiveConfirmationController,
   renderLedger,
+  renderOperationDisclosure,
   renderReview,
 } from '../web/js/render/review.mjs';
 
@@ -330,19 +331,17 @@ test('review is decision-first, says Ready to Attempt, and collapses technical d
     const container = document.createElement('div');
     renderReview(container, reviewModel());
     assert.deepEqual(
-      container.querySelectorAll('.review-context-title').slice(0, 3).map((heading) => heading.textContent),
-      ['Identity', 'Target', 'Authorization'],
+      container.querySelectorAll('.review-context-title').map((heading) => heading.textContent),
+      ['Run Context'],
     );
-    assert.deepEqual(
-      container.querySelectorAll('.review-risk-fact').map((fact) => fact.querySelector('h4').textContent),
-      ['Effect', 'Blast radius', 'Reversibility'],
-    );
-    assert.match(container.textContent, /Exact generated operation/);
+    assert.match(container.textContent, /This run willDeletes the APIM product/);
+    assert.match(container.textContent, /Blast radiusEvery consumer/);
+    assert.match(container.textContent, /RecoveryNot reversible/);
+    assert.match(container.textContent, /Exact Operation/);
     assert.match(container.textContent, /Ready to Attempt/);
     assert.doesNotMatch(container.textContent, /\bAuthorized\b/);
-    const details = container.querySelector('details');
-    assert.ok(details);
-    assert.equal(details.open, false);
+    assert.equal(container.querySelectorAll('details').length, 2);
+    assert.ok(container.querySelectorAll('details').every((details) => details.open === false));
 
     renderReview(container, reviewModel({ canRun: false }));
     assert.match(container.textContent, /Not Ready/);
@@ -358,8 +357,32 @@ test('review is decision-first, says Ready to Attempt, and collapses technical d
         },
       }),
     );
-    assert.ok(container.textContent.includes('StateReady to AttemptMeaning'));
+    assert.ok(container.textContent.includes('AuthorizationReady to Attempt.'));
     assert.doesNotMatch(container.textContent, /\bAuthorized\b/);
+
+    renderReview(container, reviewModel({
+      identity: { human: 'Not Signed In', execution: 'Not Reported' },
+      target: {
+        exact: 'Gateway URL: https://gateway.example.test',
+        tenant: 'Not supplied',
+        subscription: 'Not supplied',
+        resourceGroup: 'Not supplied',
+        apimName: '',
+      },
+    }));
+    assert.doesNotMatch(container.textContent, /Not supplied|Not Reported|Not Signed In/);
+    assert.match(container.textContent, /Gateway URL: https:\/\/gateway\.example\.test/);
+  }));
+
+test('read-only configuration can expose the exact operation without a mandatory review page', () =>
+  withDocument(() => {
+    const disclosure = renderOperationDisclosure(reviewModel(), {
+      summary: 'Preview Exact Operation',
+    });
+    assert.equal(disclosure.tagName, 'DETAILS');
+    assert.equal(disclosure.open, false);
+    assert.match(disclosure.textContent, /Preview Exact Operation/);
+    assert.match(disclosure.textContent, /az apim product delete/);
   }));
 
 test('destructive confirmation requires the exact typed APIM phrase before callback', () =>

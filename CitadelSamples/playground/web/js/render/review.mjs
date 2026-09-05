@@ -113,9 +113,14 @@ function section(title, children, options = {}) {
 }
 
 function compactSection(title, rows, className = '') {
+  const visibleRows = rows.filter(([, value]) => {
+    const text = present(value);
+    return text !== NOT_SUPPLIED && text !== 'Not Reported' && text !== 'Not Signed In';
+  });
+  if (!visibleRows.length) return null;
   return el('section', { class: `review-context-section${className ? ` ${className}` : ''}` }, [
     el('h3', { class: 'review-context-title', text: title }),
-    facts(rows),
+    facts(visibleRows),
   ]);
 }
 
@@ -133,6 +138,12 @@ function textList(items, emptyText) {
       }),
     ),
   );
+}
+
+function factList(rows, className = '') {
+  const list = facts(rows);
+  if (className) list.className = `${list.className} ${className}`.trim();
+  return list;
 }
 
 function renderAcknowledgement(model, callbacks) {
@@ -173,13 +184,27 @@ function renderAcknowledgement(model, callbacks) {
   ]);
 }
 
-function technicalDetails(model, operation) {
-  const details = asList(model.technicalDetails ?? model.planDetails);
-  const steps = asList(operation.steps);
-  return el('details', { class: 'review-details' }, [
-    el('summary', { text: 'Technical plan and details' }),
+function exactOperationDetails(operation, summary = 'Exact Operation') {
+  return el('details', { class: 'review-details review-operation-details' }, [
+    el('summary', { text: summary }),
     el('div', { class: 'review-details-body' }, [
       el('p', { class: 'review-copy', text: operation.summary }),
+      el('pre', { class: 'review-operation', tabindex: '0', text: operation.text }),
+    ]),
+  ]);
+}
+
+export function renderOperationDisclosure(model, { summary = 'Preview Exact Operation' } = {}) {
+  return exactOperationDetails(operationOf(model), summary);
+}
+
+function technicalDetails(model, operation, deviations, placeholders) {
+  const details = asList(model.technicalDetails ?? model.planDetails);
+  const steps = asList(operation.steps);
+  if (!details.length && !steps.length && !deviations.length && !placeholders.length) return null;
+  return el('details', { class: 'review-details' }, [
+    el('summary', { text: 'Technical Details' }),
+    el('div', { class: 'review-details-body' }, [
       details.length ? textList(details, '') : null,
       steps.length
         ? el(
@@ -195,6 +220,18 @@ function technicalDetails(model, operation) {
             ),
           )
         : el('p', { class: 'review-empty', text: 'No additional plan details were supplied.' }),
+      deviations.length
+        ? el('div', { class: 'review-detail-group' }, [
+            el('h4', { text: 'Deviations' }),
+            textList(deviations, ''),
+          ])
+        : null,
+      placeholders.length
+        ? el('div', { class: 'review-detail-group' }, [
+            el('h4', { text: 'Credential Placeholders' }),
+            textList(placeholders, ''),
+          ])
+        : null,
     ]),
   ]);
 }
@@ -222,11 +259,14 @@ export function renderReview(container, model, callbacks = {}) {
   }, [
     el('header', { class: 'review-heading' }, [
       el('div', {}, [
-        el('p', { class: 'review-eyebrow', text: 'Review before execution' }),
         el('h2', {
           id: `${DOSSIER_IDS.review}-title`,
           class: 'review-title',
           text: present(model.title ?? model.sample?.title, 'Run review'),
+        }),
+        el('p', {
+          class: 'review-intro',
+          text: 'Confirm the target and impact before this run starts.',
         }),
       ]),
       el('span', {
@@ -241,60 +281,26 @@ export function renderReview(container, model, callbacks = {}) {
       }),
     ]),
     el('div', { class: 'review-context-grid' }, [
-      compactSection('Identity', [
-        ['Human identity', identity.human],
-        ['Execution identity', identity.execution],
-      ]),
-      compactSection('Target', [
-        ['Exact target', target.exact],
-        ['Tenant', target.tenant],
-        ['Subscription', target.subscription],
-        ['Resource group', target.resourceGroup],
-        ['API Management', target.apimName],
-      ]),
-      compactSection(
-        'Authorization',
-        [
-          ['State', authorization.label],
-          ['Meaning', authorization.summary],
-        ],
-        authorization.proven ? 'review-authorization-proven' : '',
-      ),
+      compactSection('Run Context', [
+        ['Runs as', identity.execution],
+        ['Target', target.exact],
+        ['Authorization', `${authorization.label}. ${authorization.summary}`],
+      ], authorization.proven ? 'review-authorization-proven' : ''),
     ]),
     section(
-      'Effect and recovery',
+      'Impact',
       [
-        el('div', { class: 'review-risk-grid' }, [
-          el('article', { class: 'review-risk-fact' }, [
-            el('h4', { text: 'Effect' }),
-            el('p', { text: present(risk.effect) }),
-          ]),
-          el('article', { class: 'review-risk-fact' }, [
-            el('h4', { text: 'Blast radius' }),
-            el('p', { text: present(risk.blastRadius) }),
-          ]),
-          el('article', { class: 'review-risk-fact' }, [
-            el('h4', { text: 'Reversibility' }),
-            el('p', { text: present(risk.reversibility) }),
-          ]),
-        ]),
+        factList([
+          ['This run will', present(risk.effect)],
+          ['Blast radius', present(risk.blastRadius)],
+          ['Recovery', present(risk.reversibility)],
+        ], 'review-impact-list'),
       ],
       { note: present(risk.level, 'unknown') },
     ),
-    section('Exact generated operation', [
-      el('p', { class: 'review-copy', text: operation.summary }),
-      el('pre', { class: 'review-operation', tabindex: '0', text: operation.text }),
-    ]),
-    el('div', { class: 'review-decision-grid' }, [
-      section('Deviations', [textList(deviations, 'No deviations were supplied.')], {
-        note: String(deviations.length),
-      }),
-      section('Placeholders', [textList(placeholders, 'No placeholders are required.')], {
-        note: String(placeholders.length),
-      }),
-    ]),
     section('Acknowledgement', [renderAcknowledgement(model, callbacks)]),
-    technicalDetails(model, operation),
+    exactOperationDetails(operation),
+    technicalDetails(model, operation, deviations, placeholders),
   ]);
 
   replace(container, [review]);

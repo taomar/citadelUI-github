@@ -667,8 +667,8 @@ export function renderConfigure(
         el('p', {
           class: 'configure-help-copy configure-review-note',
           text: contract.ready
-            ? 'Continue to review the exact generated operation.'
-            : 'Complete or correct the blocking fields before reviewing the generated operation.',
+            ? 'Required values are complete.'
+            : 'Complete or correct the blocking fields to continue.',
         }),
       ]) : null,
       showEvidence ? renderEvidenceSummary(source, sourceValidation, callbacks) : null,
