@@ -137,14 +137,12 @@ Open `http://127.0.0.1:4173/`. Preview mode lets you select all 19 samples,
 complete their configuration, export JSON or `.env.example`, and inspect the
 exact protected source and generated plan. It executes nothing.
 
-The masthead also carries an **Offline self-test** — a fixed, local
+The diagnostics drawer includes an **Offline self-test** — a fixed, local
 demonstration that needs no Azure subscription, no credential, and no network.
-It runs a handful of deterministic checks against this exact checkout (imported
-notebook provenance, the catalogue's fixed size, the vendored offline bundle,
-workspace isolation, and the same-origin guard itself) through the real
-`/api/self-test` route, in both preview and operator mode. Its result always
-reports `azureContacted: false` and `liveEvidence: false` and can never be
-mistaken for a live scenario outcome.
+It runs deterministic checks against this exact checkout through the real
+`/api/self-test` route in preview and operator mode. Its result always reports
+`azureContacted: false` and `liveEvidence: false` and can never be mistaken for a
+live scenario outcome.
 
 To execute samples from this machine:
 
@@ -158,8 +156,8 @@ npm run start:execute
 ```
 
 Operator mode is deliberately separate from ordinary startup. It probes only
-local runtimes at boot; it does not contact Azure or a gateway until **Run this
-plan** is selected. Local execution is refused unless the server binds to
+local runtimes at boot; it does not contact Azure or a gateway until **Run
+Sample** is selected. Local execution is refused unless the server binds to
 loopback.
 
 Available commands:
@@ -193,12 +191,11 @@ matched exactly; forwarded host and protocol headers do not broaden it.
 
 ---
 
-## Prepare the Code workspace
+## Prepare the Signed Run Dossier
 
-Every sample declares its configuration explicitly. The Code workspace keeps
-the protected notebook source in the centre and renders one canonical task pane
-beside it. The task pane identifies the execution principal and target first,
-then shows only fields that sample uses, grouped by execution meaning:
+Every sample declares its configuration explicitly. The dossier identifies the
+global human account, execution principal, target, and authorization state
+before showing only the fields that sample uses, grouped by execution meaning:
 
 | Group | Meaning |
 | --- | --- |
@@ -450,35 +447,33 @@ weaknesses in the source, all disclosed rather than silently applied:
 The Control Plane visual world is **reproduced locally, not imported**. Nothing
 under `playground/` reads, links or modifies `CitadelUI`; a test asserts it.
 
-The surface is a notebook-like operations workbench: a grouped, searchable
-recipe directory on the left, one selected sample in the centre under Guide /
-Code / Configure / Review & approve / Output views, and a compact readiness and
-provenance rail on the right. The Code view renders protected source rather than
-an editor. Only one sample is rendered at a time.
+The surface is a Signed Run Dossier: one continuous semantic document ordered
+purpose and prerequisites, inputs, decision-first review, and output. A grouped
+recipe directory occupies the left rail on wide screens and becomes one drawer
+or full-height picker on compact screens. A sticky Run Ledger occupies the
+right rail on wide screens and becomes the bottom action dock on compact
+screens. Protected source, guide content, provenance, and diagnostics open as
+secondary inspectors. Only Output uses internal tabs.
 
-The longer-term product direction is a linear runbook rather than mutually
-exclusive tabs: protected source, declared playground inputs, generated
-operation, review and approval, then runner transcript and evidence. The
-protected-source release is an incremental step toward that shape.
-
-Below ~66rem both rails are replaced rather than squeezed — a native `<select>`
-for the directory and a disclosure for the context — so the layout changes shape
-instead of shrinking. Verified with no horizontal overflow at 320px and at 200%
-zoom.
+At 768–1199px the directory becomes a drawer and the dossier becomes one column.
+At 767px and below, the recipe picker fills the available height and the action
+dock respects the safe area. The 320x480 and 200% zoom layouts avoid page-level
+horizontal overflow and keep focused controls clear of sticky regions.
 
 Deep Azure-blue masthead, bright paper sheet, cool chrome rails; Fluent blue for
 action and current position, cloud teal for values sourced outside the page,
 semantic status hues; hairline rules, recessed control wells, Segoe UI Variable
 for prose and Cascadia Mono for every identifier, endpoint and value. No
-gradients, no glass, no same-size card grid, no nested cards, no modals, no fake
-dashboard metrics — compact rows and progressive disclosure instead.
+gradients, no glass, no same-size card grid, no nested cards, or fake dashboard
+metrics. The only modal is the native destructive confirmation that protects an
+irreversible target.
 
 Accessibility targets WCAG 2.2 AA: landmarks, a skip link, programmatic labels,
-roving-tabindex tabs with arrow/Home/End keys, `aria-invalid` and
-`aria-describedby` on every control that needs them, an `aria-live` status
-region, visible focus everywhere, and honoured `prefers-reduced-motion`. A
-required field the user has not reached yet reads as *needed* in brand blue, not
-as an *error* in red — the user has not made a mistake, they have not arrived.
+Output-only roving tabs, `aria-invalid` and `aria-describedby` on every control
+that needs them, a bounded `role="log"`, visible focus everywhere, forced-colors
+support, and honoured `prefers-reduced-motion`. A required field the user has
+not reached yet reads as *needed*, not as an *error* — the user has not made a
+mistake, they have not arrived.
 
 ---
 
