@@ -488,10 +488,10 @@ mistake, they have not arrived.
 ## Tests
 
 ```
-npm test                 872/872 pass, node --test, no dependencies
+npm test                 903/903 pass, node --test, no dependencies
 npm run check            136 modules, 0 dependencies, nothing outside scope
 npm run smoke            22/22 headless-browser interaction checks
-npm run acceptance:dossier  113/113 browser checks, 15 screenshots
+npm run acceptance:dossier  136/136 browser checks, 15 screenshots
 npm run verify           all three, in order
 ```
 

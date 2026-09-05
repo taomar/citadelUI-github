@@ -135,10 +135,10 @@ inputs. Do not introduce a general-purpose editable notebook.
 
 - `npm run check` — 136 modules, 0 dependencies, nothing outside
   `CitadelSamples`;
-- `node --test` — 872/872 passing;
+- `node --test` — 903/903 passing;
 - `npm run smoke` — 22/22 passing.
 
-The wizard browser acceptance passed 113/113 checks and regenerated 15 responsive
+The wizard browser acceptance passed 136/136 checks and regenerated 15 responsive
 screenshots. The Impeccable detector returned no findings.
 
 No Azure endpoint, subscription, gateway key, Foundry project, Policy burst, or
