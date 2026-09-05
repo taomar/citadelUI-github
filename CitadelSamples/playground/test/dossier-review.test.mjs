@@ -344,6 +344,10 @@ test('review is decision-first, says Ready to Attempt, and collapses technical d
     assert.ok(details);
     assert.equal(details.open, false);
 
+    renderReview(container, reviewModel({ canRun: false }));
+    assert.match(container.textContent, /Not Ready/);
+    assert.doesNotMatch(container.querySelector('.review-state').textContent, /Ready to Attempt/);
+
     renderReview(
       container,
       reviewModel({

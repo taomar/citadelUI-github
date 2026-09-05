@@ -211,6 +211,8 @@ export function renderReview(container, model, callbacks = {}) {
   const operation = operationOf(model);
   const deviations = asList(model.deviations ?? model.request?.deviations ?? model.request?.plan?.deviations);
   const placeholders = asList(model.placeholders ?? model.request?.placeholders ?? model.request?.plan?.secretRefs);
+  const missingInputs = requiredInputCount(model);
+  const readyToAttempt = missingInputs === 0 && model.canRun === true;
 
   const review = el('article', {
     class: 'dossier-review',
@@ -228,11 +230,13 @@ export function renderReview(container, model, callbacks = {}) {
       ]),
       el('span', {
         class: 'review-state',
-        'data-state': requiredInputCount(model) > 0 ? 'blocked' : 'ready',
+        'data-state': missingInputs > 0 ? 'blocked' : readyToAttempt ? 'ready' : 'not-ready',
         text:
-          requiredInputCount(model) > 0
-            ? `${requiredInputCount(model)} Required Input${requiredInputCount(model) === 1 ? '' : 's'}`
-            : 'Ready to Attempt',
+          missingInputs > 0
+            ? `${missingInputs} Required Input${missingInputs === 1 ? '' : 's'}`
+            : readyToAttempt
+              ? 'Ready to Attempt'
+              : 'Not Ready',
       }),
     ]),
     el('div', { class: 'review-context-grid' }, [
@@ -385,6 +389,8 @@ export function renderLedger(container, model, callbacks = {}) {
   const authorization = authorizationOf(model);
   const risk = riskOf(model);
   const action = primaryAction(model);
+  const missingInputs = requiredInputCount(model);
+  const readyToAttempt = missingInputs === 0 && model.canRun === true;
   const destructiveHandlerMissing =
     action.kind === 'run' && isDestructive(model) && typeof callbacks.onRequestDestructiveConfirmation !== 'function';
 
@@ -406,13 +412,15 @@ export function renderLedger(container, model, callbacks = {}) {
       ]),
       el('span', {
         class: 'ledger-state',
-        'data-state': requiredInputCount(model) > 0 ? 'blocked' : model.running ? 'running' : 'ready',
+        'data-state': missingInputs > 0 ? 'blocked' : model.running ? 'running' : readyToAttempt ? 'ready' : 'not-ready',
         text:
-          requiredInputCount(model) > 0
-            ? `${requiredInputCount(model)} blocked`
+          missingInputs > 0
+            ? `${missingInputs} blocked`
             : model.running
               ? 'Attempt in progress'
-              : 'Ready to Attempt',
+              : readyToAttempt
+                ? 'Ready to Attempt'
+                : 'Not Ready',
       }),
     ]),
     el('section', { class: 'ledger-section' }, [
