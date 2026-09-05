@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 
 import { createPlaygroundServer } from '../server.mjs';
 import { createCheckReporter, launchBrowserHarness } from './browser-harness.mjs';
+import { navigationFocusCycle, navigationKey, navigationPointer, openNavigationPicker } from './dossier-browser-acceptance.mjs';
 
 function argumentValue(name) {
   const index = process.argv.indexOf(name);
@@ -65,12 +66,8 @@ async function main() {
     reporter.check('desktop has no page-level horizontal overflow', initial.documentWidth <= initial.viewportWidth);
     reporter.check('the bootstrap capability is removed immediately', !initial.bootstrapInUrl);
 
-    const validation = await harness.evaluate(`(() => {
-      const button = document.querySelector('#wizard-action-bar .btn-primary');
-      button?.click();
-      return true;
-    })()`);
-    reporter.check('the primary setup action is present', validation);
+    await navigationPointer(harness, '#wizard-action-bar .btn-primary');
+    reporter.check('the primary setup action is present', true);
     await settle(harness);
     const focused = await harness.evaluate(`(() => ({
       step: document.querySelector('[data-wizard-step]')?.dataset.wizardStep,
@@ -83,12 +80,9 @@ async function main() {
       JSON.stringify(focused),
     );
 
-    const selected = await harness.evaluate(`(async () => {
-      const item = document.querySelector('.recipe-directory-item[data-recipe-id="weather-mcp-discovery"]');
-      item?.click();
-      return Boolean(item);
-    })()`);
-    reporter.check('the gateway recipe can be selected', selected);
+    await navigationPointer(harness, '#recipe-group-exercise');
+    await navigationPointer(harness, '[data-recipe-id="weather-mcp-discovery"]');
+    reporter.check('the gateway recipe can be selected', true);
     await harness.waitFor(
       "document.querySelector('.dossier-current-id')?.textContent === 'weather-mcp-discovery'",
       { label: 'Weather MCP discovery' },
@@ -176,30 +170,20 @@ async function main() {
         && narrow.stepSelectorTop >= narrow.recipePickerBottom - 1,
       JSON.stringify(narrow),
     );
-    const drawerKeyboard = await harness.evaluate(`new Promise((resolve) => {
-      const picker = document.querySelector('.dossier-directory-toggle');
-      picker?.click();
-      requestAnimationFrame(() => {
-        const search = document.getElementById('recipe-directory-search');
-        const close = document.querySelector('.recipe-directory-close');
-        const items = [...document.querySelectorAll('.recipe-directory-item:not([disabled])')];
-        const last = items.at(-1);
-        last?.focus();
-        last?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
-        const wrapsForward = document.activeElement === close;
-        close?.focus();
-        close?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
-        const wrapsBackward = document.activeElement === last;
-        last?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-        requestAnimationFrame(() => resolve({
-          wrapsForward,
-          wrapsBackward,
-          closed: document.querySelector('.dossier-directory-toggle')?.getAttribute('aria-expanded') === 'false',
-          focusReturned: document.activeElement === document.querySelector('.dossier-directory-toggle'),
-        }));
-      });
-    })`);
-    await harness.evaluate("document.querySelector('.dossier-directory-toggle')?.click()");
+    await openNavigationPicker(harness);
+    const drawerKeyboard = await navigationFocusCycle(harness, [
+      'close', 'recipe-directory-search', 'recipe-group-discover', 'recipe-group-prepare',
+      'recipe-group-publish-grant', 'recipe-group-exercise', 'recipe-link-weather-mcp-discovery',
+      'recipe-link-learn-mcp-discovery', 'recipe-link-a2a-agent-card', 'recipe-link-a2a-message-send',
+      'recipe-link-agent-framework-hr-question', 'recipe-link-weather-tools-call',
+      'recipe-group-observe', 'recipe-group-policy', 'recipe-group-lifecycle',
+    ]);
+    await navigationKey(harness, 'Escape', 27);
+    Object.assign(drawerKeyboard, await harness.evaluate(`({
+      closed:document.querySelector('.dossier-directory-toggle')?.getAttribute('aria-expanded') === 'false',
+      focusReturned:document.activeElement === document.querySelector('.dossier-directory-toggle')
+    })`));
+    await openNavigationPicker(harness);
     await harness.setViewport({ width: 390, height: 700, mobile: true });
     await settle(harness);
     drawerKeyboard.sameModeResize = await harness.evaluate(`(() => ({

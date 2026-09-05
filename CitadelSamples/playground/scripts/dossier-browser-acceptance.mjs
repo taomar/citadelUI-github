@@ -2243,7 +2243,7 @@ export function navigationContractIssues(snapshot, { desktop = false } = {}) {
   return issues;
 }
 
-async function navigationKey(harness, key, windowsVirtualKeyCode, modifiers = 0) {
+export async function navigationKey(harness, key, windowsVirtualKeyCode, modifiers = 0) {
   const text = key === 'Enter' ? '\r' : key === ' ' ? ' ' : undefined;
   for (const type of ['keyDown', 'keyUp']) {
     await harness.page.send('Input.dispatchKeyEvent', {
@@ -2254,7 +2254,7 @@ async function navigationKey(harness, key, windowsVirtualKeyCode, modifiers = 0)
   await settle(harness);
 }
 
-async function navigationPointer(harness, selector, { scroll = false } = {}) {
+export async function navigationPointer(harness, selector, { scroll = false } = {}) {
   for (let attempt = 0; attempt < (scroll ? 12 : 1); attempt += 1) {
     const point = await harness.evaluate(`(() => {
       const n = document.querySelector(${JSON.stringify(selector)});
@@ -2296,14 +2296,85 @@ async function navigationTabTo(harness, selector) {
 }
 
 async function navigationGroup(harness, group) {
-  await settle(harness);
+  await openNavigationPicker(harness);
   const compact = await harness.evaluate('innerWidth < 1200');
-  if (compact && await harness.evaluate("document.querySelector('#recipe-drawer').dataset.open !== 'true'")) {
-    await navigationPointer(harness, '.dossier-directory-toggle');
-  }
   if (!await harness.evaluate(`document.querySelector('#recipe-group-${group}').parentElement.open`)) {
     await navigationPointer(harness, `#recipe-group-${group}`, { scroll: compact });
   }
+}
+
+async function navigationPickerState(harness) {
+  return harness.evaluate(`(() => {
+    const drawer = document.querySelector('#recipe-drawer');
+    const hit = selector => {
+      const n = document.querySelector(selector), r = n?.getBoundingClientRect();
+      return !!r && r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight &&
+        n.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+    };
+    return {
+      width:innerWidth, height:innerHeight, open:drawer?.dataset.open === 'true',
+      modal:drawer?.getAttribute('aria-modal') === 'true',
+      expanded:document.querySelector('.dossier-directory-toggle')?.getAttribute('aria-expanded') === 'true',
+      search:hit('#recipe-directory-search'), close:hit('.recipe-directory-close'),
+      focusInside:drawer?.contains(document.activeElement) === true
+    };
+  })()`);
+}
+
+export async function openNavigationPicker(harness) {
+  await settle(harness);
+  const before = await navigationPickerState(harness);
+  if (before.width >= 1200) return { before, after: before, clicked: false };
+  if (!before.open) await navigationPointer(harness, '.dossier-directory-toggle');
+  try {
+    await harness.waitFor(`(() => {
+      const drawer = document.querySelector('#recipe-drawer');
+      if (drawer?.dataset.open !== 'true' || drawer.getAttribute('aria-modal') !== 'true' ||
+          document.querySelector('.dossier-directory-toggle')?.getAttribute('aria-expanded') !== 'true') return false;
+      return ['#recipe-directory-search', '.recipe-directory-close'].every(selector => {
+        const n = document.querySelector(selector), r = n?.getBoundingClientRect();
+        return r && r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight &&
+          n.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+      });
+    })()`, { timeoutMs: 5000, label: 'the actually open, visible and unoccluded recipe picker' });
+  } catch (error) {
+    throw new Error(`${error.message} Picker before/after: ${JSON.stringify({ before, after: await navigationPickerState(harness) })}`, { cause: error });
+  }
+  return { before, after: await navigationPickerState(harness), clicked: !before.open };
+}
+
+export async function navigationFocusCycle(harness, expected) {
+  const capture = () => harness.evaluate(`(() => {
+    const n = document.activeElement, r = n.getBoundingClientRect();
+    const list = n.closest('.recipe-directory-groups')?.getBoundingClientRect();
+    return {
+      id:n.matches('.recipe-directory-close') ? 'close' : n.id,
+      tag:n.tagName, inside:document.querySelector('#recipe-drawer').contains(n),
+      visible:r.width > 0 && r.height > 0 && r.top >= (list?.top ?? 0) - 0.5 &&
+        r.bottom <= (list?.bottom ?? innerHeight) + 0.5 &&
+        n.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2))
+    };
+  })()`);
+  const traces = {};
+  for (const [direction, modifiers] of [['forward', 0], ['backward', 8]]) {
+    await navigationPointer(harness, '#recipe-directory-search');
+    await navigationKey(harness, 'Tab', 9, 8);
+    const trace = [await capture()];
+    for (let index = 1; index <= expected.length; index += 1) {
+      await navigationKey(harness, 'Tab', 9, modifiers);
+      trace.push(await capture());
+      if (!trace.at(-1).inside) break;
+    }
+    traces[direction] = trace;
+  }
+  const matches = (trace, reverse) => trace.length === expected.length + 1 && trace.every((entry, index) =>
+    entry.inside && entry.visible &&
+    entry.id === expected[(reverse ? expected.length - index : index) % expected.length]);
+  return {
+    expected, ...traces,
+    wrapsForward:matches(traces.forward, false),
+    wrapsBackward:matches(traces.backward, true),
+  };
 }
 
 async function navigationSnapshot(harness) {
@@ -2319,7 +2390,7 @@ async function navigationSnapshot(harness) {
         r.bottom <= Math.min(innerHeight,b.bottom)+0.5 &&
         n.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2));
     };
-    const groups = [...nav.querySelectorAll('summary')].map(n => ({
+    const groups = [...nav.querySelectorAll('.recipe-directory-group-heading')].map(n => ({
       title:n.querySelector('h3').textContent, ...rect(n), visible:visible(n), open:n.parentElement.open
     }));
     const rows = [...nav.querySelectorAll('.recipe-directory-item')].map(n => ({
@@ -2329,6 +2400,8 @@ async function navigationSnapshot(harness) {
     const targets = [...nav.querySelectorAll('summary,button,input')].filter(visible);
     return {
       viewport:[innerWidth,innerHeight], directory:rect(nav),
+      pickerOpen:document.querySelector('#recipe-drawer').dataset.open === 'true',
+      pickerModal:document.querySelector('#recipe-drawer').getAttribute('aria-modal') === 'true',
       list:{...rect(list),scrollTop:list.scrollTop,clientHeight:list.clientHeight,scrollHeight:list.scrollHeight},
       groups,rows,visibleGroups:groups.filter(n=>n.visible).length,visibleRecipes:rows.filter(n=>n.visible).length,
       minimumTarget:Math.min(...targets.map(n=>n.getBoundingClientRect().height)),
@@ -2355,6 +2428,8 @@ async function runNavigationAcceptance() {
     }),
   });
   const snapshots = [];
+  const pickerOpenings = [];
+  const focusCycles = [];
   let guard;
   const record = async (label) => {
     const snapshot = await navigationSnapshot(harness);
@@ -2364,9 +2439,7 @@ async function runNavigationAcceptance() {
     return snapshot;
   };
   const openPicker = async () => {
-    if (await harness.evaluate("innerWidth < 1200 && document.querySelector('#recipe-drawer').dataset.open !== 'true'")) {
-      await navigationPointer(harness, '.dossier-directory-toggle');
-    }
+    pickerOpenings.push(await openNavigationPicker(harness));
   };
   const choose = async (group, recipe, scroll = false) => {
     await openPicker();
@@ -2413,6 +2486,70 @@ async function runNavigationAcceptance() {
         reporter.check(`${label}: Shift+Tab wraps inside picker`, await harness.evaluate("document.querySelector('#recipe-drawer').contains(document.activeElement) && !document.activeElement.matches('.recipe-directory-close')"));
         await navigationPointer(harness, '.recipe-directory-close');
         reporter.check(`${label}: close returns focus to browse`, await harness.evaluate("document.activeElement?.classList.contains('dossier-directory-toggle')"));
+      }
+    }
+    const groupOrder = ['discover', 'prepare', 'publish-grant', 'exercise', 'observe', 'policy', 'lifecycle'];
+    const rowsByGroup = {
+      discover: ['azure-context-check', 'apim-discovery'],
+      prepare: ['foundry-enable-a2a', 'apim-foundry-grant', 'weather-api-ensure'],
+      exercise: ['weather-mcp-discovery', 'learn-mcp-discovery', 'a2a-agent-card', 'a2a-message-send', 'agent-framework-hr-question', 'weather-tools-call'],
+      lifecycle: ['cleanup'],
+    };
+    for (const viewport of [
+      { width: 660, height: 800 },
+      { width: 390, height: 844, mobile: true },
+      { width: 320, height: 480, mobile: true },
+    ]) {
+      await harness.setViewport(viewport);
+      for (const mode of ['discover', 'exercise', 'lifecycle', 'lifecycle-closed', 'all-collapsed', 'search', 'eligibility']) {
+        await navigateToRecipe(harness, mode.startsWith('lifecycle') ? 'cleanup' : 'azure-context-check', 'account-target', { previewOnly: true });
+        await openPicker();
+        let openGroup = mode === 'eligibility' ? 'exercise' : mode === 'lifecycle-closed' ? 'prepare' : mode;
+        if (rowsByGroup[openGroup]) await navigationGroup(harness, openGroup);
+        if (mode === 'all-collapsed') await navigationPointer(harness, '#recipe-group-discover');
+        if (mode === 'search') {
+          await navigationPointer(harness, '#recipe-directory-search');
+          await harness.page.send('Input.insertText', { text: 'weather' });
+          await settle(harness);
+        }
+        if (mode === 'eligibility') {
+          await harness.evaluate(`(() => {
+            document.getElementById('recipe-link-weather-mcp-discovery').hidden = true;
+            document.getElementById('recipe-link-learn-mcp-discovery').setAttribute('inert', '');
+            document.getElementById('recipe-link-a2a-agent-card').disabled = true;
+            document.getElementById('recipe-link-a2a-message-send').style.visibility = 'hidden';
+            const nested = document.createElement('details');
+            const summary = document.createElement('summary');
+            summary.id = 'hidden-nested-summary';
+            summary.tabIndex = 0;
+            summary.textContent = 'Not a visible group heading';
+            nested.append(summary);
+            document.querySelector('[data-group-id="lifecycle"] ul').append(nested);
+          })()`);
+        }
+        const groups = mode === 'search' ? ['prepare', 'exercise'] : groupOrder;
+        const expected = ['close', 'recipe-directory-search'];
+        for (const group of groups) {
+          expected.push(`recipe-group-${group}`);
+          const rows = mode === 'search'
+            ? (group === 'prepare' ? ['weather-api-ensure'] : ['weather-mcp-discovery', 'weather-tools-call'])
+            : group === openGroup ? rowsByGroup[group] : [];
+          for (const id of rows ?? []) {
+            if (mode === 'eligibility' && rowsByGroup.exercise.slice(0, 4).includes(id)) continue;
+            expected.push(`recipe-link-${id}`);
+          }
+        }
+        const label = `${viewport.width}x${viewport.height}-${mode}-focus`;
+        const cycle = await navigationFocusCycle(harness, expected);
+        focusCycles.push({ label, ...cycle });
+        reporter.check(`${label}: exact visible forward Tab cycle`, cycle.wrapsForward, JSON.stringify(cycle.forward));
+        reporter.check(`${label}: exact visible reverse Tab cycle`, cycle.wrapsBackward, JSON.stringify(cycle.backward));
+        if (viewport.width === 320) await record(label);
+        await navigationKey(harness, 'Escape', 27);
+        reporter.check(`${label}: Escape closes and returns focus`, await harness.evaluate("document.querySelector('#recipe-drawer').dataset.open === 'false' && document.activeElement.matches('.dossier-directory-toggle')"));
+        await openPicker();
+        await navigationPointer(harness, '.recipe-directory-close');
+        reporter.check(`${label}: Close returns focus`, await harness.evaluate("document.querySelector('#recipe-drawer').dataset.open === 'false' && document.activeElement.matches('.dossier-directory-toggle')"));
       }
     }
     await harness.setViewport({ width: 1440, height: 900 });
@@ -2508,7 +2645,7 @@ async function runNavigationAcceptance() {
     reportIssues(reporter, 'navigation attempted no live request', nonLoopbackRequestIssues(guard.requests, harness.baseUrl));
     reporter.check('navigation has no browser errors', harness.pageErrors.length === 0, harness.pageErrors.join('; '));
   } finally {
-    await writeFile(resolve(output, 'navigation-after.json'), JSON.stringify({ snapshots, checks: reporter.results }, null, 2));
+    await writeFile(resolve(output, 'navigation-after.json'), JSON.stringify({ snapshots, pickerOpenings, focusCycles, checks: reporter.results }, null, 2));
     await guard?.close();
     await harness.close();
   }

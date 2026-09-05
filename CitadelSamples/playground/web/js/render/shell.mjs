@@ -354,6 +354,19 @@ function renderContextBar(execution = {}, identity = {}, { collapsed = false } =
   ]);
 }
 
+function canReceiveModalFocus(element) {
+  if (element.tabIndex < 0 || element.matches(':disabled') || element.closest('[hidden], [inert]')) return false;
+  const style = element.ownerDocument.defaultView.getComputedStyle(element);
+  if (style.visibility === 'hidden' || style.visibility === 'collapse' || !element.getClientRects().length) return false;
+  // Chromium can report rectangles for unfocusable content in a closed details.
+  for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+    if (parent.tagName !== 'DETAILS' || parent.open) continue;
+    const summary = [...parent.children].find((child) => child.tagName === 'SUMMARY');
+    if (!summary?.contains(element)) return false;
+  }
+  return true;
+}
+
 function trapModalFocus(event, container, onClose) {
   if (event.key === 'Escape') {
     event.preventDefault();
@@ -364,12 +377,12 @@ function trapModalFocus(event, container, onClose) {
   if (event.key !== 'Tab') return;
   const focusable = [...container.querySelectorAll(
     'button:not([disabled]):not([tabindex="-1"]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], summary',
-  )].filter((element) => element.getClientRects().length > 0);
+  )].filter(canReceiveModalFocus);
   if (focusable.length === 0) return;
   const first = focusable[0];
   const last = focusable.at(-1);
   const active = container.ownerDocument?.activeElement;
-  if (!container.contains(active)) {
+  if (!focusable.includes(active)) {
     event.preventDefault();
     first.focus();
   } else if (event.shiftKey && active === first) {
@@ -704,8 +717,7 @@ export function renderShell({
   if (directoryOpen && (!priorDirectoryOpen || priorDirectoryFocused)) {
     const search = directory.querySelector('#recipe-directory-search');
     const previous = priorActive?.id ? ownerDocument.getElementById(priorActive.id) : null;
-    const target = previous && directory.contains(previous)
-      && (previous.tagName === 'SUMMARY' || !previous.closest('details:not([open])'))
+    const target = previous && directory.contains(previous) && canReceiveModalFocus(previous)
       ? previous
       : search;
     target?.focus({ preventScroll: true });
