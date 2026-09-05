@@ -158,6 +158,19 @@ test('the Output contract contains only Transcript, Evidence, and Artifacts with
   assert.equal(fakeDocument.activeElement.textContent, 'Evidence');
 });
 
+test('hosted entered-key gateway evidence does not pretend that ARM was contacted', () => {
+  const container = new FakeNode('div');
+  renderOutput(container, baseModel({ state: 'completed', credentialType: 'apim-subscription-key',
+    environment: { mode: 'hosted-bff', label: 'Hosted HTTPS' }, azureContacted: false, liveEvidence: true }));
+  assert.match(container.textContent, /Live gateway evidence/);
+  assert.match(container.textContent, /ARM contacted/);
+  assert.doesNotMatch(container.textContent, /Evidence boundary conflict/);
+  const unproven = new FakeNode('div');
+  renderOutput(unproven, baseModel({ state: 'completed',
+    environment: { mode: 'hosted-bff', label: 'Hosted HTTPS' }, azureContacted: false, liveEvidence: true }));
+  assert.match(unproven.textContent, /Evidence boundary conflict/);
+});
+
 test('the transcript is a bounded polite log with parent-owned reveal and follow hooks', () => {
   const container = new FakeNode('div');
   const revealed = [];

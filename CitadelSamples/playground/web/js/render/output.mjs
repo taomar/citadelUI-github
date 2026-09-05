@@ -269,7 +269,7 @@ function buildContext(response, options, redact, isolated, runId) {
   const sourceEnvironment =
     response.environment && typeof response.environment === 'object' ? response.environment : {};
   const environment = {
-    mode: ['hosted-relay', 'local-machine', 'offline-local', 'preview'].includes(sourceEnvironment.mode)
+    mode: ['hosted-bff', 'hosted-relay', 'local-machine', 'offline-local', 'preview'].includes(sourceEnvironment.mode)
       ? sourceEnvironment.mode
       : '',
     evidenceMode: sourceEnvironment.evidenceMode === 'offline-validation' ? 'offline-validation' : '',
@@ -321,6 +321,7 @@ function buildContext(response, options, redact, isolated, runId) {
     summary,
     detail,
     environment,
+    gatewayEvidence: environment.mode === 'hosted-bff' && response.credentialType === 'apim-subscription-key',
     azureContacted,
     liveEvidence,
     partial,
@@ -459,7 +460,7 @@ function renderEvidence(panel, context) {
     factList([
       ['Runner', runner],
       ['Evidence source', source.label],
-      ['Azure contacted', flagLabel(context.azureContacted, boundaryConflict)],
+      [context.environment.mode === 'hosted-bff' ? 'ARM contacted' : 'Azure contacted', flagLabel(context.azureContacted, boundaryConflict)],
       ['Live evidence', flagLabel(context.liveEvidence, boundaryConflict)],
     ]),
   ]);
@@ -864,6 +865,7 @@ function evidenceLabel(context) {
     return { label: 'Live target evidence', tone: 'cloud' };
   }
   if (context.liveEvidence === true && context.azureContacted === false) {
+    if (context.gatewayEvidence) return { label: 'Live gateway evidence', tone: 'cloud' };
     return { label: 'Evidence boundary conflict', tone: 'danger' };
   }
   if (
@@ -879,6 +881,7 @@ function evidenceLabel(context) {
 
 function runnerLabel(environment) {
   if (environment.mode === 'hosted-relay') return 'Hosted relay';
+  if (environment.mode === 'hosted-bff') return 'Hosted HTTPS';
   if (environment.mode === 'local-machine') return 'Local operator';
   if (environment.mode === 'offline-local') return 'Offline self-test';
   if (environment.mode === 'preview') return 'Preview only';
@@ -958,7 +961,7 @@ function hasEvidenceConflict(context) {
     context.environment.mode === 'preview' ||
     context.environment.evidenceMode === 'offline-validation';
   return (
-    (context.liveEvidence === true && context.azureContacted !== true) ||
+    (context.liveEvidence === true && context.azureContacted !== true && !context.gatewayEvidence) ||
     (affirmative && (noExecutionState || offlineEnvironment))
   );
 }

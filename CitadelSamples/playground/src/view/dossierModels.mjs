@@ -108,6 +108,7 @@ function contextFrom(contextState) {
 function credentialLabel(context) {
   if (!context) return 'Not Reported';
   if (context.kind === 'gateway-key') return 'Memory-Only APIM Key';
+  if (context.kind === 'hosted-delegated-user') return 'Server-Owned Delegated Azure User Token';
   if (context.kind === 'hosted-relay') return 'Managed Identity + Key Vault Mapping';
   if (context.kind === 'offline-python') return 'Local Parser; No Cloud Credential';
   return 'Citadel Private Azure CLI Session';
@@ -164,9 +165,9 @@ export function buildDossierIdentityModel({ contextState = {}, accountControlSta
   const account = normalizeAccountControlState(accountControlState);
   const isGateway = context?.kind === 'gateway-key';
   const isHosted = context?.kind === 'hosted-relay';
-  const isAzure = context?.kind?.startsWith('azure-cli-') === true;
+  const isAzure = context?.kind?.startsWith('azure-cli-') === true || context?.kind === 'hosted-delegated-user';
   const activeSubscription =
-    context?.activeCliSubscription ??
+    context?.selectedSubscription ?? context?.activeCliSubscription ??
     (context?.subscription
       ? {
           id: context.subscription.activeId,

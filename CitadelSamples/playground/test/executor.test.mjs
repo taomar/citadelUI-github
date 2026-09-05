@@ -593,17 +593,22 @@ test('the server refuses to serve anything outside web/ and src/', async () => {
 
 test('the server sends restrictive security headers and answers the capability probe', async () => {
   const { createPlaygroundServer } = await import('../server.mjs');
-  const server = createPlaygroundServer();
+  const { testTls } = await import('./helpers/hostedTls.mjs');
+  const { createHttpsTransport } = await import('../src/hosted/httpsTransport.mjs');
+  const tls = testTls();
+  const secureFetch = createHttpsTransport({ ca: tls.ca, resolve: async () => [{ address: '127.0.0.1', family: 4 }],
+    addressAllowed: (address) => address === '127.0.0.1' });
+  const server = createPlaygroundServer({ tls, host: 'localhost', testBootstrapCapability: 'A'.repeat(43) });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const { port } = server.address();
   try {
-    const capabilities = await fetch(`http://127.0.0.1:${port}/api/capabilities`);
+    const capabilities = await secureFetch(`https://localhost:${port}/api/capabilities`);
     assert.equal(capabilities.status, 200);
     const payload = await capabilities.json();
     assert.equal(payload.executor.canExecute, false);
 
-    const page = await fetch(`http://127.0.0.1:${port}/`);
+    const page = await secureFetch(`https://localhost:${port}/`);
     assert.equal(page.status, 200);
     assert.match(page.headers.get('content-type'), /text\/html/);
     assert.match(page.headers.get('content-security-policy'), /default-src 'none'/);
@@ -614,14 +619,14 @@ test('the server sends restrictive security headers and answers the capability p
     assert.equal(page.headers.get('referrer-policy'), 'no-referrer');
     assert.match(page.headers.get('permissions-policy'), /camera=\(\)/);
 
-    const module = await fetch(`http://127.0.0.1:${port}/src/catalogue/index.mjs`);
+    const module = await secureFetch(`https://localhost:${port}/src/catalogue/index.mjs`);
     assert.equal(module.status, 200);
     assert.match(module.headers.get('content-type'), /text\/javascript/);
 
-    const traversal = await fetch(`http://127.0.0.1:${port}/../package.json`);
+    const traversal = await secureFetch(`https://localhost:${port}/../package.json`);
     assert.equal(traversal.status, 404);
 
-    const execute = await fetch(`http://127.0.0.1:${port}/api/execute`, {
+    const execute = await secureFetch(`https://localhost:${port}/api/execute`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sampleId: 'a2a-agent-card', inputs: {} }),
@@ -633,5 +638,6 @@ test('the server sends restrictive security headers and answers the capability p
   } finally {
     server.close();
     await once(server, 'close');
+    tls.clean();
   }
 });

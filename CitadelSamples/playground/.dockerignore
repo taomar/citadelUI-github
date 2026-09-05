@@ -1,6 +1,8 @@
 *
 !.gitignore
 !package.json
+!package-lock.json
+!hosted-server.mjs
 !server.mjs
 !src/
 !src/**

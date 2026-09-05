@@ -22,9 +22,179 @@ product. Any upstream change must be reviewed across provenance, catalogue
 metadata, builders, allowlists, assertions, and tests. In return, every visible
 operation is attributable, bounded, and explainable before it runs.
 
-## Start
+## Docker: ordinary application-owned sign-in
 
-Node.js 20.6 or newer is required. There are no package dependencies.
+The Docker image starts `hosted-server.mjs`, not the workstation executor. Open
+the deployment's ordinary stable HTTPS URL, choose **Sign in with Microsoft**,
+and return to the application. New browsers, expired sessions and restarts use
+that same flow. No terminal, bootstrap URL, Copilot session, device code, Azure
+CLI cache or server-side WAM is involved.
+
+For Azure context check and APIM discovery, **Connect Azure** requests delegated
+Azure Service Management consent for the same user, then **Load subscriptions**
+and **Use subscription** select an enabled deployment-permitted target. The
+backend really reads ARM as that user. It does not substitute a managed identity.
+The entered non-secret Subscription ID and selected recipe survive sign-in.
+
+The five gateway recipes require the application operator session and a
+transient access-contract key, but no ARM consent or subscription. The gateway
+key, not Microsoft user identity, authorizes the data-plane request. Keys are
+never saved across navigation; the application explains when re-entry is needed.
+
+### One-time deployment-owner configuration
+
+End-user authentication is entirely in-app. Initial infrastructure, trusted TLS,
+Entra registration and operator enrollment require the deployment owner's
+authorization, not anonymous browser enrollment. No real IDs, credentials,
+certificate, registration or permission grant is supplied by this repository.
+
+Use Node 24 (the image is digest-pinned), one replica, and `npm ci` when running
+the hosted entrypoint outside its image. MSAL Node `6.0.0` and JOSE `6.2.12` are
+the only approved direct runtime dependencies; the lockfile pins their closure.
+The browser remains zero-build and receives no auth SDK, token or client secret.
+
+| Setting | Required deployment value |
+| --- | --- |
+| `CITADEL_PLAYGROUND_PUBLIC_ORIGIN` | Exact stable HTTPS origin, without path or trailing slash |
+| `CITADEL_PLAYGROUND_AZURE_CLOUD` | Explicit `AzureCloud`, `AzureUSGovernment` or `AzureChinaCloud` |
+| `CITADEL_PLAYGROUND_ENTRA_TENANT_ID`, `CITADEL_PLAYGROUND_ENTRA_CLIENT_ID` | Owner-approved tenant and confidential Web application GUIDs |
+| Web redirect URI | Exactly the public origin plus `/auth/callback`; code flow, no implicit grant |
+| `CITADEL_ENTRA_CLIENT_SECRET_FILE` | Absolute read-only regular-file mount containing the confidential client credential; never an image layer, JS value or user-entered form |
+| `CITADEL_PLAYGROUND_OPERATOR_REQUIRED_APP_ROLE` | `Citadel.Operator`, assigned to intended operators on this app registration |
+| `CITADEL_PLAYGROUND_OPERATOR_ALLOWED_PRINCIPAL_IDS`, `CITADEL_PLAYGROUND_OPERATOR_ALLOWED_GROUP_IDS` | Optional explicit JSON allowlists; role OR configured principal/group is required, never tenant membership alone |
+| `CITADEL_HOSTED_SUBSCRIPTION_IDS` | JSON array of permitted subscription GUIDs; `[]` explicitly disables ARM recipes |
+| `CITADEL_HOSTED_GATEWAY_POLICY_FILE` | Absolute mounted JSON file with `origins` and exact per-recipe/per-step `samples` URL/header policies |
+| `CITADEL_TLS_CERT_FILE`, `CITADEL_TLS_KEY_FILE` | Read-only mounted certificate chain and matching unencrypted private key, readable only by authorized deployment identities |
+| `NODE_EXTRA_CA_CERTS` | Optional mounted PEM trust bundle for private PKI, trusted by Node including its encrypted health check; browsers need independently managed trust |
+
+The registration needs delegated Azure Service Management permission and
+owner-approved tenant consent policy for the two ARM recipes. Users still need
+Azure RBAC. There is no Graph permission requirement merely to sign in. A client
+secret is the implemented confidential-credential mechanism; certificate client
+authentication is not claimed. Rotate the secret through the owner's secret
+store and restart the single replica before expiration.
+
+Gateway policy uses the existing relay's exact request-policy schema, but the
+new adapter accepts only declared ephemeral keys and does not alter the relay
+wire contract. For example, the `weather-tools-call` entry needs
+`mcp-initialize`, `mcp-initialized`, and `tools-call`, each with `urls` naming
+the approved full `https://.../mcp/weather-tool-mcp/mcp` URL and
+`headerNames: ["api-key"]`. Other recipes must be explicitly added with the
+step IDs and routes in their catalogue plans. No wildcard routes are accepted.
+Private, loopback, link-local and reserved DNS destinations are refused, all
+resolved addresses are checked, the chosen address is pinned for the request,
+and redirects are refused. This phase therefore does not support private-IP
+gateways; an externally enforced egress policy is also a deployment prerequisite.
+
+Missing auth or target configuration is reported as named, non-secret readiness
+issues inside the application and execution fails closed. Public origin and TLS
+material are listener prerequisites: without valid matching material no listener
+starts. No anonymous endpoint can configure credentials, targets or operators.
+
+### TLS and lifecycle
+
+The application listens only on HTTPS, port 8443 by default, with TLS 1.2 minimum.
+Publish no HTTP port and use no downgrade/redirect fallback. A reverse proxy must
+verify and re-encrypt its upstream connection to this listener, preserving the
+configured Host; untrusted forwarded headers never broaden authorization.
+Mount keys read-only, never bake them into an image or disable certificate
+verification. The image's health check verifies HTTPS and hostname against the
+same configured origin while connecting directly to the application listener.
+Browser trust is mandatory; a self-signed certificate without managed trust is
+not a working deployment.
+
+Monitor certificate expiry and atomically rotate mounted files, then restart the
+replica: certificates are loaded at startup, not hot-reloaded. Expired or
+hostname/key-mismatched certificates fail closed. Restart revokes all sessions;
+users recover by signing in from the normal URL, not by reading container logs.
+The existing Container Apps relay Bicep is not an all-HTTPS deployment of this
+new image. Edge TLS alone and HTTP managed-identity metadata do not qualify.
+Relay activation is disabled in BFF mode pending a separately reviewed all-HTTPS
+credential and transport topology.
+
+Sessions, MSAL caches and one-use code transactions live only in server memory,
+partitioned by exact account/session. Cookies are Secure, HttpOnly and host-only;
+API requests also require exact Origin/Host and a session CSRF value. Idle expiry
+is 30 minutes, absolute expiry is 8 hours, and ID-token expiry may require earlier
+reauthentication. Transactions expire after 5 minutes; review tickets after one
+minute and one use. Context/account changes cancel owned work and invalidate
+reviews. Already-sent calls may have completed and are never automatically retried.
+Entra role removal is not instantaneous: reauthentication/ID-token expiry or the
+absolute session bound refreshes claims; current deployment entitlement policy
+is checked on every privileged request and dispatch.
+
+`CITADEL_SESSION_IDLE_SECONDS`, `CITADEL_SESSION_ABSOLUTE_SECONDS` and
+`CITADEL_AUTH_TRANSACTION_SECONDS` may reduce, not increase, those time bounds.
+Default limits are 500 sessions, 100 auth transactions, 8 concurrent runs and
+30 sign-in starts/minute. Configurable session/transaction/run maxima are
+2000/500/32. Scale-out requires a separately reviewed atomic shared store.
+
+### Recipe support and evidence
+
+This is a seven-recipe phase, not completion of the nineteen-recipe objective.
+Supported adapters are `azure-context-check`, `apim-discovery`,
+`weather-mcp-discovery`, `learn-mcp-discovery`, `a2a-agent-card`,
+`a2a-message-send`, and `weather-tools-call`. Their previews identify the actual
+HTTP operations; protected notebook source is unchanged. Weather output exposes
+only bounded, typed, redacted weather fields. Raw upstream bodies and tokens are
+not published.
+
+The remaining twelve stay visibly unsupported: `foundry-enable-a2a`,
+`apim-foundry-grant`, `weather-api-ensure`, `publish-assets`,
+`access-contract-deploy`, `access-contract-kv-verify`,
+`agent-framework-hr-question`, `usage-metrics`, `circuit-breaker-check`,
+`tool-rate-limit-burst`, `agent-rate-limit-burst`, and `cleanup`.
+They require a separate protected adapter/process-isolation decision. Successful
+sign-in does not authorize arbitrary remote Python, CLI or command execution.
+
+No live Microsoft, Azure, gateway, deployment or end-user aesthetic acceptance
+is implied by offline signed-fixture/HTTPS browser evidence. All seven external
+release gates remain open.
+
+### Scoped offline acceptance
+
+Run focused Node cases from this directory:
+
+```powershell
+node --test test\hosted-auth.test.mjs test\hosted-runtime.test.mjs test\hosted-boundaries.test.mjs
+```
+
+The existing CDP-pipe browser harness is reused by
+`scripts/hosted-browser-acceptance.mjs`. Its pinned Chromium container installs
+only a synthetic CA inside that disposable container's NSS database, then runs
+with `--network none`, no published ports and no host browser/profile mount.
+The fixture uses real MSAL orchestration and JOSE-signed tokens with synthetic
+identity/ARM/gateway data, not live service evidence. From `CitadelSamples`:
+
+```powershell
+docker build --file playground\test\Dockerfile.hosted-browser --tag citadel-auth-test-8ea0cc0f:browser .
+docker run --rm --network none --name citadel-auth-test-8ea0cc0f-browser --shm-size 256m citadel-auth-test-8ea0cc0f:browser
+```
+
+The actual application image has a separate opt-in
+`test/hosted-container.test.mjs`, requiring a locally built
+`citadel-auth-test-8ea0cc0f:app` image and
+`CITADEL_RUN_HOSTED_CONTAINER_TEST=1`. It uses read-only synthetic secret mounts,
+the non-root production entrypoint, certificate-verified health checks and a
+restart, then removes its container. No certificate-validation bypass or shared
+OS trust-store installation is used.
+
+Older smoke/dossier network drivers are not HTTPS acceptance of this candidate.
+The shared browser launcher now refuses a plaintext server before listening;
+those older drivers require their own TLS-fixture migration before reuse. The
+focused executor transport test has been migrated to verified HTTPS. Historical
+counts remain attributable only to their original commits.
+
+## Legacy workstation compatibility (not the Docker route)
+
+The separately launched workstation preview/local executor retains its private
+CLI identity boundary. It is not the deployment's end-user sign-in procedure.
+New command-line launches also require `CITADEL_TLS_CERT_FILE` and
+`CITADEL_TLS_KEY_FILE`. The trusted certificate must cover the generated
+`citadel-<random>.localhost` name (for example a deployment-owned private-CA
+wildcard for `*.localhost`). No trust bypass is provided. The legacy injectable
+server factory retains its old test transport for existing non-migrated tests;
+neither shipped application entrypoint selects plaintext serving.
 
 ```powershell
 npm start
@@ -72,8 +242,7 @@ rather than deleted aggressively.
 The launch capability and browser session also rotate on every server restart,
 and only a browser opened from the current terminal URL can invoke local
 execution, validation, self-test, or Azure account operations. Hosted
-deployments continue to use their trusted proxy and Entra boundary instead of
-this local cookie or private CLI profile.
+deployments use the BFF flow above, never this local cookie or private CLI profile.
 
 ## Execution identity contract
 

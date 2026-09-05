@@ -29,6 +29,16 @@ execution capability, and result assertions.
 
 ## Product and Architecture Decision
 
+Docker uses application-owned Microsoft authorization-code + PKCE sign-in at a
+stable, end-to-end HTTPS URL. A fresh browser must expose Sign in or actionable
+deployment-configuration requirements, not a terminal bootstrap instruction.
+Operator authorization and downstream credentials are distinct: the two ARM
+adapters use the signed-in user's delegated token; the five gateway adapters
+use an entered ephemeral gateway key without ARM consent. No hosted route
+imports local CLI/Python execution. This seven-recipe phase leaves twelve
+explicitly unavailable pending the separate protected execution decision; the
+overall nineteen-recipe goal and seven external gates are unchanged.
+
 The product keeps the server-authoritative catalogue and typed, allowlisted
 executor. The browser selects a catalogue sample and supplies only that sample's
 declared inputs, transient declared secrets, and any required acknowledgement.

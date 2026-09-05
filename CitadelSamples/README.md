@@ -131,8 +131,20 @@ risk acknowledgement, and evidence that can be attributed to a fixed operation.
 
 ## Quick start
 
-Node 20.6 or newer is required. The web application has no package dependencies,
-and preview mode needs no installation.
+For Docker, open the deployment's stable **HTTPS application URL** and use
+**Sign in with Microsoft** in the application. Azure context/APIM use the same
+user's delegated ARM credential; gateway recipes use their separately entered
+access-contract key and need no ARM consent. No terminal launch URL is part of
+the Docker user flow. Deployment owners must first configure TLS, the Entra Web
+registration, explicit operators and target policies as described in the
+[hosting contract](playground/README.md#docker-ordinary-application-owned-sign-in).
+
+The Node 24 Docker image defaults to the HTTPS BFF and installs only the pinned
+MSAL/JOSE authentication dependencies. Seven adapters are supported; twelve
+remain pending a protected execution decision, not enabled by sign-in.
+
+The following is the separate legacy workstation preview/local compatibility
+workflow, not instructions for a Docker end user:
 
 ```bash
 cd CitadelSamples/playground
@@ -160,12 +172,10 @@ live scenario outcome.
 To execute samples from this machine:
 
 ```bash
-az login
-
 # Required only by samples whose Runtime section names Python modules.
 python -m pip install -r runtime/requirements.txt
 
-npm run start:execute
+npm run start:execute:system-login
 ```
 
 Operator mode is deliberately separate from ordinary startup. It probes only
@@ -181,7 +191,7 @@ Available commands:
 | `npm start` | Safe preview-only server |
 | `npm run start:execute` | Loopback-only local execution |
 | `npm test` | Recursive Node unit and integration tests |
-| `npm run check` | Static imports, zero dependencies, and isolation checks |
+| `npm run check` | Static imports, approved pinned auth dependencies, and isolation checks |
 | `npm run smoke` | Browser interaction and responsive smoke checks |
 | `npm run acceptance:dossier` | Dossier workflows, focus continuity and responsive gallery |
 | `npm run verify` | Check, unit/integration tests, then browser smoke |
@@ -251,7 +261,7 @@ CitadelSamples/
   README.md                              this file
   PRODUCT.md  PROJECT_BRIEF.md  AGENT_PROGRESS.md
   playground/
-    package.json          zero dependencies, "type": "module"
+    package.json          pinned server auth dependencies, "type": "module"
     provenance.json       upstream record + sample-to-cell map
     server.mjs            preview/operator server and guarded API routes
     runtime/

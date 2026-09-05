@@ -3,8 +3,9 @@
  *
  * Two guarantees are tested here. First, structural: a plan never contains a
  * secret value, so a preview cannot leak one. Second, textual: no source file
- * in the application reaches for browser storage, a cookie, or a log line that
- * could carry a credential out of memory.
+ * in the application reaches for persistent credential storage, readable
+ * cookies, or a log line that could carry a credential out of memory. The
+ * bounded hosted sign-in draft is the sole non-secret tab-storage exception.
  */
 
 import { test } from 'node:test';
@@ -175,10 +176,19 @@ test('an acknowledgement is spent by one run', () => {
 
 /* ------------------------------------------------- no persistence paths */
 
-test('no source file touches browser storage, cookies or IndexedDB', async () => {
+test('only the declared non-secret sign-in handoff can access tab storage; cookies and other stores stay inaccessible', async () => {
   const forbidden = [/\blocalStorage\b/, /\bsessionStorage\b/, /document\.cookie/, /\bindexedDB\b/, /\bopenDatabase\b/];
   for (const file of await allSourceFiles()) {
-    const text = await readFile(file, 'utf-8');
+    let text = await readFile(file, 'utf-8');
+    if (relative(ROOT, file) === join('web', 'js', 'main.mjs')) {
+      for (const handoff of [
+        'consumeHostedResume({ storage: window.sessionStorage, catalogue: CATALOGUE })',
+        'saveHostedResume({ storage: window.sessionStorage, sample: state.sample, inputs })',
+      ]) {
+        assert.equal(text.split(handoff).length, 2, 'Only the two reviewed non-secret handoff calls may receive tab storage.');
+        text = text.replace(handoff, '');
+      }
+    }
     for (const pattern of forbidden) {
       assert.ok(!pattern.test(text), `${relative(ROOT, file)} uses ${pattern} — secrets must stay in memory`);
     }

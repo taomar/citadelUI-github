@@ -323,7 +323,7 @@ function producerActionLabel(producer) {
 
 function renderAcquisitionHelp(field, callbacks, label = 'Get this value') {
   const producer = producerLabel(field);
-  const command = cliCommand(field);
+  const command = field.hosted ? '' : cliCommand(field);
   const technical = [
     field.path ? ['Internal field', field.path] : null,
     field.ownerLabel ? ['Configuration owner', field.ownerLabel] : null,
@@ -500,7 +500,9 @@ function renderField(field, callbacks, { showAcquisition = true } = {}) {
         id: reasonId,
         text: field.inputType === 'password'
          ? `${field.secretSet ? 'Key present in memory.' : 'Supply the key for this run.'} Kept in this tab only and excluded from exports.`
-         : FIELD_PRESENTATION[field.path]?.help ?? field.requirementReason ?? field.help,
+         : field.hosted && field.path === 'hub.subscriptionId'
+           ? 'The intended subscription. Connect Azure and explicitly choose the matching subscription using this application.'
+           : FIELD_PRESENTATION[field.path]?.help ?? field.requirementReason ?? field.help,
       }),
       error ? el('p', { class: 'configure-field-error', id: errorId, role: 'alert', text: error }) : null,
       !error && needed ? el('p', { class: 'configure-field-needed', id: neededId, text: needed }) : null,

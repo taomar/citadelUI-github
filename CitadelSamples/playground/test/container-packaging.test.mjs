@@ -27,6 +27,8 @@ const RELAY_PACKAGE = Object.freeze([
 const PLAYGROUND_PACKAGE = Object.freeze([
   ['citadel-publish-contract-tests.ipynb', 'app/citadel-publish-contract-tests.ipynb'],
   ['playground/package.json', 'app/playground/package.json'],
+  ['playground/package-lock.json', 'app/playground/package-lock.json'],
+  ['playground/hosted-server.mjs', 'app/playground/hosted-server.mjs'],
   ['playground/server.mjs', 'app/playground/server.mjs'],
   ['playground/src', 'app/playground/src'],
   ['playground/web', 'app/playground/web'],
@@ -61,6 +63,8 @@ const PLAYGROUND_IGNORE = Object.freeze([
   'playground/*',
   '!playground/.gitignore',
   '!playground/package.json',
+  '!playground/package-lock.json',
+  '!playground/hosted-server.mjs',
   '!playground/server.mjs',
   '!playground/src/',
   '!playground/src/**',

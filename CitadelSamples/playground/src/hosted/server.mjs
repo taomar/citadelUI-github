@@ -1,0 +1,214 @@
+import { createServer } from 'node:https';
+import { readFile, realpath } from 'node:fs/promises';
+import { resolve, sep, extname } from 'node:path';
+import { createSessions, cookieValue, sessionCookie, SESSION_COOKIE, CORRELATION_COOKIE, sameToken } from './sessions.mjs';
+import { createMicrosoftAuth } from './auth.mjs';
+import { createHostedRuntime } from './runtime.mjs';
+import { CATALOGUE } from '../catalogue/index.mjs';
+import { HOSTED_RECIPES } from './config.mjs';
+import { readSampleSource } from '../server/sourceView.mjs';
+
+const headers = {
+  'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
+  'Referrer-Policy': 'no-referrer', 'Strict-Transport-Security': 'max-age=31536000',
+  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+};
+const types = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json' };
+const fail = (message, status = 400, code = 'request-refused') => { throw Object.assign(new Error(message), { status, code }); };
+
+function send(response, status, payload, extra = {}) {
+  if (response.destroyed || response.writableEnded) return;
+  response.writeHead(status, { ...headers, 'Content-Type': 'application/json; charset=utf-8', ...extra });
+  response.end(payload == null ? undefined : typeof payload === 'string' ? payload : JSON.stringify(payload));
+}
+async function body(request) {
+  if (request.headers['content-type']?.split(';')[0] !== 'application/json') fail('Use application/json.', 415);
+  let size = 0;
+  const parts = [];
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 128 * 1024) fail('Request is too large.', 413);
+    parts.push(chunk);
+  }
+  try {
+    const value = JSON.parse(Buffer.concat(parts).toString('utf8'));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) fail('Expected a JSON object.');
+    return value;
+  } catch { fail('Invalid JSON request.'); }
+}
+function exact(value, keys) {
+  if (Object.keys(value).some((key) => !keys.includes(key))) fail('Unexpected request fields.');
+}
+
+export function hostedCapabilities(config, sessions, session, runtime) {
+  const authorized = sessions.authorized(session) && !session.authPending;
+  const reason = config.authIssues.length ? 'Deployment owner must complete Microsoft sign-in configuration.'
+    : !session.claims ? 'Sign in with Microsoft in this application.'
+    : !authorized ? 'Signed in, but not authorized to operate this application.'
+    : 'Seven Docker adapters are available when their target policy is configured; twelve require future protected adapters.';
+  return {
+    status: 'ok', protocolVersion: 2, mode: 'hosted',
+    auth: { mode: 'bff', available: config.authIssues.length === 0, signedIn: Boolean(session.claims),
+      authorized, pending: session.authPending === true, csrf: session.csrf, account: session.claims ? {
+        name: session.claims.preferred_username || session.claims.oid, objectId: session.claims.oid, tenantId: session.claims.tid,
+      } : null, azureConnected: session.azure === true, selectedSubscription: session.subscription,
+      contextVersion: session.contextVersion, issues: config.issues, resourceManager: config.cloud?.resourceManager },
+    sessionAuth: { required: true, state: authorized ? 'claimed' : 'unclaimed', claimEndpoint: null, message: reason },
+    operatorAuthorization: { required: true, signedIn: Boolean(session.claims), authorized, message: reason },
+    executor: { id: 'hosted-bff', kind: 'hosted-bff', canExecute: authorized && runtime.allowed.length > 0,
+      endpoint: '/api/hosted/run', supportedStepTypes: ['http', 'assertion'], allowedSampleIds: runtime.allowed,
+      supportedSampleIds: HOSTED_RECIPES, reason },
+    capability: { mode: 'hosted', label: 'Hosted HTTPS adapters', detail: reason, total: 19,
+      ready: authorized ? runtime.allowed.length : 0,
+      perSample: CATALOGUE.samples.map((sample) => ({ id: sample.id, ready: authorized && runtime.allowed.includes(sample.id),
+        state: runtime.allowed.includes(sample.id) ? 'ready' : 'partial', dependencies: [],
+        reasons: runtime.allowed.includes(sample.id) ? [] : ['A configured, protected Docker adapter is not available for this recipe.'] })) },
+    hosted: { supportedSampleIds: HOSTED_RECIPES, allowedSampleIds: runtime.allowed, resourceManager: config.cloud?.resourceManager },
+    executionContext: { endpoint: authorized ? '/api/execution-context' : null },
+    selfTest: { available: false }, sourceValidation: { available: false },
+    protectedSource: { available: true, editable: false, endpointTemplate: '/api/source/{sampleId}' },
+    azureAuth: { systemLogin: { available: false }, subscriptions: { available: false } },
+  };
+}
+
+export function createHostedServer({ config, tls, root, auth: injectedAuth, fetchImpl, now } = {}) {
+  if (!tls?.cert || !tls?.key) throw new TypeError('Hosted serving requires mounted TLS certificate and key.');
+  const sessions = createSessions(config, { ...(now ? { now } : {}) });
+  const auth = injectedAuth ?? (config.authIssues.length ? null : createMicrosoftAuth(config, { fetchImpl }));
+  const runtime = createHostedRuntime(config, sessions, auth, { fetchImpl });
+  const expectedHost = new URL(config.origin).host;
+  async function handler(request, response) {
+    try {
+      if (!request.socket.encrypted || request.headers.host !== expectedHost) fail('HTTPS host is not the configured application origin.', 403);
+      if (tls.expiresAt && Date.now() >= tls.expiresAt) fail('TLS certificate expired; deployment owner renewal is required.', 503);
+      if ((request.url ?? '').length > 12000 || !request.url.startsWith('/') || request.url.startsWith('//')) fail('Invalid request target.');
+      const url = new URL(request.url, config.origin);
+      const path = url.pathname;
+      if (path === '/auth/callback') {
+        if (request.method !== 'GET' || !auth) fail('Sign-in is not configured.', 400);
+        let prior, next;
+        try {
+          for (const key of url.searchParams.keys()) if (url.searchParams.getAll(key).length !== 1) fail('Duplicate authentication response fields.');
+          const tx = sessions.consume(url.searchParams.get('state'), cookieValue(request, CORRELATION_COOKIE));
+          prior = sessions.get(tx.sessionId);
+          if (url.searchParams.has('error')) fail('Microsoft sign-in was cancelled or denied.');
+          const code = url.searchParams.get('code');
+          if (!code || code.length > 10000) fail('Missing or invalid authorization code.');
+          const verified = await auth.finish(tx, code);
+          if (!sessions.get(tx.sessionId, { touch: false })) fail('Sign-in session expired.');
+          next = sessions.create();
+          Object.assign(next, verified);
+        } catch {
+          sessions.revoke(prior);
+          send(response, 303, null, { Location: '/?signin=failed', 'Set-Cookie': [
+            ...(prior ? [sessionCookie('', { clear: true }), sessionCookie('', { correlation: true, clear: true })] : []),
+          ] });
+          return;
+        }
+        sessions.revoke(prior);
+        send(response, 303, null, { Location: '/', 'Set-Cookie': [
+          sessionCookie(next.id), sessionCookie('', { correlation: true, clear: true }),
+        ] });
+        return;
+      }
+      if (path === '/api/live' && request.method === 'GET') { send(response, 200, { status: 'ok' }); return; }
+      let session = sessions.get(cookieValue(request, SESSION_COOKIE));
+      if (path === '/api/capabilities' && request.method === 'GET') {
+        const fresh = !session;
+        session ??= sessions.create();
+        send(response, 200, hostedCapabilities(config, sessions, session, runtime),
+          fresh ? { 'Set-Cookie': sessionCookie(session.id) } : {});
+        return;
+      }
+      if (request.method === 'POST') {
+        if (request.headers.origin !== config.origin || !['same-origin', undefined].includes(request.headers['sec-fetch-site'])) fail('Same-origin request required.', 403);
+        if (!session || !sameToken(request.headers['x-citadel-csrf'], session.csrf)) fail('Session expired or CSRF check failed. Reload to sign in.', 401, 'session-required');
+        const payload = await body(request);
+        if (path === '/api/auth/start') {
+          exact(payload, ['purpose']);
+          if (!auth || !['signin', 'azure'].includes(payload.purpose)) fail('Sign-in configuration is incomplete.');
+          if (payload.purpose === 'azure' && !sessions.authorized(session)) fail('Operator sign-in required.', 403);
+          if (payload.purpose === 'azure' && !config.subscriptionIds.length) fail('The deployment owner must configure permitted subscriptions before Azure consent.', 403);
+          const tx = sessions.begin(session, payload.purpose, auth.client());
+          sessions.invalidateContext(session);
+          session.authPending = true;
+          try {
+            const location = await auth.start(tx, session);
+            send(response, 200, { url: location }, { 'Set-Cookie': sessionCookie(tx.correlation, { correlation: true }) });
+          } catch {
+            sessions.revoke(session);
+            fail('Microsoft sign-in could not start. Reload and retry; contact the deployment owner if it persists.', 503, 'signin-unavailable');
+          }
+          return;
+        }
+        if (path === '/api/auth/logout' || path === '/api/auth/cancel') {
+          exact(payload, []);
+          sessions.revoke(session);
+          send(response, 200, { url: path.endsWith('logout') && auth ? auth.logoutUrl : '/' }, {
+            'Set-Cookie': [sessionCookie('', { clear: true }), sessionCookie('', { correlation: true, clear: true })],
+          });
+          return;
+        }
+        if (!sessions.authorized(session) || session.authPending) fail('This account is not authorized to operate.', 403, 'operator-required');
+        if (path === '/api/execution-context') {
+          exact(payload, ['protocolVersion', 'sampleId', 'configuredSubscriptionId', 'gateway']);
+          if (payload.protocolVersion !== 2) fail('Unsupported protocol.');
+          send(response, 200, { context: runtime.context(session, payload) });
+        } else if (path === '/api/hosted/subscriptions') {
+          exact(payload, []);
+          send(response, 200, { subscriptions: await runtime.subscriptions(session) });
+        } else if (path === '/api/hosted/subscription') {
+          exact(payload, ['subscriptionId']);
+          send(response, 200, { subscription: await runtime.select(session, payload.subscriptionId), contextVersion: session.contextVersion });
+        } else if (path === '/api/hosted/review') {
+          send(response, 200, runtime.review(session, payload));
+        } else if (path === '/api/hosted/run') {
+          const disconnected = new AbortController();
+          const abort = () => { if (!response.writableEnded) disconnected.abort(); };
+          response.once('close', abort);
+          try { send(response, 200, await runtime.run(session, payload, { signal: disconnected.signal })); }
+          finally { response.off('close', abort); }
+        } else if (path === '/api/hosted/cancel') {
+          exact(payload, []);
+          send(response, 200, runtime.cancel(session));
+        } else fail('No hosted operation exists at this endpoint.', 404);
+        return;
+      }
+      if (request.method !== 'GET') fail('Method not allowed.', 405);
+      const source = /^\/api\/source\/([a-z0-9-]+)$/.exec(path);
+      if (source) {
+        const sample = CATALOGUE.byId.get(source[1]);
+        if (!sample) fail('Unknown sample.', 404);
+        send(response, 200, await readSampleSource({ playgroundRoot: root, sample, notebook: CATALOGUE.sourceNotebook }));
+        return;
+      }
+      const staticPath = path === '/' ? '/web/index.html' : path;
+      if (!/^\/(?:web\/|src\/(?:core|catalogue|view)\/)/.test(staticPath)) fail('Not found.', 404);
+      const file = resolve(root, `.${decodeURIComponent(staticPath)}`);
+      const allowedRoots = ['web', 'src/core', 'src/catalogue', 'src/view'].map((directory) => resolve(root, directory) + sep);
+      if (!allowedRoots.some((directory) => file.startsWith(directory)) || !types[extname(file)]) fail('Not found.', 404);
+      let content;
+      try {
+        const canonical = await realpath(file);
+        if (!allowedRoots.some((directory) => canonical.startsWith(directory))) fail('Not found.', 404);
+        content = await readFile(canonical);
+      } catch (error) { if (error.code === 'ENOENT') fail('Not found.', 404); throw error; }
+      if (staticPath === '/web/index.html') content = content.toString('utf8').replace('<html ', '<html data-citadel-hosted="true" ');
+      response.writeHead(200, { ...headers, 'Content-Type': types[extname(file)] });
+      response.end(content);
+    } catch (error) {
+      const expected = Number.isInteger(error.status) && error.status >= 400 && error.status < 600;
+      send(response, expected ? error.status : 500, { state: 'blocked',
+        code: expected ? error.code ?? 'request-refused' : 'hosted-operation-failed',
+        summary: expected ? error.message : 'The hosted operation could not complete. No automatic retry was made.' });
+    }
+  }
+  const server = createServer({ ...tls, minVersion: 'TLSv1.2' }, handler);
+  server.requestTimeout = 90000;
+  server.headersTimeout = 10000;
+  server.maxHeadersCount = 80;
+  server.on('close', () => sessions.close());
+  return Object.assign(server, { sessions, runtime });
+}

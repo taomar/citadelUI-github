@@ -246,7 +246,7 @@ test('relay image is non-root, zero-dependency, and excludes local process execu
   assert.match(dockerfile, /COPY playground\/src\/server\/runRequest\.mjs/);
   assert.doesNotMatch(dockerfile, /--chown=node:node/);
   assert.doesNotMatch(dockerfile, /npm (install|ci)|apk add|azure-cli|python|child_process|localExecutor|transports\.mjs/i);
-  assert.deepEqual(JSON.parse(packageJson).dependencies, {});
+  assert.deepEqual(JSON.parse(packageJson).dependencies, { '@azure/msal-node': '6.0.0', jose: '6.2.12' });
 });
 
 test('hosted Entra trust accepts only the deployment tenant and a valid platform principal', async () => {

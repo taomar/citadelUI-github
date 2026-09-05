@@ -22,6 +22,7 @@ import { buildConfigurationDocument, buildEnvExample, configurationFileNames, se
 import { describeSampleCapability } from '../core/capability.mjs';
 import { sampleExecutionContext } from '../core/executionContext.mjs';
 import { EXECUTION_PROTOCOL_VERSION } from '../core/types.mjs';
+import { HOSTED_ARM_SAMPLES, hostedManagementPlan, hostedManagementPresentation } from '../core/hostedPlan.mjs';
 
 const RISK_TONE = Object.freeze({
   'read-only': { tone: 'neutral', label: 'Read-only' },
@@ -50,6 +51,11 @@ export function stateBadge(state) {
 }
 
 export function buildExecutionEnvironmentModel(capability) {
+  if (capability?.kind === 'hosted-bff') {
+    return { mode: 'hosted-bff', label: 'Hosted HTTPS', evidenceMode: 'live-capable',
+      evidenceLabel: 'Not run', liveCapable: capability.canExecute === true,
+      detail: 'Application-owned HTTPS adapters. Azure calls use the signed-in user; gateway calls use the entered key.' };
+  }
   if (!capability?.canExecute) {
     return {
       mode: 'preview',
@@ -89,6 +95,17 @@ export function describeEffectiveExecutionCapability({
   runtimeProbe = {},
 } = {}) {
   const localRuntime = describeSampleCapability(sample, runtimeProbe);
+  if (capability?.kind === 'hosted-bff') {
+    const unsupportedStepTypes = requiredStepTypes.filter((type) => !capability.supportedStepTypes.includes(type));
+    const ready = capability.canExecute === true && capability.allowedSampleIds.includes(sample.id) && !unsupportedStepTypes.length;
+    return { state: ready ? 'ready' : 'partial', ready, executionKind: 'hosted-bff',
+      reasons: ready ? [] : [!capability.allowedSampleIds.includes(sample.id)
+        ? capability.supportedSampleIds?.includes(sample.id)
+          ? 'The deployment owner must configure permitted targets for this Docker adapter.'
+          : 'This recipe needs a separately approved protected Docker adapter.'
+        : capability.reason || 'This recipe is not enabled for Docker.'],
+      advisories: [], dependencies: [], unsupportedStepTypes };
+  }
   if (capability?.kind !== 'relay') return localRuntime;
 
   const allowedSampleIds = Array.isArray(capability.allowedSampleIds)
@@ -331,6 +348,8 @@ function buildResultEnvironmentModel(result, capability) {
       return buildExecutionEnvironmentModel({ kind: 'local', canExecute: true });
     case 'hosted-relay':
       return buildExecutionEnvironmentModel({ kind: 'relay', canExecute: true });
+    case 'hosted-bff':
+      return buildExecutionEnvironmentModel({ kind: 'hosted-bff', canExecute: true });
     case 'preview':
       return buildExecutionEnvironmentModel({ kind: 'unavailable', canExecute: false });
     default:
@@ -744,7 +763,9 @@ export function buildContextModel({ sample, read, hasSecret, capability, sampleC
       ? {
           ...sampleCapability,
           badge:
-            sampleCapability.executionKind === 'relay' && sampleCapability.ready
+            sampleCapability.executionKind === 'hosted-bff'
+              ? { tone: sampleCapability.ready ? 'success' : 'warning', label: sampleCapability.ready ? 'Hosted HTTPS adapter' : 'Hosted adapter unavailable' }
+              : sampleCapability.executionKind === 'relay' && sampleCapability.ready
               ? { tone: 'success', label: 'Hosted relay ready' }
               : sampleCapability.executionKind === 'relay'
                 ? { tone: 'warning', label: 'Relay unavailable' }
@@ -829,6 +850,7 @@ export function buildConfigureModel({ sample, read, hasSecret, issues, isTouched
     const pending = !touched && unanswered && errors.length > 0;
     return {
       path: entry.path,
+      hosted: capability?.executionKind === 'hosted-bff',
       name: field.name,
       label: field.label,
       type: field.type,
@@ -933,15 +955,21 @@ function buildExportBundle({ sample, manifest, plan, capability, acknowledgement
 }
 
 /** The Request tab. */
-export function buildRequestModel({ sample, read, acknowledged = false, secrets = {} }) {
-  const { plan, validation } = buildSamplePlan(sample, read);
+export function buildRequestModel({ sample, read, acknowledged = false, secrets = {}, hosted = null }) {
+  const built = buildSamplePlan(sample, read);
+  const validation = built.validation;
+  const hostedArm = hosted && HOSTED_ARM_SAMPLES.includes(sample.id);
+  const missingCloud = hostedArm && typeof hosted.resourceManager !== 'string';
+  const plan = missingCloud ? null : built.plan && hostedArm
+    ? hostedManagementPlan(sample, read, hosted) : built.plan;
   const acknowledgement = acknowledgementFor(sample, acknowledged, read);
   if (!plan) {
     return {
       sampleId: sample.id,
       available: false,
-      reason: 'Complete the required inputs before a plan can be generated.',
-      errors: errorsOf(validation.issues).map((issue) => ({ path: issue.path, message: issue.message })),
+      reason: missingCloud ? 'The deployment owner must configure the Azure cloud before an HTTP plan can be generated.' : 'Complete the required inputs before a plan can be generated.',
+      errors: missingCloud ? [{ message: 'The configured Azure cloud is unavailable.' }]
+        : errorsOf(validation.issues).map((issue) => ({ path: issue.path, message: issue.message })),
       acknowledgement,
     };
   }
@@ -994,6 +1022,8 @@ export function buildResponseModel({ sample, result, capability, running = false
     })),
     // Presence only. A value is never rendered.
     secretUpdateCount: Object.keys(result?.secretUpdates ?? {}).length,
+    credentialType: result?.meta?.credentialType === 'apim-subscription-key' ? 'apim-subscription-key'
+      : result?.meta?.credentialType === 'delegated-user' ? 'delegated-user' : null,
     expected: (sample.expectedResults ?? []).map((expected) => ({
       id: expected.id,
       title: expected.title,
@@ -1049,7 +1079,9 @@ export function buildWorkbenchModel({
   sourceValidationState = {},
 }) {
   const validation = validateSample(sample, read);
-  const request = buildRequestModel({ sample, read, acknowledged, secrets });
+  const request = buildRequestModel({ sample, read, acknowledged, secrets, hosted: runtimeProbe.hosted });
+  const presentedSample = runtimeProbe.hosted && HOSTED_ARM_SAMPLES.includes(sample.id)
+    ? hostedManagementPresentation(sample, request.plan) : sample;
   const sampleCapability = describeEffectiveExecutionCapability({
     sample,
     requiredStepTypes: request.requiredStepTypes ?? [],
@@ -1085,10 +1117,10 @@ export function buildWorkbenchModel({
       id: sample.id,
       title: sample.title,
       shortTitle: sample.shortTitle ?? sample.title,
-      summary: sample.summary,
+      summary: runtimeProbe.hosted && HOSTED_ARM_SAMPLES.includes(sample.id) ? request.plan?.summary ?? 'Sign in and select an Azure subscription in this application.' : sample.summary,
       group: sample.group,
       groupTitle: sample.groupTitle,
-      risk: { ...sample.risk, badge: riskBadge(sample.risk.level) },
+      risk: { ...(runtimeProbe.hosted && request.plan ? request.plan.risk : sample.risk), badge: riskBadge(sample.risk.level) },
       sourceCells: sample.sourceCells,
     },
     activeTab,
@@ -1098,14 +1130,16 @@ export function buildWorkbenchModel({
       { id: 'request', label: 'Review & approve' },
       { id: 'response', label: 'Output', state: running ? 'running' : (result?.state ?? 'not-run') },
     ],
-    guide: buildGuideModel(sample),
+    guide: buildGuideModel(presentedSample),
     source: buildSourceModel({ sample, sourceState }),
-    sourceValidation: buildSourceValidationModel(sourceValidationState),
+    sourceValidation: runtimeProbe.hosted
+      ? { ...buildSourceValidationModel(sourceValidationState), summary: 'Protected source is read-only. This Docker backend does not run the workstation Python validator.' }
+      : buildSourceValidationModel(sourceValidationState),
     configure,
     request,
-    response: buildResponseModel({ sample, result, capability, running, runId }),
+    response: buildResponseModel({ sample: presentedSample, result, capability, running, runId }),
     context: buildContextModel({
-      sample,
+      sample: presentedSample,
       read,
       hasSecret,
       capability,

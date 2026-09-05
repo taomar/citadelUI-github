@@ -104,6 +104,7 @@ function identityFact(label, value, { mono = false } = {}) {
 }
 
 function renderIdentitySurface(identity = {}, callbacks = {}) {
+  if (identity.kind === 'hosted-bff') return renderHostedIdentity(identity, callbacks);
   const kind = identity.kind ?? 'unavailable';
   const launchAvailable = kind !== 'gateway-key' && systemLaunchAvailable(identity);
   const subscriptions = Array.isArray(identity.subscriptions)
@@ -233,6 +234,52 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
         text: 'Set Active changes only this Citadel playground launch.',
       }) : null,
     ]),
+  ]);
+}
+
+function renderHostedIdentity(identity, callbacks) {
+  const auth = identity.auth;
+  const action = (id, label, callback, disabled = false) => el('button', {
+    id, type: 'button', class: 'dossier-identity-action', text: label,
+    disabled: disabled || identity.busy || typeof callback !== 'function', onclick: callback,
+  });
+  return el('section', { id: DOSSIER_IDS.globalIdentity, class: 'task-identity', 'aria-label': 'Application account' }, [
+    el('h2', { text: auth.signedIn ? 'Application account' : 'Sign in to Citadel' }),
+    el('p', { text: auth.account?.name ?? 'Sign in with Microsoft here. No terminal or launch link is required.' }),
+    !auth.signedIn ? el('p', { text: 'The selected recipe and non-secret inputs return after sign-in. Gateway keys are not saved and must be re-entered.' }) : null,
+    auth.available
+      ? action('dossier-identity-sign-in', auth.signedIn ? 'Switch account' : 'Sign in with Microsoft', callbacks.onIdentitySignIn, auth.pending)
+      : el('p', { role: 'status', text: auth.recovering ? 'The application session is temporarily unavailable. Retry the connection here.'
+        : 'The deployment owner must configure Microsoft sign-in before this application can authenticate operators.' }),
+    auth.recovering ? action('dossier-identity-retry', 'Retry connection', callbacks.onIdentityRetry) : null,
+    auth.signedIn ? action('dossier-identity-sign-out', 'Sign out', callbacks.onIdentitySignOut) : null,
+    auth.pending ? action('dossier-identity-cancel', 'Cancel pending sign-in', callbacks.onIdentityCancel) : null,
+    auth.signedIn && !auth.authorized ? el('p', { role: 'status', text: 'This account has no configured operator entitlement. Contact the deployment owner.' }) : null,
+    identity.message ? el('p', { role: 'status', text: identity.message }) : null,
+    identity.management && auth.authorized ? el('div', {}, [
+      el('p', { text: 'Azure requests use this account through a server-owned delegated token. No Azure CLI session is involved.' }),
+      !auth.azureConnected ? action('dossier-connect-azure', 'Connect Azure', callbacks.onIdentityConnectAzure) : null,
+      auth.azureConnected ? action('dossier-load-subscriptions', 'Load subscriptions', callbacks.onIdentityVerify) : null,
+      auth.azureConnected ? el('label', { for: 'dossier-hosted-subscription', text: 'Permitted Azure subscription' }) : null,
+      auth.azureConnected ? el('select', {
+        id: 'dossier-hosted-subscription', disabled: identity.busy,
+        onchange: (event) => callbacks.onIdentitySubscriptionChange?.(event.target.value),
+      }, [
+        el('option', { value: '', text: 'Choose a subscription', selected: !identity.selectedSubscriptionId }),
+        ...(identity.subscriptions ?? []).map((item) => el('option', {
+          value: item.id, text: `${item.name || item.id} (${item.id})`,
+          selected: item.id === identity.selectedSubscriptionId,
+        })),
+      ]) : null,
+      auth.azureConnected ? action('dossier-use-subscription', 'Use subscription', () => callbacks.onIdentitySetActive?.(identity.selectedSubscriptionId), !identity.selectedSubscriptionId) : null,
+      auth.selectedSubscription ? el('p', { text: `Selected subscription: ${auth.selectedSubscription.name || auth.selectedSubscription.id}` }) : null,
+    ]) : null,
+    !identity.management && identity.supported ? el('p', { text: 'Application sign-in authorizes use of Citadel. This recipe uses the gateway key, not an Azure account token.' }) : null,
+    identity.supported === false ? el('p', { role: 'status', text: 'This recipe needs a separately approved protected Docker adapter. Signing in does not enable it.' }) : null,
+    auth.issues?.length ? el('details', {}, [
+      el('summary', { text: 'Deployment configuration requirements' }),
+      ...auth.issues.map((issue) => el('p', { text: issue })),
+    ]) : null,
   ]);
 }
 
@@ -391,6 +438,9 @@ export function renderShell({
   onIdentity,
   onIdentityToggle,
   onIdentitySignIn,
+  onIdentitySignOut,
+  onIdentityConnectAzure,
+  onIdentityRetry,
   onIdentitySubscriptionChange,
   onIdentityVerify,
   onIdentitySetActive,
@@ -436,6 +486,9 @@ export function renderShell({
     onIdentity,
     onIdentityToggle,
     onIdentitySignIn,
+    onIdentitySignOut,
+    onIdentityConnectAzure,
+    onIdentityRetry,
     onIdentitySubscriptionChange,
     onIdentityVerify,
     onIdentitySetActive,

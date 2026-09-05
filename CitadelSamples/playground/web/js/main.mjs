@@ -8,7 +8,6 @@ import { isAzureCliContext, sampleExecutionContext } from '../../src/core/execut
 import {
   buildDirectoryModel,
   buildExecutionEnvironmentModel,
-  buildGuideModel,
 } from '../../src/view/models.mjs';
 import { createRunProgress, reduceRunProgress } from '../../src/view/runProgress.mjs';
 import { buildDossierModel } from '../../src/view/dossierModels.mjs';
@@ -20,6 +19,8 @@ import {
   reconcileAzureContextCurrent,
 } from './executionContextClient.mjs';
 import { createLocalExecutorClient } from './localClient.mjs';
+import { createHostedExecutorClient, hostedPost, sessionFetch, setHostedCapabilities } from './hostedClient.mjs';
+import { consumeHostedResume, saveHostedResume } from './hostedResume.mjs';
 import { renderShell } from './render/shell.mjs';
 import {
   captureFocus,
@@ -54,7 +55,7 @@ const provenanceDialog = document.getElementById('provenance-drawer');
 const diagnosticsDialog = document.getElementById('diagnostics-drawer');
 const destructiveHost = document.getElementById('destructive-dialog-host');
 const destructiveController = createDestructiveConfirmationController(destructiveHost);
-const executionContextClient = createExecutionContextClient();
+const executionContextClient = createExecutionContextClient({ fetchImpl: sessionFetch });
 const playgroundState = createPlaygroundState({ catalogue: CATALOGUE });
 
 const state = {
@@ -270,6 +271,8 @@ function executionContextFingerprint(contextState) {
     signedInAccount: context.signedInAccount ?? null,
     executionCredential: context.executionCredential ?? null,
     activeCliSubscription: context.activeCliSubscription ?? null,
+    selectedSubscription: context.selectedSubscription ?? null,
+    contextVersion: context.contextVersion ?? null,
     intendedTarget: context.intendedTarget ?? null,
     authorization: context.authorization ?? null,
     authority: context.authority ?? null,
@@ -442,7 +445,7 @@ function currentModels() {
   return {
     capabilities: state.capabilities,
     context,
-    guide: buildGuideModel(state.sample),
+    guide: dossier.guide,
     configure: dossier.configure,
     environment: buildExecutionEnvironmentModel(capability),
     directory,
@@ -455,6 +458,13 @@ function activeAccount(accountControl) {
 }
 
 function shellIdentity(models) {
+  if (state.capabilities?.auth?.mode === 'bff') {
+    return { kind: 'hosted-bff', auth: state.capabilities.auth,
+      supported: state.capabilities.hosted.supportedSampleIds.includes(state.sample.id),
+      management: ['azure-context-check', 'apim-discovery'].includes(state.sample.id),
+      subscriptions: state.hostedSubscriptions ?? [], selectedSubscriptionId: state.selectedSubscriptionId,
+      busy: state.hostedBusy === true || !appReady, message: state.hostedMessage ?? '' };
+  }
   const identity = models.dossier.identity;
   const contextKind = models.context?.context?.kind;
   const expectedKind = sampleExecutionContext(state.sample.id).kind;
@@ -567,6 +577,8 @@ function shellExecution(models) {
         ? 'Hosted relay gateway runs do not use this browser session`s Azure account or subscription.'
         : gateway
         ? 'Gateway recipes do not use Azure account or subscription controls.'
+        : state.capabilities?.auth?.mode === 'bff'
+          ? 'Explicitly selected for this delegated-user application session; no CLI context is used.'
         : identity.targetSubscriptionMismatch
           ? 'The private Azure CLI subscription and intended target do not match.'
           : 'Citadel private Azure CLI subscription; the intended target remains separate.',
@@ -714,7 +726,7 @@ function drawerHeader(title, eyebrow, dialog) {
 function openProvenance() {
   const notebook = CATALOGUE.sourceNotebook;
   const source = state.sourceBundle;
-  const guide = buildGuideModel(state.sample);
+  const guide = currentModels().guide;
   replace(provenanceDialog, [
     drawerHeader('Guide & provenance', 'Recipe evidence', provenanceDialog),
     node('div', { class: 'evidence-drawer-body' }, [
@@ -789,6 +801,7 @@ function openDiagnostics() {
           ))
         : node('p', { text: 'Offline diagnostics are unavailable for this browser session.' }),
       capabilities?.azureAuth?.systemLogin?.available !== true
+        && capabilities?.auth?.mode !== 'bff'
         && capabilities?.sessionAuth?.state !== 'unclaimed'
         ? node('div', { class: 'terminal-handoff' }, [
             node('h3', { text: 'Private Azure sign-in unavailable' }),
@@ -1041,6 +1054,10 @@ function renderWizardStepNav(container, steps) {
 }
 
 function renderWizardContext(container, models, shell) {
+  if (state.capabilities?.auth?.mode === 'bff' && state.wizardStep === 'account-target') {
+    if (shell.identitySurface) container.append(shell.identitySurface);
+    return;
+  }
   const kind = wizardIdentityKind();
   if (kind === 'azure' && state.wizardStep === 'account-target') {
     if (shell.identitySurface) container.append(shell.identitySurface);
@@ -1305,6 +1322,8 @@ function renderWizardActions(container, models, steps) {
 
 function render() {
   if (!state.sample || !app) return;
+  app.inert = state.capabilities?.auth?.mode === 'bff' && !appReady;
+  app.setAttribute('aria-busy', app.inert ? 'true' : 'false');
   if (hasActiveTextEntry()) {
     state.renderPending = true;
     return;
@@ -1346,14 +1365,17 @@ function render() {
       focusPath('gatewayAccess.apiKey');
     },
     onIdentityToggle: () => {},
-    onIdentitySignIn: startSystemBrowserLogin,
+    onIdentitySignIn: () => state.capabilities?.auth?.mode === 'bff' ? beginHostedSignIn('signin') : startSystemBrowserLogin(),
+    onIdentitySignOut: signOutHosted,
+    onIdentityConnectAzure: () => beginHostedSignIn('azure'),
+    onIdentityRetry: () => hostedAction(async () => { await fetchCapabilities(); await refreshExecutionContext(); }),
     onIdentitySubscriptionChange(id) {
       state.selectedSubscriptionId = id;
       render();
     },
-    onIdentityVerify: verifySystemBrowserLogin,
-    onIdentitySetActive: setActiveSubscription,
-    onIdentityCancel: cancelSystemBrowserLogin,
+    onIdentityVerify: () => state.capabilities?.auth?.mode === 'bff' ? refreshHostedSubscriptions() : verifySystemBrowserLogin(),
+    onIdentitySetActive: (id) => state.capabilities?.auth?.mode === 'bff' ? selectHostedSubscription(id) : setActiveSubscription(id),
+    onIdentityCancel: () => state.capabilities?.auth?.mode === 'bff' ? cancelHostedSignIn() : cancelSystemBrowserLogin(),
     onIdentityTerminalFallback: openDiagnostics,
     onDirectoryToggle(open) {
       state.directoryOpen = open;
@@ -1605,11 +1627,18 @@ async function fetchCapabilities() {
     const response = await fetch('/api/capabilities', { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`Capability probe failed with HTTP ${response.status}.`);
     state.capabilities = await response.json();
+    setHostedCapabilities(state.capabilities);
     state.runtimeProbe = {
       mode: state.capabilities.mode ?? 'preview',
       ...probeFromCapabilityPayload(state.capabilities, CATALOGUE.byId),
+      ...(state.capabilities.hosted ? { hosted: state.capabilities.hosted } : {}),
     };
-    if (state.capabilities.executor?.kind === 'local' && state.capabilities.executor.canExecute) {
+    if (state.capabilities.executor?.kind === 'hosted-bff') {
+      state.executor = createHostedExecutorClient({
+        capability: state.capabilities.executor,
+        contextVersion: () => effectiveContext()?.context?.contextVersion ?? state.capabilities.auth.contextVersion,
+      });
+    } else if (state.capabilities.executor?.kind === 'local' && state.capabilities.executor.canExecute) {
       state.executor = createLocalExecutorClient({
         allowedSampleIds: recipeIds,
         supportedStepTypes: state.capabilities.executor.supportedStepTypes ?? [],
@@ -1625,6 +1654,9 @@ async function fetchCapabilities() {
     }
     state.executorCapability = state.executor.describeCapability();
   } catch (error) {
+    const hosted = state.capabilities?.auth?.mode === 'bff' || document.documentElement.dataset.citadelHosted === 'true';
+    const previousHosted = state.capabilities?.hosted;
+    setHostedCapabilities(null);
     state.capabilities = {
       executor: {
         id: 'unavailable',
@@ -1638,8 +1670,17 @@ async function fetchCapabilities() {
       selfTest: { available: false, endpoint: null },
       sessionAuth: { required: true, state: 'unclaimed', claimEndpoint: null, message: 'Secure browser session unavailable.' },
     };
-    state.runtimeProbe = { mode: 'preview' };
-    state.executor = createUnavailableExecutor({ reason: state.capabilities.executor.reason });
+    if (hosted) {
+      state.capabilities.auth = { mode: 'bff', available: false, signedIn: false, authorized: false, recovering: true,
+        issues: [state.capabilities.executor.reason] };
+      state.capabilities.hosted = previousHosted ?? { supportedSampleIds: [], allowedSampleIds: [] };
+      Object.assign(state.capabilities.executor, { id: 'hosted-bff', kind: 'hosted-bff', allowedSampleIds: [] });
+      setHostedCapabilities(state.capabilities);
+    }
+    state.runtimeProbe = hosted ? { mode: 'hosted', hosted: state.capabilities.hosted } : { mode: 'preview' };
+    state.executor = hosted
+      ? createHostedExecutorClient({ capability: state.capabilities.executor, contextVersion: () => 0 })
+      : createUnavailableExecutor({ reason: state.capabilities.executor.reason });
     state.executorCapability = state.executor.describeCapability();
   }
 }
@@ -2133,7 +2174,9 @@ async function startRun({ confirmed = false } = {}) {
   const runToken = ++state.runGeneration;
   const runInputs = publicInputsFor(runSample);
   const runSecrets = secretsFor(runSample);
-  const { plan, validation } = buildSamplePlan(runSample, readCurrentValue);
+  const built = buildSamplePlan(runSample, readCurrentValue);
+  const validation = built.validation;
+  const plan = state.capabilities?.auth?.mode === 'bff' ? models.dossier.reviewDecision.request.plan : built.plan;
   if (!plan || !ledger.canRun) return;
   if (
     acknowledgement.required !== true
@@ -2219,6 +2262,10 @@ async function startRun({ confirmed = false } = {}) {
   } finally {
     if (state.activeRunToken === runToken) state.activeRunToken = null;
     state.cancelling = false;
+    if (state.capabilities?.auth?.mode === 'bff') {
+      await fetchCapabilities();
+      await refreshExecutionContext();
+    }
     render();
   }
 }
@@ -2315,6 +2362,7 @@ function installTestHooks() {
 }
 
 async function boot() {
+  const signinFailed = new URL(window.location.href).searchParams.get('signin') === 'failed';
   try {
     const capability = consumeBootstrapCapability();
     if (capability) {
@@ -2333,7 +2381,20 @@ async function boot() {
   }
   await fetchCapabilities();
   const initial = readWizardUrl();
+  let resumed = null;
+  if (state.capabilities?.auth?.mode === 'bff') {
+    try { resumed = consumeHostedResume({ storage: window.sessionStorage, catalogue: CATALOGUE }); }
+    catch (error) { state.hostedMessage = safeMessage(error, 'The non-secret draft could not be restored.'); }
+    if (resumed) initial.recipeId = resumed.recipeId;
+    if (signinFailed) state.hostedMessage = 'Microsoft sign-in was cancelled, denied or expired. Try again from this application.';
+  }
   await selectSample(initial.recipeId);
+  if (resumed) {
+    for (const [path, value] of Object.entries(resumed.inputs)) playgroundState.set(path, value, fieldByPath(path));
+    initial.stepId = 'account-target';
+    state.hostedMessage = signinFailed ? state.hostedMessage : 'Non-secret inputs restored. Re-enter any gateway key; credentials are never saved.';
+    await refreshExecutionContext();
+  }
   applyWizardRun(initial.runId);
   state.wizardStep = initial.stepId;
   wizardSteps(currentModels());
@@ -2344,6 +2405,91 @@ async function boot() {
   await runDiagnostics();
   render();
 }
+
+async function hostedAction(operation) {
+  if (state.hostedBusy) return;
+  state.hostedBusy = true;
+  state.hostedMessage = '';
+  invalidateApproval({ returnToReview: true });
+  render();
+  try { await operation(); }
+  catch (error) {
+    state.hostedMessage = safeMessage(error, 'The application action could not complete.');
+    if ([401, 403, 503].includes(error.status)) {
+      await fetchCapabilities();
+      invalidateExecutionIdentity('Refresh the application session before continuing.');
+    }
+  } finally {
+    state.hostedBusy = false;
+    render();
+  }
+}
+
+function saveSignInDraft() {
+  const inputs = publicInputsFor(state.sample);
+  assertNoSecretValues(inputs, playgroundState.secretValues(), 'Sign-in resume draft');
+  saveHostedResume({ storage: window.sessionStorage, sample: state.sample, inputs });
+}
+
+async function beginHostedSignIn(purpose) {
+  return hostedAction(async () => {
+    saveSignInDraft();
+    const result = await hostedPost('/api/auth/start', { purpose });
+    if (new URL(result.url).protocol !== 'https:') throw new Error('Sign-in requires HTTPS.');
+    playgroundState.markInputsHandled();
+    window.location.assign(result.url);
+  });
+}
+
+async function signOutHosted() {
+  return hostedAction(async () => {
+    saveSignInDraft();
+    for (const path of Object.keys(playgroundState.secretValues())) playgroundState.set(path, '', fieldByPath(path));
+    const result = await hostedPost('/api/auth/logout', {});
+    if (result.url !== '/' && new URL(result.url).protocol !== 'https:') throw new Error('Sign-out requires HTTPS.');
+    playgroundState.markInputsHandled();
+    window.location.assign(result.url);
+  });
+}
+
+async function cancelHostedSignIn() {
+  return hostedAction(async () => {
+    await hostedPost('/api/auth/cancel', {});
+    await fetchCapabilities();
+    await refreshExecutionContext();
+    state.hostedMessage = 'Pending sign-in cancelled. Sign in again from this application.';
+  });
+}
+
+async function refreshHostedSubscriptions() {
+  return hostedAction(async () => {
+    const result = await hostedPost('/api/hosted/subscriptions', {});
+    state.hostedSubscriptions = result.subscriptions;
+    state.hostedMessage = result.subscriptions.length ? 'Choose a subscription, then use it explicitly.' : 'No enabled subscription matches this account and the deployment target policy.';
+  });
+}
+
+async function selectHostedSubscription(id) {
+  return hostedAction(async () => {
+    const result = await hostedPost('/api/hosted/subscription', { subscriptionId: id });
+    state.selectedSubscriptionId = result.subscription.id;
+    playgroundState.set('hub.subscriptionId', result.subscription.id, fieldByPath('hub.subscriptionId'));
+    await fetchCapabilities();
+    await refreshExecutionContext();
+    state.hostedMessage = 'Subscription selected for this application session only.';
+  });
+}
+
+window.addEventListener('focus', async () => {
+  if (!appReady || state.capabilities?.auth?.mode !== 'bff' || state.hostedBusy) return;
+  const previous = JSON.stringify(state.capabilities.auth);
+  await fetchCapabilities();
+  if (previous !== JSON.stringify(state.capabilities.auth)) {
+    invalidateApproval({ returnToReview: true });
+    await refreshExecutionContext();
+    render();
+  }
+});
 
 window.addEventListener('popstate', async (event) => {
   if (!appReady) return;

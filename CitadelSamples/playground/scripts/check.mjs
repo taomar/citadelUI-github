@@ -5,7 +5,7 @@
  * Three things it enforces:
  *   1. every relative module import resolves on disk, because a zero-build
  *      application has no bundler to catch a typo;
- *   2. no runtime dependency has crept into package.json;
+ *   2. only the pinned, approved server-side authentication dependencies exist;
  *   3. nothing under `playground/` reaches outside `CitadelSamples`.
  */
 
@@ -61,16 +61,16 @@ for (const file of scriptFiles) {
   }
 }
 
-/* 2. no runtime or dev dependencies */
+/* 2. narrowly approved server-side authentication dependencies */
 const pkg = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf-8'));
-if (Object.keys(pkg.dependencies ?? {}).length > 0) fail('package.json declares runtime dependencies');
+const approvedDependencies = { '@azure/msal-node': '6.0.0', jose: '6.2.12' };
+if (JSON.stringify(pkg.dependencies) !== JSON.stringify(approvedDependencies)) fail('package.json differs from the approved pinned authentication dependencies');
 if (Object.keys(pkg.devDependencies ?? {}).length > 0) fail('package.json declares dev dependencies');
 if (pkg.type !== 'module') fail('package.json must declare "type": "module"');
 for (const script of ['start', 'test', 'check']) {
   if (!pkg.scripts?.[script]) fail(`package.json is missing the "${script}" script`);
 }
-if (await exists(join(ROOT, 'node_modules'))) fail('node_modules exists; this project must install nothing');
-if (await exists(join(ROOT, 'package-lock.json'))) fail('package-lock.json exists; there is nothing to lock');
+if (!(await exists(join(ROOT, 'package-lock.json')))) fail('The approved authentication dependencies require a lockfile');
 
 /* 3. nothing reaches outside CitadelSamples */
 for (const file of files) {
@@ -104,4 +104,4 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-process.stdout.write(`check: ok — ${scriptFiles.length} modules, 0 dependencies, nothing outside CitadelSamples\n`);
+process.stdout.write(`check: ok — ${scriptFiles.length} modules, 2 approved authentication dependencies, nothing outside CitadelSamples\n`);

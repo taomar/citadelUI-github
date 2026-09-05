@@ -12,6 +12,7 @@ export const RUN_EVIDENCE_CLASSES = Object.freeze([
   'offline',
   'local-live-capable',
   'hosted-relay',
+  'hosted-bff',
   'preview',
 ]);
 
@@ -27,6 +28,7 @@ const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
  */
 export function classifyRunEvidence({ mode = 'preview', executorKind = 'unavailable' } = {}) {
   if (mode === 'offline-local') return 'offline';
+  if (executorKind === 'hosted-bff') return 'hosted-bff';
   if (executorKind === 'relay' || executorKind === 'relay-core' || executorKind === 'hosted-relay') {
     return 'hosted-relay';
   }

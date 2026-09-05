@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node server.mjs",
+    "start:hosted": "node hosted-server.mjs",
     "start:execute": "node server.mjs --execute",
     "start:execute:system-login": "node server.mjs --execute --allow-system-azure-login",
     "test": "node --test",
@@ -19,6 +20,9 @@
     "acceptance:dossier": "node scripts/dossier-browser-acceptance.mjs",
     "verify": "node scripts/check.mjs && node --test && node scripts/smoke.mjs"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@azure/msal-node": "6.0.0",
+    "jose": "6.2.12"
+  },
   "devDependencies": {}
 }

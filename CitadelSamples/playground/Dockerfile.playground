@@ -1,8 +1,10 @@
 # Build from CitadelSamples: docker build -f playground/Dockerfile.playground .
-FROM node:20-alpine
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf
 
 WORKDIR /app/playground
-COPY playground/package.json playground/server.mjs ./
+COPY playground/package.json playground/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+COPY playground/server.mjs playground/hosted-server.mjs ./
 COPY playground/src ./src
 COPY playground/web ./web
 COPY playground/runtime ./runtime
@@ -10,9 +12,10 @@ COPY playground/.gitignore ./.gitignore
 COPY citadel-publish-contract-tests.ipynb /app/citadel-publish-contract-tests.ipynb
 
 ENV NODE_ENV=production \
-    CITADEL_PLAYGROUND_PORT=8080 \
+    CITADEL_PLAYGROUND_PORT=8443 \
     CITADEL_PLAYGROUND_HOST=0.0.0.0
 
 USER node
-EXPOSE 8080
-CMD ["node", "server.mjs"]
+EXPOSE 8443
+HEALTHCHECK --interval=30s --timeout=6s --start-period=10s CMD ["node", "src/hosted/healthcheck.mjs"]
+CMD ["node", "hosted-server.mjs"]

@@ -15,6 +15,14 @@ specific Windows username, drive, or local checkout path.
 
 ## Current checkpoint
 
+The application-owned HTTPS BFF implementation is a new, unreviewed candidate,
+not a replacement for the accepted historical evidence below. Its deployment
+contract and exact seven-supported/twelve-pending map are in
+[the hosting guide](playground/README.md#docker-ordinary-application-owned-sign-in).
+The Docker route no longer uses workstation bootstrap or CLI login. Independent
+frozen review and live owner-approved identity/target validation are still gates;
+do not extrapolate historical totals or declare all nineteen Docker-ready.
+
 | Item | Value |
 | --- | --- |
 | Repository | `taomar/citadelUI-github` |

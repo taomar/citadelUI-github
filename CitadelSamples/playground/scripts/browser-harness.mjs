@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer as createNetServer } from 'node:net';
+import { Server as HttpsServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -206,6 +207,8 @@ export async function launchBrowserHarness({
   createServer,
   path = '/?testExecutor',
   bootstrapCapability = TEST_BOOTSTRAP_CAPABILITY,
+  originForPort = (port) => `https://127.0.0.1:${port}`,
+  browserArguments = [],
   viewport = { width: 1440, height: 900, mobile: false },
 } = {}) {
   if (typeof createServer !== 'function') throw new TypeError('launchBrowserHarness requires createServer.');
@@ -216,9 +219,11 @@ export async function launchBrowserHarness({
 
   const serverPort = await reserveLoopbackPort();
   const server = createServer({ port: serverPort, testBootstrapCapability: bootstrapCapability });
+  if (!(server instanceof HttpsServer)) throw new Error('Browser acceptance requires an HTTPS server and isolated browser trust before listening.');
   server.listen(serverPort, '127.0.0.1');
   await once(server, 'listening');
-  const baseUrl = `http://127.0.0.1:${serverPort}`;
+  const baseUrl = originForPort(serverPort);
+  if (new URL(baseUrl).protocol !== 'https:') throw new Error('Browser acceptance requires verified HTTPS.');
   const profile = await mkdtemp(join(tmpdir(), 'citadel-browser-acceptance-'));
   const browser = spawn(
     executable,
@@ -228,6 +233,7 @@ export async function launchBrowserHarness({
       '--no-first-run',
       '--no-default-browser-check',
       '--remote-debugging-pipe',
+      ...browserArguments,
       `--user-data-dir=${profile}`,
       'about:blank',
     ],
@@ -244,6 +250,7 @@ export async function launchBrowserHarness({
   let browserClient;
   let page;
   const pageErrors = [];
+  const runtimeErrors = [];
 
   async function setViewport({ width, height, mobile = false, deviceScaleFactor = 1 }) {
     await page.send('Emulation.setDeviceMetricsOverride', {
@@ -278,7 +285,9 @@ export async function launchBrowserHarness({
     const { sessionId } = await browserClient.send('Target.attachToTarget', { targetId, flatten: true });
     page = browserClient.session(sessionId);
     page.on('Runtime.exceptionThrown', ({ exceptionDetails }) => {
-      pageErrors.push(exceptionDetails?.exception?.description ?? exceptionDetails?.text ?? 'Uncaught page error');
+      const message = exceptionDetails?.exception?.description ?? exceptionDetails?.text ?? 'Uncaught page error';
+      pageErrors.push(message);
+      runtimeErrors.push(message);
     });
     page.on('Log.entryAdded', ({ entry }) => {
       if (entry?.level === 'error') pageErrors.push(entry.text ?? 'Browser log error');
@@ -288,7 +297,7 @@ export async function launchBrowserHarness({
     await page.send('Log.enable');
     await setViewport(viewport);
     const launchUrl = new URL(path, baseUrl);
-    launchUrl.hash = `bootstrap=${encodeURIComponent(bootstrapCapability)}`;
+    if (bootstrapCapability) launchUrl.hash = `bootstrap=${encodeURIComponent(bootstrapCapability)}`;
     await page.send('Page.navigate', { url: launchUrl.href });
   } catch (error) {
     const output = browserOutput.trim();
@@ -300,10 +309,28 @@ export async function launchBrowserHarness({
     baseUrl,
     page,
     pageErrors,
+    runtimeErrors,
     evaluate: (expression) => evaluate(page, expression),
     waitFor: (expression, options) => waitFor(page, expression, options),
     setViewport,
     pressKey,
+    async openTestPage(url, { freshContext = false } = {}) {
+      if (new URL(url).protocol !== 'https:') throw new Error('Browser test pages require HTTPS.');
+      const context = freshContext ? await browserClient.send('Target.createBrowserContext') : {};
+      const { targetId } = await browserClient.send('Target.createTarget', { url: 'about:blank', ...context });
+      const { sessionId } = await browserClient.send('Target.attachToTarget', { targetId, flatten: true });
+      const client = browserClient.session(sessionId);
+      await client.send('Page.enable');
+      await client.send('Runtime.enable');
+      await client.send('Page.navigate', { url });
+      return {
+        evaluate: (expression) => evaluate(client, expression),
+        waitFor: (expression) => waitFor(client, expression),
+        close: () => context.browserContextId
+          ? browserClient.send('Target.disposeBrowserContext', context)
+          : browserClient.send('Target.closeTarget', { targetId }),
+      };
+    },
     close,
   });
 }

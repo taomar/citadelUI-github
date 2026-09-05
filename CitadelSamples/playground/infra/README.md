@@ -1,5 +1,14 @@
 # Container Apps deployment contract
 
+**Legacy relay topology, not the application-owned HTTPS BFF deployment.** The
+current Docker image defaults to the new hosted BFF, documented in
+[the hosting guide](../README.md#docker-ordinary-application-owned-sign-in).
+This Bicep's edge TLS and existing backend/managed-identity transport do not prove
+HTTPS on every hop. Do not deploy the new image with these legacy parameters or
+describe this topology as satisfying the BFF contract. A verified re-encrypted
+upstream and all-HTTPS credential transport need a separately reviewed hosting
+change. The historical relay contract below is preserved, not silently widened.
+
 `main.bicep` deploys two separately identified Container Apps into an existing
 managed environment, registry, and Key Vault in the same resource group:
 

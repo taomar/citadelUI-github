@@ -21,6 +21,8 @@
  */
 
 import { createServer } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
+import { readTls } from './src/hosted/config.mjs';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { extname, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -700,11 +702,11 @@ export function checkStateChangingRequest(
     const effectivePort = request.socket?.localPort ?? port;
     const expected = new Set(
       browserHost
-        ? [httpOrigin(browserHost, effectivePort)]
+        ? [httpOrigin(browserHost, effectivePort, request.socket?.encrypted === true)]
         : [
-            httpOrigin(host, effectivePort),
-            httpOrigin('localhost', effectivePort),
-            httpOrigin('127.0.0.1', effectivePort),
+            httpOrigin(host, effectivePort, request.socket?.encrypted === true),
+            httpOrigin('localhost', effectivePort, request.socket?.encrypted === true),
+            httpOrigin('127.0.0.1', effectivePort, request.socket?.encrypted === true),
           ],
     );
     if (publicOrigin) expected.add(publicOrigin);
@@ -875,9 +877,9 @@ async function handleSessionClaim(request, response, { localSessionAuth, port, h
   send(response, 204, { ...securityHeaders('application/json; charset=utf-8'), 'Set-Cookie': result.cookie }, '');
 }
 
-function httpOrigin(host, port) {
+function httpOrigin(host, port, encrypted = false) {
   const hostname = String(host).replace(/^\[|\]$/g, '');
-  const url = new URL('http://localhost');
+  const url = new URL(encrypted ? 'https://localhost' : 'http://localhost');
   url.hostname = hostname.includes(':') ? `[${hostname}]` : hostname;
   url.port = String(port);
   return url.origin;
@@ -1678,6 +1680,8 @@ export function createPlaygroundServer({
   publicOrigin = DEFAULT_PUBLIC_ORIGIN,
   testBootstrapCapability,
   secureSessionCookie = false,
+  tls = null,
+  requireTls = false,
   allowSystemAzureLogin = false,
   processTransports = null,
   privateAzureCliContextFactory = createPrivateAzureCliContext,
@@ -1690,10 +1694,13 @@ export function createPlaygroundServer({
     ? createLocalSessionAuth({
         bootstrapCapability: testBootstrapCapability,
         browserHost: testBootstrapCapability == null ? undefined : String(host).replace(/^\[|\]$/g, ''),
-        secureCookie: secureSessionCookie,
+        secureCookie: secureSessionCookie || Boolean(tls) || requireTls,
       })
     : null;
   const browserHost = localSessionAuth?.browserHost ?? null;
+  const tlsOptions = tls ?? (requireTls
+    ? readTls(process.env, publicOrigin ?? httpOrigin(browserHost ?? host, port, true))
+    : null);
   const localExecutionEnabled = mode === 'execute' && relay.enabled !== true;
   const ownsPrivateAzureCliContext =
     localExecutionEnabled && isLoopbackHost(host);
@@ -1747,7 +1754,8 @@ export function createPlaygroundServer({
   let runtimeProbe = probe;
   const shutdownController = new AbortController();
 
-  const server = createServer(async (request, response) => {
+  const makeServer = tlsOptions ? (handler) => createHttpsServer({ ...tlsOptions, minVersion: 'TLSv1.2' }, handler) : createServer;
+  const server = makeServer(async (request, response) => {
     try {
       const requestTarget = request.url ?? '/';
       const path = requestTarget.split('?')[0];
@@ -2104,11 +2112,11 @@ if (invokedDirectly) {
     process.exit(1);
   }
   const mode = wantsExecution ? 'execute' : 'preview';
-  const server = createPlaygroundServer({ mode, allowSystemAzureLogin });
+  const server = createPlaygroundServer({ mode, allowSystemAzureLogin, requireTls: true });
   server.listen(PORT, HOST, async () => {
     const address = server.address();
     const actualPort = typeof address === 'object' && address ? address.port : PORT;
-    const origin = httpOrigin(HOST, actualPort);
+    const origin = httpOrigin(HOST, actualPort, true);
     process.stdout.write(
       server.localSessionAuth
         ? `Citadel Publish Playground secure launch URL: ${server.localSessionAuth.launchUrl(origin)}\n`

@@ -7,9 +7,9 @@
  *
  * `toPersistable()` exists so a future "remember my hub" feature cannot be
  * written by accident against the wrong object: it walks the catalogue and
- * drops every field classified as `secret`. Nothing in this application uses a
- * browser storage API, a cookie, or the URL to carry state; a test greps the
- * source tree for those APIs by name to keep it that way.
+ * drops every field classified as `secret`. Hosted sign-in may preserve a
+ * short-lived, declared non-secret draft in tab storage through hostedResume;
+ * this store and all credential values remain memory-only.
  */
 
 import { coerceValue } from './validation.mjs';

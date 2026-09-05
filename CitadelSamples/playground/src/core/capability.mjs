@@ -28,6 +28,11 @@ export const CAPABILITY_STATES = Object.freeze(['preview-only', 'ready', 'partia
  * @returns {{ state, ready, reasons, dependencies }}
  */
 export function describeSampleCapability(sample, probe = {}) {
+  if (probe.mode === 'hosted') {
+    const ready = probe.hosted?.allowedSampleIds?.includes(sample.id) === true;
+    return Object.freeze({ state: ready ? 'ready' : 'partial', ready, dependencies: [], advisories: [],
+      reasons: ready ? [] : ['This recipe needs a configured, protected Docker adapter. Signing in does not unlock unsupported recipes.'] });
+  }
   const dependencies = (sample.runtime?.dependencies ?? []).map((id) => {
     const optional = id === 'python' && Boolean(sample.runtime?.python?.optionalReason);
     return {

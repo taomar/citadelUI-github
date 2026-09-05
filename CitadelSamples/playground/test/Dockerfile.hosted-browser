@@ -1,0 +1,17 @@
+FROM node:24-bookworm@sha256:be23f54a88d34e8824c741b19b91064094f92c1c97b194144bfc8b50d67258e2
+RUN sed -i 's,http:,https:,g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update -qq -o APT::Update::Error-Mode=any \
+    && apt-get install -y --no-install-recommends chromium=152.0.7977.75-1~deb12u1 libnss3-tools=2:3.87.1-1+deb12u4 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app/playground
+COPY playground/package.json playground/package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY --chown=node:node playground/src ./src
+COPY --chown=node:node playground/web ./web
+COPY --chown=node:node playground/test ./test
+COPY --chown=node:node playground/scripts ./scripts
+COPY playground/hosted-server.mjs ./
+COPY citadel-publish-contract-tests.ipynb /app/citadel-publish-contract-tests.ipynb
+USER node
+ENV CITADEL_AUTH_TEST_CONTAINER=1
+CMD ["node", "scripts/hosted-browser-acceptance.mjs"]
