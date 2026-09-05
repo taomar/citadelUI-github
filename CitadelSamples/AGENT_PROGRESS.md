@@ -3,7 +3,7 @@
 ## Current Milestone
 
 Protected-source playground redesign implemented and verified at integration
-reference `47fd336`. The product decision is final:
+reference `171ae6b`. The product decision is final:
 retain the server-authoritative catalogue and typed allowlisted local executor,
 add a notebook-like read-only source surface, and allow edits only to declared
 inputs. Do not introduce a general-purpose editable notebook.
@@ -71,6 +71,16 @@ inputs. Do not introduce a general-purpose editable notebook.
 - The protected Code view renders exact server-selected cited cells and
   server-owned declared parameter zones without accepting source from the
   browser.
+- Code is the default workspace. Its sticky task pane leads with the selected
+  sample's execution identity and target, then renders the one canonical set of
+  required, conditional, secret, defaulted, and generated inputs.
+- Azure management, Python management, and Foundry samples identify the local
+  Azure CLI principal, tenant, and active/configured subscription match before
+  execution. Explicit device-code sign-in uses only
+  `az login --use-device-code`; tokens are never returned to the browser.
+- Gateway samples identify the memory-only APIM subscription-key context without
+  exposing the key. Offline validation and hosted relay samples use separately
+  labelled local-parser and managed-identity contexts.
 - Exact source retrieval works in preview and operator modes.
 - Compile-only Python validation is available only in loopback operator mode,
   accepts only the protocol version, removes its ephemeral workspace, and reports
@@ -88,14 +98,15 @@ inputs. Do not introduce a general-purpose editable notebook.
 
 ### Final verified baseline
 
-`npm run verify` at `47fd336` exited 0:
+`npm run verify` at `171ae6b` exited 0:
 
-- `npm run check` — 106 modules, 0 dependencies, nothing outside
+- `npm run check` — 111 modules, 0 dependencies, nothing outside
   `CitadelSamples`;
-- `node --test` — 670/670 passing;
+- `node --test` — 715/715 passing;
 - `npm run smoke` — 89/89 passing.
 
-The separate protected-source Chromium acceptance passed 114/114 checks.
+The separate protected-source browser acceptance passed 150/150 checks, and the
+Impeccable layout detector returned no findings.
 
 No Azure endpoint, subscription, gateway key, Foundry project, Policy burst, or
 Cleanup operation was used by this verification.

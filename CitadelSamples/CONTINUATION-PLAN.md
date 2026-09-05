@@ -25,8 +25,8 @@ specific Windows username, drive, or local checkout path.
 | Local execution | Server-authoritative registered operations with streamed progress, exact-run cancellation, and contained artifacts |
 | Hosted relay | HTTP/assertion-only; no process, Python, Azure CLI, or artifact execution |
 | Future hosted process execution | Fresh per-run no-ingress isolated jobs only |
-| Verified integration reference | `47fd336` |
-| Automated baseline | 106 modules, 0 dependencies/out-of-scope; 670/670 Node tests; 89/89 browser smoke; 114/114 protected browser acceptance |
+| Verified integration reference | `171ae6b` |
+| Automated baseline | 111 modules, 0 dependencies/out-of-scope; 715/715 Node tests; 89/89 browser smoke; 150/150 protected browser acceptance |
 | Live Azure validation | Not performed |
 
 ### Decision inputs
@@ -268,7 +268,8 @@ Get-FileHash ..\citadel-publish-contract-tests.ipynb -Algorithm SHA256
 Do not rely only on the existing automated suite. Confirm:
 
 1. All 19 samples are present and grouped correctly.
-2. Each Configure view renders only fields used by that sample.
+2. Each Code workspace renders one canonical Parameters pane containing only
+   fields used by that sample.
 3. Mandatory values block execution when blank.
 4. Conditional values block only while their condition is active.
 5. Optional values show their notebook-derived fallback.

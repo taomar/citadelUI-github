@@ -139,8 +139,10 @@ as a synonym for simulated or offline.
 - Show the exact cited notebook cells in a read-only, notebook-like surface with
   per-cell provenance.
 - Show only the fields a selected sample actually uses, grouped as mandatory, conditional, optional/defaulted, generated/override, or secret.
-- Provide Guide, protected Code, Configure, Review & approve, and Output views
-  for every sample during the incremental protected-source release.
+- Provide protected Code, Guide, Review & approve, and Output views for every
+  sample. Code is the default workspace and includes the one canonical
+  execution-identity and Parameters pane; there is no disconnected duplicate
+  Configure surface.
 - Generate deterministic, redacted configuration manifests and execution plans that users can copy or download.
 - Distinguish parser-only Python validation from registered Python sample
   execution in both controls and evidence.

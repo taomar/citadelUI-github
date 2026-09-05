@@ -187,10 +187,12 @@ The relay URL and token are never returned to browser code.
 
 ---
 
-## Configure and generate
+## Prepare the Code workspace
 
-Every sample declares its configuration explicitly. The Configure tab renders
-only fields that sample uses and groups them by execution meaning:
+Every sample declares its configuration explicitly. The Code workspace keeps
+the protected notebook source in the centre and renders one canonical task pane
+beside it. The task pane identifies the execution principal and target first,
+then shows only fields that sample uses, grouped by execution meaning:
 
 | Group | Meaning |
 | --- | --- |
@@ -200,10 +202,16 @@ only fields that sample uses and groups them by execution meaning:
 | **Generated / override** | Produced by discovery or an earlier recipe; may be overridden |
 | **Secrets** | Required only for samples that present a credential; memory-only |
 
-The summary names missing values and runtime dependencies before Run can be
-enabled. **Copy configuration (JSON)** and **Download configuration** produce a
-deterministic manifest containing source cells, prerequisites, grouped inputs,
-risk, runtime requirements, missing values, and generated operations.
+Required inputs lead the pane. Conditional fields appear only while their
+condition applies; defaulted and generated/override values use progressive
+disclosure. Every field states its purpose, readiness, expected format, and
+where to obtain it. Inline errors name the correction needed.
+
+The summary names missing values, identity mismatches, and runtime dependencies
+before Run can be enabled. **Copy configuration (JSON)** and
+**Download configuration** produce a deterministic manifest containing source
+cells, prerequisites, grouped inputs, risk, runtime requirements, missing
+values, and generated operations.
 `.env.example` actions produce empty environment-variable placeholders. Neither
 format can contain a secret value.
 
@@ -466,15 +474,16 @@ as an *error* in red — the user has not made a mistake, they have not arrived.
 ## Tests
 
 ```
-npm test                 670/670 pass, node --test, no dependencies
-npm run check            106 modules, 0 dependencies, nothing outside scope
+npm test                 715/715 pass, node --test, no dependencies
+npm run check            111 modules, 0 dependencies, nothing outside scope
 npm run smoke            89/89 headless-browser interaction checks
 npm run verify           all three, in order
 ```
 
 These totals were verified at integration reference
-`47fd336`; `npm run verify` exited 0. The separate protected-source browser
-acceptance passed 114/114 checks at the same reference.
+`171ae6b`; `npm run verify` exited 0. The separate protected-source browser
+acceptance passed 150/150 checks at the same reference, and the Impeccable layout
+detector returned no findings.
 
 | File | Covers |
 | --- | --- |
