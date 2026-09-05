@@ -139,7 +139,7 @@ async function checkRunWorkspaceIgnored(playgroundRoot) {
  * requests. This proves the guard behaves correctly without making a real
  * network call to anything — including this server.
  */
-function checkSameOriginGuard(checkStateChangingRequest, { port, host }) {
+function checkSameOriginGuard(checkStateChangingRequest, { port, host, publicOrigin }) {
   const id = 'same-origin-guard';
   const label = 'The same-origin guard refuses a cross-site request and accepts a same-origin one';
   const jsonHeaders = { 'content-type': 'application/json' };
@@ -148,8 +148,14 @@ function checkSameOriginGuard(checkStateChangingRequest, { port, host }) {
     { port, host },
   );
   const sameOrigin = checkStateChangingRequest(
-    { headers: { ...jsonHeaders, 'sec-fetch-site': 'same-origin' } },
-    { port, host },
+    {
+      headers: {
+        ...jsonHeaders,
+        'sec-fetch-site': 'same-origin',
+        ...(publicOrigin ? { origin: publicOrigin } : {}),
+      },
+    },
+    { port, host, publicOrigin },
   );
   const passed = crossSite.ok === false && crossSite.status === 403 && sameOrigin.ok === true;
   return {
@@ -177,14 +183,23 @@ function checkSameOriginGuard(checkStateChangingRequest, { port, host }) {
  * @param {Function} options.checkStateChangingRequest the production guard function
  * @param {number} options.port
  * @param {string} options.host
+ * @param {string|null} options.publicOrigin
  */
-export async function runSelfTest({ playgroundRoot, catalogue, mode, checkStateChangingRequest, port, host }) {
+export async function runSelfTest({
+  playgroundRoot,
+  catalogue,
+  mode,
+  checkStateChangingRequest,
+  port,
+  host,
+  publicOrigin = null,
+}) {
   const checks = [
     await checkNotebookProvenance(playgroundRoot),
     checkCatalogueSize(catalogue),
     await checkAcceleratorBundlePresent(playgroundRoot),
     await checkRunWorkspaceIgnored(playgroundRoot),
-    checkSameOriginGuard(checkStateChangingRequest, { port, host }),
+    checkSameOriginGuard(checkStateChangingRequest, { port, host, publicOrigin }),
   ];
   const passed = checks.every((check) => check.passed);
   return Object.freeze({

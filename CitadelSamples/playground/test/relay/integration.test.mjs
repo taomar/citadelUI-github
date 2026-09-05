@@ -42,7 +42,6 @@ import { createNonceStore } from '../../src/relay/nonceStore.mjs';
 import { createStaticTenantPolicy, createRelayTenantBundle } from '../../src/relay/tenantPolicy.mjs';
 import { deriveDefaultSampleRequestPolicy } from '../../src/relay/requestPolicy.mjs';
 import { createSharedSecretAuthenticator, createDenyAllAuthenticator } from '../../src/relay/principalAuth.mjs';
-import { computeRelayAllowedSampleIds } from '../../src/relay/requestSchema.mjs';
 import { buildSamplePlan, CATALOGUE, requirementsFor } from '../../src/catalogue/index.mjs';
 import { EXECUTION_PROTOCOL_VERSION } from '../../src/core/types.mjs';
 import { FAKE_API_KEY } from '../helpers/fixtures.mjs';
@@ -52,7 +51,7 @@ const GATEWAY_ORIGIN = 'https://apim-citadel-test.azure-api.net';
 const RELAY_TENANT = 'integration-tenant';
 const RELAY_CALLER = 'citadel-playground-proxy-integration';
 const RELAY_SHARED_TOKEN = 'integration-relay-token-do-not-use-elsewhere';
-const ALLOWED_SAMPLE_IDS = Object.freeze(computeRelayAllowedSampleIds(CATALOGUE, { buildSamplePlan, requirementsFor }));
+const ALLOWED_SAMPLE_IDS = Object.freeze(['weather-mcp-discovery']);
 
 /** The relay's canned answer for the three MCP requests `weather-mcp-discovery` makes. */
 function gatewayFetch() {
@@ -104,7 +103,15 @@ async function listenLoopback(server) {
  * http executor and secret provider, and a shared-secret authenticator
  * standing in for a real Entra/OIDC-verified token.
  */
-function realRelayServer({ originAllowlist = createOriginAllowlist([GATEWAY_ORIGIN]), fetchImpl = gatewayFetch() } = {}) {
+function realRelayServer({
+  originAllowlist = createOriginAllowlist([GATEWAY_ORIGIN]),
+  fetchImpl = gatewayFetch(),
+  authenticator = createSharedSecretAuthenticator({
+    token: RELAY_SHARED_TOKEN,
+    tenant: RELAY_TENANT,
+    principal: RELAY_CALLER,
+  }),
+} = {}) {
   const bundle = createRelayTenantBundle({
     allowedSampleIds: ALLOWED_SAMPLE_IDS,
     originAllowlist,
@@ -122,7 +129,7 @@ function realRelayServer({ originAllowlist = createOriginAllowlist([GATEWAY_ORIG
   });
   return createRelayServer({
     tenantPolicy: createStaticTenantPolicy({ [RELAY_TENANT]: bundle }),
-    authenticator: createSharedSecretAuthenticator({ token: RELAY_SHARED_TOKEN, tenant: RELAY_TENANT, principal: RELAY_CALLER }),
+    authenticator,
     nonceStore: createNonceStore(),
   });
 }
@@ -176,6 +183,48 @@ test('a real request round-trips proxy -> relay -> (mocked gateway) over real lo
         'the relay actually ran the sample through its real assertion core and reported a passing result, not a stub',
       );
       assert.equal(body.steps?.length, 4, 'all three MCP requests and the assertion step ran for real');
+    } finally {
+      await proxy.close();
+    }
+  } finally {
+    await relay.close();
+  }
+});
+
+test('the configured one-sample subset disables every other eligible sample before the proxy calls the relay', async () => {
+  let relayAuthenticationCalls = 0;
+  const relay = await listenLoopback(
+    realRelayServer({
+      authenticator: {
+        async authenticate(request) {
+          relayAuthenticationCalls += 1;
+          return createSharedSecretAuthenticator({
+            token: RELAY_SHARED_TOKEN,
+            tenant: RELAY_TENANT,
+            principal: RELAY_CALLER,
+          }).authenticate(request);
+        },
+      },
+    }),
+  );
+  try {
+    const proxy = await listenLoopback(realProxyServer(relay.base));
+    try {
+      const capabilities = await (await fetch(`${proxy.base}/api/capabilities`)).json();
+      assert.deepEqual(capabilities.executor.allowedSampleIds, ['weather-mcp-discovery']);
+
+      const response = await fetch(`${proxy.base}/api/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          protocolVersion: EXECUTION_PROTOCOL_VERSION,
+          sampleId: 'learn-mcp-discovery',
+          inputs: { 'hub.gatewayUrl': GATEWAY_ORIGIN },
+        }),
+      });
+      assert.equal(response.status, 403);
+      assert.equal((await response.json()).code, 'relay-sample-not-allowed');
+      assert.equal(relayAuthenticationCalls, 0, 'the proxy must reject the disabled sample before contacting the relay');
     } finally {
       await proxy.close();
     }

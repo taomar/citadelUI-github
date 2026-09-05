@@ -19,10 +19,20 @@ Provide a real parameter file outside source control. `main.bicepparam` is a
 non-deployable shape example only: angle-bracket values must be replaced.
 
 `relayAllowedOrigins`, `relayAllowedSampleIds`, `relayRequestPolicy`, and
-`relayLogicalRefMappings` are required policy input. They are serialized exactly
-into the relay environment. `relayLogicalRefMappings` maps logical catalogue refs
-to **secret names**, not values. The existing vault URI is supplied from its
-resource, and the relay resolves values with its assigned identity at runtime.
+`relayLogicalRefMappings` are required policy input. The same serialized
+`relayAllowedSampleIds` array is passed to both the playground and relay; neither
+process defaults an enabled relay to every structurally eligible catalogue item.
+Unknown, duplicate, malformed, or relay-ineligible IDs fail startup. An explicit
+empty array disables all relay samples.
+
+`relayRequestPolicy` must be generated or checked against the catalogue plan, not
+copied from an older endpoint shape. The example authorizes the canonical
+`weather-mcp-discovery` plan: `mcp-initialize`, the id-less
+`mcp-initialized` notification, and `tools-list`, all at
+`/mcp/weather-tool-mcp/mcp` with the secret-bearing `api-key` header.
+`relayLogicalRefMappings` maps logical catalogue refs to **secret names**, not
+values. The existing vault URI is supplied from its resource, and the relay
+resolves values with its assigned identity at runtime.
 
 The Entra applications and application ID URI must already exist. Configure the
 relay application to expose `relayTokenAudience` and allow the playground
@@ -64,9 +74,17 @@ requests; excess requests fail closed with HTTP 429 before authentication, body
 parsing, secret resolution, or network execution.
 
 The playground receives the private relay URL and token audience from Bicep,
-plus `CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED=true`, the same tenant ID, and
-`CITADEL_PLAYGROUND_RELAY_CLIENT_ID` for its assigned user-assigned identity. It
-does not receive a relay token: it obtains one from its managed identity.
+plus `CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED=true`, the same tenant ID,
+`CITADEL_PLAYGROUND_RELAY_CLIENT_ID` for its assigned user-assigned identity, and
+the same serialized `relayAllowedSampleIds` value the relay receives. It does not
+receive a relay token: it obtains one from its managed identity.
+
+Bicep also sets `CITADEL_PLAYGROUND_PUBLIC_ORIGIN` to
+`https://<playground-name>.<managed-environment-default-domain>`, derived from the
+existing Container Apps environment. Every state-changing JSON route requires
+that exact HTTPS `Origin` on a non-loopback bind. Scheme, host, and port changes
+are rejected, and forwarded host/protocol headers are never trusted. Loopback
+development continues to accept its configured HTTP loopback origins.
 
 Container Apps injects the following variables into each container because the
 Bicep assigns a managed identity. They are runtime platform values and must not

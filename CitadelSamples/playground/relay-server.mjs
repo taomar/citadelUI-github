@@ -8,7 +8,7 @@
 import { CATALOGUE, buildSamplePlan, requirementsFor } from './src/catalogue/index.mjs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { computeRelayAllowedSampleIds } from './src/relay/requestSchema.mjs';
+import { computeRelayAllowedSampleIds, parseRelayAllowedSampleIds } from './src/relay/requestSchema.mjs';
 import { createOriginAllowlist } from './src/relay/originAllowlist.mjs';
 import { createSampleRequestPolicy } from './src/relay/requestPolicy.mjs';
 import { createKeyVaultSecretProvider } from './src/relay/secretProvider.mjs';
@@ -55,7 +55,11 @@ function secretMappings(env) {
 export function buildHostedRelay(env = process.env) {
   const tenantId = required(env, 'CITADEL_RELAY_TENANT_ID');
   const allowedPrincipalId = required(env, 'CITADEL_RELAY_ALLOWED_PRINCIPAL_ID');
-  const allowedSampleIds = json(env, 'CITADEL_RELAY_ALLOWED_SAMPLE_IDS');
+  const allowedSampleIds = parseRelayAllowedSampleIds(
+    env.CITADEL_RELAY_ALLOWED_SAMPLE_IDS,
+    CATALOGUE,
+    { buildSamplePlan, requirementsFor },
+  );
   const allowedOrigins = json(env, 'CITADEL_RELAY_ALLOWED_ORIGINS');
   const requestPolicy = json(env, 'CITADEL_RELAY_REQUEST_POLICY');
   const hostedLimits = readHostedRelayLimits(env);

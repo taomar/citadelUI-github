@@ -117,6 +117,52 @@ export function computeRelayAllowedSampleIds(catalogue, { buildSamplePlan, requi
 }
 
 /**
+ * Parse the deployment-owned relay allow-list shared by the playground proxy
+ * and relay. Missing configuration never widens to every structurally eligible
+ * sample; an empty array explicitly disables all relay execution.
+ */
+export function parseRelayAllowedSampleIds(
+  rawValue,
+  catalogue,
+  { buildSamplePlan, requirementsFor },
+  { name = 'CITADEL_RELAY_ALLOWED_SAMPLE_IDS' } = {},
+) {
+  if (typeof rawValue !== 'string' || rawValue.trim() === '') {
+    throw new TypeError(`${name} must be configured as a JSON array of catalogue sample IDs.`);
+  }
+  let configured;
+  try {
+    configured = JSON.parse(rawValue);
+  } catch {
+    throw new TypeError(`${name} must be valid JSON.`);
+  }
+  if (!Array.isArray(configured)) {
+    throw new TypeError(`${name} must be a JSON array of catalogue sample IDs.`);
+  }
+
+  const structurallyAllowed = new Set(computeRelayAllowedSampleIds(catalogue, { buildSamplePlan, requirementsFor }));
+  const seen = new Set();
+  const allowed = [];
+  for (const [index, sampleId] of configured.entries()) {
+    if (typeof sampleId !== 'string' || sampleId === '' || sampleId.trim() !== sampleId) {
+      throw new TypeError(`${name}[${index}] must be a non-empty, unpadded sample ID.`);
+    }
+    if (!catalogue.byId.has(sampleId)) {
+      throw new TypeError(`${name} contains unknown catalogue sample ID "${sampleId}".`);
+    }
+    if (!structurallyAllowed.has(sampleId)) {
+      throw new TypeError(`${name} contains sample "${sampleId}", which is not read-only HTTP/assertion relay work.`);
+    }
+    if (seen.has(sampleId)) {
+      throw new TypeError(`${name} contains duplicate sample ID "${sampleId}".`);
+    }
+    seen.add(sampleId);
+    allowed.push(sampleId);
+  }
+  return Object.freeze(allowed);
+}
+
+/**
  * Validate an inbound `/execute` request against the catalogue and the
  * relay's own allow-list. Throws `RequestRefused` on any violation.
  *

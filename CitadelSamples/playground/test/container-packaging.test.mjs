@@ -396,6 +396,8 @@ test('Docker builds and runs both least-privilege images when Docker is availabl
       playgroundContainer,
       '--publish',
       `127.0.0.1:${playgroundPort}:8080`,
+      '--env',
+      'CITADEL_PLAYGROUND_PUBLIC_ORIGIN=https://playground.packaging.test',
       playgroundImage,
     ]);
 
@@ -410,7 +412,10 @@ test('Docker builds and runs both least-privilege images when Docker is availabl
 
       const selfTestResponse = await fetch(`http://127.0.0.1:${playgroundPort}/api/self-test`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: 'https://playground.packaging.test',
+        },
         body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
       });
       assert.equal(selfTestResponse.status, 200);

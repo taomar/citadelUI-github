@@ -76,6 +76,16 @@ param relayRequestTimeoutMs int = 10000
 var relayEffectiveRequestTimeoutMs = min(relayRequestTimeoutMs, relayRunTimeoutMs)
 var acrPullRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
 var keyVaultSecretsUserRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
+var managedEnvironmentName = last(split(managedEnvironmentId, '/'))
+
+resource managedEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
+  name: managedEnvironmentName
+}
+
+// Container Apps assigns <app-name>.<environment-default-domain>. Deriving the
+// external origin from the environment avoids trusting forwarded host headers
+// or self-referencing the app resource while its revision is being created.
+var playgroundPublicOrigin = 'https://${playgroundName}.${managedEnvironment.properties.defaultDomain}'
 
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
   name: containerRegistryName
@@ -309,11 +319,13 @@ resource playground 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'CITADEL_PLAYGROUND_HOST', value: '0.0.0.0' }
             { name: 'CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED', value: 'true' }
             { name: 'CITADEL_PLAYGROUND_ENTRA_TENANT_ID', value: entraTenantId }
+            { name: 'CITADEL_PLAYGROUND_PUBLIC_ORIGIN', value: playgroundPublicOrigin }
             { name: 'CITADEL_PLAYGROUND_RELAY_URL', value: 'https://${relay.properties.configuration.ingress.fqdn}/execute' }
             { name: 'CITADEL_PLAYGROUND_RELAY_RESOURCE', value: relayTokenAudience }
             { name: 'CITADEL_PLAYGROUND_RELAY_CLIENT_ID', value: playgroundIdentity.properties.clientId }
             { name: 'CITADEL_PLAYGROUND_RELAY_CALLER_PRINCIPAL', value: playgroundIdentity.properties.principalId }
             { name: 'CITADEL_PLAYGROUND_RELAY_TENANT', value: entraTenantId }
+            { name: 'CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS', value: string(relayAllowedSampleIds) }
           ]
         }
       ]

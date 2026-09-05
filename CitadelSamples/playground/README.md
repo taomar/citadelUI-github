@@ -167,6 +167,18 @@ deletion, and hosted quarantine remain future capabilities.
 The existing hosted relay is intentionally limited to allowlisted HTTP and
 assertion work. Its image and import graph must remain free of Python, Azure CLI,
 process transports, arbitrary files, and artifact writers.
+One deployment-owned JSON array configures the allowed sample IDs in both the
+playground and relay. The browser capability response and executor expose only
+that subset; a disabled sample is rejected by the playground before it calls the
+relay. Missing configuration never expands to every structurally eligible sample,
+and malformed, duplicate, unknown, or ineligible IDs fail startup.
+
+On a non-loopback bind, every state-changing JSON route requires the exact
+canonical HTTPS origin in `CITADEL_PLAYGROUND_PUBLIC_ORIGIN`. The Container Apps
+Bicep derives it from the playground app name and managed-environment default
+domain. It does not infer trust from `Host`, `Forwarded`, or `X-Forwarded-*`
+headers. Local loopback HTTP origins remain available for workstation use.
+
 Each Container App acquires tokens only through its own platform-injected
 `IDENTITY_ENDPOINT` and `IDENTITY_HEADER`, with the deployment-owned
 user-assigned client ID. Partial or malformed injection fails closed; the secret

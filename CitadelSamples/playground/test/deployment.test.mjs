@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createContainerAppsEntraAuthenticator } from '../src/relay/principalAuth.mjs';
+import { buildSamplePlan, CATALOGUE, getSample } from '../src/catalogue/index.mjs';
+import { createSampleRequestPolicy } from '../src/relay/requestPolicy.mjs';
+import { makeFixtureReader } from './helpers/fixtures.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const read = (path) => readFile(new URL(path, `file://${root}`), 'utf-8');
@@ -42,6 +45,8 @@ test('deployment passes managed-identity service authentication and exact relay 
     'CITADEL_PLAYGROUND_RELAY_RESOURCE',
     'CITADEL_PLAYGROUND_RELAY_CLIENT_ID',
     'CITADEL_PLAYGROUND_RELAY_CALLER_PRINCIPAL',
+    'CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS',
+    'CITADEL_PLAYGROUND_PUBLIC_ORIGIN',
     'CITADEL_RELAY_ALLOWED_ORIGINS',
     'CITADEL_RELAY_ALLOWED_SAMPLE_IDS',
     'CITADEL_RELAY_REQUEST_POLICY',
@@ -58,6 +63,18 @@ test('deployment passes managed-identity service authentication and exact relay 
   assert.match(bicep, /relayTokenAudience/);
   assert.match(bicep, /CITADEL_RELAY_ENTRA_AUTHENTICATED', value: 'true'/);
   assert.match(bicep, /CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED', value: 'true'/);
+  assert.match(
+    bicep,
+    /CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS', value: string\(relayAllowedSampleIds\)/,
+  );
+  assert.match(
+    bicep,
+    /CITADEL_RELAY_ALLOWED_SAMPLE_IDS', value: string\(relayAllowedSampleIds\)/,
+  );
+  assert.match(
+    bicep,
+    /playgroundPublicOrigin = 'https:\/\/\$\{playgroundName\}\.\$\{managedEnvironment\.properties\.defaultDomain\}'/,
+  );
   assert.doesNotMatch(bicep, /name: 'IDENTITY_(?:ENDPOINT|HEADER)'/, 'platform identity variables must never be authored by Bicep');
   assert.match(managedIdentity, /environment\[CONTAINER_APPS_ENDPOINT_ENV\]/);
   assert.match(managedIdentity, /'X-IDENTITY-HEADER'/);
@@ -67,6 +84,38 @@ test('deployment passes managed-identity service authentication and exact relay 
   assert.match(deploymentGuide, /`IDENTITY_ENDPOINT`/);
   assert.match(deploymentGuide, /`IDENTITY_HEADER`/);
   assert.match(deploymentGuide, /Partial or malformed injection fails/);
+});
+
+test('the example Weather MCP request policy names and authorizes the canonical rebuilt plan exactly', async () => {
+  const parameters = await read('infra/main.bicepparam');
+  const endpoint = 'https://apim-gateway-host.example/mcp/weather-tool-mcp/mcp';
+  for (const stepId of ['mcp-initialize', 'mcp-initialized', 'tools-list']) {
+    assert.match(
+      parameters,
+      new RegExp(`'${stepId}': \\{[\\s\\S]*?'https://<apim-gateway-host>/mcp/weather-tool-mcp/mcp'[\\s\\S]*?'api-key'`),
+    );
+  }
+  assert.doesNotMatch(parameters, /Ocp-Apim-Subscription-Key|\/weather\/mcp|\binitialize:\s*\{/);
+
+  const readFixture = makeFixtureReader({
+    'hub.gatewayUrl': 'https://apim-gateway-host.example',
+    'gatewayAccess.subscriptionKeyHeader': 'api-key',
+  });
+  const { plan } = buildSamplePlan(getSample('weather-mcp-discovery'), readFixture);
+  const requestPolicy = createSampleRequestPolicy({
+    'weather-mcp-discovery': Object.fromEntries(
+      ['mcp-initialize', 'mcp-initialized', 'tools-list'].map((stepId) => [
+        stepId,
+        { urls: [endpoint], headerNames: ['api-key'] },
+      ]),
+    ),
+  });
+  assert.deepEqual(
+    plan.steps.filter((step) => step.type === 'http').map((step) => step.id),
+    ['mcp-initialize', 'mcp-initialized', 'tools-list'],
+  );
+  assert.deepEqual(requestPolicy.authorizeStaticPlan('weather-mcp-discovery', plan), { ok: true });
+  assert.equal(CATALOGUE.byId.has('weather-mcp-discovery'), true);
 });
 
 test('Container Apps probes match implemented health endpoints and constrain resources', async () => {

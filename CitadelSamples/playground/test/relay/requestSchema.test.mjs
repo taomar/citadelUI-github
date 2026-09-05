@@ -19,6 +19,7 @@ import { RequestRefused } from '../../src/server/runRequest.mjs';
 import { EXECUTION_PROTOCOL_VERSION } from '../../src/core/types.mjs';
 import {
   computeRelayAllowedSampleIds,
+  parseRelayAllowedSampleIds,
   RELAY_SUPPORTED_STEP_TYPES,
   rebuildRelayPlan,
   validateExecuteRequest,
@@ -73,6 +74,39 @@ test('computeRelayAllowedSampleIds never throws for a structurally-incomplete sa
   // gateway-dependent samples in the computed list.
   assert.ok(DEFAULT_ALLOWED.length > 0);
   assert.doesNotThrow(() => computeRelayAllowedSampleIds(CATALOGUE, { buildSamplePlan, requirementsFor }));
+});
+
+test('the deployment allow-list parser preserves an explicit subset and permits an explicit empty list', () => {
+  assert.deepEqual(
+    parseRelayAllowedSampleIds(
+      '["weather-mcp-discovery"]',
+      CATALOGUE,
+      { buildSamplePlan, requirementsFor },
+    ),
+    ['weather-mcp-discovery'],
+  );
+  assert.deepEqual(
+    parseRelayAllowedSampleIds('[]', CATALOGUE, { buildSamplePlan, requirementsFor }),
+    [],
+  );
+});
+
+test('the deployment allow-list parser rejects missing, malformed, duplicate, unknown, and ineligible IDs', () => {
+  for (const [raw, message] of [
+    [undefined, /must be configured/],
+    ['', /must be configured/],
+    ['{}', /must be a JSON array/],
+    ['not-json', /valid JSON/],
+    ['["weather-mcp-discovery","weather-mcp-discovery"]', /duplicate/],
+    ['["not-a-sample"]', /unknown catalogue sample ID/],
+    ['["publish-assets"]', /not read-only HTTP\/assertion relay work/],
+    ['[" weather-mcp-discovery"]', /unpadded/],
+  ]) {
+    assert.throws(
+      () => parseRelayAllowedSampleIds(raw, CATALOGUE, { buildSamplePlan, requirementsFor }),
+      message,
+    );
+  }
 });
 
 /* -------------------------------------------------------- validateExecuteRequest */

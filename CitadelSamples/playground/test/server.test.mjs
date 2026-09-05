@@ -25,6 +25,7 @@ import {
   createPlaygroundServer,
   createSignalShutdownHandler,
   isLoopbackHost,
+  parseTrustedPublicOrigin,
   probeRuntimes,
   resolveServedPath,
 } from '../server.mjs';
@@ -912,21 +913,26 @@ const WEATHER_MCP_REQUEST = {
   sampleId: 'weather-mcp-discovery',
   inputs: { 'hub.gatewayUrl': 'https://gw.example.net' },
 };
+const PLAYGROUND_RELAY_ENV = Object.freeze({
+  CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.example/execute',
+  CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS: '["weather-mcp-discovery"]',
+});
 
 test('buildRelayConfig is disabled with no URL configured, and never touches other env vars', () => {
   assert.deepEqual(buildRelayConfig({}), { enabled: false });
 });
 
 test('buildRelayConfig defaults callerPrincipal/tenant to fixed, non-blank values when unset', () => {
-  const config = buildRelayConfig({ CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.example/execute' });
+  const config = buildRelayConfig(PLAYGROUND_RELAY_ENV);
   assert.equal(config.enabled, true);
+  assert.deepEqual(config.allowedSampleIds, ['weather-mcp-discovery']);
   assert.equal(config.callerPrincipal, 'citadel-playground-proxy');
   assert.equal(config.tenant, 'default-tenant');
 });
 
 test('buildRelayConfig reads callerPrincipal/tenant from their own env vars when configured', () => {
   const config = buildRelayConfig({
-    CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.example/execute',
+    ...PLAYGROUND_RELAY_ENV,
     CITADEL_PLAYGROUND_RELAY_CALLER_PRINCIPAL: 'proxy-east-1',
     CITADEL_PLAYGROUND_RELAY_TENANT: 'tenant-east',
   });
@@ -950,6 +956,7 @@ test('buildRelayConfig binds managed identity to the supplied Container Apps env
     };
     const config = buildRelayConfig({
       CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.internal.example/execute',
+      CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS: '["weather-mcp-discovery"]',
       CITADEL_PLAYGROUND_RELAY_RESOURCE: 'api://relay-app',
       CITADEL_PLAYGROUND_RELAY_CLIENT_ID: 'playground-user-assigned-id',
       CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED: 'true',
@@ -972,12 +979,28 @@ test('the hosted playground requires its deployment-owned user-assigned client i
     () =>
       buildRelayConfig({
         CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.internal.example/execute',
+        CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS: '["weather-mcp-discovery"]',
         CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED: 'true',
         CITADEL_PLAYGROUND_ENTRA_TENANT_ID: 'tenant-a',
         IDENTITY_ENDPOINT: 'http://localhost:42356/msi/token',
         IDENTITY_HEADER: 'playground-identity-header',
       }),
     /CITADEL_PLAYGROUND_RELAY_CLIENT_ID must be configured/,
+  );
+});
+
+test('buildRelayConfig never defaults an enabled relay to every structurally eligible sample', () => {
+  assert.throws(
+    () => buildRelayConfig({ CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.example/execute' }),
+    /CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS must be configured/,
+  );
+  assert.throws(
+    () =>
+      buildRelayConfig({
+        CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.example/execute',
+        CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS: '["not-a-sample"]',
+      }),
+    /unknown catalogue sample ID/,
   );
 });
 
@@ -1242,7 +1265,7 @@ test('the relay endpoint rejects a sample outside its own allow-list, before for
   });
 });
 
-test('a non-loopback bind refuses every /api/execute caller by default (fail closed)', async () => {
+test('a non-loopback bind trusts no forwarded host and refuses state changes without a configured public origin', async () => {
   const calls = [];
   const relay = fakeRelay({
     fetchImpl: async () => {
@@ -1253,10 +1276,15 @@ test('a non-loopback bind refuses every /api/execute caller by default (fail clo
   await withServer({ mode: 'preview', relay, host: 'playground.example.net' }, async ({ call }) => {
     const response = await call('/api/execute', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'https://playground.example.net',
+        'X-Forwarded-Host': 'playground.example.net',
+        'X-Forwarded-Proto': 'https',
+      },
       body: JSON.stringify(WEATHER_MCP_REQUEST),
     });
-    assert.equal(response.status, 401);
+    assert.equal(response.status, 403);
     assert.equal(calls.length, 0);
   });
 });
@@ -1270,17 +1298,26 @@ test('a non-loopback bind accepts a caller that presents the configured shared s
       return { ok: true, status: 200, text: async () => JSON.stringify({ state: 'completed', summary: 'ok' }) };
     },
   });
-  await withServer({ mode: 'preview', relay, host: 'playground.example.net' }, async ({ call }) => {
+  await withServer({
+    mode: 'preview',
+    relay,
+    host: 'playground.example.net',
+    publicOrigin: 'https://playground.example.net',
+  }, async ({ call }) => {
     const unauthenticated = await call('/api/execute', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Origin: 'https://playground.example.net' },
       body: JSON.stringify(WEATHER_MCP_REQUEST),
     });
     assert.equal(unauthenticated.status, 401);
 
     const authenticated = await call('/api/execute', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer operator-secret' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer operator-secret',
+        Origin: 'https://playground.example.net',
+      },
       body: JSON.stringify(WEATHER_MCP_REQUEST),
     });
     assert.equal(authenticated.status, 200);
@@ -1324,6 +1361,15 @@ test('the capability payload reports the exact relay allow-list, and nothing wid
   assert.equal(payload.relayConfigured, true);
   const serialized = JSON.stringify(payload);
   assert.ok(!serialized.includes(relay.url), 'the relay URL must never be disclosed to the browser');
+});
+
+test('an explicitly empty relay allow-list is advertised as unavailable without widening or crashing the browser', () => {
+  const payload = capabilitiesPayload({ mode: 'preview', relay: fakeRelay({ allowedSampleIds: [] }) });
+  assert.equal(payload.executor.kind, 'relay');
+  assert.equal(payload.executor.canExecute, false);
+  assert.deepEqual(payload.executor.allowedSampleIds, []);
+  assert.match(payload.executor.reason, /enables no catalogue samples/);
+  assert.equal(payload.relayConfigured, true);
 });
 
 test('operator mode exposes the run id in response headers before the run finishes', async () => {
@@ -1393,6 +1439,87 @@ test('a state-changing call must be same-origin and carry a JSON content type', 
   const formPost = checkStateChangingRequest(make({ 'content-type': 'application/x-www-form-urlencoded' }));
   assert.equal(formPost.ok, false);
   assert.equal(formPost.status, 415);
+});
+
+test('the trusted public origin accepts only one canonical HTTPS origin', () => {
+  assert.equal(parseTrustedPublicOrigin(undefined), null);
+  assert.equal(
+    parseTrustedPublicOrigin('https://playground.example.net'),
+    'https://playground.example.net',
+  );
+  for (const value of [
+    '',
+    'http://playground.example.net',
+    'https://playground.example.net/',
+    'https://playground.example.net/path',
+    'https://playground.example.net?query=1',
+    'https://user@playground.example.net',
+    'https://PLAYGROUND.example.net',
+    'https://playground.example.net:443',
+  ]) {
+    assert.throws(() => parseTrustedPublicOrigin(value), /exact HTTPS origin|canonical HTTPS origin/);
+  }
+});
+
+test('the hosted guard accepts the configured HTTPS origin and rejects the wrong scheme, host, or port', () => {
+  const make = (origin) => ({
+    headers: {
+      origin,
+      'sec-fetch-site': 'same-origin',
+      'content-type': 'application/json',
+    },
+  });
+  const options = {
+    host: '0.0.0.0',
+    port: 8080,
+    publicOrigin: 'https://playground.example.net',
+  };
+  assert.equal(checkStateChangingRequest(make('https://playground.example.net'), options).ok, true);
+  for (const origin of [
+    'http://playground.example.net',
+    'https://other.example.net',
+    'https://playground.example.net:8443',
+  ]) {
+    const result = checkStateChangingRequest(make(origin), options);
+    assert.equal(result.ok, false, `${origin} must not be accepted`);
+    assert.equal(result.status, 403);
+  }
+});
+
+test('every state-changing JSON route applies the hosted public-origin guard before route-specific behavior', async () => {
+  const routes = [
+    '/api/run',
+    '/api/run/cancel',
+    '/api/execution-context',
+    '/api/azure-login/start',
+    '/api/execute',
+    '/api/self-test',
+    '/api/source/weather-mcp-discovery/validate',
+  ];
+  await withServer(
+    {
+      mode: 'preview',
+      host: '0.0.0.0',
+      publicOrigin: 'https://playground.example.net',
+    },
+    async ({ call }) => {
+      for (const route of routes) {
+        const refused = await call(route, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Origin: 'https://wrong.example.net' },
+          body: '{}',
+        });
+        assert.equal(refused.status, 403, `${route} must reject a different origin first`);
+
+        const acceptedOrigin = await call(route, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Origin: 'https://playground.example.net' },
+          body: '{}',
+        });
+        assert.notEqual(acceptedOrigin.status, 403, `${route} must accept the configured public origin`);
+      }
+    },
+  );
 });
 
 test('the state-changing guard accepts IPv6 loopback only at the configured origin', () => {

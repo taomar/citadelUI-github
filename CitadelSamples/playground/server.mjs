@@ -50,7 +50,7 @@ import {
   createDenyAllAuthenticator,
   createSharedSecretAuthenticator,
 } from './src/relay/principalAuth.mjs';
-import { computeRelayAllowedSampleIds, rebuildRelayPlan, validateExecuteRequest } from './src/relay/requestSchema.mjs';
+import { parseRelayAllowedSampleIds, rebuildRelayPlan, validateExecuteRequest } from './src/relay/requestSchema.mjs';
 import { mintAcknowledgement, planRequestUrls } from './src/relay/acknowledgement.mjs';
 import { runSelfTest, SELF_TEST_SCENARIO, validateSelfTestRequest } from './src/server/selfTest.mjs';
 
@@ -66,6 +66,32 @@ const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
 
 export function isLoopbackHost(host) {
   return LOOPBACK_HOSTS.has(String(host).replace(/^\[|\]$/g, ''));
+}
+
+/** Parse one canonical HTTPS origin; paths, credentials, query, and fragments are never trusted. */
+export function parseTrustedPublicOrigin(rawValue, { name = 'CITADEL_PLAYGROUND_PUBLIC_ORIGIN' } = {}) {
+  if (rawValue === undefined) return null;
+  if (typeof rawValue !== 'string' || rawValue === '' || rawValue.trim() !== rawValue) {
+    throw new TypeError(`${name} must be one exact HTTPS origin.`);
+  }
+  let parsed;
+  try {
+    parsed = new URL(rawValue);
+  } catch {
+    throw new TypeError(`${name} must be one exact HTTPS origin.`);
+  }
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    parsed.pathname !== '/' ||
+    parsed.search !== '' ||
+    parsed.hash !== '' ||
+    parsed.origin !== rawValue
+  ) {
+    throw new TypeError(`${name} must be one canonical HTTPS origin with no path, credentials, query, or fragment.`);
+  }
+  return parsed.origin;
 }
 
 /**
@@ -136,6 +162,12 @@ export function buildRelayConfig(env = process.env) {
   // otherwise reject every forwarded request outright.
   const callerPrincipal = env.CITADEL_PLAYGROUND_RELAY_CALLER_PRINCIPAL || 'citadel-playground-proxy';
   const tenant = env.CITADEL_PLAYGROUND_RELAY_TENANT || 'default-tenant';
+  const allowedSampleIds = parseRelayAllowedSampleIds(
+    env.CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS,
+    CATALOGUE,
+    { buildSamplePlan, requirementsFor },
+    { name: 'CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS' },
+  );
 
   return Object.freeze({
     enabled: true,
@@ -143,13 +175,14 @@ export function buildRelayConfig(env = process.env) {
     fetchImpl: null,
     credentialProvider,
     authenticator,
-    allowedSampleIds: Object.freeze(computeRelayAllowedSampleIds(CATALOGUE, { buildSamplePlan, requirementsFor })),
+    allowedSampleIds,
     callerPrincipal,
     tenant,
   });
 }
 
 const DEFAULT_RELAY_CONFIG = buildRelayConfig();
+const DEFAULT_PUBLIC_ORIGIN = parseTrustedPublicOrigin(process.env.CITADEL_PLAYGROUND_PUBLIC_ORIGIN);
 
 const MIME = new Map(
   Object.entries({
@@ -312,14 +345,16 @@ export function capabilitiesPayload({
     executor: relay.enabled
       ? {
           kind: 'relay',
-          canExecute: true,
+          canExecute: relay.allowedSampleIds.length > 0,
           endpoint: '/api/execute',
           supportedStepTypes: ['http', 'assertion'],
           // The exact sample ids the relay will run — never a claim wider
           // than reality. A caller has no way to widen this from the wire.
           allowedSampleIds: [...relay.allowedSampleIds],
           reason:
-            'An approved relay is configured on the local server. It executes a fixed, explicitly allow-listed set of read-only catalogue samples.',
+            relay.allowedSampleIds.length > 0
+              ? 'An approved relay is configured on the local server. It executes a fixed, explicitly allow-listed set of read-only catalogue samples.'
+              : 'The relay is configured, but this deployment enables no catalogue samples.',
         }
       : mode === 'execute'
         ? {
@@ -426,16 +461,27 @@ function monitorClientDisconnect(request, response, { signal } = {}) {
  * it is bound to loopback, and requiring a JSON content type keeps it out of
  * reach of a simple form post.
  */
-export function checkStateChangingRequest(request, { port = PORT, host = HOST } = {}) {
+export function checkStateChangingRequest(
+  request,
+  { port = PORT, host = HOST, publicOrigin = DEFAULT_PUBLIC_ORIGIN } = {},
+) {
   const site = request.headers['sec-fetch-site'];
   if (site && site !== 'same-origin' && site !== 'none') {
     return { ok: false, status: 403, message: `Refused a ${site} request. This API is same-origin only.` };
   }
   const origin = request.headers.origin;
-  if (origin) {
+  if (isLoopbackHost(host)) {
     const expected = new Set([httpOrigin(host, port), httpOrigin('localhost', port), httpOrigin('127.0.0.1', port)]);
-    if (!expected.has(origin)) {
+    if (publicOrigin) expected.add(publicOrigin);
+    if (origin && !expected.has(origin)) {
       return { ok: false, status: 403, message: `Refused a request from origin ${origin}.` };
+    }
+  } else {
+    if (!publicOrigin) {
+      return { ok: false, status: 403, message: 'Refused a state-changing request because no trusted public origin is configured.' };
+    }
+    if (origin !== publicOrigin) {
+      return { ok: false, status: 403, message: `Refused a request from origin ${origin ?? '(missing)'}.` };
     }
   }
   const contentType = String(request.headers['content-type'] ?? '');
@@ -453,8 +499,8 @@ function httpOrigin(host, port) {
   return url.origin;
 }
 
-async function handleExecute(request, response, { port, host, relay }) {
-  const guard = checkStateChangingRequest(request, { port, host });
+async function handleExecute(request, response, { port, host, publicOrigin, relay }) {
+  const guard = checkStateChangingRequest(request, { port, host, publicOrigin });
   if (!guard.ok) {
     sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
     return;
@@ -673,7 +719,12 @@ async function handleStatic(request, response) {
   }
 }
 
-async function handleRun(request, response, { mode, manager, port, host, shutdownSignal }) {
+async function handleRun(request, response, { mode, manager, port, host, publicOrigin, shutdownSignal }) {
+  const guard = checkStateChangingRequest(request, { port, host, publicOrigin });
+  if (!guard.ok) {
+    sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
+    return;
+  }
   if (mode !== 'execute' || !manager) {
     sendJson(response, 501, {
       state: 'blocked',
@@ -681,11 +732,6 @@ async function handleRun(request, response, { mode, manager, port, host, shutdow
       detail:
         'Restart with `npm run start:execute` (or `node server.mjs --execute`) to attach the local executor. Preview mode generates and inspects plans and executes nothing.',
     });
-    return;
-  }
-  const guard = checkStateChangingRequest(request, { port, host });
-  if (!guard.ok) {
-    sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
     return;
   }
   const disconnect = monitorClientDisconnect(request, response, { signal: shutdownSignal });
@@ -756,8 +802,8 @@ async function handleRun(request, response, { mode, manager, port, host, shutdow
   }
 }
 
-async function handleExecutionContext(request, response, { manager, port, host }) {
-  const guard = checkStateChangingRequest(request, { port, host });
+async function handleExecutionContext(request, response, { manager, port, host, publicOrigin }) {
+  const guard = checkStateChangingRequest(request, { port, host, publicOrigin });
   if (!guard.ok) {
     sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
     return;
@@ -785,8 +831,8 @@ async function handleExecutionContext(request, response, { manager, port, host }
   }
 }
 
-async function handleAzureLogin(request, response, { action, manager, port, host }) {
-  const guard = checkStateChangingRequest(request, { port, host });
+async function handleAzureLogin(request, response, { action, manager, port, host, publicOrigin }) {
+  const guard = checkStateChangingRequest(request, { port, host, publicOrigin });
   if (!guard.ok) {
     sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
     return;
@@ -835,14 +881,14 @@ async function handleAzureLogin(request, response, { action, manager, port, host
   }
 }
 
-async function handleCancel(request, response, { manager, port, host }) {
-  if (!manager) {
-    sendJson(response, 501, { cancelled: false, reason: 'Nothing can be running in preview mode.' });
-    return;
-  }
-  const guard = checkStateChangingRequest(request, { port, host });
+async function handleCancel(request, response, { manager, port, host, publicOrigin }) {
+  const guard = checkStateChangingRequest(request, { port, host, publicOrigin });
   if (!guard.ok) {
     sendJson(response, guard.status, { cancelled: false, reason: guard.message });
+    return;
+  }
+  if (!manager) {
+    sendJson(response, 501, { cancelled: false, reason: 'Nothing can be running in preview mode.' });
     return;
   }
   let payload = {};
@@ -865,8 +911,8 @@ async function handleCancel(request, response, { manager, port, host }) {
  * guarded exactly like every other state-changing endpoint even though it
  * changes nothing, so it cannot be triggered from a cross-site page.
  */
-async function handleSelfTest(request, response, { mode, port, host }) {
-  const guard = checkStateChangingRequest(request, { port, host });
+async function handleSelfTest(request, response, { mode, port, host, publicOrigin }) {
+  const guard = checkStateChangingRequest(request, { port, host, publicOrigin });
   if (!guard.ok) {
     sendJson(response, guard.status, {
       scenario: SELF_TEST_SCENARIO,
@@ -921,6 +967,7 @@ async function handleSelfTest(request, response, { mode, port, host }) {
     checkStateChangingRequest,
     port,
     host,
+    publicOrigin,
   });
   sendJson(response, 200, result);
 }
@@ -942,14 +989,13 @@ async function handleProtectedSource(response, sampleId) {
   }
 }
 
-async function handleSourceValidation(request, response, { mode, manager, sampleId, port, host }) {
-  if (mode !== 'execute' || !manager) {
-    sendJson(response, 501, {
+async function handleSourceValidation(request, response, { mode, manager, sampleId, port, host, publicOrigin }) {
+  const guard = checkStateChangingRequest(request, { port, host, publicOrigin });
+  if (!guard.ok) {
+    sendJson(response, guard.status, {
       scenario: CODE_VALIDATION_SCENARIO,
       state: 'blocked',
-      summary: 'Offline Python validation is available only from the loopback execute server.',
-      mode: 'offline-local',
-      validation: 'python-compile-only',
+      summary: guard.message,
       sourceExecuted: false,
       azureContacted: false,
       networkContacted: false,
@@ -957,12 +1003,13 @@ async function handleSourceValidation(request, response, { mode, manager, sample
     });
     return;
   }
-  const guard = checkStateChangingRequest(request, { port, host });
-  if (!guard.ok) {
-    sendJson(response, guard.status, {
+  if (mode !== 'execute' || !manager) {
+    sendJson(response, 501, {
       scenario: CODE_VALIDATION_SCENARIO,
       state: 'blocked',
-      summary: guard.message,
+      summary: 'Offline Python validation is available only from the loopback execute server.',
+      mode: 'offline-local',
+      validation: 'python-compile-only',
       sourceExecuted: false,
       azureContacted: false,
       networkContacted: false,
@@ -1055,6 +1102,7 @@ function decodeSampleId(value) {
  * @param {object} [options.runManager]   injected for tests
  * @param {object} [options.probe]        injected for tests
  * @param {object} [options.relay]        injected relay config for tests (see buildRelayConfig)
+ * @param {string|null} [options.publicOrigin] exact hosted HTTPS browser origin
  */
 export function createPlaygroundServer({
   mode = 'preview',
@@ -1065,7 +1113,12 @@ export function createPlaygroundServer({
   port = PORT,
   host = HOST,
   relay = DEFAULT_RELAY_CONFIG,
+  publicOrigin = DEFAULT_PUBLIC_ORIGIN,
 } = {}) {
+  publicOrigin =
+    publicOrigin === null
+      ? null
+      : parseTrustedPublicOrigin(publicOrigin, { name: 'createPlaygroundServer publicOrigin' });
   const identityManager =
     executionContextManager ??
     createExecutionContextManager({
@@ -1121,6 +1174,7 @@ export function createPlaygroundServer({
           manager,
           port,
           host,
+          publicOrigin,
           shutdownSignal: shutdownController.signal,
         });
         return;
@@ -1131,7 +1185,7 @@ export function createPlaygroundServer({
           sendJson(response, 405, { cancelled: false, reason: 'Use POST.' });
           return;
         }
-        await handleCancel(request, response, { manager, port, host });
+        await handleCancel(request, response, { manager, port, host, publicOrigin });
         return;
       }
 
@@ -1140,7 +1194,7 @@ export function createPlaygroundServer({
           sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
           return;
         }
-        await handleExecutionContext(request, response, { manager: identityManager, port, host });
+        await handleExecutionContext(request, response, { manager: identityManager, port, host, publicOrigin });
         return;
       }
 
@@ -1155,6 +1209,7 @@ export function createPlaygroundServer({
           manager: identityManager,
           port,
           host,
+          publicOrigin,
         });
         return;
       }
@@ -1164,7 +1219,7 @@ export function createPlaygroundServer({
           sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
           return;
         }
-        await handleExecute(request, response, { port, host, relay });
+        await handleExecute(request, response, { port, host, publicOrigin, relay });
         return;
       }
 
@@ -1173,7 +1228,7 @@ export function createPlaygroundServer({
           sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
           return;
         }
-        await handleSelfTest(request, response, { mode, port, host });
+        await handleSelfTest(request, response, { mode, port, host, publicOrigin });
         return;
       }
 
@@ -1189,6 +1244,7 @@ export function createPlaygroundServer({
           sampleId: decodeSampleId(validationRoute[1]),
           port,
           host,
+          publicOrigin,
         });
         return;
       }

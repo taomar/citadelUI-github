@@ -20,12 +20,28 @@ param relayAllowedSampleIds = [
 ]
 param relayRequestPolicy = {
   'weather-mcp-discovery': {
-    initialize: {
+    'mcp-initialize': {
       urls: [
-        'https://<apim-gateway-host>/weather/mcp'
+        'https://<apim-gateway-host>/mcp/weather-tool-mcp/mcp'
       ]
       headerNames: [
-        'Ocp-Apim-Subscription-Key'
+        'api-key'
+      ]
+    }
+    'mcp-initialized': {
+      urls: [
+        'https://<apim-gateway-host>/mcp/weather-tool-mcp/mcp'
+      ]
+      headerNames: [
+        'api-key'
+      ]
+    }
+    'tools-list': {
+      urls: [
+        'https://<apim-gateway-host>/mcp/weather-tool-mcp/mcp'
+      ]
+      headerNames: [
+        'api-key'
       ]
     }
   }

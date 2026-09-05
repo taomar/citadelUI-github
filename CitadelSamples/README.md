@@ -180,10 +180,16 @@ Environment variables:
 | `CITADEL_PLAYGROUND_PORT` | `4173` | Listening port |
 | `CITADEL_PLAYGROUND_HOST` | `127.0.0.1` | Bind address; local execution accepts loopback only |
 | `CITADEL_PLAYGROUND_PYTHON` | `python` on Windows, `python3` elsewhere | Approved Python interpreter |
+| `CITADEL_PLAYGROUND_PUBLIC_ORIGIN` | *(unset)* | Exact canonical HTTPS browser origin required by every state-changing JSON route on a non-loopback bind |
 | `CITADEL_PLAYGROUND_RELAY_URL` | *(unset)* | Approved external execution relay |
-| `CITADEL_PLAYGROUND_RELAY_TOKEN` | *(unset)* | Bearer token for that relay |
+| `CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS` | *(required when relay URL is set)* | Deployment-owned JSON array; the playground advertises and forwards only this subset |
+| `CITADEL_PLAYGROUND_RELAY_TOKEN` | *(unset)* | Development-only static relay credential; hosted Container Apps uses managed identity instead |
 
-The relay URL and token are never returned to browser code.
+The relay URL and credentials are never returned to browser code. Hosted
+deployment passes the same serialized allowed-sample array to the playground and
+relay. Unknown, duplicate, malformed, or relay-ineligible IDs are rejected rather
+than widened to the catalogue-derived eligible set. The trusted public origin is
+matched exactly; forwarded host and protocol headers do not broaden it.
 
 ---
 
