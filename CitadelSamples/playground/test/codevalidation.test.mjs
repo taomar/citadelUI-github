@@ -16,6 +16,7 @@ import {
   CODE_VALIDATION_SCENARIO,
   createCodeValidationManager,
 } from '../src/server/codeValidation.mjs';
+import { RequestRefused } from '../src/server/runRequest.mjs';
 import { spawnProcess } from '../src/server/transports.mjs';
 
 const PLAYGROUND_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -215,6 +216,105 @@ test('a cleanup failure fails closed instead of claiming an ephemeral run', asyn
     assert.equal(result.state, 'failed');
     assert.equal(result.workspaceRemoved, false);
     assert.match(result.summary, /workspace could not be removed/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('cancelAll waits for process exit and workspace cleanup, and repeated drains clean up once', async () => {
+  const fixture = await makeFixture();
+  try {
+    let markProcessStarted;
+    const processStarted = new Promise((resolveStarted) => {
+      markProcessStarted = resolveStarted;
+    });
+    let markProcessAborted;
+    const processAborted = new Promise((resolveAborted) => {
+      markProcessAborted = resolveAborted;
+    });
+    let releaseProcess;
+    const processExit = new Promise((resolveExit) => {
+      releaseProcess = resolveExit;
+    });
+    let markCleanupStarted;
+    const cleanupStarted = new Promise((resolveStarted) => {
+      markCleanupStarted = resolveStarted;
+    });
+    let releaseCleanup;
+    const cleanupRelease = new Promise((resolveCleanup) => {
+      releaseCleanup = resolveCleanup;
+    });
+    let cleanupCalls = 0;
+    const manager = createCodeValidationManager({
+      playgroundRoot: fixture.playgroundRoot,
+      spawn: ({ signal }) =>
+        new Promise((resolveSpawn) => {
+          markProcessStarted();
+          const finish = () => {
+            markProcessAborted();
+            void processExit.then(() => {
+              resolveSpawn({ code: -1, stdout: '', stderr: 'aborted', timedOut: false, aborted: true });
+            });
+          };
+          if (signal.aborted) finish();
+          else signal.addEventListener('abort', finish, { once: true });
+        }),
+      removeImpl: async (path, options) => {
+        cleanupCalls += 1;
+        markCleanupStarted();
+        await cleanupRelease;
+        await rm(path, options);
+      },
+    });
+    const pending = manager.start('azure-context-check', REQUEST);
+    await processStarted;
+
+    let drained = false;
+    const firstDrain = manager.cancelAll().then(() => {
+      drained = true;
+    });
+    const secondDrain = manager.cancelAndDrain();
+    await processAborted;
+    await new Promise((resolveTurn) => setImmediate(resolveTurn));
+    assert.equal(drained, false, 'drain must wait for the child process to exit');
+
+    releaseProcess();
+    await cleanupStarted;
+    await new Promise((resolveTurn) => setImmediate(resolveTurn));
+    assert.equal(drained, false, 'drain must wait for finally workspace cleanup');
+
+    releaseCleanup();
+    const [result] = await Promise.all([pending, firstDrain, secondDrain]);
+    assert.equal(result.state, 'cancelled');
+    assert.equal(result.workspaceRemoved, true);
+    assert.equal(cleanupCalls, 1);
+    assert.equal(manager.activeCount, 0);
+    assert.equal(await pathExists(join(fixture.playgroundRoot, '.runs', result.runId)), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('a validation start racing shutdown is refused before it creates a workspace', async () => {
+  const fixture = await makeFixture();
+  try {
+    let sourceReads = 0;
+    const manager = createCodeValidationManager({
+      playgroundRoot: fixture.playgroundRoot,
+      sourceReader: async () => {
+        sourceReads += 1;
+        throw new Error('source must not be read after shutdown starts');
+      },
+    });
+    const draining = manager.cancelAll();
+    await assert.rejects(
+      () => manager.start('azure-context-check', REQUEST),
+      (error) => error instanceof RequestRefused && error.code === 'code-validation-manager-closed' && error.status === 409,
+    );
+    await draining;
+    assert.equal(sourceReads, 0);
+    assert.equal(manager.activeCount, 0);
+    assert.equal(await pathExists(join(fixture.playgroundRoot, '.runs')), false);
   } finally {
     await fixture.cleanup();
   }

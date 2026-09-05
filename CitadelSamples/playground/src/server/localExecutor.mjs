@@ -135,6 +135,7 @@ function resolveValue(value, outputs, secrets) {
  * @param {object} options.workspace   from `createRunWorkspace`
  * @param {object} [options.limits]
  * @param {string} [options.pythonExecutable]
+ * @param {() => number} [options.now]
  */
 export function createLocalExecutor({
   transports,
@@ -143,6 +144,9 @@ export function createLocalExecutor({
   pythonExecutable = 'python',
   pythonRoot,
   verifyAzureIdentity = null,
+  now = () => Date.now(),
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout,
 }) {
   const bounds = validateLimits(limits);
   if (!workspace || typeof workspace.root !== 'string' || !isAbsolute(workspace.root)) {
@@ -156,6 +160,9 @@ export function createLocalExecutor({
   }
   if (verifyAzureIdentity !== null && typeof verifyAzureIdentity !== 'function') {
     throw new Error('The local executor Azure identity verifier must be a function.');
+  }
+  if (typeof now !== 'function' || typeof setTimeoutFn !== 'function' || typeof clearTimeoutFn !== 'function') {
+    throw new Error('The local executor clock must provide now, setTimeoutFn, and clearTimeoutFn functions.');
   }
   const approvedExecutables = Object.freeze([...new Set(['az', pythonExecutable])]);
   const approvedPythonRoot = resolve(pythonRoot);
@@ -171,7 +178,8 @@ export function createLocalExecutor({
     const stepResults = [];
     const configurationUpdates = {};
     const secretUpdates = {};
-    const startedAt = Date.now();
+    const startedAt = now();
+    const runDeadlineAt = startedAt + bounds.runTimeoutMs;
 
     const report = (record) => {
       stepResults.push(record);
@@ -184,7 +192,7 @@ export function createLocalExecutor({
         report({ id: step.id, kind: step.type, title: step.title, state: 'cancelled', durationMs: 0, evidence: {} });
         break;
       }
-      if (Date.now() - startedAt > bounds.runTimeoutMs) {
+      if (now() >= runDeadlineAt) {
         report({
           id: step.id,
           kind: step.type,
@@ -197,8 +205,10 @@ export function createLocalExecutor({
         break;
       }
       onProgress?.({ type: 'step-start', step: progressIdentity(step, redactor) });
-      const began = Date.now();
-      const deadlineAt = Math.min(startedAt + bounds.runTimeoutMs, began + bounds.stepTimeoutMs);
+      const began = now();
+      const stepDeadlineAt = began + bounds.stepTimeoutMs;
+      const deadlineAt = Math.min(runDeadlineAt, stepDeadlineAt);
+      const deadlineScope = runDeadlineAt <= stepDeadlineAt ? 'run' : 'step';
       let record;
       try {
         record = await runStep(step, {
@@ -213,6 +223,7 @@ export function createLocalExecutor({
           redactor,
           signal,
           deadlineAt,
+          deadlineScope,
         });
       } catch (error) {
         record = {
@@ -224,7 +235,7 @@ export function createLocalExecutor({
           evidence: {},
         };
       }
-      record.durationMs = Date.now() - began;
+      record.durationMs = now() - began;
       Object.assign(configurationUpdates, record.configurationUpdates ?? {});
       Object.assign(secretUpdates, record.secretUpdates ?? {});
       for (const value of Object.values(record.secretUpdates ?? {})) redactor.add(value);
@@ -235,7 +246,7 @@ export function createLocalExecutor({
       if (record.state !== 'completed' && record.state !== 'skipped') break;
     }
 
-    return summarise({ plan, stepResults, configurationUpdates, secretUpdates, redactor, signal, startedAt });
+    return summarise({ plan, stepResults, configurationUpdates, secretUpdates, redactor, signal, startedAt, now });
   }
 
   /* ------------------------------------------------------------- one step */
@@ -374,7 +385,7 @@ export function createLocalExecutor({
     };
   }
 
-  async function runHttp(step, { outputs, secrets, redactor, signal, deadlineAt }) {
+  async function runHttp(step, { outputs, secrets, redactor, signal, deadlineAt, deadlineScope }) {
     const request = step.request ?? {};
     const url = assertExecutableUrl(resolveValue(request.url, outputs, secrets));
     const headers = resolveValue(request.headers ?? {}, outputs, secrets);
@@ -386,13 +397,29 @@ export function createLocalExecutor({
     await verifyIdentityBeforeEffect({ signal });
     const outboundJsonRpcId = jsonRpcRequestId(resolvedBody);
     const expectsJsonRpc = outboundJsonRpcId !== undefined;
-    const timeoutMs = remainingTimeout(deadlineAt, (request.timeoutSeconds ?? 60) * 1000);
 
     if (request.repeat) {
-      return runBurst(step, { url, headers, body, request, outputs, redactor, signal, deadlineAt });
+      return runBurst(step, { url, headers, body, request, outputs, redactor, signal, deadlineAt, deadlineScope });
     }
 
-    const response = await fetchOnce({ url, method: request.method ?? 'GET', headers, body, timeoutMs, signal });
+    let timeout;
+    try {
+      timeout = timeoutBudget(deadlineAt, (request.timeoutSeconds ?? 60) * 1000, deadlineScope, now);
+    } catch {
+      return {
+        id: step.id,
+        kind: 'http',
+        title: step.title,
+        state: 'failed',
+        detail: `The request exhausted its ${deadlineScope} execution-time budget before it could start.`,
+        evidence: {
+          url: url.toString(),
+          method: request.method ?? 'GET',
+          errorType: 'deadline-timeout',
+        },
+      };
+    }
+    const response = await fetchOnce({ url, method: request.method ?? 'GET', headers, body, timeout, signal });
     if (response.error) {
       return {
         id: step.id,
@@ -400,7 +427,26 @@ export function createLocalExecutor({
         title: step.title,
         state: signal?.aborted ? 'cancelled' : 'failed',
         detail: redactor.text(response.error),
-        evidence: { url: url.toString(), method: request.method ?? 'GET' },
+        evidence: {
+          url: url.toString(),
+          method: request.method ?? 'GET',
+          errorType: response.errorType,
+        },
+      };
+    }
+    if (response.completedAt >= deadlineAt) {
+      return {
+        id: step.id,
+        kind: 'http',
+        title: step.title,
+        state: 'failed',
+        detail: `The response completed after the ${deadlineScope} execution-time budget expired.`,
+        evidence: {
+          url: url.toString(),
+          method: request.method ?? 'GET',
+          status: response.status,
+          errorType: 'deadline-timeout',
+        },
       };
     }
     const parsed = parseHttpResponse(
@@ -458,42 +504,77 @@ export function createLocalExecutor({
     };
   }
 
-  async function runBurst(step, { url, headers, body, request, outputs, redactor, signal, deadlineAt }) {
+  async function runBurst(step, { url, headers, body, request, outputs, redactor, signal, deadlineAt, deadlineScope }) {
     const count = Math.min(Number(request.repeat.count) || 1, bounds.maxBurstRequests);
     const concurrency = Math.max(1, Math.min(Number(request.repeat.concurrency) || 1, bounds.maxConcurrency));
     const requestTimeoutMs = Math.min((request.repeat.timeoutSeconds ?? 30) * 1000, bounds.stepTimeoutMs);
     const statusCodes = new Array(count).fill(0);
     const errors = [];
     let next = 0;
+    let attempted = 0;
     let deadlineExceeded = false;
+    let deadlineExpiredBeforeStart = false;
+    let requestTimeouts = 0;
+    let deadlineTimeouts = 0;
+    let transportErrors = 0;
 
     async function worker() {
       while (next < count) {
         if (signal?.aborted) return;
-        if (Date.now() >= deadlineAt) {
+        if (now() >= deadlineAt) {
           deadlineExceeded = true;
+          deadlineExpiredBeforeStart = true;
+          if (errors.length < 20) {
+            errors.push(`The ${deadlineScope} execution-time budget expired before every burst request could start.`);
+          }
           return;
         }
         const index = next++;
+        let timeout;
+        try {
+          timeout = timeoutBudget(deadlineAt, requestTimeoutMs, deadlineScope, now);
+        } catch {
+          deadlineExceeded = true;
+          deadlineExpiredBeforeStart = true;
+          if (errors.length < 20) {
+            errors.push(`The ${deadlineScope} execution-time budget expired before a burst request could start.`);
+          }
+          return;
+        }
+        attempted += 1;
         const response = await fetchOnce({
           url,
           method: request.method ?? 'POST',
           headers,
           body,
-          timeoutMs: remainingTimeout(deadlineAt, requestTimeoutMs),
+          timeout,
           signal,
         });
         if (response.error) {
           statusCodes[index] = 0;
+          if (response.errorType === 'deadline-timeout') {
+            deadlineExceeded = true;
+            deadlineTimeouts += 1;
+          } else if (response.errorType === 'request-timeout') {
+            requestTimeouts += 1;
+          } else if (response.errorType === 'transport-error') {
+            transportErrors += 1;
+          }
           if (errors.length < 20) errors.push(redactor.text(response.error));
         } else {
           statusCodes[index] = response.status;
+          if (response.completedAt >= deadlineAt) {
+            deadlineExceeded = true;
+            deadlineTimeouts += 1;
+            if (errors.length < 20) {
+              errors.push(`A burst response completed after the ${deadlineScope} execution-time budget expired.`);
+            }
+          }
         }
       }
     }
 
     await Promise.all(Array.from({ length: concurrency }, worker));
-    const attempted = statusCodes.filter((code) => code !== 0 || errors.length > 0).length;
     outputs.set(`${step.id}.statusCodes`, statusCodes);
     outputs.set(`${step.id}.errors`, errors);
     const histogram = {};
@@ -504,15 +585,20 @@ export function createLocalExecutor({
       title: step.title,
       state: signal?.aborted ? 'cancelled' : deadlineExceeded ? 'failed' : 'completed',
       detail: deadlineExceeded
-        ? `The burst exceeded its ${Math.round(bounds.stepTimeoutMs / 1000)}s step budget.`
+        ? `The burst exhausted its ${deadlineScope} execution-time budget before every response completed.`
         : `${count} request(s) at concurrency ${concurrency}.`,
       evidence: {
         url: url.toString(),
         requested: count,
         attempted,
+        unattempted: count - attempted,
         concurrency,
         statusHistogram: histogram,
-        transportErrors: errors.length,
+        requestTimeouts,
+        deadlineTimeouts,
+        transportErrors,
+        deadlineExpiredBeforeStart,
+        deadlineScope: deadlineExceeded ? deadlineScope : null,
         firstErrors: errors.slice(0, 3),
       },
     };
@@ -665,7 +751,7 @@ export function createLocalExecutor({
       stdin,
       env,
       signal,
-      timeoutMs: remainingTimeout(deadlineAt),
+      timeoutMs: remainingTimeout(deadlineAt, Number.POSITIVE_INFINITY, now),
       maxOutputBytes: bounds.maxOutputBytes,
       allowedExecutables: approvedExecutables,
     });
@@ -705,12 +791,23 @@ export function createLocalExecutor({
     };
   }
 
-  async function fetchOnce({ url, method, headers, body, timeoutMs, signal }) {
+  async function fetchOnce({ url, method, headers, body, timeout, signal }) {
     const controller = new AbortController();
-    const onAbort = () => controller.abort();
+    let interrupt;
+    const interrupted = new Promise((resolveInterrupted) => {
+      interrupt = resolveInterrupted;
+    });
+    const onAbort = () => {
+      interrupt({ type: 'cancelled' });
+      controller.abort();
+    };
     signal?.addEventListener('abort', onAbort, { once: true });
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
+    if (signal?.aborted) onAbort();
+    const timer = setTimeoutFn(() => {
+      interrupt({ type: timeout.errorType });
+      controller.abort();
+    }, timeout.timeoutMs);
+    const operation = (async () => {
       const response = await transports.fetch(url.toString(), {
         method,
         headers,
@@ -720,18 +817,33 @@ export function createLocalExecutor({
         redirect: 'error',
       });
       const text = await readBounded(response, bounds.maxResponseBytes);
-      return { status: response.status, headers: response.headers, text };
+      return { status: response.status, headers: response.headers, text, completedAt: now() };
+    })();
+    try {
+      const outcome = await Promise.race([operation, interrupted]);
+      if (outcome?.type === 'cancelled') {
+        return { error: 'Cancelled.', errorType: 'cancelled' };
+      }
+      if (outcome?.type === 'deadline-timeout') {
+        return {
+          error: `The request exhausted its ${timeout.deadlineScope} execution-time budget.`,
+          errorType: 'deadline-timeout',
+        };
+      }
+      if (outcome?.type === 'request-timeout') {
+        return {
+          error: `Timed out after ${Math.round(timeout.timeoutMs / 1000)}s.`,
+          errorType: 'request-timeout',
+        };
+      }
+      return outcome;
     } catch (error) {
-      const aborted = signal?.aborted;
       return {
-        error: aborted
-          ? 'Cancelled.'
-          : error?.name === 'AbortError'
-            ? `Timed out after ${Math.round(timeoutMs / 1000)}s.`
-            : String(error?.message ?? error),
+        error: signal?.aborted ? 'Cancelled.' : String(error?.message ?? error),
+        errorType: signal?.aborted ? 'cancelled' : 'transport-error',
       };
     } finally {
-      clearTimeout(timer);
+      clearTimeoutFn(timer);
       signal?.removeEventListener('abort', onAbort);
     }
   }
@@ -757,10 +869,20 @@ function validateLimits(overrides) {
   return Object.freeze(limits);
 }
 
-function remainingTimeout(deadlineAt, requested = Number.POSITIVE_INFINITY) {
-  const remaining = deadlineAt - Date.now();
+function remainingTimeout(deadlineAt, requested = Number.POSITIVE_INFINITY, now = () => Date.now()) {
+  const remaining = deadlineAt - now();
   if (remaining <= 0) throw new Error('The step exhausted its execution-time budget.');
   return Math.max(1, Math.min(remaining, requested));
+}
+
+function timeoutBudget(deadlineAt, requested, deadlineScope, now) {
+  const remaining = deadlineAt - now();
+  if (remaining <= 0) throw new Error('The step exhausted its execution-time budget.');
+  return Object.freeze({
+    timeoutMs: Math.max(1, Math.min(remaining, requested)),
+    errorType: remaining <= requested ? 'deadline-timeout' : 'request-timeout',
+    deadlineScope,
+  });
 }
 
 async function readBounded(response, limitBytes) {
@@ -851,7 +973,7 @@ function publicStep(record) {
   };
 }
 
-function summarise({ plan, stepResults, configurationUpdates, secretUpdates, redactor, signal, startedAt }) {
+function summarise({ plan, stepResults, configurationUpdates, secretUpdates, redactor, signal, startedAt, now }) {
   const steps = stepResults.map(publicStep);
   const assertions = stepResults.filter((step) => step.assertion).map((step) => step.assertion);
   const failed = stepResults.filter((step) => step.state === 'failed');
@@ -892,7 +1014,7 @@ function summarise({ plan, stepResults, configurationUpdates, secretUpdates, red
     secretUpdates,
     meta: {
       executor: 'local',
-      durationMs: Date.now() - startedAt,
+      durationMs: now() - startedAt,
       stepsRun: ran,
       stepsPlanned: expected,
       artifacts: stepResults.filter((step) => step.artifactPath).map((step) => step.artifactPath),

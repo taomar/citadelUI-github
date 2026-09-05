@@ -13,8 +13,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
+import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -36,6 +37,7 @@ import { ACCELERATOR_ROOT, EXECUTION_PROTOCOL_VERSION } from '../src/core/types.
 import { describeSampleCapability, probeFromCapabilityPayload, summariseCapability } from '../src/core/capability.mjs';
 import { canonicalInputDigest } from '../src/relay/acknowledgement.mjs';
 import { resolveSpawnInvocation, spawnProcess } from '../src/server/transports.mjs';
+import { createCodeValidationManager } from '../src/server/codeValidation.mjs';
 import { createRunManager } from '../src/server/runManager.mjs';
 import {
   createContainerAppsEntraAuthenticator,
@@ -630,6 +632,114 @@ test('signal shutdown waits for a disconnected admission reservation to finish c
   assert.equal(executionCalls, 0);
   assert.equal(manager.activeCount, 0);
   assert.equal(filesystem.dirs.size, 0);
+});
+
+test('signal shutdown waits for offline validation process exit and workspace cleanup before exit', { timeout: 5_000 }, async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'citadel-validation-shutdown-'));
+  let server;
+  try {
+    let markProcessStarted;
+    const processStarted = new Promise((resolveStarted) => {
+      markProcessStarted = resolveStarted;
+    });
+    let markProcessAborted;
+    const processAborted = new Promise((resolveAborted) => {
+      markProcessAborted = resolveAborted;
+    });
+    let releaseProcess;
+    const processExit = new Promise((resolveExit) => {
+      releaseProcess = resolveExit;
+    });
+    let markCleanupStarted;
+    const cleanupStarted = new Promise((resolveStarted) => {
+      markCleanupStarted = resolveStarted;
+    });
+    let releaseCleanup;
+    const cleanupRelease = new Promise((resolveCleanup) => {
+      releaseCleanup = resolveCleanup;
+    });
+    let cleanupCalls = 0;
+    const manager = createCodeValidationManager({
+      playgroundRoot: temporaryRoot,
+      sourceReader: async () => ({
+        notebook: { fileName: 'fixture.ipynb', sha256: 'fixture' },
+        cells: [{ cellIndex: 0, cellType: 'code', text: 'print("fixture")\n', bytes: 17, sha256: 'fixture-cell' }],
+      }),
+      spawn: ({ signal }) =>
+        new Promise((resolveSpawn) => {
+          markProcessStarted();
+          const finish = () => {
+            markProcessAborted();
+            void processExit.then(() => {
+              resolveSpawn({ code: -1, stdout: '', stderr: 'aborted', timedOut: false, aborted: true });
+            });
+          };
+          if (signal.aborted) finish();
+          else signal.addEventListener('abort', finish, { once: true });
+        }),
+      removeImpl: async (path, options) => {
+        cleanupCalls += 1;
+        markCleanupStarted();
+        await cleanupRelease;
+        await rm(path, options);
+      },
+    });
+    server = createPlaygroundServer({
+      mode: 'execute',
+      codeValidationManager: manager,
+      testBootstrapCapability: TEST_BOOTSTRAP_CAPABILITY,
+    });
+    await new Promise((done) => server.listen(0, '127.0.0.1', done));
+    const { port } = server.address();
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const { cookie } = await claimLocalSession(baseUrl);
+    const pending = fetch(`${baseUrl}/api/source/azure-context-check/validate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Connection: 'close',
+        Cookie: cookie,
+        Origin: baseUrl,
+        'Sec-Fetch-Site': 'same-origin',
+      },
+      body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
+    });
+    await processStarted;
+
+    const exitCodes = [];
+    let markExited;
+    const exited = new Promise((resolveExited) => {
+      markExited = resolveExited;
+    });
+    const shutdown = createSignalShutdownHandler(server, {
+      exit(code) {
+        exitCodes.push(code);
+        markExited();
+      },
+    });
+    shutdown();
+    shutdown();
+    await processAborted;
+    await new Promise((resolveTurn) => setImmediate(resolveTurn));
+    assert.deepEqual(exitCodes, [], 'signal exit must wait for the validation process to exit');
+
+    releaseProcess();
+    await cleanupStarted;
+    await new Promise((resolveTurn) => setImmediate(resolveTurn));
+    assert.deepEqual(exitCodes, [], 'signal exit must wait for validation workspace cleanup');
+
+    releaseCleanup();
+    const response = await pending;
+    await exited;
+    assert.equal((await response.json()).state, 'cancelled');
+    assert.deepEqual(exitCodes, [0]);
+    assert.equal(cleanupCalls, 1);
+    assert.equal(manager.activeCount, 0);
+  } finally {
+    server?.closeAllConnections?.();
+    if (server?.listening) await new Promise((done) => server.close(done));
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
 });
 
 test('the relay endpoint applies the same-origin JSON guard before forwarding', async () => {

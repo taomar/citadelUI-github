@@ -41,8 +41,15 @@ export function createCodeValidationManager({
   const bounds = Object.freeze({ ...DEFAULT_CODE_VALIDATION_LIMITS, ...limits });
   const active = new Map();
   let sequence = 0;
+  let shuttingDown = false;
 
   async function start(sampleId, payload, { onStart, onProgress } = {}) {
+    if (shuttingDown) {
+      throw new RequestRefused('The offline validation manager is shutting down.', {
+        code: 'code-validation-manager-closed',
+        status: 409,
+      });
+    }
     const request = validateCodeValidationRequest(sampleId, payload, catalogue);
     if (active.size >= bounds.maxConcurrentRuns) {
       throw new RequestRefused(
@@ -55,7 +62,11 @@ export function createCodeValidationManager({
     const runId = makeRunId(`code-${request.sample.id}`, sequence);
     const workspace = createRunWorkspace({ playgroundRoot, runId });
     const controller = new AbortController();
-    active.set(runId, { controller, sampleId: request.sample.id });
+    let resolveDone;
+    const done = new Promise((resolveCompletion) => {
+      resolveDone = resolveCompletion;
+    });
+    active.set(runId, { controller, sampleId: request.sample.id, done });
 
     let result;
     let cleanupError = null;
@@ -93,6 +104,7 @@ export function createCodeValidationManager({
         cleanupError = error;
       }
       active.delete(runId);
+      resolveDone();
     }
 
     if (cleanupError) {
@@ -118,14 +130,18 @@ export function createCodeValidationManager({
     return Object.freeze({ cancelled: true, runId, sampleId: run.sampleId });
   }
 
-  function cancelAll() {
-    for (const run of active.values()) run.controller.abort();
+  async function cancelAll() {
+    shuttingDown = true;
+    const runs = [...active.values()];
+    for (const run of runs) run.controller.abort();
+    await Promise.all(runs.map((run) => run.done));
   }
 
   return Object.freeze({
     start,
     cancel,
     cancelAll,
+    cancelAndDrain: cancelAll,
     get activeCount() {
       return active.size;
     },

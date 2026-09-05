@@ -1983,9 +1983,10 @@ export function createPlaygroundServer({
 /* ------------------------------------------------------------------- boot */
 
 function cancelAndDrain(manager) {
-  if (typeof manager?.cancelAll !== 'function') return Promise.resolve();
+  const drain = typeof manager?.cancelAndDrain === 'function' ? manager.cancelAndDrain : manager?.cancelAll;
+  if (typeof drain !== 'function') return Promise.resolve();
   try {
-    return Promise.resolve(manager.cancelAll());
+    return Promise.resolve(drain.call(manager));
   } catch (error) {
     return Promise.reject(error);
   }

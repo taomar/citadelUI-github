@@ -52,7 +52,7 @@ function inputsFor(sample, overrides = {}) {
   return inputs;
 }
 
-function makeExecutor({ spawn, fetch, filesystem, limits, workspaceId = 'test-0001' } = {}) {
+function makeExecutor({ spawn, fetch, filesystem, limits, workspaceId = 'test-0001', clock = {} } = {}) {
   const fs = filesystem ?? fakeFileSystem({ realReadRoots: [ACCELERATOR_ROOT] });
   const transports = makeTransports({ spawn, fetch, filesystem: fs });
   const workspace = createRunWorkspace({
@@ -66,13 +66,14 @@ function makeExecutor({ spawn, fetch, filesystem, limits, workspaceId = 'test-00
     limits,
     pythonExecutable: 'python',
     pythonRoot: `${PLAYGROUND_ROOT}/runtime/python`,
+    ...clock,
   });
   return { executor, transports, workspace };
 }
 
-async function run(sampleId, { spawn, fetch, filesystem, overrides = {}, secrets = FIXTURE_SECRETS, limits, signal } = {}) {
+async function run(sampleId, { spawn, fetch, filesystem, overrides = {}, secrets = FIXTURE_SECRETS, limits, signal, clock } = {}) {
   const { sample, plan } = planFor(sampleId, overrides);
-  const { executor, transports, workspace } = makeExecutor({ spawn, fetch, filesystem, limits });
+  const { executor, transports, workspace } = makeExecutor({ spawn, fetch, filesystem, limits, clock });
   const result = await executor.execute(plan, {
     sampleId,
     inputs: inputsFor(sample, overrides),
@@ -815,6 +816,215 @@ test('a transport error is counted separately from a throttled call', async () =
   const burst = result.steps.find((step) => step.id === 'burst');
   assert.ok(burst.evidence.transportErrors > 0, 'transport errors must be counted');
   assert.ok(burst.evidence.statusHistogram['0'] > 0, 'a transport error is not a status code');
+});
+
+test('a burst fails when its last scheduled request exhausts the run deadline after an earlier 429', async () => {
+  let currentTime = 0;
+  const timers = [];
+  const clock = {
+    now: () => currentTime,
+    setTimeoutFn(callback, delayMs) {
+      const timer = { callback, at: currentTime + delayMs, cleared: false, fired: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeoutFn(timer) {
+      timer.cleared = true;
+    },
+  };
+  let calls = 0;
+  const fetch = async (_url, { signal }) => {
+    calls += 1;
+    if (calls < 35) {
+      return {
+        status: calls === 1 ? 429 : 200,
+        headers: {},
+        text: async () => '',
+      };
+    }
+    return new Promise((_resolve, reject) => {
+      signal.addEventListener(
+        'abort',
+        () => {
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          reject(error);
+        },
+        { once: true },
+      );
+    });
+  };
+
+  const pending = run('tool-rate-limit-burst', {
+    fetch,
+    limits: { runTimeoutMs: 50, stepTimeoutMs: 100 },
+    clock,
+  });
+  while (calls < 35) await new Promise((resolveTurn) => setImmediate(resolveTurn));
+  const deadlineTimer = timers.find((timer) => !timer.cleared && !timer.fired);
+  assert.ok(deadlineTimer, 'the final request must be bounded by the remaining run deadline');
+  currentTime = deadlineTimer.at;
+  deadlineTimer.fired = true;
+  deadlineTimer.callback();
+
+  const { result } = await pending;
+  const burst = result.steps.find((step) => step.id === 'burst');
+  assert.equal(result.state, 'failed');
+  assert.equal(burst.state, 'failed');
+  assert.equal(burst.evidence.attempted, 35);
+  assert.equal(burst.evidence.deadlineTimeouts, 1);
+  assert.equal(burst.evidence.requestTimeouts, 0);
+  assert.equal(burst.evidence.transportErrors, 0);
+  assert.ok(burst.evidence.statusHistogram['429'] > 0, 'completed throttling evidence must be retained');
+  assert.ok(burst.evidence.statusHistogram['0'] > 0, 'the deadline-bound request has no status code');
+  assert.equal(
+    result.assertions.find((entry) => entry.id === 'assert-throttled'),
+    undefined,
+    'the prior 429 must not let a deadline-exhausted burst reach its assertion',
+  );
+});
+
+test('a burst records a per-request timeout separately from the total deadline', async () => {
+  let currentTime = 0;
+  const timers = [];
+  const clock = {
+    now: () => currentTime,
+    setTimeoutFn(callback, delayMs) {
+      const timer = { callback, at: currentTime + delayMs, cleared: false, fired: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeoutFn(timer) {
+      timer.cleared = true;
+    },
+  };
+  let calls = 0;
+  const fetch = async (_url, { signal }) => {
+    calls += 1;
+    if (calls < 35) {
+      return {
+        status: calls === 1 ? 429 : 200,
+        headers: {},
+        text: async () => '',
+      };
+    }
+    return new Promise((_resolve, reject) => {
+      signal.addEventListener(
+        'abort',
+        () => {
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          reject(error);
+        },
+        { once: true },
+      );
+    });
+  };
+
+  const pending = run('tool-rate-limit-burst', {
+    fetch,
+    limits: { runTimeoutMs: 40_000, stepTimeoutMs: 40_000 },
+    clock,
+  });
+  while (calls < 35) await new Promise((resolveTurn) => setImmediate(resolveTurn));
+  const requestTimer = timers.find((timer) => !timer.cleared && !timer.fired);
+  assert.ok(requestTimer);
+  currentTime = requestTimer.at;
+  requestTimer.fired = true;
+  requestTimer.callback();
+
+  const { result } = await pending;
+  const burst = result.steps.find((step) => step.id === 'burst');
+  assert.equal(burst.state, 'completed');
+  assert.equal(burst.evidence.requestTimeouts, 1);
+  assert.equal(burst.evidence.deadlineTimeouts, 0);
+  assert.equal(burst.evidence.transportErrors, 0);
+  assert.equal(result.assertions.find((entry) => entry.id === 'assert-throttled').status, 'passed');
+});
+
+test('a burst reports structured deadline evidence when the budget expires while reserving a request timeout', async () => {
+  const times = [0, 0, 0, 49, 50];
+  let fetchCalls = 0;
+  const { executor } = makeExecutor({
+    fetch: async () => {
+      fetchCalls += 1;
+      return { status: 429, headers: {}, text: async () => '' };
+    },
+    limits: { runTimeoutMs: 50, stepTimeoutMs: 100 },
+    clock: {
+      now: () => times.shift() ?? 50,
+      setTimeoutFn: setTimeout,
+      clearTimeoutFn: clearTimeout,
+    },
+  });
+  const result = await executor.execute(
+    {
+      sampleId: 'deadline-boundary',
+      steps: [
+        {
+          id: 'burst',
+          type: 'http',
+          title: 'Boundary burst',
+          produces: ['statusCodes', 'errors'],
+          request: {
+            url: 'https://gateway.example.test/burst',
+            method: 'POST',
+            repeat: { count: 1, concurrency: 1, timeoutSeconds: 30 },
+          },
+        },
+      ],
+    },
+    { sampleId: 'deadline-boundary' },
+  );
+
+  const [burst] = result.steps;
+  assert.equal(result.state, 'failed');
+  assert.equal(burst.state, 'failed');
+  assert.match(burst.detail, /run execution-time budget/);
+  assert.equal(burst.evidence.attempted, 0);
+  assert.equal(burst.evidence.unattempted, 1);
+  assert.equal(burst.evidence.deadlineExpiredBeforeStart, true);
+  assert.equal(burst.evidence.deadlineScope, 'run');
+  assert.match(burst.evidence.firstErrors[0], /expired before a burst request could start/);
+  assert.equal(fetchCalls, 0);
+});
+
+test('a single HTTP response that completes on the deadline boundary fails with its status retained', async () => {
+  const times = [0, 0, 49, 49, 50];
+  const { executor } = makeExecutor({
+    fetch: async () => ({ status: 200, headers: {}, text: async () => '{}' }),
+    limits: { runTimeoutMs: 50, stepTimeoutMs: 100 },
+    clock: {
+      now: () => times.shift() ?? 50,
+      setTimeoutFn: setTimeout,
+      clearTimeoutFn: clearTimeout,
+    },
+  });
+  const result = await executor.execute(
+    {
+      sampleId: 'deadline-boundary',
+      steps: [
+        {
+          id: 'request',
+          type: 'http',
+          title: 'Boundary request',
+          request: { url: 'https://gateway.example.test/request', method: 'GET' },
+        },
+      ],
+    },
+    { sampleId: 'deadline-boundary' },
+  );
+
+  const [request] = result.steps;
+  assert.equal(result.state, 'failed');
+  assert.equal(request.state, 'failed');
+  assert.match(request.detail, /run execution-time budget/);
+  assert.deepEqual(request.evidence, {
+    url: 'https://gateway.example.test/request',
+    method: 'GET',
+    status: 200,
+    errorType: 'deadline-timeout',
+  });
 });
 
 /* --------------------------------------------------------------- URL rules */
