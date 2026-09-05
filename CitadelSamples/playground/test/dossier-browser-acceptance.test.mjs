@@ -22,7 +22,7 @@ test('dossier acceptance scenarios and screenshot names are deterministic', () =
       '01-azure-account-desktop-1440x900.png',
       '02-gateway-connection-desktop-1440x900.png',
       '03-gateway-help-mobile-390x844.png',
-      '04-publish-assets-desktop-1440x900.png',
+      '04-publish-assets-desktop-1252x876.png',
       '05-publish-assets-tablet-768x800.png',
       '06-publish-assets-phone-390x844.png',
       '07-publish-assets-phone-small-320x480.png',
@@ -107,6 +107,16 @@ test('viewport helper enforces the breakpoint-specific dossier shape', () => {
         documentWidth: 1440,
         viewportWidth: 1440,
         shellWidth: 1440,
+        documentClientHeight: 900,
+        documentScrollHeight: 900,
+        mainOverflowY: 'auto',
+        mainClientHeight: 700,
+        mainScrollHeight: 1100,
+        mainHorizontalOverflow: false,
+        bodyOverflowY: 'hidden',
+        directoryOverflowY: 'auto',
+        directoryClientHeight: 700,
+        directoryScrollHeight: 1200,
         nestedFormScrollers: 0,
         visibleStepContents: 1,
         directoryVisible: true,
@@ -128,6 +138,16 @@ test('viewport helper enforces the breakpoint-specific dossier shape', () => {
       documentWidth: 340,
       viewportWidth: 320,
       shellWidth: 340,
+      documentClientHeight: 480,
+      documentScrollHeight: 480,
+      mainOverflowY: 'auto',
+      mainClientHeight: 240,
+      mainScrollHeight: 900,
+      mainHorizontalOverflow: false,
+      bodyOverflowY: 'hidden',
+      directoryOverflowY: 'auto',
+      directoryClientHeight: 480,
+      directoryScrollHeight: 1000,
       nestedFormScrollers: 1,
       visibleStepContents: 2,
       directoryVisible: true,
@@ -151,6 +171,8 @@ test('responsive CSS encodes the desktop, tablet, phone, zoom, and high-contrast
   assert.match(css, /@media \(max-width: 62rem\)/);
   assert.match(css, /@media \(max-width: 47\.999rem\)/);
   assert.match(css, /\.wizard-step-nav[\s\S]*?position: sticky/);
+  assert.match(css, /#dossier-shell[\s\S]*?block-size: 100dvh/);
+  assert.match(css, /#run-dossier[\s\S]*?overflow: hidden auto/);
   assert.match(css, /\.dossier-stage-progress select[\s\S]*?display: block/);
   assert.match(css, /--dossier-dock-size: 3\.5rem/);
   assert.match(css, /env\(safe-area-inset-bottom\)/);

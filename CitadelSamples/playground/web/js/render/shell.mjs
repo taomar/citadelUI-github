@@ -354,6 +354,33 @@ function stageProgress(wizard = {}, onStageChange) {
   ]);
 }
 
+function scrollWorkspaceByKey(event) {
+  if (
+    event.defaultPrevented
+    || event.target !== event.currentTarget
+    || event.altKey
+    || event.ctrlKey
+    || event.metaKey
+  ) {
+    return;
+  }
+  const workspace = event.currentTarget;
+  const page = Math.max(40, Math.floor(workspace.clientHeight * 0.85));
+  let next = null;
+  if (event.key === 'PageDown' || (event.key === ' ' && !event.shiftKey)) {
+    next = workspace.scrollTop + page;
+  } else if (event.key === 'PageUp' || (event.key === ' ' && event.shiftKey)) {
+    next = workspace.scrollTop - page;
+  } else if (event.key === 'Home') {
+    next = 0;
+  } else if (event.key === 'End') {
+    next = workspace.scrollHeight;
+  }
+  if (next === null) return;
+  event.preventDefault();
+  workspace.scrollTo({ top: next, behavior: 'auto' });
+}
+
 export function renderShell({
   container,
   model = {},
@@ -427,6 +454,11 @@ export function renderShell({
     id: DOSSIER_IDS.dossier,
     class: 'dossier-content',
     tabindex: '-1',
+    inert: inertWhenDirectoryOpen,
+    onkeydown: scrollWorkspaceByKey,
+  });
+  const actions = el('div', {
+    class: 'dossier-action-host',
     inert: inertWhenDirectoryOpen,
   });
 
@@ -536,6 +568,7 @@ export function renderShell({
     workspaceBar,
     drawer,
     dossier,
+    actions,
     el('p', {
       id: DOSSIER_IDS.liveRegion,
       class: 'visually-hidden',
@@ -563,5 +596,5 @@ export function renderShell({
     root.querySelector('.dossier-directory-toggle')?.focus();
   }
 
-  return Object.freeze({ root, dossier, directory, drawer });
+  return Object.freeze({ root, dossier, actions, directory, drawer });
 }

@@ -156,7 +156,11 @@ async function main() {
     reporter.check('320x480 has no page-level horizontal overflow', narrow.documentWidth <= narrow.viewportWidth);
     reporter.check('320x480 uses one recipe picker instead of the rail', !narrow.recipeRailVisible && narrow.recipePickerVisible);
     reporter.check('320x480 exposes the current-step selector', narrow.stepSelectorVisible);
-    reporter.equal('320x480 pins the wizard actions', narrow.actionPosition, 'fixed');
+    reporter.check(
+      '320x480 pins the wizard actions',
+      ['sticky', 'fixed'].includes(narrow.actionPosition),
+      narrow.actionPosition,
+    );
     reporter.check('320x480 controls remain at least 44px high', narrow.minimumControlHeight >= 43.5);
     reporter.check('the page reported no uncaught browser errors', harness.pageErrors.length === 0, harness.pageErrors.join('; '));
   } finally {

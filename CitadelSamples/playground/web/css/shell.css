@@ -4,12 +4,13 @@
   --dossier-rail-width: 15rem;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   grid-template-areas:
     'masthead'
     'context'
     'workspace'
-    'content';
+    'content'
+    'actions';
   min-height: 100dvh;
   overflow: hidden;
   background: var(--ground, #f1f5f9);
@@ -673,6 +674,13 @@ code.execution-context-value {
   background: var(--sheet, #fff);
 }
 
+.dossier-action-host {
+  grid-area: actions;
+  z-index: 30;
+  min-width: 0;
+  background: var(--sheet, #fff);
+}
+
 @media (min-width: 75rem) {
   .dossier-shell {
     grid-template-columns: var(--dossier-rail-width) minmax(0, 1fr);
@@ -680,7 +688,8 @@ code.execution-context-value {
       'masthead masthead'
       'context context'
       'drawer workspace'
-      'drawer content';
+      'drawer content'
+      'drawer actions';
   }
 
   .dossier-directory-toggle,

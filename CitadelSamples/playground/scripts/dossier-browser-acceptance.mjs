@@ -50,10 +50,13 @@ export const DOSSIER_ACCEPTANCE_SCENARIOS = Object.freeze([
     order: 4,
     name: 'publish-assets-desktop',
     recipeId: 'publish-assets',
-    width: 1440,
-    height: 900,
+    width: 1252,
+    height: 876,
     mobile: false,
     breakpoint: 'desktop',
+    requiresWorkspaceScroll: true,
+    reachabilityPath: 'hub.location',
+    keyboardScroll: true,
   }),
   Object.freeze({
     order: 5,
@@ -63,6 +66,9 @@ export const DOSSIER_ACCEPTANCE_SCENARIOS = Object.freeze([
     height: 800,
     mobile: false,
     breakpoint: 'tablet',
+    requiresWorkspaceScroll: true,
+    reachabilityPath: 'hub.location',
+    keyboardScroll: true,
   }),
   Object.freeze({
     order: 6,
@@ -72,6 +78,9 @@ export const DOSSIER_ACCEPTANCE_SCENARIOS = Object.freeze([
     height: 844,
     mobile: true,
     breakpoint: 'phone',
+    requiresWorkspaceScroll: true,
+    reachabilityPath: 'hub.location',
+    keyboardScroll: true,
   }),
   Object.freeze({
     order: 7,
@@ -81,6 +90,9 @@ export const DOSSIER_ACCEPTANCE_SCENARIOS = Object.freeze([
     height: 480,
     mobile: true,
     breakpoint: 'phone',
+    requiresWorkspaceScroll: true,
+    reachabilityPath: 'hub.location',
+    keyboardScroll: true,
   }),
   Object.freeze({
     order: 8,
@@ -93,6 +105,9 @@ export const DOSSIER_ACCEPTANCE_SCENARIOS = Object.freeze([
     mobile: false,
     breakpoint: 'zoom',
     deviceScaleFactor: 2,
+    requiresWorkspaceScroll: true,
+    reachabilityPath: 'hub.location',
+    keyboardScroll: true,
   }),
   Object.freeze({
     order: 9,
@@ -242,6 +257,22 @@ export function viewportContractIssues(snapshot, scenario) {
   if (snapshot.visibleStepContents !== 1) issues.push(`expected one visible step surface, got ${snapshot.visibleStepContents}`);
   if (!['sticky', 'fixed'].includes(snapshot.actionBarPosition)) issues.push('wizard action bar is not sticky or fixed');
   if (snapshot.primaryActionCount !== 1) issues.push(`expected one primary page action, got ${snapshot.primaryActionCount}`);
+  if (!/(auto|scroll)/.test(snapshot.mainOverflowY)) {
+    issues.push(`wizard workspace overflow-y is ${snapshot.mainOverflowY || 'unset'}, not auto`);
+  }
+  if (snapshot.bodyOverflowY !== 'hidden') {
+    issues.push(`body overflow-y is ${snapshot.bodyOverflowY || 'unset'}, not hidden`);
+  }
+  if (snapshot.documentScrollHeight > snapshot.documentClientHeight + 1) {
+    issues.push('the document scrolls in addition to the wizard workspace');
+  }
+  if (snapshot.mainHorizontalOverflow) issues.push('wizard workspace has horizontal overflow');
+  if (
+    scenario.requiresWorkspaceScroll
+    && snapshot.mainScrollHeight <= snapshot.mainClientHeight + 1
+  ) {
+    issues.push('the long recipe does not expose a real workspace scroll range');
+  }
 
   if (scenario.breakpoint === 'desktop') {
     if (!snapshot.directoryVisible || snapshot.drawerControlVisible) {
@@ -249,6 +280,9 @@ export function viewportContractIssues(snapshot, scenario) {
     }
     if (!snapshot.stepNavVisible || snapshot.stepSelectorVisible) {
       issues.push('desktop must use the left wizard step navigation');
+    }
+    if (!/(auto|scroll)/.test(snapshot.directoryOverflowY)) {
+      issues.push('desktop recipe navigation is not independently scrollable');
     }
     if (snapshot.minimumControlHeight < 39.5) {
       issues.push(`desktop controls are only ${snapshot.minimumControlHeight}px high`);
@@ -260,12 +294,14 @@ export function viewportContractIssues(snapshot, scenario) {
     if (snapshot.stepNavVisible || !snapshot.stepSelectorVisible) {
       issues.push('compact layouts must use the current-step selector');
     }
-    if (snapshot.actionBarPosition !== 'fixed') issues.push('compact wizard action bar is not fixed');
+    if (!['sticky', 'fixed'].includes(snapshot.actionBarPosition)) {
+      issues.push('compact wizard action bar is not persistently docked');
+    }
     if (!snapshot.safeAreaRule) issues.push('compact action bar has no safe-area inset rule');
     if (['phone', 'zoom'].includes(scenario.breakpoint) && snapshot.minimumControlHeight < 43.5) {
       issues.push(`mobile controls are only ${snapshot.minimumControlHeight}px high`);
     }
-    if (['phone', 'zoom'].includes(scenario.breakpoint) && snapshot.contextHorizontalOverflow) {
+    if (snapshot.contextHorizontalOverflow) {
       issues.push('compact execution context requires horizontal scrolling');
     }
   }
@@ -581,6 +617,10 @@ async function viewportSnapshot(harness) {
     const stepNav = document.querySelector('.wizard-step-nav');
     const stepSelector = document.querySelector('.dossier-stage-progress select');
     const actionBar = document.getElementById('wizard-action-bar');
+    const main = document.getElementById('run-dossier');
+    const mainStyle = main ? getComputedStyle(main) : null;
+    const bodyStyle = getComputedStyle(document.body);
+    const directoryStyle = directory ? getComputedStyle(directory) : null;
     const controls = [...document.querySelectorAll(
       '#dossier-shell button:not([disabled]), #dossier-shell input:not([disabled]), #dossier-shell select:not([disabled]), #dossier-shell textarea:not([disabled]), #dossier-shell summary'
     )].filter(visible);
@@ -609,6 +649,8 @@ async function viewportSnapshot(harness) {
     return {
       viewportWidth: document.documentElement.clientWidth,
       documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+      documentClientHeight: document.documentElement.clientHeight,
+      documentScrollHeight: document.documentElement.scrollHeight,
       shellWidth: shell?.scrollWidth ?? 0,
       mastheadScrollWidth: masthead?.scrollWidth ?? 0,
       mastheadClientWidth: masthead?.clientWidth ?? 0,
@@ -616,6 +658,14 @@ async function viewportSnapshot(harness) {
       clippedMastheadControlLabels,
       contextHorizontalOverflow:
         Boolean(contextGrid) && contextGrid.scrollWidth > contextGrid.clientWidth + 1,
+      mainOverflowY: mainStyle?.overflowY ?? '',
+      mainClientHeight: main?.clientHeight ?? 0,
+      mainScrollHeight: main?.scrollHeight ?? 0,
+      mainHorizontalOverflow: Boolean(main) && main.scrollWidth > main.clientWidth + 1,
+      bodyOverflowY: bodyStyle.overflowY,
+      directoryOverflowY: directoryStyle?.overflowY ?? '',
+      directoryClientHeight: directory?.clientHeight ?? 0,
+      directoryScrollHeight: directory?.scrollHeight ?? 0,
       nestedFormScrollers,
       visibleStepContents: [...document.querySelectorAll('.wizard-step-content')].filter(visible).length,
       directoryVisible: visible(directory),
@@ -630,6 +680,111 @@ async function viewportSnapshot(harness) {
         : 0,
     };
   })()`);
+}
+
+async function scrollReachabilitySnapshot(harness, path) {
+  return harness.evaluate(`(async () => {
+    const visible = (element) => Boolean(
+      element &&
+      !(element.tagName !== 'SUMMARY' && element.closest('details:not([open])')) &&
+      element.getClientRects().length > 0 &&
+      getComputedStyle(element).visibility !== 'hidden'
+    );
+    const main = document.getElementById('run-dossier');
+    const action = document.getElementById('wizard-action-bar');
+    const targetRow = [...document.querySelectorAll('[data-parameter-path]')]
+      .find((candidate) => candidate.dataset.parameterPath === ${JSON.stringify(path)});
+    const target = targetRow?.querySelector('input, select, textarea');
+    const fields = [...document.querySelectorAll(
+      '.wizard-step-content input:not([type="hidden"]), .wizard-step-content select, .wizard-step-content textarea'
+    )].filter(visible);
+    const last = fields.at(-1);
+    const withinWorkspace = (element) => {
+      if (!main || !element) return false;
+      const mainRect = main.getBoundingClientRect();
+      const rect = element.getBoundingClientRect();
+      const top = Math.max(mainRect.top, 0);
+      const bottom = Math.min(mainRect.bottom, innerHeight);
+      return rect.top >= top - 1 && rect.bottom <= bottom + 1;
+    };
+    const withinViewport = (element) => {
+      if (!element) return false;
+      const rect = element.getBoundingClientRect();
+      return rect.top >= -1 && rect.bottom <= innerHeight + 1 &&
+        rect.left >= -1 && rect.right <= innerWidth + 1;
+    };
+    if (!main || !target || !last) return { found: false };
+    main.scrollTop = 0;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const initialTargetVisible = withinWorkspace(target);
+    const actionVisibleBefore = visible(action) && withinViewport(action);
+    main.scrollTop = main.scrollHeight;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: 'center', inline: 'nearest' });
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    last.focus({ preventScroll: true });
+    last.scrollIntoView({ block: 'center', inline: 'nearest' });
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return {
+      found: true,
+      initialTargetVisible,
+      actionVisibleBefore,
+      targetVisible: withinWorkspace(target),
+      lastVisible: withinWorkspace(last),
+      actionVisibleAfter: visible(action) && withinViewport(action),
+      activeIsLast: document.activeElement === last,
+      targetPath: target.closest('[data-parameter-path]')?.dataset.parameterPath ?? '',
+      lastPath: last.closest('[data-parameter-path]')?.dataset.parameterPath ?? '',
+      scrollTop: main.scrollTop,
+      maxScrollTop: main.scrollHeight - main.clientHeight,
+      scrollHeight: main.scrollHeight,
+      clientHeight: main.clientHeight,
+      overflowY: getComputedStyle(main).overflowY,
+      horizontalOverflow: main.scrollWidth > main.clientWidth + 1,
+    };
+  })()`);
+}
+
+async function dispatchScrollKey(harness, key, code, windowsVirtualKeyCode) {
+  const event = { key, code, windowsVirtualKeyCode, nativeVirtualKeyCode: windowsVirtualKeyCode };
+  await harness.page.send('Input.dispatchKeyEvent', { type: 'keyDown', ...event });
+  await harness.page.send('Input.dispatchKeyEvent', { type: 'keyUp', ...event });
+  await settle(harness);
+}
+
+async function keyboardScrollSnapshot(harness) {
+  const ready = await harness.evaluate(`(() => {
+    const main = document.getElementById('run-dossier');
+    if (!main || main.scrollHeight <= main.clientHeight + 1) return false;
+    main.scrollTop = 0;
+    main.focus({ preventScroll: true });
+    return document.activeElement === main;
+  })()`);
+  if (!ready) return { ready: false };
+  await dispatchScrollKey(harness, 'PageDown', 'PageDown', 34);
+  const pageDown = await harness.evaluate("document.getElementById('run-dossier')?.scrollTop ?? 0");
+  await harness.evaluate("document.getElementById('run-dossier').scrollTop = 0");
+  await dispatchScrollKey(harness, ' ', 'Space', 32);
+  const space = await harness.evaluate("document.getElementById('run-dossier')?.scrollTop ?? 0");
+  await harness.evaluate("document.getElementById('run-dossier').scrollTop = 0");
+  await dispatchScrollKey(harness, 'End', 'End', 35);
+  const end = await harness.evaluate("document.getElementById('run-dossier')?.scrollTop ?? 0");
+  const max = await harness.evaluate(`(() => {
+    const main = document.getElementById('run-dossier');
+    return main ? main.scrollHeight - main.clientHeight : 0;
+  })()`);
+  await dispatchScrollKey(harness, 'Home', 'Home', 36);
+  const home = await harness.evaluate("document.getElementById('run-dossier')?.scrollTop ?? 0");
+  return {
+    ready: true,
+    pageDown,
+    space,
+    end,
+    max,
+    home,
+    activeWorkspace: await harness.evaluate("document.activeElement?.id === 'run-dossier'"),
+  };
 }
 
 async function helpSnapshot(harness, path) {
@@ -696,12 +851,207 @@ async function validationFocusSnapshot(harness) {
     return true;
   })()`);
   await settle(harness);
-  return harness.evaluate(`(() => ({
-    before: ${JSON.stringify(before)},
-    after: document.querySelector('[data-wizard-step]')?.dataset.wizardStep,
-    activePath: document.activeElement?.closest('[data-parameter-path]')?.dataset.parameterPath ?? '',
-    invalid: document.activeElement?.getAttribute('aria-invalid') === 'true',
-  }))()`);
+  return harness.evaluate(`(() => {
+    const main = document.getElementById('run-dossier');
+    const action = document.getElementById('wizard-action-bar');
+    const active = document.activeElement;
+    const mainRect = main?.getBoundingClientRect();
+    const actionRect = action?.getBoundingClientRect();
+    const activeRect = active?.getBoundingClientRect();
+    const visibleBottom = Math.min(mainRect?.bottom ?? innerHeight, actionRect?.top ?? innerHeight);
+    return {
+      before: ${JSON.stringify(before)},
+      after: document.querySelector('[data-wizard-step]')?.dataset.wizardStep,
+      activePath: active?.closest('[data-parameter-path]')?.dataset.parameterPath ?? '',
+      invalid: active?.getAttribute('aria-invalid') === 'true',
+      activeVisible: Boolean(
+        activeRect &&
+        mainRect &&
+        activeRect.top >= mainRect.top - 1 &&
+        activeRect.bottom <= visibleBottom + 1
+      ),
+      workspaceScrollTop: main?.scrollTop ?? 0,
+    };
+  })()`);
+}
+
+async function lowerFieldValidationFocusSnapshot(harness) {
+  await navigateToRecipe(harness, 'publish-assets');
+  await setValues(harness, {
+    'hub.subscriptionId': '00000000-1111-2222-3333-444444444444',
+    'hub.resourceGroupName': 'rg-wizard-acceptance',
+    'hub.apimName': 'apim-wizard-acceptance',
+    'hub.location': '',
+  });
+  await harness.evaluate(`(() => {
+    const main = document.getElementById('run-dossier');
+    if (main) main.scrollTop = 0;
+    return true;
+  })()`);
+  return validationFocusSnapshot(harness);
+}
+
+async function stepNavigationSnapshot(harness) {
+  await navigateToRecipe(harness, 'publish-assets');
+  await setValues(harness, {
+    'hub.subscriptionId': '00000000-1111-2222-3333-444444444444',
+    'hub.resourceGroupName': 'rg-wizard-acceptance',
+    'hub.apimName': 'apim-wizard-acceptance',
+    'hub.location': 'westeurope',
+  });
+  await harness.evaluate(`(() => {
+    const main = document.getElementById('run-dossier');
+    if (main) main.scrollTop = main.scrollHeight;
+    return true;
+  })()`);
+  const advanced = await clickContinue(harness);
+  return harness.evaluate(`(() => {
+    const main = document.getElementById('run-dossier');
+    const heading = document.getElementById('wizard-step-title');
+    const mainRect = main?.getBoundingClientRect();
+    const headingRect = heading?.getBoundingClientRect();
+    return {
+      advanced: ${JSON.stringify(advanced)},
+      step: document.querySelector('[data-wizard-step]')?.dataset.wizardStep ?? '',
+      activeId: document.activeElement?.id ?? '',
+      headingVisible: Boolean(
+        mainRect &&
+        headingRect &&
+        headingRect.top >= mainRect.top - 1 &&
+        headingRect.bottom <= mainRect.bottom + 1
+      ),
+      workspaceScrollTop: main?.scrollTop ?? 0,
+    };
+  })()`);
+}
+
+async function simpleRecipeScrollSnapshot(harness) {
+  await harness.setViewport({ width: 1252, height: 876, mobile: false });
+  await navigateToRecipe(harness, 'azure-context-check');
+  return harness.evaluate(`(() => {
+    const main = document.getElementById('run-dossier');
+    return {
+      scrollHeight: main?.scrollHeight ?? 0,
+      clientHeight: main?.clientHeight ?? 0,
+      overflowY: main ? getComputedStyle(main).overflowY : '',
+    };
+  })()`);
+}
+
+async function longActionLabelSnapshot(harness) {
+  await harness.setViewport({ width: 320, height: 480, mobile: true });
+  await navigateToRecipe(harness, 'cleanup');
+  const targetName = 'a'.repeat(50);
+  await setValues(harness, {
+    'hub.subscriptionId': '00000000-1111-2222-3333-444444444444',
+    'hub.resourceGroupName': 'rg-wizard-acceptance',
+    'hub.apimName': targetName,
+    'samples.cleanup.confirmNonProduction': true,
+  });
+  const reachedReview = await advanceToReview(harness);
+  const snapshot = await harness.evaluate(`(() => {
+    const shell = document.getElementById('dossier-shell');
+    const action = document.getElementById('wizard-action-bar');
+    const button = [...action?.querySelectorAll('button') ?? []]
+      .find((candidate) => /^Run sample/.test(candidate.textContent.trim()));
+    const actionRect = action?.getBoundingClientRect();
+    const buttonRect = button?.getBoundingClientRect();
+    return {
+      reachedReview: ${JSON.stringify(reachedReview)},
+      targetPresent: button?.textContent.includes(${JSON.stringify(targetName)}) === true,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+      shellScrollWidth: shell?.scrollWidth ?? 0,
+      shellClientWidth: shell?.clientWidth ?? 0,
+      actionScrollWidth: action?.scrollWidth ?? 0,
+      actionClientWidth: action?.clientWidth ?? 0,
+      buttonScrollWidth: button?.scrollWidth ?? 0,
+      buttonClientWidth: button?.clientWidth ?? 0,
+      actionVisible: Boolean(
+        actionRect &&
+        actionRect.left >= -1 &&
+        actionRect.right <= innerWidth + 1 &&
+        actionRect.top >= -1 &&
+        actionRect.bottom <= innerHeight + 1
+      ),
+      buttonVisible: Boolean(
+        buttonRect &&
+        buttonRect.left >= -1 &&
+        buttonRect.right <= innerWidth + 1 &&
+        buttonRect.top >= -1 &&
+        buttonRect.bottom <= innerHeight + 1
+      ),
+      buttonWhiteSpace: button ? getComputedStyle(button).whiteSpace : '',
+    };
+  })()`);
+  await harness.setViewport({ width: 1440, height: 900, mobile: false });
+  await settle(harness);
+  return snapshot;
+}
+
+async function compactLandscapeSnapshot(harness) {
+  await harness.setViewport({ width: 568, height: 320, mobile: true });
+  await navigateToRecipe(harness, 'publish-assets');
+  const viewport = await viewportSnapshot(harness);
+  const reachability = await scrollReachabilitySnapshot(harness, 'hub.location');
+  await harness.setViewport({ width: 1440, height: 900, mobile: false });
+  await settle(harness);
+  return { viewport, reachability };
+}
+
+async function compactPhoneLandscapeSnapshot(harness) {
+  await harness.setViewport({ width: 390, height: 320, mobile: true });
+  await navigateToRecipe(harness, 'publish-assets');
+  const viewport = await viewportSnapshot(harness);
+  const reachability = await scrollReachabilitySnapshot(harness, 'hub.location');
+  await harness.setViewport({ width: 1440, height: 900, mobile: false });
+  await settle(harness);
+  return { viewport, reachability };
+}
+
+async function blurRerenderSnapshot(harness) {
+  await harness.setViewport({ width: 390, height: 844, mobile: true });
+  await navigateToRecipe(harness, 'publish-assets');
+  const before = await harness.evaluate(`(async () => {
+    const main = document.getElementById('run-dossier');
+    const control = document.getElementById('f-hub-resourceGroupName');
+    if (!main || !control) return { ready: false };
+    main.scrollTop = main.scrollHeight;
+    control.focus({ preventScroll: true });
+    control.scrollIntoView({ block: 'center', inline: 'nearest' });
+    control.value = 'rg-blur-rerender-acceptance';
+    control.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return {
+      ready: true,
+      scrollTop: main.scrollTop,
+      activeId: document.activeElement?.id ?? '',
+    };
+  })()`);
+  await dispatchScrollKey(harness, 'Tab', 'Tab', 9);
+  await harness.evaluate('new Promise((resolve) => setTimeout(resolve, 400))');
+  const after = await harness.evaluate(`(() => {
+    const main = document.getElementById('run-dossier');
+    const active = document.activeElement;
+    const mainRect = main?.getBoundingClientRect();
+    const activeRect = active?.getBoundingClientRect();
+    return {
+      before: ${JSON.stringify(before)},
+      scrollTop: main?.scrollTop ?? 0,
+      activeId: active?.id ?? '',
+      activeTag: active?.tagName ?? '',
+      activeInsideWorkspace: main?.contains(active) === true,
+      activeVisible: Boolean(
+        mainRect &&
+        activeRect &&
+        activeRect.top >= mainRect.top - 1 &&
+        activeRect.bottom <= mainRect.bottom + 1
+      ),
+    };
+  })()`);
+  await harness.setViewport({ width: 1440, height: 900, mobile: false });
+  await settle(harness);
+  return after;
 }
 
 async function approvalInvalidationSnapshot(harness) {
@@ -1185,6 +1535,39 @@ async function runScenario(harness, reporter, scenario) {
     );
   }
 
+  if (scenario.keyboardScroll) {
+    const keyboard = await keyboardScrollSnapshot(harness);
+    reporter.check(
+      `${scenario.name}: workspace supports PageDown, Space, End, and Home`,
+      keyboard.ready &&
+        keyboard.activeWorkspace &&
+        keyboard.pageDown > 0 &&
+      keyboard.space > 0 &&
+        keyboard.end >= keyboard.max - 1 &&
+        keyboard.home <= 1,
+      JSON.stringify(keyboard),
+    );
+  }
+
+  if (scenario.requiresWorkspaceScroll) {
+    const reachability = await scrollReachabilitySnapshot(harness, scenario.reachabilityPath);
+    reporter.check(
+      `${scenario.name}: lower and last fields remain reachable above the action dock`,
+      reachability.found &&
+        !reachability.initialTargetVisible &&
+        reachability.actionVisibleBefore &&
+        reachability.targetVisible &&
+        reachability.lastVisible &&
+        reachability.actionVisibleAfter &&
+        reachability.activeIsLast &&
+        reachability.scrollTop > 0 &&
+        reachability.maxScrollTop > 0 &&
+        /(auto|scroll)/.test(reachability.overflowY) &&
+        !reachability.horizontalOverflow,
+      JSON.stringify(reachability),
+    );
+  }
+
   if (scenario.openHelpPath) {
     const help = await helpSnapshot(harness, scenario.openHelpPath);
     reporter.check(
@@ -1296,8 +1679,83 @@ async function main() {
     const validation = await validationFocusSnapshot(harness);
     reporter.check(
       'Continue validates the current step and focuses its first invalid field',
-      validation.before === validation.after && validation.invalid && validation.activePath.length > 0,
+      validation.before === validation.after &&
+        validation.invalid &&
+        validation.activePath.length > 0 &&
+        validation.activeVisible,
       JSON.stringify(validation),
+    );
+
+    const lowerValidation = await lowerFieldValidationFocusSnapshot(harness);
+    reporter.check(
+      'Continue scrolls a lower invalid Publish Assets field above the action dock',
+      lowerValidation.before === lowerValidation.after &&
+        lowerValidation.invalid &&
+        lowerValidation.activePath === 'hub.location' &&
+        lowerValidation.activeVisible &&
+        lowerValidation.workspaceScrollTop > 0,
+      JSON.stringify(lowerValidation),
+    );
+
+    const stepNavigation = await stepNavigationSnapshot(harness);
+    reporter.check(
+      'input-step navigation focuses a visible heading in the workspace viewport',
+      stepNavigation.advanced &&
+        stepNavigation.step === 'required-inputs' &&
+        stepNavigation.activeId === 'wizard-step-title' &&
+        stepNavigation.headingVisible,
+      JSON.stringify(stepNavigation),
+    );
+
+    const simpleRecipe = await simpleRecipeScrollSnapshot(harness);
+    reporter.check(
+      'a simple desktop recipe has no unnecessary workspace scrollbar',
+      /(auto|scroll)/.test(simpleRecipe.overflowY) &&
+        simpleRecipe.scrollHeight <= simpleRecipe.clientHeight + 1,
+      JSON.stringify(simpleRecipe),
+    );
+
+    const longAction = await longActionLabelSnapshot(harness);
+    reporter.check(
+      'a long valid target name wraps inside the 320px action dock without overflow',
+      longAction.reachedReview &&
+        longAction.targetPresent &&
+        longAction.documentWidth <= longAction.viewportWidth + 1 &&
+        longAction.shellScrollWidth <= longAction.shellClientWidth + 1 &&
+        longAction.actionScrollWidth <= longAction.actionClientWidth + 1 &&
+        longAction.buttonScrollWidth <= longAction.buttonClientWidth + 1 &&
+        longAction.actionVisible &&
+        longAction.buttonVisible &&
+        longAction.buttonWhiteSpace === 'normal',
+      JSON.stringify(longAction),
+    );
+
+    const compactLandscape = await compactLandscapeSnapshot(harness);
+    reporter.check(
+      'compact landscape preserves a usable scroll workspace above the action dock',
+      compactLandscape.viewport.documentWidth <= compactLandscape.viewport.viewportWidth + 1 &&
+        compactLandscape.viewport.documentScrollHeight <= compactLandscape.viewport.documentClientHeight + 1 &&
+        compactLandscape.viewport.mainClientHeight >= 64 &&
+        compactLandscape.viewport.mainScrollHeight > compactLandscape.viewport.mainClientHeight + 1 &&
+        compactLandscape.reachability.found &&
+        compactLandscape.reachability.targetVisible &&
+        compactLandscape.reachability.lastVisible &&
+        compactLandscape.reachability.actionVisibleAfter,
+      JSON.stringify(compactLandscape),
+    );
+
+    const compactPhoneLandscape = await compactPhoneLandscapeSnapshot(harness);
+    reporter.check(
+      'narrow compact landscape preserves a usable scroll workspace above the action dock',
+      compactPhoneLandscape.viewport.documentWidth <= compactPhoneLandscape.viewport.viewportWidth + 1 &&
+        compactPhoneLandscape.viewport.documentScrollHeight <= compactPhoneLandscape.viewport.documentClientHeight + 1 &&
+        compactPhoneLandscape.viewport.mainClientHeight >= 64 &&
+        compactPhoneLandscape.viewport.mainScrollHeight > compactPhoneLandscape.viewport.mainClientHeight + 1 &&
+        compactPhoneLandscape.reachability.found &&
+        compactPhoneLandscape.reachability.targetVisible &&
+        compactPhoneLandscape.reachability.lastVisible &&
+        compactPhoneLandscape.reachability.actionVisibleAfter,
+      JSON.stringify(compactPhoneLandscape),
     );
 
     await navigateToRecipe(harness, 'weather-mcp-discovery');
@@ -1340,7 +1798,8 @@ async function main() {
       'Continue blocks populated but malformed values and focuses the invalid field',
       invalidValue.before === invalidValue.after &&
         invalidValue.invalid &&
-        invalidValue.activePath === 'hub.subscriptionId',
+        invalidValue.activePath === 'hub.subscriptionId' &&
+        invalidValue.activeVisible,
       JSON.stringify(invalidValue),
     );
 
@@ -1450,6 +1909,19 @@ async function main() {
         await runScenario(harness, reporter, scenario);
       }
     }
+
+    const blurRerender = await blurRerenderSnapshot(harness);
+    reporter.check(
+      'tabbing after a field edit preserves workspace scroll and visible keyboard focus',
+      blurRerender.before.ready &&
+        blurRerender.before.scrollTop > 0 &&
+        blurRerender.scrollTop > 0 &&
+        blurRerender.activeTag !== 'BODY' &&
+        blurRerender.activeId === 'f-hub-resourceGroupName-help-toggle' &&
+        blurRerender.activeInsideWorkspace &&
+        blurRerender.activeVisible,
+      JSON.stringify(blurRerender),
+    );
 
     reportIssues(
       reporter,

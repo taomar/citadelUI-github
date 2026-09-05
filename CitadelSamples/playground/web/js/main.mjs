@@ -85,6 +85,7 @@ const state = {
   activeRunToken: null,
   renderPending: false,
   activeEditingPath: null,
+  pendingFocusId: '',
   runtimeProbe: { mode: 'preview' },
   executor: createUnavailableExecutor(),
   executorCapability: createUnavailableExecutor().describeCapability(),
@@ -409,14 +410,45 @@ function shellExecution(models) {
   };
 }
 
+function scrollTargetIntoWorkspace(target, { block = 'nearest' } = {}) {
+  const workspace = document.getElementById('run-dossier');
+  if (!workspace || !target || !workspace.contains(target)) return false;
+  const workspaceRect = workspace.getBoundingClientRect();
+  const targetRect = target.getBoundingClientRect();
+  const style = getComputedStyle(workspace);
+  const paddingStart = Number.parseFloat(style.scrollPaddingBlockStart) || 0;
+  const paddingEnd = Number.parseFloat(style.scrollPaddingBlockEnd) || 0;
+  const visibleStart = workspaceRect.top + paddingStart;
+  const visibleEnd = workspaceRect.bottom - paddingEnd;
+  let delta = 0;
+  if (block === 'start') {
+    delta = targetRect.top - visibleStart;
+  } else if (block === 'center') {
+    delta =
+      targetRect.top
+      + targetRect.height / 2
+      - (visibleStart + Math.max(0, visibleEnd - visibleStart) / 2);
+  } else if (targetRect.top < visibleStart) {
+    delta = targetRect.top - visibleStart;
+  } else if (targetRect.bottom > visibleEnd) {
+    delta = targetRect.bottom - visibleEnd;
+  }
+  if (Math.abs(delta) > 0.5) workspace.scrollTop += delta;
+  return true;
+}
+
+function focusWorkspaceTarget(target, options) {
+  if (!target) return false;
+  target.focus({ preventScroll: true });
+  return scrollTargetIntoWorkspace(target, options);
+}
+
 function focusPath(path) {
   const control = document.getElementById(configureFieldControlId(path));
   if (!control) return false;
   const advanced = control.closest('details');
   if (advanced) advanced.open = true;
-  control.focus();
-  control.scrollIntoView({ block: 'center', inline: 'nearest' });
-  return true;
+  return focusWorkspaceTarget(control, { block: 'center' });
 }
 
 function download(name, text, mediaType = 'text/plain;charset=utf-8') {
@@ -827,8 +859,7 @@ function navigateWizardStep(stepId, { replaceHistory = false, force = false } = 
   render();
   requestAnimationFrame(() => {
     const heading = document.getElementById('wizard-step-title');
-    heading?.focus?.();
-    heading?.scrollIntoView?.({ block: 'start', inline: 'nearest' });
+    focusWorkspaceTarget(heading, { block: 'start' });
   });
   return true;
 }
@@ -949,7 +980,15 @@ function render() {
     return;
   }
   state.renderPending = false;
-  const focusId = document.activeElement?.id ?? '';
+  const priorWorkspace = document.getElementById('run-dossier');
+  const priorRecipeId = document.querySelector('.dossier-current-id')?.textContent?.trim() ?? '';
+  const priorWizardStep = document.querySelector('[data-wizard-step]')?.dataset.wizardStep ?? '';
+  const preserveWorkspace =
+    priorRecipeId === state.sample.id
+    && priorWizardStep === state.wizardStep;
+  const priorWorkspaceScrollTop = preserveWorkspace ? priorWorkspace?.scrollTop ?? 0 : 0;
+  const focusId = state.pendingFocusId || document.activeElement?.id || '';
+  state.pendingFocusId = '';
   const models = currentModels();
   const steps = wizardSteps(models);
   updateDossierStage();
@@ -1013,8 +1052,9 @@ function render() {
 
   const configureCallbacks = {
     onChange: changeInput,
-    onBlur(path) {
+    onBlur(path, nextFocusId) {
       if (state.activeEditingPath === path) state.activeEditingPath = null;
+      state.pendingFocusId = nextFocusId;
       playgroundState.markTouched(path);
       clearTimeout(state.contextRefreshTimer);
       state.contextRefreshTimer = setTimeout(async () => {
@@ -1025,6 +1065,7 @@ function render() {
     onCopy: copyText,
     onDownload: download,
     onOpenSource: openSourceInspector,
+    onFocusField: focusPath,
     onOpenProducer(field) {
       const recipeId = producerRecipeId(field);
       if (recipeId) selectRecipeFromUi(recipeId);
@@ -1076,14 +1117,20 @@ function render() {
       onRevealOutput({ runId }) {
         if (state.lastRevealedRunId === runId) return;
         state.lastRevealedRunId = runId;
-        document.getElementById('dossier-output')?.scrollIntoView({ block: 'start' });
+        scrollTargetIntoWorkspace(document.getElementById('dossier-output'), { block: 'start' });
       },
       onFollowTranscript({ log }) {
         log.scrollTop = log.scrollHeight;
       },
     });
   }
-  renderWizardActions(shell.dossier, models, steps);
+  renderWizardActions(shell.actions, models, steps);
+  if (preserveWorkspace) {
+    shell.dossier.scrollTop = Math.min(
+      priorWorkspaceScrollTop,
+      Math.max(0, shell.dossier.scrollHeight - shell.dossier.clientHeight),
+    );
+  }
 
   if (state.destructiveArmed) {
     const approvedFingerprint = models.dossier.reviewDecision.confirmationFingerprint;
@@ -1105,7 +1152,12 @@ function render() {
   }
 
   if (focusId) {
-    requestAnimationFrame(() => document.getElementById(focusId)?.focus({ preventScroll: true }));
+    requestAnimationFrame(() => {
+      const target = document.getElementById(focusId);
+      if (!target) return;
+      if (shell.dossier.contains(target)) focusWorkspaceTarget(target, { block: 'nearest' });
+      else target.focus({ preventScroll: true });
+    });
   }
   if (sourceDialog.open) renderSourceDialog();
 }
@@ -1514,7 +1566,7 @@ async function startRun({ confirmed = false } = {}) {
   state.destructiveArmed = false;
   writeWizardUrl();
   render();
-  document.getElementById('dossier-output')?.scrollIntoView({ block: 'start' });
+  scrollTargetIntoWorkspace(document.getElementById('dossier-output'), { block: 'start' });
   announce(`Running ${runSample.shortTitle}.`);
   try {
     const result = await runPlan(state.executor, plan, {

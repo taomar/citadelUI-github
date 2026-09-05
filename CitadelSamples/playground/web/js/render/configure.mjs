@@ -319,7 +319,7 @@ function renderAcquisitionHelp(field, callbacks) {
     field.notebookRef ? ['Protected source reference', field.notebookRef] : null,
   ].filter(Boolean);
   return el('details', { class: 'configure-field-help', 'data-disclosure-key': `${field.controlId}-help` }, [
-    el('summary', { text: 'Get this value' }),
+    el('summary', { id: `${field.controlId}-help-toggle`, text: 'Get this value' }),
     el('div', { class: 'configure-field-help-body' }, [
       producer
         ? el('button', {
@@ -335,7 +335,8 @@ function renderAcquisitionHelp(field, callbacks) {
         text: 'Enter manually',
         onclick: (event) => {
           event.currentTarget.closest('details')?.removeAttribute('open');
-          event.currentTarget.ownerDocument?.getElementById(field.controlId)?.focus();
+          if (callbacks.onFocusField) callbacks.onFocusField(field.path);
+          else event.currentTarget.ownerDocument?.getElementById(field.controlId)?.focus();
         },
       }),
       command
@@ -383,7 +384,10 @@ function renderFieldControl(field, callbacks, describedBy) {
       (field.requirement === 'secret' && field.blocking)
         ? 'true'
         : undefined,
-    onblur: () => setTimeout(() => callbacks.onBlur?.(field.path), 0),
+    onblur: (event) => {
+      const nextFocusId = event.relatedTarget?.id ?? '';
+      setTimeout(() => callbacks.onBlur?.(field.path, nextFocusId), 0);
+    },
   };
 
   if (field.inputType === 'checkbox') {
@@ -608,7 +612,8 @@ function renderEvidenceSummary(source, sourceValidation, callbacks) {
  * Render the primary configure document.
  *
  * Callbacks: onChange(path, value), onBlur(path), onCopy(text),
- * onDownload(name, text, mediaType), onOpenSource(source), and
+ * onDownload(name, text, mediaType), onOpenSource(source), onFocusField(path),
+ * and
  * onFocusFirstBlocker(path, control).
  */
 export function renderConfigure(

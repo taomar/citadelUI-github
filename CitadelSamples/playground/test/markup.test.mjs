@@ -155,7 +155,9 @@ test('the responsive contract uses a rail, centered task surface, compact select
   assert.match(responsiveCss, /@media \(max-width: 62rem\)[\s\S]*?\.wizard-step-nav\s*\{[\s\S]*?display: none/);
   assert.match(responsiveCss, /@media \(max-width: 62rem\)[\s\S]*?\.dossier-stage-progress select\s*\{[\s\S]*?display: block/);
   assert.match(responsiveCss, /\.wizard-action-bar\s*\{[\s\S]*?position: sticky/);
-  assert.match(responsiveCss, /@media \(max-width: 74\.999rem\)[\s\S]*?\.wizard-action-bar\s*\{[\s\S]*?position: fixed/);
+  assert.match(shellCss, /\.dossier-action-host\s*\{[^}]*grid-area: actions/);
+  assert.match(shell, /class: 'dossier-action-host'/);
+  assert.match(responsiveCss, /'content'\s*'actions'/);
   assert.match(responsiveCss, /env\(safe-area-inset-bottom\)/);
 });
 
@@ -197,7 +199,7 @@ test('the visual language stays restrained and locally defined', () => {
 test('layout tracks avoid fixed pixel widths and cap horizontal content', () => {
   assert.deepEqual([...css.matchAll(/grid-template-columns:[^;]*\b\d{2,}px/g)].map((match) => match[0]), []);
   assert.deepEqual([...css.matchAll(/(?<!max-)(?<!min-)\bwidth:\s*\d{3,}px/g)].map((match) => match[0]), []);
-  assert.match(responsiveCss, /html,\s*body\s*\{[\s\S]*?overflow-x: clip/);
+  assert.match(responsiveCss, /html,\s*body,\s*#app\s*\{[\s\S]*?overflow-x: clip/);
   assert.match(responsiveCss, /overflow-wrap: anywhere/);
 });
 
