@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url';
 
 import { createPlaygroundServer } from '../server.mjs';
 import { createCheckReporter, launchBrowserHarness } from './browser-harness.mjs';
-import { navigationFocusCycle, navigationKey, navigationPointer, openNavigationPicker } from './dossier-browser-acceptance.mjs';
+import { navigationFocusCycle, navigationKey, navigationPointer, openNavigationPicker, workspacePointer } from './dossier-browser-acceptance.mjs';
 
 function argumentValue(name) {
   const index = process.argv.indexOf(name);
@@ -47,7 +47,7 @@ async function main() {
       title: document.title,
       recipeCount: document.querySelectorAll('.recipe-directory-item').length,
       currentRecipe: document.querySelector('.dossier-current-id')?.textContent ?? '',
-      stepTitle: document.getElementById('wizard-step-title')?.textContent ?? '',
+      stepTitle: document.querySelector('.wizard-step-link[aria-current="step"]')?.getAttribute('aria-label') ?? '',
       stepProgress: document.querySelector('.dossier-stage-progress > span')?.textContent.trim() ?? '',
       topLevelTabs: [...document.querySelectorAll('[role="tab"]')]
         .filter((tab) => !document.getElementById('dossier-output')?.contains(tab)).length,
@@ -66,7 +66,7 @@ async function main() {
     reporter.check('desktop has no page-level horizontal overflow', initial.documentWidth <= initial.viewportWidth);
     reporter.check('the bootstrap capability is removed immediately', !initial.bootstrapInUrl);
 
-    await navigationPointer(harness, '#wizard-action-bar .btn-primary');
+    await workspacePointer(harness, '#wizard-action-bar .btn-primary');
     reporter.check('the primary setup action is present', true);
     await settle(harness);
     const focused = await harness.evaluate(`(() => ({
@@ -93,7 +93,7 @@ async function main() {
       const hooks = globalThis.__citadelTestHooks;
       hooks.setValue('hub.gatewayUrl', 'https://gateway.example.test');
       return {
-        title: document.getElementById('wizard-step-title')?.textContent ?? '',
+        title: document.querySelector('.wizard-step-link[aria-current="step"]')?.getAttribute('aria-label') ?? '',
         identityKind: document.querySelector('.execution-context-bar')?.dataset.identityKind ?? '',
         accountControls: /Sign in with Microsoft|Switch Azure account|Set Active/
           .test(document.body.textContent ?? ''),
@@ -139,7 +139,7 @@ async function main() {
       const picker = document.querySelector('.dossier-directory-toggle');
       const workspace = document.querySelector('.dossier-workspace-bar');
       const workspaceStyle = workspace ? getComputedStyle(workspace) : null;
-      const stepSelector = document.querySelector('.dossier-stage-progress select');
+      const stepProgress = document.querySelector('.wizard-step-nav');
       return {
         documentWidth: document.documentElement.scrollWidth,
         viewportWidth: document.documentElement.clientWidth,
@@ -154,20 +154,21 @@ async function main() {
             - Number.parseFloat(workspaceStyle.paddingLeft || '0')
             - Number.parseFloat(workspaceStyle.paddingRight || '0')
           : 0,
-        stepSelectorVisible: visible(stepSelector),
-        stepSelectorTop: stepSelector?.getBoundingClientRect().top ?? 0,
+        stepProgressVisible: visible(stepProgress),
+        stepProgressTop: stepProgress?.getBoundingClientRect().top ?? 0,
         actionPosition: getComputedStyle(document.getElementById('wizard-action-bar')).position,
+        actionInForm: document.getElementById('dossier-inputs').contains(document.getElementById('wizard-action-bar')),
         minimumControlHeight: Math.min(...controls.map((element) => element.getBoundingClientRect().height)),
       };
     })()`);
     reporter.check('320x480 has no page-level horizontal overflow', narrow.documentWidth <= narrow.viewportWidth);
     reporter.check(
-      '320x480 makes recipe navigation a full-width row above the step selector',
+      '320x480 makes recipe navigation a full-width row above inline step progress',
       !narrow.recipeRailVisible
         && narrow.recipePickerVisible
         && narrow.recipePickerText.startsWith('Browse Recipes')
         && narrow.recipePickerWidth >= narrow.workspaceContentWidth - 2
-        && narrow.stepSelectorTop >= narrow.recipePickerBottom - 1,
+        && narrow.stepProgressTop >= narrow.recipePickerBottom - 1,
       JSON.stringify(narrow),
     );
     await openNavigationPicker(harness);
@@ -213,10 +214,10 @@ async function main() {
         && !drawerKeyboard.desktopTransition.dossierInert,
       JSON.stringify(drawerKeyboard),
     );
-    reporter.check('320x480 exposes the current-step selector', narrow.stepSelectorVisible);
+    reporter.check('320x480 exposes inline step progress', narrow.stepProgressVisible);
     reporter.check(
-      '320x480 pins the wizard actions',
-      ['sticky', 'fixed'].includes(narrow.actionPosition),
+      '320x480 keeps the primary action in normal form flow',
+      narrow.actionPosition === 'static' && narrow.actionInForm,
       narrow.actionPosition,
     );
     reporter.check('320x480 controls remain at least 44px high', narrow.minimumControlHeight >= 43.5);

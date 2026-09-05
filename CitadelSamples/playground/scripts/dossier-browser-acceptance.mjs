@@ -2283,7 +2283,7 @@ export async function navigationPointer(harness, selector, { scroll = false } = 
   throw new Error(`Navigation target is not visibly clickable: ${selector} ${JSON.stringify(obstruction)}`);
 }
 
-async function workspacePointer(harness, selector) {
+export async function workspacePointer(harness, selector) {
   await settle(harness);
   await harness.evaluate(`(() => {
     const control = document.querySelector(${JSON.stringify(selector)});
@@ -2737,7 +2737,7 @@ async function runNavigationAcceptance() {
       dialogCount += 1;
       void harness.page.send('Page.handleJavaScriptDialog', { accept: false });
     });
-    await navigationPointer(harness, '#recipe-group-publish-grant');
+    await navigationGroup(harness, 'publish-grant');
     await navigationPointer(harness, '[data-recipe-id="publish-assets"]');
     reporter.check('dirty-input cancellation preserves recipe, URL and draft', dialogCount === 1 && await harness.evaluate("new URL(location.href).searchParams.get('recipe') === 'azure-context-check' && document.querySelector('#f-hub-subscriptionId').value === 'draft-subscription'"));
     removeDialog();
