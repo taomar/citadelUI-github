@@ -3,7 +3,7 @@
 ## Current Milestone
 
 Protected-source playground redesign implemented and verified at integration
-reference `0707925`. The product decision is final:
+reference `6c91be1`. The product decision is final:
 retain the server-authoritative catalogue and typed allowlisted local executor,
 add a notebook-like read-only source surface, and allow edits only to declared
 inputs. Do not introduce a general-purpose editable notebook.
@@ -87,6 +87,18 @@ inputs. Do not introduce a general-purpose editable notebook.
 - Human policy labels remain readable while deterministic safe identifiers drive
   generated product, subscription, contract, and workspace paths. Free-text
   product terms use the shared Bicep serializer.
+- Packaged playground and relay images contain their complete allowlisted runtime
+  assets and pass entrypoint/endpoint startup tests. The relay image remains free
+  of Python, Azure CLI, local process execution, and the playground runtime.
+- Container Apps token acquisition uses the injected local identity endpoint and
+  `X-IDENTITY-HEADER`; VM IMDS is used only when the Container Apps variables are
+  both absent.
+- MCP responses are correlated to the outbound JSON-RPC id across JSON and
+  multi-event SSE. Missing session captures stop dependent calls before network
+  execution and cannot become a pass.
+- Cancellation now covers pre-admission local requests and relay socket
+  disconnects. Restart recovery can release a terminal run's reserved capacity
+  only after the platform confirms no external job remains active.
 - Exact source retrieval works in preview and operator modes.
 - Compile-only Python validation is available only in loopback operator mode,
   accepts only the protocol version, removes its ephemeral workspace, and reports
@@ -104,11 +116,11 @@ inputs. Do not introduce a general-purpose editable notebook.
 
 ### Final verified baseline
 
-`npm run verify` at `0707925` exited 0:
+`npm run verify` at `6c91be1` exited 0:
 
-- `npm run check` — 114 modules, 0 dependencies, nothing outside
+- `npm run check` — 115 modules, 0 dependencies, nothing outside
   `CitadelSamples`;
-- `node --test` — 737/737 passing;
+- `node --test` — 777/777 passing;
 - `npm run smoke` — 89/89 passing.
 
 The separate protected-source browser acceptance passed 160/160 checks, and the
