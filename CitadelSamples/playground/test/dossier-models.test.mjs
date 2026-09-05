@@ -52,6 +52,13 @@ test('account switching fails closed without an advertised system-browser launch
   assert.equal(normalizeAccountControlState({ state: 'unknown-state', canLaunch: true }).state, 'login-disabled');
 });
 
+test('identity fails closed when neither execution context nor account adapter reports', () => {
+  const identity = buildDossierIdentityModel();
+  assert.equal(identity.authorization.ready, false);
+  assert.equal(identity.authorization.label, 'Not Ready');
+  assert.match(identity.authorization.detail, /system-browser launch capability/i);
+});
+
 test('gateway identity has no Azure account switcher and never overclaims authorization', () => {
   const identity = buildDossierIdentityModel({
     contextState: {

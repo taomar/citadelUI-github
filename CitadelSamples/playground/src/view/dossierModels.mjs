@@ -119,7 +119,7 @@ function runsAsLabel(context) {
   return context.authority?.principalName || context.label || 'Local Azure CLI Principal';
 }
 
-function authorizationModel(context, contextState) {
+function authorizationModel(context, contextState, account) {
   const contextReady = context?.canExecute === true;
   const ready = contextReady;
   return Object.freeze({
@@ -160,7 +160,7 @@ export function buildDossierIdentityModel({ contextState = {}, accountControlSta
           matches: subscription.matches === true ? true : subscription.matches === false ? false : null,
         })
       : null,
-    authorization: authorizationModel(context, contextState),
+    authorization: authorizationModel(context, contextState, account),
     accountControl: Object.freeze({
       ...account,
       visible: !isGateway && !isHosted,
