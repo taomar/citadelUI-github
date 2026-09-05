@@ -533,6 +533,8 @@ function renderEvidenceSummary(source, sourceValidation, callbacks) {
     el('button', {
       type: 'button',
       class: 'btn configure-action',
+      'aria-controls': DOSSIER_IDS.sourceInspector,
+      'data-open-inspector': 'source',
       disabled: !ready && source?.state !== 'error',
       text: ready ? 'Inspect protected source' : source?.state === 'error' ? 'Review source error' : 'Protected source is loading',
       onclick: () => callbacks.onOpenSource?.(source),
@@ -603,6 +605,7 @@ export function renderConfigure(
             type: 'button',
             id: 'configure-review-button',
             class: 'btn btn-primary configure-action',
+            'data-dossier-action': 'review',
             disabled: !contract.ready,
             text: 'Review exact plan',
             onclick: () => callbacks.onReview?.(),
