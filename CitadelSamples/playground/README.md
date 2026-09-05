@@ -43,6 +43,13 @@ To attach the trusted-workstation local executor:
 npm run start:execute
 ```
 
+System Azure sign-in and Azure CLI subscription switching remain disabled in
+that mode. Opt in for one server launch with:
+
+```powershell
+npm run start:execute:system-login
+```
+
 Execution-capable startup is loopback-only. It uses the operator's local Azure
 CLI and optional registered Python dependencies; it is not a hostile-code
 sandbox. The launch capability and session rotate on every server restart, and
@@ -81,29 +88,52 @@ identity, command, executable, argument, token, or credential value.
 ```
 
 `gateway` is `null` for non-gateway samples. `configuredSubscriptionId` is the
-current sample subscription or `null`. The response contains the sample's
-`kind`, `state`, safe principal name/type, tenant, active and configured
-subscription IDs/names, match status, key presence/header name, and the fixed
-`tokensExposed: false` and `credentialsPersisted: false` guarantees. Preview
-returns `state: "unavailable"` without probing Azure CLI or contacting a
-network.
+current sample subscription or `null`. The response separates the signed-in
+account, execution credential, active CLI subscription, intended target, and
+`Authorization Not Checked` status. A valid local context is `Ready to Attempt`,
+not proof that Azure authorization will succeed. Key presence/header name and
+the fixed `tokensExposed: false` and `credentialsPersisted: false` guarantees
+remain safe projections. Preview returns `state: "unavailable"` without probing
+Azure CLI or contacting a network.
 
 Local Azure CLI sign-in is explicit. The server never starts it because a
 sample failed:
 
 | Endpoint | Exact JSON request |
 | --- | --- |
-| `POST /api/azure-login/start` | `{ "protocolVersion": 2 }` |
-| `POST /api/azure-login/status` | `{ "protocolVersion": 2, "loginId": "azure-login-0001" }` |
-| `POST /api/azure-login/cancel` | `{ "protocolVersion": 2, "loginId": "azure-login-0001" }` |
+| `POST /api/azure-auth/start` | `{ "protocolVersion": 2 }` |
+| `POST /api/azure-auth/status` | `{ "protocolVersion": 2, "loginId": "azure-system-login" }` |
+| `POST /api/azure-auth/cancel` | `{ "protocolVersion": 2, "loginId": "azure-system-login" }` |
+| `POST /api/azure-subscriptions/list` | `{ "protocolVersion": 2 }` |
+| `POST /api/azure-subscriptions/activate` | `{ "protocolVersion": 2, "subscriptionId": "00000000-1111-2222-3333-444444444444" }` |
 
 These endpoints are same-origin, JSON-only, and available only from the
-loopback execute server. Start invokes exactly `az login --use-device-code`
-with no shell and no browser-supplied arguments. One login may be in flight.
-Status reports `starting`, `waiting-for-user`, `succeeded`, `failed`,
-`cancelled`, or `timed-out`, plus a safely parsed verification URL and user
-code. Success refreshes the safe Azure CLI account projection. Raw process
-output and tokens are never returned or persisted.
+loopback execute server after the browser claims its per-launch session and the
+server starts with `--allow-system-azure-login`. Start invokes exactly `az
+login`, with no shell or browser-supplied arguments, and child overrides
+`AZURE_CORE_LOGIN_EXPERIENCE_V2=off`, `AZURE_CORE_NO_COLOR=true`, and
+`AZURE_CORE_OUTPUT=none`. Windows uses its supported account UI; other platforms
+use the Azure CLI system-browser flow. The dedicated system-browser process
+profile preserves reviewed desktop-session variables such as `DISPLAY`,
+`WAYLAND_DISPLAY`, and the desktop bus address, but never inherits a `BROWSER`
+command override. One login may be in flight.
+
+If Azure CLI falls back to a short-code flow, the server aborts it immediately,
+returns `device-fallback-blocked`, and observes the bounded stream without
+retaining stdout or stderr. It never returns, logs, persists, or copies the URL,
+code, or raw output into application state. Run `az login` directly in a terminal, then use
+**Refresh Azure CLI Status**. Other states are `login-disabled`, `starting`,
+`waiting-system-ui`, `verifying`, `status-unknown`, `cancel-requested`,
+`cancelled`, `failed`, `timed-out`, and `ready`.
+
+Subscription listing executes one fixed `az account list` query and returns only
+Enabled records matching the current principal and tenant. Activation accepts
+one GUID, refreshes the list, executes fixed `az account set --subscription
+<id>`, and verifies the result with `az account show`. Changing it updates the
+shared Azure CLI default used by other terminals and tools. Runs hold an
+identity lease for their complete lifecycle: sign-in and subscription changes
+are refused while a run is reserved or active, and new runs are refused while
+either Azure CLI mutation is in flight.
 
 ## What the interface shows
 

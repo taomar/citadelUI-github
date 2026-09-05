@@ -36,6 +36,8 @@ import {
   createExecutionContextManager,
   validateLoginStartRequest,
   validateLoginTargetRequest,
+  validateSubscriptionActivateRequest,
+  validateSubscriptionListRequest,
 } from './src/server/executionContextManager.mjs';
 import { createCodeValidationManager, CODE_VALIDATION_SCENARIO } from './src/server/codeValidation.mjs';
 import { validateSourceSampleId } from './src/server/recipeRequest.mjs';
@@ -338,11 +340,13 @@ export function capabilitiesPayload({
   mode = 'preview',
   probe = {},
   relay = DEFAULT_RELAY_CONFIG,
-  loginAvailable = mode === 'execute',
+  allowSystemAzureLogin = false,
   sessionAuth = { required: false, state: 'not-required', claimEndpoint: null, message: '' },
 } = {}) {
   const capability = summariseCapability(CATALOGUE.samples, { ...probe, mode });
   const sessionReady = sessionAuth.required !== true || sessionAuth.state === 'claimed';
+  const azureControlsAvailable =
+    mode === 'execute' && allowSystemAzureLogin === true && sessionReady && relay.enabled !== true;
   const secureLaunchMessage = sessionAuth.message || 'Open the secure launch URL shown in the terminal.';
   return {
     status: 'ok',
@@ -418,11 +422,22 @@ export function capabilitiesPayload({
     }),
     executionContext: Object.freeze({
       endpoint: sessionReady ? '/api/execution-context' : null,
-      login: Object.freeze({
-        startEndpoint: '/api/azure-login/start',
-        statusEndpoint: '/api/azure-login/status',
-        cancelEndpoint: '/api/azure-login/cancel',
-        available: loginAvailable && sessionReady,
+    }),
+    azureAuth: Object.freeze({
+      systemLogin: Object.freeze({
+        available: azureControlsAvailable,
+        state: azureControlsAvailable ? 'available' : 'login-disabled',
+        loginId: 'azure-system-login',
+        startEndpoint: azureControlsAvailable ? '/api/azure-auth/start' : null,
+        statusEndpoint: azureControlsAvailable ? '/api/azure-auth/status' : null,
+        cancelEndpoint: azureControlsAvailable ? '/api/azure-auth/cancel' : null,
+      }),
+      subscriptions: Object.freeze({
+        available: azureControlsAvailable,
+        listEndpoint: azureControlsAvailable ? '/api/azure-subscriptions/list' : null,
+        activateEndpoint: azureControlsAvailable ? '/api/azure-subscriptions/activate' : null,
+        warning:
+          'Changing the active subscription updates the shared Azure CLI default for other terminals and tools on this machine.',
       }),
     }),
   };
@@ -959,7 +974,7 @@ async function handleAzureLogin(request, response, { action, manager, port, host
   const cancelDisconnectedStart = () => {
     if (action !== 'start' || !startedLoginId || response.writableEnded) return;
     try {
-      manager.cancelLogin(startedLoginId);
+      manager.cancelSystemLogin(startedLoginId);
     } catch {
       // The login may already have reached a terminal state.
     }
@@ -971,23 +986,38 @@ async function handleAzureLogin(request, response, { action, manager, port, host
     let result;
     if (action === 'start') {
       validateLoginStartRequest(payload);
-      result = manager.startLogin();
+      result = manager.startSystemLogin();
       startedLoginId = result.login.id;
     } else {
       const loginId = validateLoginTargetRequest(payload);
-      result = action === 'status' ? manager.statusLogin(loginId) : manager.cancelLogin(loginId);
+      result =
+        action === 'status'
+          ? manager.statusSystemLogin(loginId)
+          : manager.cancelSystemLogin(loginId);
     }
     sendJson(response, action === 'start' ? 202 : 200, result);
   } catch (error) {
     if (error instanceof RequestRefused) {
       const current =
-        error.code === 'login-in-progress' && typeof manager.currentLogin === 'function'
-          ? manager.currentLogin()
+        error.code === 'login-in-progress' && typeof manager.currentSystemLogin === 'function'
+          ? manager.currentSystemLogin()
           : null;
       sendJson(response, error.status, {
         state: 'blocked',
         summary: error.message,
         code: error.code,
+        ...(error.code === 'login-disabled'
+          ? {
+              login: {
+                id: 'azure-system-login',
+                state: 'login-disabled',
+                code: 'login-disabled',
+                message: error.message,
+                accountChange: 'unverified',
+              },
+              context: null,
+            }
+          : {}),
         ...(current ?? {}),
       });
       return;
@@ -996,6 +1026,44 @@ async function handleAzureLogin(request, response, { action, manager, port, host
   } finally {
     request.off('aborted', cancelDisconnectedStart);
     response.off('close', cancelDisconnectedStart);
+  }
+}
+
+async function handleAzureSubscriptions(request, response, { action, manager, port, host, publicOrigin }) {
+  const guard = checkStateChangingRequest(request, {
+    port,
+    host,
+    publicOrigin,
+    requireOrigin: isLoopbackHost(host),
+  });
+  if (!guard.ok) {
+    sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
+    return;
+  }
+  try {
+    const payload = JSON.parse(await readBody(request, 4096));
+    let result;
+    if (action === 'list') {
+      validateSubscriptionListRequest(payload);
+      result = await manager.listSubscriptions();
+    } else {
+      const subscriptionId = validateSubscriptionActivateRequest(payload);
+      result = await manager.activateSubscription(subscriptionId);
+    }
+    sendJson(response, 200, result);
+  } catch (error) {
+    if (error instanceof RequestRefused) {
+      sendJson(response, error.status, {
+        state: 'blocked',
+        summary: error.message,
+        code: error.code,
+      });
+      return;
+    }
+    sendJson(response, 500, {
+      state: 'failed',
+      summary: 'The Azure CLI subscription request could not be completed.',
+    });
   }
 }
 
@@ -1250,6 +1318,7 @@ export function createPlaygroundServer({
   publicOrigin = DEFAULT_PUBLIC_ORIGIN,
   testBootstrapCapability,
   secureSessionCookie = false,
+  allowSystemAzureLogin = false,
 } = {}) {
   publicOrigin =
     publicOrigin === null
@@ -1267,6 +1336,11 @@ export function createPlaygroundServer({
       playgroundRoot: ROOT,
       mode: mode === 'execute' && isLoopbackHost(host) ? 'execute' : 'preview',
       relay,
+      allowSystemAzureLogin:
+        allowSystemAzureLogin === true &&
+        mode === 'execute' &&
+        isLoopbackHost(host) &&
+        relay.enabled !== true,
     });
   const manager =
     mode === 'execute'
@@ -1314,7 +1388,11 @@ export function createPlaygroundServer({
             mode,
             probe: runtimeProbe,
             relay,
-            loginAvailable: mode === 'execute' && isLoopbackHost(host),
+            allowSystemAzureLogin:
+              allowSystemAzureLogin === true &&
+              mode === 'execute' &&
+              isLoopbackHost(host) &&
+              relay.enabled !== true,
             sessionAuth:
               localSessionAuth?.describe(request) ??
               Object.freeze({
@@ -1366,7 +1444,7 @@ export function createPlaygroundServer({
         return;
       }
 
-      const loginRoute = /^\/api\/azure-login\/(start|status|cancel)$/.exec(path);
+      const loginRoute = /^\/api\/azure-auth\/(start|status|cancel)$/.exec(path);
       if (loginRoute) {
         if (request.method !== 'POST') {
           sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
@@ -1374,6 +1452,31 @@ export function createPlaygroundServer({
         }
         await handleAzureLogin(request, response, {
           action: loginRoute[1],
+          manager: identityManager,
+          port,
+          host,
+          publicOrigin,
+        });
+        return;
+      }
+
+      if (/^\/api\/azure-login\/(?:start|status|cancel)$/.test(path)) {
+        sendJson(response, 410, {
+          state: 'gone',
+          summary: 'The former Azure login API is no longer available. Use the system-login capability advertised by `/api/capabilities`.',
+          code: 'legacy-login-gone',
+        });
+        return;
+      }
+
+      const subscriptionRoute = /^\/api\/azure-subscriptions\/(list|activate)$/.exec(path);
+      if (subscriptionRoute) {
+        if (request.method !== 'POST') {
+          sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
+          return;
+        }
+        await handleAzureSubscriptions(request, response, {
+          action: subscriptionRoute[1],
           manager: identityManager,
           port,
           host,
@@ -1512,6 +1615,7 @@ const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === resolve(
 
 if (invokedDirectly) {
   const wantsExecution = process.argv.includes('--execute');
+  const allowSystemAzureLogin = process.argv.includes('--allow-system-azure-login');
   if (wantsExecution && !isLoopbackHost(HOST)) {
     process.stderr.write(
       `Refusing to attach the local executor on ${HOST}. Local execution spawns processes and writes files, so it is allowed only when the server is bound to loopback.\n` +
@@ -1520,7 +1624,7 @@ if (invokedDirectly) {
     process.exit(1);
   }
   const mode = wantsExecution ? 'execute' : 'preview';
-  const server = createPlaygroundServer({ mode });
+  const server = createPlaygroundServer({ mode, allowSystemAzureLogin });
   server.listen(PORT, HOST, async () => {
     const origin = httpOrigin(HOST, PORT);
     process.stdout.write(
@@ -1539,6 +1643,11 @@ if (invokedDirectly) {
       const { capability } = capabilitiesPayload({ mode, probe, relay: DEFAULT_RELAY_CONFIG });
       process.stdout.write(`Local execution: ${capability.label} (${capability.ready}/${capability.total} samples ready)\n`);
       process.stdout.write('Risk gates still apply. Nothing runs without a fresh acknowledgement.\n');
+      process.stdout.write(
+        allowSystemAzureLogin
+          ? 'System Azure sign-in and subscription switching: enabled for this secure browser launch.\n'
+          : 'System Azure sign-in and subscription switching: disabled. Add --allow-system-azure-login to opt in for this launch.\n',
+      );
     } else {
       process.stdout.write('Preview only — plans are generated and inspected, and nothing is executed.\n');
       process.stdout.write('Run `npm run start:execute` to attach the local executor.\n');

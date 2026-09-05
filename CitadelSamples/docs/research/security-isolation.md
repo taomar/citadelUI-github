@@ -241,9 +241,11 @@ many requests, timing, output lengths, status choices, or encrypted artifacts.
 5. Child environments are built from an allowlist, not `{ ...process.env }`.
    `HOME`, `USERPROFILE`, `AZURE_CONFIG_DIR`, temporary directories, package
    configuration, proxy variables, and cloud credentials are isolated per run.
-6. Azure CLI uses the operator's existing login only for immutable registered
-   commands. The app never runs interactive `az login`, device code login, or
-   credential installation.
+6. Azure CLI uses the operator's existing login for immutable registered
+   commands. A separately gated, per-launch loopback capability may run exact
+   `az login` for the claimed browser session; any short-code fallback is
+   aborted without projection. The app never installs credentials or accepts
+   browser-selected login arguments.
 7. A whole process tree is terminated and verified on cancel/timeout on every
    supported OS. Failure to prove termination is reported and blocks another run
    from consuming the released slot.

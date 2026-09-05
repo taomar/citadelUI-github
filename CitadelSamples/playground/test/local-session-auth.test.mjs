@@ -340,9 +340,11 @@ test('every privileged local POST is denied before managers, spawns, or relay cr
     },
     executionContextManager: {
       describe: async () => record('identity.describe', {}),
-      startLogin: () => record('identity.startLogin', {}),
-      statusLogin: () => record('identity.statusLogin', {}),
-      cancelLogin: () => record('identity.cancelLogin', {}),
+      startSystemLogin: () => record('identity.startSystemLogin', {}),
+      statusSystemLogin: () => record('identity.statusSystemLogin', {}),
+      cancelSystemLogin: () => record('identity.cancelSystemLogin', {}),
+      listSubscriptions: () => record('identity.listSubscriptions', {}),
+      activateSubscription: () => record('identity.activateSubscription', {}),
       cancelAll() {},
     },
     relay: {
@@ -371,9 +373,23 @@ test('every privileged local POST is denied before managers, spawns, or relay cr
           gateway: null,
         }),
       ],
-      ['/api/azure-login/start', JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION })],
-      ['/api/azure-login/status', JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION, loginId: 'login-0001' })],
-      ['/api/azure-login/cancel', JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION, loginId: 'login-0001' })],
+      ['/api/azure-auth/start', JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION })],
+      [
+        '/api/azure-auth/status',
+        JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION, loginId: 'azure-system-login' }),
+      ],
+      [
+        '/api/azure-auth/cancel',
+        JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION, loginId: 'azure-system-login' }),
+      ],
+      ['/api/azure-subscriptions/list', JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION })],
+      [
+        '/api/azure-subscriptions/activate',
+        JSON.stringify({
+          protocolVersion: EXECUTION_PROTOCOL_VERSION,
+          subscriptionId: '00000000-1111-2222-3333-444444444444',
+        }),
+      ],
       ['/api/execute', '{}'],
       ['/api/self-test', JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION })],
       ['/api/source/azure-context-check/validate', JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION })],

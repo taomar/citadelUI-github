@@ -479,14 +479,24 @@ async function checkExecutionIdentity(harness) {
       state: 'signed-out',
       code: 'azure-cli-signed-out',
       canExecute: false,
-      authority: null,
-      subscription: { activeId: null, activeName: null, configuredId: null, matches: null },
+      signedInAccount: { state: 'signed-out', principalName: null, principalType: null, tenantId: null },
+      executionCredential: { type: 'azure-cli-user', source: 'azure-cli' },
+      activeCliSubscription: null,
+      intendedTarget: { subscriptionId: null, matchesActive: null },
+      authorization: { state: 'not-checked', label: 'Authorization Not Checked' },
       gateway: null,
       hostedRelay: null,
       guarantees: { tokensExposed: false, credentialsPersisted: false },
       futureHostedProcess: null,
     };
     globalThis.__acceptanceSignedOutContext = context;
+    hooks.setAzureAuthCapability({
+      systemLoginAllowed: true,
+      subscriptionsAvailable: true,
+      loginId: 'azure-system-login',
+      accountSwitchLabel: 'Switch Azure account',
+      warning: 'Changing the active subscription updates the shared Azure CLI default.'
+    });
     hooks.setExecutionContext(context);
     const identity = document.querySelector('[data-execution-identity]');
     const parameters = document.querySelector('.parameters-section');
@@ -500,7 +510,7 @@ async function checkExecutionIdentity(harness) {
       ),
       heading: identity.querySelector('.task-section-title')?.textContent ?? '',
       text: identity.textContent,
-      signInLabel: document.getElementById('start-azure-login')?.textContent ?? '',
+      signInLabel: document.getElementById('start-system-azure-login')?.textContent ?? '',
       badge: identity.querySelector('.chip')?.textContent ?? '',
     };
   })()`);
@@ -523,32 +533,35 @@ async function checkExecutionIdentity(harness) {
   );
   reporter.check(
     'signed-out Azure context names the specific sign-in action without claiming readiness',
-    signedOut.signInLabel === 'Sign In to Azure' && signedOut.badge !== 'Ready' && /Runs as/.test(signedOut.text),
+    signedOut.signInLabel === 'Sign in with system browser' &&
+      signedOut.badge !== 'Ready to Attempt' &&
+      /Signed-in account/.test(signedOut.text),
     JSON.stringify(signedOut),
   );
 
   const pending = await harness.evaluate(`(() => {
     globalThis.__citadelTestHooks.setAzureLogin({
-      loginId: 'login-acceptance',
-      state: 'waiting-for-user',
-      verificationUrl: 'https://microsoft.com/devicelogin',
-      userCode: 'ABCD-EFGH',
-      message: 'Open Microsoft sign-in and enter the short code.',
+      loginId: 'azure-system-login',
+      state: 'waiting-system-ui',
+      message: 'Complete sign-in in the Windows account dialog or system browser.',
+      accountChange: 'unverified',
       timestamps: {},
     });
     return {
-      link: document.querySelector('.device-login a')?.getAttribute('href') ?? '',
-      code: document.getElementById('azure-device-code')?.textContent ?? '',
-      cancel: document.getElementById('cancel-azure-login')?.textContent ?? '',
-      signInPresent: Boolean(document.getElementById('start-azure-login')),
+      links: document.querySelectorAll('.system-login a').length,
+      codes: document.querySelectorAll('.system-login code').length,
+      cancel: document.getElementById('cancel-system-azure-login')?.textContent ?? '',
+      signInPresent: Boolean(document.getElementById('start-system-azure-login')),
+      text: document.querySelector('.system-login')?.textContent ?? '',
     };
   })()`);
   reporter.check(
-    'device-code pending state exposes its URL, short code, and cancellation',
-    pending.link === 'https://microsoft.com/devicelogin' &&
-      pending.code === 'ABCD-EFGH' &&
+    'system-login pending state exposes cancellation without URL or code material',
+    pending.links === 0 &&
+      pending.codes === 0 &&
       pending.cancel === 'Cancel Azure sign-in' &&
-      pending.signInPresent === false,
+      pending.signInPresent === false &&
+      !/device|code/i.test(pending.text),
     JSON.stringify(pending),
   );
 
@@ -558,24 +571,23 @@ async function checkExecutionIdentity(harness) {
     hooks.setValue('hub.subscriptionId', 'subscription-changed-during-login');
     const snapshot = {
       state: document.querySelector('[data-execution-identity]')?.dataset.executionIdentity ?? '',
-      code: document.getElementById('azure-device-code')?.textContent ?? '',
-      cancel: document.getElementById('cancel-azure-login')?.textContent ?? '',
+      login: document.querySelector('.system-login')?.dataset.loginState ?? '',
+      cancel: document.getElementById('cancel-system-azure-login')?.textContent ?? '',
     };
     hooks.setExecutionContext(globalThis.__acceptanceSignedOutContext);
     hooks.setAzureLogin({
-      loginId: 'login-acceptance',
-      state: 'waiting-for-user',
-      verificationUrl: 'https://microsoft.com/devicelogin',
-      userCode: 'ABCD-EFGH',
-      message: 'Open Microsoft sign-in and enter the short code.',
+      loginId: 'azure-system-login',
+      state: 'waiting-system-ui',
+      message: 'Complete sign-in in the system account UI.',
+      accountChange: 'unverified',
       timestamps: {},
     });
     return snapshot;
   })()`);
   reporter.check(
-    'active device login remains visible and cancellable while context refreshes',
+    'active system login remains visible and cancellable while context refreshes',
     loginDuringRefresh.state === 'unavailable' &&
-      loginDuringRefresh.code === 'ABCD-EFGH' &&
+      loginDuringRefresh.login === 'waiting-system-ui' &&
       loginDuringRefresh.cancel === 'Cancel Azure sign-in',
     JSON.stringify(loginDuringRefresh),
   );
@@ -583,55 +595,51 @@ async function checkExecutionIdentity(harness) {
   const failedLogin = await harness.evaluate(`(() => {
     globalThis.__citadelTestHooks.setExecutionContext(globalThis.__acceptanceSignedOutContext);
     globalThis.__citadelTestHooks.setAzureLogin({
-      loginId: 'login-acceptance',
-      state: 'failed',
-      verificationUrl: '',
-      userCode: '',
+      loginId: 'azure-system-login',
+      state: 'status-unknown',
       message: 'Status could not be refreshed.',
+      accountChange: 'unverified',
       timestamps: {},
     });
     return {
-      signIn: Boolean(document.getElementById('start-azure-login')),
-      cancel: document.getElementById('cancel-azure-login')?.textContent ?? '',
-      message: document.querySelector('.device-login-message')?.textContent ?? '',
+      signIn: Boolean(document.getElementById('start-system-azure-login')),
+      cancel: document.getElementById('cancel-system-azure-login')?.textContent ?? '',
+      message: document.querySelector('.system-login-message')?.textContent ?? '',
     };
   })()`);
   reporter.check(
-    'failed in-flight login keeps its cancellation and suppresses unsafe retry',
-    failedLogin.signIn === false &&
-      failedLogin.cancel === 'Cancel Azure sign-in' &&
+    'unknown login status permits a fresh system sign-in and is not falsely cancellable',
+    failedLogin.signIn === true &&
+      failedLogin.cancel === '' &&
       /could not be refreshed/.test(failedLogin.message),
     JSON.stringify(failedLogin),
   );
 
   const ready = await harness.evaluate(`(() => {
     globalThis.__citadelTestHooks.setAzureLogin({
-      loginId: 'login-acceptance',
-      state: 'succeeded',
-      verificationUrl: '',
-      userCode: '',
+      loginId: 'azure-system-login',
+      state: 'ready',
       message: 'Signed in.',
+      accountChange: 'unchanged',
       timestamps: {},
     });
     const context = {
       kind: 'azure-cli-management',
       label: 'Azure CLI user',
       summary: 'Signed in for this local operator sample.',
-      state: 'ready',
+      state: 'ready-to-attempt',
       code: 'azure-cli-ready',
       canExecute: true,
-      authority: {
-        type: 'azure-cli-user',
+      signedInAccount: {
+        state: 'signed-in',
         principalName: 'Acceptance User',
         principalType: 'user',
         tenantId: 'tenant-acceptance'
       },
-      subscription: {
-        activeId: 'sub-acceptance',
-        activeName: 'Acceptance Sandbox',
-        configuredId: 'sub-acceptance',
-        matches: true
-      },
+      executionCredential: { type: 'azure-cli-user', source: 'azure-cli' },
+      activeCliSubscription: { id: 'sub-acceptance', name: 'Acceptance Sandbox', tenantId: 'tenant-acceptance' },
+      intendedTarget: { subscriptionId: 'sub-acceptance', matchesActive: true },
+      authorization: { state: 'not-checked', label: 'Authorization Not Checked' },
       gateway: null,
       hostedRelay: null,
       guarantees: { tokensExposed: false, credentialsPersisted: false },
@@ -639,17 +647,74 @@ async function checkExecutionIdentity(harness) {
     };
     globalThis.__acceptanceExecutionContext = context;
     globalThis.__citadelTestHooks.setExecutionContext(context);
+    globalThis.__citadelTestHooks.setAzureSubscriptions({
+      status: 'ready',
+      selectedId: 'sub-acceptance',
+      subscriptions: [
+        {
+          id: 'sub-acceptance',
+          name: 'Acceptance Sandbox',
+          tenantId: 'tenant-acceptance',
+          user: { name: 'Acceptance User', type: 'user' },
+          isDefault: true
+        }
+      ],
+      message: '1 enabled subscription available.'
+    });
     const identity = document.querySelector('[data-execution-identity]');
-    return { badge: identity.querySelector('.chip')?.textContent ?? '', text: identity.textContent };
+    return {
+      badge: identity.querySelector('.chip')?.textContent ?? '',
+      text: identity.textContent,
+      subscriptionControl: Boolean(document.getElementById('azure-subscription-select'))
+    };
   })()`);
   reporter.check(
     'signed-in context states principal, tenant, subscription, and match',
-    ready.badge === 'Ready' &&
+    ready.badge === 'Ready to Attempt' &&
       /Acceptance User/.test(ready.text) &&
       /tenant-acceptance/.test(ready.text) &&
       /Acceptance Sandbox/.test(ready.text) &&
-      /matches/.test(ready.text),
+      /matches/.test(ready.text) &&
+      /Authorization Not Checked/.test(ready.text) &&
+      /shared Azure CLI default/.test(ready.text) &&
+      ready.subscriptionControl === true,
     JSON.stringify(ready),
+  );
+
+  const unrelated = await harness.evaluate(`(() => {
+    const hooks = globalThis.__citadelTestHooks;
+    hooks.setAzureLogin({
+      loginId: 'azure-system-login',
+      state: 'waiting-system-ui',
+      message: 'Complete sign-in in the system account UI.',
+      accountChange: 'unverified',
+    });
+    hooks.setExecutionContext({
+      kind: 'gateway-key',
+      label: 'Gateway key',
+      summary: 'A memory-only gateway key authorizes this sample.',
+      state: 'ready-to-attempt',
+      canExecute: true,
+      signedInAccount: null,
+      executionCredential: { type: 'gateway-key', source: 'browser-memory' },
+      activeCliSubscription: null,
+      intendedTarget: null,
+      authorization: { state: 'not-checked', label: 'Authorization Not Checked' },
+      gateway: { keyPresent: true, headerName: 'api-key' },
+      guarantees: { tokensExposed: false, credentialsPersisted: false },
+    });
+    return {
+      login: Boolean(document.querySelector('.system-login')),
+      signIn: Boolean(document.getElementById('start-system-azure-login')),
+      cancel: Boolean(document.getElementById('cancel-system-azure-login')),
+      refresh: Boolean(document.getElementById('refresh-azure-cli-status')),
+      subscriptions: Boolean(document.getElementById('azure-subscription-select')),
+    };
+  })()`);
+  reporter.check(
+    'gateway context hides active local Azure controls',
+    Object.values(unrelated).every((present) => present === false),
+    JSON.stringify(unrelated),
   );
 
   const stale = await harness.evaluate(`(() => {
@@ -678,19 +743,18 @@ async function checkAzureLoginRestartRecovery(harness) {
   let cancelledLoginId = null;
   const descriptor = {
     state: 'blocked',
-    summary: 'An Azure CLI device-code login is already in progress.',
+    summary: 'An Azure CLI system sign-in is already in progress.',
     code: 'login-in-progress',
     login: {
-      id: 'azure-login-0042',
-      state: 'waiting-for-user',
-      verificationUrl: 'https://microsoft.com/devicelogin',
-      userCode: 'RETRY-1234',
+      id: 'azure-system-login',
+      state: 'waiting-system-ui',
       message: 'Continue the current sign-in.',
+      accountChange: 'unverified',
     },
     context: null,
   };
   const removeListener = harness.page.on('Fetch.requestPaused', (event) => {
-    if (event.request.url.includes('/api/azure-login/cancel')) {
+    if (event.request.url.includes('/api/azure-auth/cancel')) {
       cancelledLoginId = JSON.parse(event.request.postData).loginId;
       harness.page
         .send('Fetch.fulfillRequest', {
@@ -701,8 +765,9 @@ async function checkAzureLoginRestartRecovery(harness) {
             JSON.stringify({
               login: {
                 ...descriptor.login,
-                state: 'cancelled',
-                message: 'Azure CLI device-code sign-in was cancelled.',
+                state: 'ready',
+                message: 'Azure account changed before cancellation completed.',
+                accountChange: 'switched',
               },
               context: null,
             }),
@@ -711,7 +776,7 @@ async function checkAzureLoginRestartRecovery(harness) {
         .catch(() => {});
       return;
     }
-    if (!event.request.url.includes('/api/azure-login/start')) {
+    if (!event.request.url.includes('/api/azure-auth/start')) {
       harness.page.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {});
       return;
     }
@@ -734,26 +799,25 @@ async function checkAzureLoginRestartRecovery(harness) {
       .catch(() => {});
   });
   await harness.page.send('Fetch.enable', {
-    patterns: [{ urlPattern: '*api/azure-login/*', requestStage: 'Request' }],
+    patterns: [{ urlPattern: '*api/azure-auth/*', requestStage: 'Request' }],
   });
   try {
     const ambiguous = await harness.evaluate(`(async () => {
       const hooks = globalThis.__citadelTestHooks;
       hooks.setExecutionContext(globalThis.__acceptanceSignedOutContext);
       hooks.setAzureLogin({
-        loginId: 'obsolete-terminal-login',
+        loginId: 'azure-system-login',
         state: 'failed',
-        verificationUrl: '',
-        userCode: '',
         message: 'The prior sign-in failed.',
+        accountChange: 'unverified',
       });
-      await hooks.startAzureLogin();
+      await hooks.startSystemAzureLogin();
       await new Promise((resolve) => requestAnimationFrame(resolve));
       return {
-        message: document.querySelector('.device-login-message')?.textContent ?? '',
-        cancel: Boolean(document.getElementById('cancel-azure-login')),
-        retry: Boolean(document.getElementById('start-azure-login')),
-        refresh: Boolean(document.getElementById('refresh-execution-context')),
+        message: document.querySelector('.system-login-message')?.textContent ?? '',
+        cancel: Boolean(document.getElementById('cancel-system-azure-login')),
+        retry: Boolean(document.getElementById('start-system-azure-login')),
+        refresh: Boolean(document.getElementById('refresh-azure-cli-status')),
         focused: document.activeElement?.id ?? '',
       };
     })()`);
@@ -762,24 +826,24 @@ async function checkAzureLoginRestartRecovery(harness) {
       ambiguous.cancel === false &&
         ambiguous.retry === true &&
         ambiguous.refresh === true &&
-        ambiguous.focused === 'start-azure-login' &&
+        ambiguous.focused === 'start-system-azure-login' &&
         /could not be confirmed/i.test(ambiguous.message),
       JSON.stringify(ambiguous),
     );
 
     const reconciled = await harness.evaluate(`(async () => {
-      await globalThis.__citadelTestHooks.startAzureLogin();
+      await globalThis.__citadelTestHooks.startSystemAzureLogin();
       return {
-        state: document.querySelector('.device-login')?.dataset.loginState ?? '',
-        code: document.getElementById('azure-device-code')?.textContent ?? '',
-        cancel: document.getElementById('cancel-azure-login')?.textContent ?? '',
-        retry: Boolean(document.getElementById('start-azure-login')),
+        state: document.querySelector('.system-login')?.dataset.loginState ?? '',
+        links: document.querySelectorAll('.system-login a').length,
+        cancel: document.getElementById('cancel-system-azure-login')?.textContent ?? '',
+        retry: Boolean(document.getElementById('start-system-azure-login')),
       };
     })()`);
     reporter.check(
       'a login-in-progress descriptor reconciles the UI to the current cancellable login',
-      reconciled.state === 'waiting-for-user' &&
-        reconciled.code === 'RETRY-1234' &&
+      reconciled.state === 'waiting-system-ui' &&
+        reconciled.links === 0 &&
         reconciled.cancel === 'Cancel Azure sign-in' &&
         reconciled.retry === false,
       JSON.stringify(reconciled),
@@ -789,13 +853,12 @@ async function checkAzureLoginRestartRecovery(harness) {
       const hooks = globalThis.__citadelTestHooks;
       hooks.setExecutionContext(globalThis.__acceptanceSignedOutContext);
       hooks.setAzureLogin({
-        loginId: 'another-terminal-login',
+        loginId: 'azure-system-login',
         state: 'failed',
-        verificationUrl: '',
-        userCode: '',
         message: 'The prior sign-in failed.',
+        accountChange: 'unverified',
       });
-      globalThis.__acceptancePendingLoginStart = hooks.startAzureLogin();
+      globalThis.__acceptancePendingLoginStart = hooks.startSystemAzureLogin();
       return true;
     })()`);
     const heldDeadline = Date.now() + 2_000;
@@ -803,26 +866,22 @@ async function checkAzureLoginRestartRecovery(harness) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     if (!heldRestartRequestId) throw new Error('The held Azure login restart request was not observed.');
-    await harness.evaluate(`globalThis.__citadelTestHooks.cancelAzureLogin()`);
-    await harness.page.send('Fetch.fulfillRequest', {
-      requestId: heldRestartRequestId,
-      responseCode: 409,
-      responseHeaders: [{ name: 'Content-Type', value: 'application/json; charset=utf-8' }],
-      body: Buffer.from(JSON.stringify(descriptor)).toString('base64'),
-    });
+    await harness.evaluate(`globalThis.__citadelTestHooks.cancelSystemAzureLogin()`);
     const cancelled = await harness.evaluate(`(async () => {
       await globalThis.__acceptancePendingLoginStart;
       delete globalThis.__acceptancePendingLoginStart;
       return {
-        state: document.querySelector('.device-login')?.dataset.loginState ?? '',
-        cancel: Boolean(document.getElementById('cancel-azure-login')),
+        state: document.querySelector('.system-login')?.dataset.loginState ?? '',
+        message: document.querySelector('.system-login-message')?.textContent ?? '',
+        cancel: Boolean(document.getElementById('cancel-system-azure-login')),
       };
     })()`);
     reporter.check(
-      'cancellation requested before reconciliation cancels the returned current login id',
+      'cancellation while start is pending preserves an authentication-race completion',
       heldRestartRequestId !== null &&
         cancelledLoginId === descriptor.login.id &&
-        cancelled.state === 'cancelled' &&
+        cancelled.state === 'ready' &&
+        cancelled.message === 'Azure account changed before cancellation completed.' &&
         cancelled.cancel === false,
       JSON.stringify({ heldRestartRequestId, cancelledLoginId, ...cancelled }),
     );
@@ -834,6 +893,126 @@ async function checkAzureLoginRestartRecovery(harness) {
         harness.pageErrors.splice(index, 1);
       }
     }
+  }
+}
+
+async function checkAzureSubscriptionRefresh(harness) {
+  await selectSample(harness, 'azure-context-check');
+  const oldId = '00000000-1111-2222-3333-444444444444';
+  const freshId = '11111111-2222-3333-4444-555555555555';
+  let listObserved = false;
+  const removeListener = harness.page.on('Fetch.requestPaused', (event) => {
+    if (!event.request.url.includes('/api/azure-subscriptions/list')) {
+      harness.page.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {});
+      return;
+    }
+    listObserved = true;
+    harness.page
+      .send('Fetch.fulfillRequest', {
+        requestId: event.requestId,
+        responseCode: 200,
+        responseHeaders: [{ name: 'Content-Type', value: 'application/json; charset=utf-8' }],
+        body: Buffer.from(
+          JSON.stringify({
+            subscriptions: [
+              {
+                id: oldId,
+                name: 'Old Sandbox',
+                tenantId: 'tenant-fresh',
+                user: { name: 'fresh@example.test', type: 'user' },
+                isDefault: false,
+              },
+              {
+                id: freshId,
+                name: 'Fresh Sandbox',
+                tenantId: 'tenant-fresh',
+                user: { name: 'fresh@example.test', type: 'user' },
+                isDefault: true,
+              },
+            ],
+            current: {
+              signedInAccount: {
+                state: 'signed-in',
+                principalName: 'fresh@example.test',
+                principalType: 'user',
+                tenantId: 'tenant-fresh',
+              },
+              activeCliSubscription: {
+                id: freshId,
+                name: 'Fresh Sandbox',
+                tenantId: 'tenant-fresh',
+              },
+            },
+            warning: 'Changing the active subscription updates the shared Azure CLI default.',
+          }),
+        ).toString('base64'),
+      })
+      .catch(() => {});
+  });
+  await harness.page.send('Fetch.enable', {
+    patterns: [{ urlPattern: '*api/azure-subscriptions/list', requestStage: 'Request' }],
+  });
+  try {
+    const refreshed = await harness.evaluate(`(async () => {
+      const hooks = globalThis.__citadelTestHooks;
+      hooks.setAzureAuthCapability({
+        systemLoginAllowed: true,
+        subscriptionsAvailable: true,
+        loginId: 'azure-system-login',
+      });
+      hooks.setExecutionContext({
+        kind: 'azure-cli-management',
+        label: 'Azure CLI user',
+        summary: 'The active Azure CLI subscription does not match the intended target.',
+        state: 'subscription-mismatch',
+        code: 'subscription-mismatch',
+        canExecute: true,
+        signedInAccount: {
+          state: 'signed-in',
+          principalName: 'old@example.test',
+          principalType: 'user',
+          tenantId: 'tenant-old',
+        },
+        executionCredential: {
+          type: 'azure-cli-user',
+          source: 'azure-cli',
+          principalName: 'old@example.test',
+          principalType: 'user',
+          tenantId: 'tenant-old',
+        },
+        activeCliSubscription: {
+          id: ${JSON.stringify(oldId)},
+          name: 'Old Sandbox',
+          tenantId: 'tenant-old',
+        },
+        intendedTarget: {
+          subscriptionId: ${JSON.stringify(freshId)},
+          matchesActive: false,
+        },
+        authorization: { state: 'not-checked', label: 'Authorization Not Checked' },
+        guarantees: { tokensExposed: false, credentialsPersisted: false },
+      });
+      hooks.setAzureSubscriptions({ status: 'idle', subscriptions: [], selectedId: '', message: '' });
+      await hooks.loadAzureSubscriptions();
+      const identity = document.querySelector('[data-execution-identity]');
+      return {
+        selected: document.getElementById('azure-subscription-select')?.value ?? '',
+        badge: identity?.querySelector('.chip')?.textContent ?? '',
+        text: identity?.textContent ?? '',
+      };
+    })()`);
+    reporter.check(
+      'subscription refresh selects and renders the server-reported active CLI context',
+      listObserved &&
+        refreshed.selected === freshId &&
+        refreshed.badge === 'Ready to Attempt' &&
+        /fresh@example\.test/.test(refreshed.text) &&
+        /Fresh Sandbox/.test(refreshed.text),
+      JSON.stringify({ listObserved, ...refreshed }),
+    );
+  } finally {
+    await harness.page.send('Fetch.disable').catch(() => {});
+    removeListener?.();
   }
 }
 
@@ -1319,7 +1498,7 @@ async function checkKeyboardOrder(harness) {
   const reverseTarget = await harness.evaluate(`document.activeElement?.id ?? ''`);
   reporter.check(
     'Shift+Tab keeps focus on the preceding Code-pane control after validation renders',
-    reverse === 'f-hub-subscriptionId' && reverseTarget === 'refresh-execution-context',
+    reverse === 'f-hub-subscriptionId' && reverseTarget === 'parameter-pane-summary',
     reverseTarget,
   );
 }
@@ -1584,6 +1763,7 @@ async function main() {
     await checkCodeParameterWorkspace(harness);
     await checkExecutionIdentity(harness);
     await checkAzureLoginRestartRecovery(harness);
+    await checkAzureSubscriptionRefresh(harness);
     await checkOfflineValidation(harness, sourceBySample);
     await checkValidationAbortReset(harness);
     await checkApprovalGate(harness);

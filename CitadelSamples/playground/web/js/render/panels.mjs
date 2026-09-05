@@ -273,7 +273,9 @@ export function renderSource(
     onRefreshIdentity,
     onSignIn,
     onCancelLogin,
-    onCopyCode,
+    onRefreshSubscriptions,
+    onSelectSubscription,
+    onActivateSubscription,
     wrapSource,
     onToggleWrap,
   } = {},
@@ -447,7 +449,9 @@ export function renderSource(
         onRefreshIdentity,
         onSignIn,
         onCancelLogin,
-        onCopyCode,
+        onRefreshSubscriptions,
+        onSelectSubscription,
+        onActivateSubscription,
       }),
     ]),
   ]);
@@ -673,7 +677,17 @@ function renderField(field, { onChange, onBlur }) {
   ]);
 }
 
-function renderExecutionIdentity(identity, { onRefreshIdentity, onSignIn, onCancelLogin, onCopyCode }) {
+function renderExecutionIdentity(
+  identity,
+  {
+    onRefreshIdentity,
+    onSignIn,
+    onCancelLogin,
+    onRefreshSubscriptions,
+    onSelectSubscription,
+    onActivateSubscription,
+  },
+) {
   const details = [
     el('div', { class: 'task-section-head' }, [
       el('h3', { class: 'task-section-title', text: '1. Execution identity & target' }),
@@ -681,27 +695,32 @@ function renderExecutionIdentity(identity, { onRefreshIdentity, onSignIn, onCanc
     ]),
     el('p', { class: 'identity-summary', text: identity.summary }),
     facts([
-      ['Runs as', identity.runsAs],
-      ['Credential source', identity.credentialSource],
-      identity.authority?.tenantId ? ['Tenant', identity.authority.tenantId, { mono: true }] : null,
-      identity.subscription?.activeName
-        ? ['Active subscription', `${identity.subscription.activeName} · ${identity.subscription.activeId}`, { mono: true }]
-        : identity.subscription?.activeId
-          ? ['Active subscription', identity.subscription.activeId, { mono: true }]
-          : null,
-      identity.subscription?.configuredId
+      ['Signed-in account', identity.runsAs],
+      ['Execution credential', identity.credentialSource],
+      identity.signedInAccount?.tenantId ? ['Account tenant', identity.signedInAccount.tenantId, { mono: true }] : null,
+      identity.activeCliSubscription?.name
         ? [
-            'Configured subscription',
-            `${identity.subscription.configuredId}${
-              identity.subscription.matches === true
+            'Active CLI subscription',
+            `${identity.activeCliSubscription.name} · ${identity.activeCliSubscription.id}`,
+            { mono: true },
+          ]
+        : identity.activeCliSubscription?.id
+          ? ['Active CLI subscription', identity.activeCliSubscription.id, { mono: true }]
+          : null,
+      identity.intendedTarget?.subscriptionId
+        ? [
+            'Intended target',
+            `${identity.intendedTarget.subscriptionId}${
+              identity.intendedTarget.matchesActive === true
                 ? ' · matches'
-                : identity.subscription.matches === false
+                : identity.intendedTarget.matchesActive === false
                   ? ' · does not match'
                   : ''
             }`,
             { mono: true },
           ]
         : null,
+      identity.authorization?.label ? ['Authorization', identity.authorization.label] : null,
       identity.gateway
         ? [
             'Gateway key',
@@ -716,34 +735,16 @@ function renderExecutionIdentity(identity, { onRefreshIdentity, onSignIn, onCanc
 
   if (identity.login) {
     details.push(
-      el('div', { class: 'device-login', 'data-login-state': identity.login.state }, [
-        el('p', { class: 'device-login-message', text: identity.login.message || `Azure sign-in is ${identity.login.state}.` }),
-        identity.login.verificationUrl
-          ? el('p', { class: 'device-login-link' }, [
-              el('a', {
-                href: identity.login.verificationUrl,
-                target: '_blank',
-                rel: 'noreferrer noopener',
-                text: 'Open Microsoft device sign-in',
-              }),
-            ])
-          : null,
-        identity.login.userCode
-          ? el('div', { class: 'device-code' }, [
-              el('code', { id: 'azure-device-code', text: identity.login.userCode }),
-              el('button', {
-                type: 'button',
-                class: 'btn btn-sm',
-                text: 'Copy device code',
-                onclick: () => onCopyCode?.(identity.login.userCode),
-              }),
-            ])
-          : null,
+      el('div', { class: 'system-login', 'data-login-state': identity.login.state }, [
+        el('p', {
+          class: 'system-login-message',
+          text: identity.login.message || `Azure system sign-in is ${identity.login.state}.`,
+        }),
         identity.login.cancelAvailable
           ? el('button', {
               type: 'button',
               class: 'btn btn-sm',
-              id: 'cancel-azure-login',
+              id: 'cancel-system-azure-login',
               text: 'Cancel Azure sign-in',
               onclick: () => onCancelLogin?.(),
             })
@@ -758,8 +759,8 @@ function renderExecutionIdentity(identity, { onRefreshIdentity, onSignIn, onCanc
         ? el('button', {
             type: 'button',
             class: 'btn btn-primary',
-            id: 'start-azure-login',
-            text: identity.signInLabel || 'Sign In to Azure',
+            id: 'start-system-azure-login',
+            text: identity.signInLabel || 'Sign in with system browser',
             onclick: () => onSignIn?.(),
           })
         : null,
@@ -767,10 +768,10 @@ function renderExecutionIdentity(identity, { onRefreshIdentity, onSignIn, onCanc
         ? el('button', {
             type: 'button',
             class: 'btn btn-sm',
-            id: 'refresh-execution-context',
+            id: 'refresh-azure-cli-status',
             'aria-busy': identity.refreshing ? 'true' : undefined,
             'aria-disabled': identity.refreshing ? 'true' : undefined,
-            text: identity.refreshing ? 'Checking execution identity…' : 'Refresh execution identity',
+            text: identity.refreshing ? 'Checking Azure CLI status…' : 'Refresh Azure CLI Status',
             onclick: () => {
               if (!identity.refreshing) onRefreshIdentity?.();
             },
@@ -778,6 +779,65 @@ function renderExecutionIdentity(identity, { onRefreshIdentity, onSignIn, onCanc
         : null,
     ]),
   );
+  if (identity.subscriptionControl) {
+    const control = identity.subscriptionControl;
+    details.push(
+      el('div', { class: 'subscription-control', 'data-subscription-state': control.status }, [
+        el('p', {
+          class: 'hint',
+          text: control.warning,
+        }),
+        control.subscriptions.length
+          ? el('label', { class: 'field-label', for: 'azure-subscription-select', text: 'Azure CLI subscription' })
+          : null,
+        control.subscriptions.length
+          ? el(
+              'select',
+              {
+                id: 'azure-subscription-select',
+                value: control.selectedId,
+                disabled: !control.canSelect,
+                onchange: (event) => {
+                  if (control.canSelect) onSelectSubscription?.(event.target.value);
+                },
+              },
+              control.subscriptions.map((subscription) =>
+                el('option', {
+                  value: subscription.id,
+                  selected: subscription.id === control.selectedId,
+                  text: `${subscription.name} · ${subscription.id}`,
+                }),
+              ),
+            )
+          : null,
+        el('div', { class: 'identity-actions' }, [
+          el('button', {
+            type: 'button',
+            class: 'btn btn-sm',
+            id: 'refresh-azure-subscriptions',
+            disabled: !control.canRefresh,
+            'aria-busy': control.status === 'loading' ? 'true' : undefined,
+            text: control.status === 'loading' ? 'Loading subscriptions…' : 'Refresh subscriptions',
+            onclick: () => {
+              if (control.canRefresh) onRefreshSubscriptions?.();
+            },
+          }),
+          control.subscriptions.length
+            ? el('button', {
+                type: 'button',
+                class: 'btn btn-sm',
+                id: 'activate-azure-subscription',
+                disabled: !control.canActivate,
+                'aria-busy': control.status === 'activating' ? 'true' : undefined,
+                text: control.status === 'activating' ? 'Changing subscription…' : 'Use selected subscription',
+                onclick: () => onActivateSubscription?.(),
+              })
+            : null,
+        ]),
+        control.message ? el('p', { class: 'system-login-message', text: control.message }) : null,
+      ]),
+    );
+  }
   if (identity.guarantees.length) {
     details.push(keyedDisclosure('identity-security', 'Security boundary', [bullets(identity.guarantees)]));
   }
@@ -802,7 +862,20 @@ function renderParameterGroup(group, options) {
 export function renderParameters(
   configure,
   executionIdentity,
-  { onConfigure, onChange, onBlur, onCopy, onDownload, onReview, onRefreshIdentity, onSignIn, onCancelLogin, onCopyCode },
+  {
+    onConfigure,
+    onChange,
+    onBlur,
+    onCopy,
+    onDownload,
+    onReview,
+    onRefreshIdentity,
+    onSignIn,
+    onCancelLogin,
+    onRefreshSubscriptions,
+    onSelectSubscription,
+    onActivateSubscription,
+  },
 ) {
   const ready = configure.blockingCount === 0 && configure.errorCount === 0;
   const readinessLabel = ready
@@ -877,7 +950,9 @@ export function renderParameters(
         onRefreshIdentity,
         onSignIn,
         onCancelLogin,
-        onCopyCode,
+        onRefreshSubscriptions,
+        onSelectSubscription,
+        onActivateSubscription,
       }),
       el('section', { class: 'parameters-section', 'aria-labelledby': 'parameters-section-title' }, [
         el('div', { class: 'task-section-head' }, [

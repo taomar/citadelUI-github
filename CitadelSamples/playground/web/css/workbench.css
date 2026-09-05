@@ -1394,15 +1394,15 @@ input[type='search'].ctl {
   font-size: var(--t-small);
 }
 
-.identity-actions,
-.device-code {
+.identity-actions {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
   flex-wrap: wrap;
 }
 
-.device-login {
+.system-login,
+.subscription-control {
   display: grid;
   gap: var(--sp-3);
   padding: var(--sp-4);
@@ -1411,21 +1411,9 @@ input[type='search'].ctl {
   background: var(--brand-wash);
 }
 
-.device-login-message,
-.device-login-link {
+.system-login-message {
   color: var(--ink-2);
   font-size: var(--t-small);
-}
-
-.device-code code {
-  padding: var(--sp-3) var(--sp-4);
-  border: 1px solid var(--rule-strong);
-  border-radius: var(--r-2);
-  background: var(--sheet);
-  color: var(--ink-1);
-  font-size: var(--t-body);
-  font-weight: 700;
-  letter-spacing: 0.08em;
 }
 
 .parameter-contract {

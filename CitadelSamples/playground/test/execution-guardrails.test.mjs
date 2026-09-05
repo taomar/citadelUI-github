@@ -39,20 +39,41 @@ test('the process transport uses an exact executable allow-list and a workspace 
 
 test('the child environment excludes ambient credentials and rejects arbitrary overrides', () => {
   const environment = createProcessEnvironment(
-    { CITADEL_GATEWAY_ACCESS_API_KEY: 'wrapper-secret' },
+    {
+      CITADEL_GATEWAY_ACCESS_API_KEY: 'wrapper-secret',
+      AZURE_CORE_LOGIN_EXPERIENCE_V2: 'off',
+      AZURE_CORE_NO_COLOR: 'true',
+      AZURE_CORE_OUTPUT: 'none',
+    },
     {
       PATH: 'safe-path',
       HOME: 'safe-home',
+      DISPLAY: ':1',
+      WAYLAND_DISPLAY: 'wayland-1',
+      XDG_RUNTIME_DIR: '/run/user/1000',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+      BROWSER: 'unreviewed-browser-command',
       GH_TOKEN: 'must-not-pass',
       AZURE_CLIENT_SECRET: 'must-not-pass',
     },
+    { profile: 'system-browser' },
   );
   assert.equal(environment.PATH, 'safe-path');
   assert.equal(environment.HOME, 'safe-home');
+  assert.equal(environment.DISPLAY, ':1');
+  assert.equal(environment.WAYLAND_DISPLAY, 'wayland-1');
+  assert.equal(environment.XDG_RUNTIME_DIR, '/run/user/1000');
+  assert.equal(environment.DBUS_SESSION_BUS_ADDRESS, 'unix:path=/run/user/1000/bus');
+  assert.equal(environment.BROWSER, undefined);
   assert.equal(environment.CITADEL_GATEWAY_ACCESS_API_KEY, 'wrapper-secret');
+  assert.equal(environment.AZURE_CORE_LOGIN_EXPERIENCE_V2, 'off');
+  assert.equal(environment.AZURE_CORE_NO_COLOR, 'true');
+  assert.equal(environment.AZURE_CORE_OUTPUT, 'none');
   assert.equal(environment.GH_TOKEN, undefined);
   assert.equal(environment.AZURE_CLIENT_SECRET, undefined);
+  assert.equal(createProcessEnvironment({}, { DISPLAY: ':1' }).DISPLAY, undefined);
   assert.throws(() => createProcessEnvironment({ PATH: 'browser-choice' }, {}), /unapproved/);
+  assert.throws(() => createProcessEnvironment({}, {}, { profile: 'browser-choice' }), /Unknown/);
 });
 
 test('one oversized subprocess chunk is clipped at the byte boundary', { timeout: 10_000 }, async () => {
@@ -66,6 +87,41 @@ test('one oversized subprocess chunk is clipped at the byte boundary', { timeout
   });
   assert.equal(result.code, 0);
   assert.equal(Buffer.byteLength(result.stdout, 'utf-8'), 1024);
+});
+
+test('non-capturing process observation never retains streamed output', { timeout: 10_000 }, async () => {
+  const observed = [];
+  const result = await spawnProcess({
+    executable: process.execPath,
+    args: ['-e', "process.stdout.write('sensitive marker')"],
+    cwd: ROOT,
+    timeoutMs: 5000,
+    maxOutputBytes: 1024,
+    allowedExecutables: [process.execPath],
+    captureOutput: false,
+    onOutput: ({ text }) => observed.push(text),
+  });
+  assert.equal(result.code, 0);
+  assert.equal(observed.join(''), 'sensitive marker');
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, '');
+});
+
+test('non-capturing process launch failures stay structured without retaining the error output', async () => {
+  const executable = 'citadel-command-that-does-not-exist';
+  const result = await spawnProcess({
+    executable,
+    args: [],
+    cwd: ROOT,
+    timeoutMs: 5000,
+    maxOutputBytes: 1024,
+    allowedExecutables: [executable],
+    captureOutput: false,
+  });
+  assert.equal(result.code, -1);
+  assert.equal(result.spawnFailed, true);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, '');
 });
 
 test('a multibyte sequence crossing the output limit cannot expand past it', { timeout: 10_000 }, async () => {

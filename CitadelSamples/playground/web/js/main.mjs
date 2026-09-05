@@ -25,7 +25,12 @@ import {
   buildWorkbenchModel,
 } from '../../src/view/models.mjs';
 import { createRunProgress, reduceRunProgress } from '../../src/view/runProgress.mjs';
-import { buildExecutionContextProjection, createExecutionContextClient } from './executionContextClient.mjs';
+import {
+  azureAuthCapabilityFromPayload,
+  buildExecutionContextProjection,
+  createExecutionContextClient,
+  reconcileAzureContextCurrent,
+} from './executionContextClient.mjs';
 import { createLocalExecutorClient } from './localClient.mjs';
 import { chip, el, replace } from './render/dom.mjs';
 import { renderDirectory, renderSampleSelect } from './render/directory.mjs';
@@ -102,12 +107,14 @@ let executionContextRequestVersion = 0;
 let executionContextTimer = null;
 let executionContextController = null;
 let azureLoginState = { status: 'idle' };
+let azureAuthCapability = azureAuthCapabilityFromPayload(null);
+let azureSubscriptionsState = { status: 'idle', subscriptions: [], selectedId: '', message: '' };
 let azureLoginPollTimer = null;
-let azureLoginPollCount = 0;
 let azureLoginController = null;
 let azureLoginGeneration = 0;
-let azureLoginStartedAt = 0;
 let azureLoginCancelRequested = false;
+let azureSubscriptionsController = null;
+let azureSubscriptionsGeneration = 0;
 let sourceWrap = false;
 let testExecutionContextOverride = TEST_EXECUTOR_ENABLED;
 let secretInputInProgress = false;
@@ -160,6 +167,7 @@ async function probeCapability() {
     capabilitySummary = payload.capability ?? null;
     sourceValidationAvailable = payload.sourceValidation?.available === true;
     executionContextAvailable = typeof payload.executionContext?.endpoint === 'string';
+    azureAuthCapability = azureAuthCapabilityFromPayload(payload);
     selfTestAvailable = payload.selfTest?.available === true;
     if (payload.executor?.kind === 'local' && payload.executor.canExecute) {
       executor = createLocalExecutorClient({
@@ -238,6 +246,13 @@ function executionContextFingerprint(sample) {
 }
 
 function executionIdentityIsCurrent(sample, identity) {
+  const loginState = azureLoginState.login?.state;
+  if (
+    azureLoginState.status === 'starting' ||
+    ['starting', 'waiting-system-ui', 'verifying', 'cancel-requested'].includes(loginState)
+  ) {
+    return false;
+  }
   if (testExecutionContextOverride) return identity.canExecute === true;
   if (!executionContextAvailable) return true;
   return (
@@ -310,45 +325,40 @@ function scheduleExecutionContext() {
   executionContextTimer = setTimeout(() => loadExecutionContext(), 250);
 }
 
+function invalidateExecutionContext(message) {
+  clearTimeout(executionContextTimer);
+  executionContextController?.abort();
+  executionContextRequestVersion += 1;
+  executionContextState = { status: 'stale', message };
+}
+
 function applyAzureLogin(login) {
   const focusedId = document.activeElement?.id ?? '';
   azureLoginState = { status: 'ready', login };
   render();
   clearTimeout(azureLoginPollTimer);
-  if (login.state === 'succeeded') {
-    if (focusedId === 'cancel-azure-login') {
-      requestAnimationFrame(() => document.getElementById('refresh-execution-context')?.focus());
+  if (login.state === 'ready') {
+    if (focusedId === 'cancel-system-azure-login') {
+      requestAnimationFrame(() => document.getElementById('refresh-azure-cli-status')?.focus());
     }
+    azureSubscriptionsState = { status: 'idle', subscriptions: [], selectedId: '', message: '' };
     announce('Azure sign-in completed. Refreshing execution identity.');
     loadExecutionContext();
     return;
   }
-  if (!['starting', 'waiting-for-user'].includes(login.state)) {
-    if (focusedId === 'cancel-azure-login') {
+  if (!['starting', 'waiting-system-ui', 'verifying', 'cancel-requested'].includes(login.state)) {
+    if (focusedId === 'cancel-system-azure-login') {
       requestAnimationFrame(() => {
         const target =
-          document.getElementById('cancel-azure-login') ?? document.getElementById('start-azure-login');
+          document.getElementById('cancel-system-azure-login') ??
+          document.getElementById('start-system-azure-login');
         target?.focus();
       });
     }
     announce(login.message || `Azure sign-in ${login.state}.`);
     return;
   }
-  announce(login.message || 'Azure device sign-in is waiting for you.');
-  if (azureLoginPollCount >= 120) {
-    azureLoginState = {
-      status: 'ready',
-      login: {
-        ...login,
-        state: 'failed',
-        message: 'Azure sign-in reached its polling limit. Cancel this sign-in or start again.',
-      },
-    };
-    render();
-    announce(azureLoginState.login.message);
-    return;
-  }
-  azureLoginPollCount += 1;
+  announce(login.message || 'Azure system sign-in is waiting for the system account UI.');
   const generation = azureLoginGeneration;
   azureLoginPollTimer = setTimeout(() => pollAzureLogin(generation), 2_000);
 }
@@ -368,26 +378,28 @@ async function loginRequest(action, generation, timeoutMs = 10_000) {
   }
 }
 
-async function startAzureLogin() {
+async function startSystemAzureLogin() {
   clearTimeout(azureLoginPollTimer);
   azureLoginController?.abort();
+  azureSubscriptionsController?.abort();
+  azureSubscriptionsGeneration += 1;
   const generation = ++azureLoginGeneration;
-  azureLoginPollCount = 0;
-  azureLoginStartedAt = Date.now();
   azureLoginCancelRequested = false;
+  invalidateExecutionContext('Execution identity must be refreshed after Azure sign-in finishes.');
   azureLoginState = { status: 'starting' };
+  azureSubscriptionsState = { status: 'idle', subscriptions: [], selectedId: '', message: '' };
   render();
-  requestAnimationFrame(() => document.getElementById('cancel-azure-login')?.focus());
-  announce('Starting Azure device sign-in…');
+  requestAnimationFrame(() => document.getElementById('cancel-system-azure-login')?.focus());
+  announce('Starting Azure system sign-in…');
   try {
     const login = await loginRequest(
-      (signal) => executionContextClient.startAzureLogin({ signal }),
+      (signal) => executionContextClient.startSystemAzureLogin({ signal }),
       generation,
       15_000,
     );
     if (login && azureLoginCancelRequested) {
       azureLoginState = { status: 'ready', login };
-      await cancelAzureLogin('Azure sign-in cancelled.');
+      await cancelSystemAzureLogin('Azure sign-in cancelled.');
     } else if (login) {
       applyAzureLogin(login);
     }
@@ -396,7 +408,7 @@ async function startAzureLogin() {
     if (error?.code === 'login-in-progress' && error.login) {
       if (azureLoginCancelRequested) {
         azureLoginState = { status: 'ready', login: error.login };
-        await cancelAzureLogin('Azure sign-in cancelled.');
+        await cancelSystemAzureLogin('Azure sign-in cancelled.');
       } else {
         applyAzureLogin(error.login);
       }
@@ -409,7 +421,9 @@ async function startAzureLogin() {
     };
     render();
     requestAnimationFrame(() => {
-      const target = document.getElementById('start-azure-login') ?? document.getElementById('refresh-execution-context');
+      const target =
+        document.getElementById('start-system-azure-login') ??
+        document.getElementById('refresh-azure-cli-status');
       target?.focus();
     });
     announce(azureLoginState.message);
@@ -420,30 +434,21 @@ async function pollAzureLogin(generation = azureLoginGeneration) {
   if (generation !== azureLoginGeneration) return;
   const loginId = azureLoginState.login?.loginId;
   if (!loginId) return;
-  const remainingMs = 240_000 - (Date.now() - azureLoginStartedAt);
-  if (remainingMs <= 0) {
-    await cancelAzureLogin('Azure sign-in timed out after 4 minutes.');
-    return;
-  }
   try {
     const login = await loginRequest(
-      (signal) => executionContextClient.getAzureLogin(loginId, { signal }),
+      (signal) => executionContextClient.getSystemAzureLogin(loginId, { signal }),
       generation,
-      Math.min(10_000, remainingMs),
+      10_000,
     );
     if (login && login.loginId === loginId) applyAzureLogin(login);
   } catch {
     if (generation !== azureLoginGeneration) return;
-    if (Date.now() - azureLoginStartedAt >= 240_000) {
-      await cancelAzureLogin('Azure sign-in timed out after 4 minutes.');
-      return;
-    }
     azureLoginState = {
       status: 'ready',
       login: {
         ...azureLoginState.login,
-        state: 'failed',
-        message: 'Azure sign-in status could not be refreshed. Cancel this sign-in or start again.',
+        state: 'status-unknown',
+        message: 'Azure sign-in status could not be refreshed. Run `az account show` in a terminal, then Refresh Azure CLI Status.',
       },
     };
     render();
@@ -451,8 +456,8 @@ async function pollAzureLogin(generation = azureLoginGeneration) {
   }
 }
 
-async function cancelAzureLogin(message = 'Azure sign-in cancelled.') {
-  const loginId = azureLoginState.login?.loginId;
+async function cancelSystemAzureLogin(message = 'Azure sign-in cancelled.') {
+  const loginId = azureLoginState.login?.loginId ?? azureAuthCapability.loginId;
   clearTimeout(azureLoginPollTimer);
   if (!loginId) {
     azureLoginCancelRequested = true;
@@ -461,7 +466,7 @@ async function cancelAzureLogin(message = 'Azure sign-in cancelled.') {
       message: 'Cancellation requested. Waiting for the server login ID.',
     };
     render();
-    requestAnimationFrame(() => document.getElementById('cancel-azure-login')?.focus());
+    requestAnimationFrame(() => document.getElementById('cancel-system-azure-login')?.focus());
     announce(azureLoginState.message);
     return;
   }
@@ -469,10 +474,10 @@ async function cancelAzureLogin(message = 'Azure sign-in cancelled.') {
   const generation = ++azureLoginGeneration;
   try {
     const login = await loginRequest(
-      (signal) => executionContextClient.cancelAzureLogin(loginId, { signal }),
+      (signal) => executionContextClient.cancelSystemAzureLogin(loginId, { signal }),
       generation,
     );
-    if (login && login.loginId === loginId) applyAzureLogin({ ...login, message: message || login.message });
+    if (login && login.loginId === loginId) applyAzureLogin({ ...login, message: login.message || message });
   } catch {
     if (generation !== azureLoginGeneration) return;
     azureLoginState = {
@@ -480,7 +485,7 @@ async function cancelAzureLogin(message = 'Azure sign-in cancelled.') {
       login: {
         ...azureLoginState.login,
         loginId,
-        state: 'failed',
+        state: 'status-unknown',
         message: 'Azure sign-in cancellation could not be confirmed. Retry the cancellation.',
       },
     };
@@ -489,12 +494,108 @@ async function cancelAzureLogin(message = 'Azure sign-in cancelled.') {
   }
 }
 
-async function copyDeviceCode(code) {
+async function loadAzureSubscriptions() {
+  if (!azureAuthCapability.subscriptionsAvailable || azureSubscriptionsState.status === 'activating') return;
+  azureSubscriptionsController?.abort();
+  const controller = new AbortController();
+  azureSubscriptionsController = controller;
+  const generation = ++azureSubscriptionsGeneration;
+  azureSubscriptionsState = {
+    ...azureSubscriptionsState,
+    status: 'loading',
+    message: '',
+  };
+  render();
   try {
-    await navigator.clipboard.writeText(code);
-    announce('Azure device code copied.');
-  } catch {
-    announce('The device code could not be copied. Select the code and copy it manually.');
+    const result = await executionContextClient.listAzureSubscriptions({ signal: controller.signal });
+    if (generation !== azureSubscriptionsGeneration) return;
+    if (executionContextState.status === 'ready') {
+      executionContextState = {
+        ...executionContextState,
+        context: reconcileAzureContextCurrent(executionContextState.context, result.current, {
+          sampleId: state.selectedSampleId,
+        }),
+      };
+    }
+    const currentId = result.current.activeCliSubscription.id;
+    const defaultId = result.subscriptions.find((subscription) => subscription.isDefault)?.id ?? '';
+    const cachedId = executionContextState.context?.activeCliSubscription?.id ?? '';
+    const selectedId =
+      [currentId, defaultId, cachedId]
+        .map((candidate) =>
+          result.subscriptions.find(
+            (subscription) => subscription.id.toLowerCase() === String(candidate).toLowerCase(),
+          )?.id,
+        )
+        .find(Boolean) ??
+      result.subscriptions[0]?.id ??
+      '';
+    azureSubscriptionsState = {
+      status: 'ready',
+      subscriptions: result.subscriptions,
+      selectedId,
+      message:
+        result.subscriptions.length > 0
+          ? `${result.subscriptions.length} enabled subscription${result.subscriptions.length === 1 ? '' : 's'} available.`
+          : 'No enabled subscriptions are available for the current Azure CLI account and tenant.',
+    };
+  } catch (error) {
+    if (generation !== azureSubscriptionsGeneration) return;
+    azureSubscriptionsState = {
+      status: 'error',
+      subscriptions: [],
+      selectedId: '',
+      message: error?.message ?? 'Azure subscriptions could not be loaded.',
+    };
+  } finally {
+    if (azureSubscriptionsController === controller) azureSubscriptionsController = null;
+  }
+  render();
+  announce(azureSubscriptionsState.message);
+}
+
+function selectAzureSubscription(subscriptionId) {
+  if (azureSubscriptionsState.status !== 'ready') return;
+  azureSubscriptionsState = { ...azureSubscriptionsState, selectedId: subscriptionId };
+  render();
+}
+
+async function activateAzureSubscription() {
+  const subscriptionId = azureSubscriptionsState.selectedId;
+  if (!subscriptionId || azureSubscriptionsState.status !== 'ready') return;
+  azureSubscriptionsController?.abort();
+  const controller = new AbortController();
+  azureSubscriptionsController = controller;
+  const generation = ++azureSubscriptionsGeneration;
+  invalidateExecutionContext('Execution identity must be refreshed after the Azure subscription changes.');
+  azureSubscriptionsState = {
+    ...azureSubscriptionsState,
+    status: 'activating',
+    message: 'Changing the shared Azure CLI default subscription.',
+  };
+  render();
+  try {
+    await executionContextClient.activateAzureSubscription(subscriptionId, { signal: controller.signal });
+    if (generation !== azureSubscriptionsGeneration) return;
+    azureSubscriptionsState = {
+      ...azureSubscriptionsState,
+      status: 'ready',
+      message: 'Azure CLI subscription changed and verified.',
+    };
+    await loadExecutionContext();
+    await loadAzureSubscriptions();
+  } catch (error) {
+    if (generation !== azureSubscriptionsGeneration) return;
+    azureSubscriptionsState = {
+      ...azureSubscriptionsState,
+      status: 'error',
+      message: error?.message ?? 'Azure CLI subscription could not be changed.',
+    };
+    await loadExecutionContext();
+    render();
+    announce(azureSubscriptionsState.message);
+  } finally {
+    if (azureSubscriptionsController === controller) azureSubscriptionsController = null;
   }
 }
 
@@ -811,7 +912,14 @@ function secretsFor(sample) {
 
 async function runSelected() {
   const sample = getSample(state.selectedSampleId);
-  const identity = buildExecutionIdentityModel({ contextState: executionContextState, loginState: azureLoginState });
+  const identity = buildExecutionIdentityModel({
+    sampleId: sample.id,
+    contextState: executionContextState,
+    loginState: azureLoginState,
+    azureAuthCapability,
+    subscriptionsState: azureSubscriptionsState,
+    runInFlight: running,
+  });
   if (!executionIdentityIsCurrent(sample, identity)) {
     announce(`Not run: ${identity.summary}`);
     render();
@@ -946,8 +1054,12 @@ function render() {
 
   const sample = getSample(state.selectedSampleId);
   const executionIdentity = buildExecutionIdentityModel({
+    sampleId: sample.id,
     contextState: executionContextState,
     loginState: azureLoginState,
+    azureAuthCapability,
+    subscriptionsState: azureSubscriptionsState,
+    runInFlight: running,
   });
   const identityCurrent = executionIdentityIsCurrent(sample, executionIdentity);
   const model = buildWorkbenchModel({
@@ -990,9 +1102,11 @@ function render() {
     onDownload: downloadText,
     onReview: openReview,
     onRefreshIdentity: refreshExecutionContext,
-    onSignIn: startAzureLogin,
-    onCancelLogin: cancelAzureLogin,
-    onCopyCode: copyDeviceCode,
+    onSignIn: startSystemAzureLogin,
+    onCancelLogin: cancelSystemAzureLogin,
+    onRefreshSubscriptions: loadAzureSubscriptions,
+    onSelectSubscription: selectAzureSubscription,
+    onActivateSubscription: activateAzureSubscription,
     wrapSource: sourceWrap,
     onToggleWrap: toggleSourceWrap,
   });
@@ -1108,11 +1222,25 @@ if (TEST_EXECUTOR_ENABLED) {
           kind: 'azure-cli',
           label: 'Loopback test identity',
           summary: 'A loopback-only test identity is attached. It cannot contact Azure.',
-          state: 'ready',
+          state: 'ready-to-attempt',
           code: 'test-only',
           canExecute: true,
-          authority: { type: 'test', principalName: 'Loopback test executor', principalType: 'test', tenantId: '' },
-          subscription: null,
+          signedInAccount: {
+            state: 'signed-in',
+            principalName: 'Loopback test executor',
+            principalType: 'test',
+            tenantId: '',
+          },
+          executionCredential: {
+            type: 'test',
+            source: 'loopback-test',
+            principalName: 'Loopback test executor',
+            principalType: 'test',
+            tenantId: '',
+          },
+          activeCliSubscription: null,
+          intendedTarget: null,
+          authorization: { state: 'not-checked', label: 'Authorization Not Checked' },
           gateway: null,
           hostedRelay: null,
           guarantees: ['Available only on loopback with the explicit test flag.'],
@@ -1146,8 +1274,17 @@ if (TEST_EXECUTOR_ENABLED) {
       azureLoginState = { status: 'ready', login };
       render();
     },
-    startAzureLogin,
-    cancelAzureLogin,
+    setAzureAuthCapability(capability) {
+      azureAuthCapability = { ...azureAuthCapability, ...capability };
+      render();
+    },
+    setAzureSubscriptions(subscriptionsState) {
+      azureSubscriptionsState = { ...azureSubscriptionsState, ...subscriptionsState };
+      render();
+    },
+    startSystemAzureLogin,
+    cancelSystemAzureLogin,
+    loadAzureSubscriptions,
     refreshExecutionContext,
     validateProtectedSource,
     isRunning: () => running,

@@ -86,6 +86,55 @@ test('a valid request runs and comes back with a run id and per-step results', a
   assert.equal(instance.activeCount, 0, 'the run is removed from the active set when it finishes');
 });
 
+test('a run holds and releases the execution identity lease for its whole lifecycle', async () => {
+  let acquired = 0;
+  let released = 0;
+  const executionContextManager = {
+    acquireRunLease() {
+      acquired += 1;
+      let done = false;
+      return () => {
+        if (done) return;
+        done = true;
+        released += 1;
+      };
+    },
+    async forRun({ sampleId }) {
+      assert.equal(acquired, 1);
+      assert.equal(released, 0);
+      return {
+        kind: 'test-context',
+        label: 'Fake execution context',
+        summary: 'Approved by the fake execution-context manager.',
+        state: 'ready',
+        code: null,
+        canExecute: true,
+        sampleId,
+      };
+    },
+  };
+  const spawn = fakeSpawn([
+    {
+      match: (options) => options.args.slice(0, 2).join(' ') === 'account show',
+      result: {
+        code: 0,
+        stdout: JSON.stringify({
+          id: FIXTURE_VALUES['hub.subscriptionId'],
+          name: 'Fake Subscription',
+          user: { name: 'operator@example.test' },
+          tenantId: 'tenant',
+        }),
+      },
+    },
+  ]);
+  const { instance } = manager({ spawn, executionContextManager });
+  await instance.start(
+    request('azure-context-check', { 'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'] }),
+  );
+  assert.equal(acquired, 1);
+  assert.equal(released, 1);
+});
+
 test('the manager reports step progress while a run is in flight', async () => {
   const spawn = fakeSpawn([
     {
