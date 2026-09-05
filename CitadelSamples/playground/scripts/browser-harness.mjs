@@ -14,6 +14,7 @@ const DEFAULT_BROWSER_CANDIDATES = Object.freeze([
   '/usr/bin/chromium',
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
 ]);
+export const TEST_BOOTSTRAP_CAPABILITY = 'A'.repeat(43);
 
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -204,6 +205,7 @@ export async function launchBrowserHarness({
   browserPath,
   createServer,
   path = '/?testExecutor',
+  bootstrapCapability = TEST_BOOTSTRAP_CAPABILITY,
   viewport = { width: 1440, height: 900, mobile: false },
 } = {}) {
   if (typeof createServer !== 'function') throw new TypeError('launchBrowserHarness requires createServer.');
@@ -213,7 +215,7 @@ export async function launchBrowserHarness({
   }
 
   const serverPort = await reserveLoopbackPort();
-  const server = createServer({ port: serverPort });
+  const server = createServer({ port: serverPort, testBootstrapCapability: bootstrapCapability });
   server.listen(serverPort, '127.0.0.1');
   await once(server, 'listening');
   const baseUrl = `http://127.0.0.1:${serverPort}`;
@@ -285,7 +287,9 @@ export async function launchBrowserHarness({
     await page.send('Runtime.enable');
     await page.send('Log.enable');
     await setViewport(viewport);
-    await page.send('Page.navigate', { url: new URL(path, baseUrl).href });
+    const launchUrl = new URL(path, baseUrl);
+    launchUrl.hash = `bootstrap=${encodeURIComponent(bootstrapCapability)}`;
+    await page.send('Page.navigate', { url: launchUrl.href });
   } catch (error) {
     const output = browserOutput.trim();
     await close();

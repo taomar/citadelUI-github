@@ -9,6 +9,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { EXECUTION_PROTOCOL_VERSION, SOURCE_NOTEBOOK } from '../src/core/types.mjs';
+import { claimLocalSession } from './helpers/localSession.mjs';
 
 const PLAYGROUND_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SAMPLES_ROOT = resolve(PLAYGROUND_ROOT, '..');
@@ -191,6 +192,21 @@ async function waitForResponse(url, { child = null, output = () => '', ...init }
   throw new Error(`Timed out waiting for ${url}: ${lastError?.message ?? 'no response'}\n${output()}`);
 }
 
+async function claimPrintedLocalSession(baseUrl, output) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const match = /secure launch URL: (http:\/\/\S+)/.exec(output());
+    if (match) {
+      const launchUrl = new URL(match[1]);
+      const capability = new URLSearchParams(launchUrl.hash.slice(1)).get('bootstrap');
+      if (!capability) throw new Error('The printed secure launch URL has no bootstrap fragment.');
+      return claimLocalSession(baseUrl, capability);
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+  }
+  throw new Error(`The server did not print a secure launch URL.\n${output()}`);
+}
+
 async function assertMissing(path) {
   await assert.rejects(
     () => stat(path),
@@ -292,7 +308,9 @@ test('the playground temporary image layout serves protected source and passes i
 
     const port = await reservePort();
     await withNodeEntrypoint(resolve(playgroundRoot, 'server.mjs'), playgroundEnvironment(port), async (child, output) => {
-      await waitForResponse(`http://127.0.0.1:${port}/api/health`, { child, output });
+      const baseUrl = `http://127.0.0.1:${port}`;
+      await waitForResponse(`${baseUrl}/api/health`, { child, output });
+      const { cookie } = await claimPrintedLocalSession(baseUrl, output);
 
       const sourceResponse = await fetch(`http://127.0.0.1:${port}/api/source/weather-mcp-discovery`);
       assert.equal(sourceResponse.status, 200);
@@ -301,9 +319,14 @@ test('the playground temporary image layout serves protected source and passes i
       assert.equal(source.notebook.sha256, SOURCE_NOTEBOOK.sha256);
       assert.ok(source.cells.length > 0);
 
-      const selfTestResponse = await fetch(`http://127.0.0.1:${port}/api/self-test`, {
+      const selfTestResponse = await fetch(`${baseUrl}/api/self-test`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: cookie,
+          Origin: baseUrl,
+          'Sec-Fetch-Site': 'same-origin',
+        },
         body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
       });
       assert.equal(selfTestResponse.status, 200);

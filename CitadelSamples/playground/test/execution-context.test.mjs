@@ -21,6 +21,11 @@ import {
 import { createRunManager } from '../src/server/runManager.mjs';
 import { RequestRefused } from '../src/server/runRequest.mjs';
 import { createPlaygroundServer } from '../server.mjs';
+import {
+  claimLocalSession,
+  createAuthenticatedFetch,
+  TEST_BOOTSTRAP_CAPABILITY,
+} from './helpers/localSession.mjs';
 import { fakeFileSystem } from './helpers/transports.mjs';
 
 const PLAYGROUND_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -65,10 +70,17 @@ async function waitForLogin(manager, loginId, state) {
 }
 
 async function withServer(options, body) {
-  const server = createPlaygroundServer(options);
+  const server = createPlaygroundServer({
+    ...options,
+    testBootstrapCapability: options?.testBootstrapCapability ?? TEST_BOOTSTRAP_CAPABILITY,
+  });
   await new Promise((done) => server.listen(0, '127.0.0.1', done));
   const { port } = server.address();
-  const call = (path, init = {}) => fetch(`http://127.0.0.1:${port}${path}`, init);
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const claimed = server.localSessionAuth ? await claimLocalSession(baseUrl, TEST_BOOTSTRAP_CAPABILITY) : null;
+  const call = claimed
+    ? createAuthenticatedFetch(baseUrl, claimed.cookie)
+    : (path, init = {}) => fetch(new URL(path, baseUrl), init);
   try {
     return await body({ call, server });
   } finally {

@@ -133,9 +133,12 @@ cd CitadelSamples/playground
 npm start
 ```
 
-Open `http://127.0.0.1:4173/`. Preview mode lets you select all 19 samples,
-complete their configuration, export JSON or `.env.example`, and inspect the
-exact protected source and generated plan. It executes nothing.
+Open the secure launch URL printed in the terminal. Its one-time URL fragment is
+removed immediately and exchanged for an HttpOnly local session cookie. Preview
+mode lets you select all 19 samples, complete their configuration, export JSON
+or `.env.example`, and inspect the exact protected source and generated plan. It
+executes nothing. Opening the plain `http://127.0.0.1:4173/` URL is read-only and
+cannot invoke self-test, validation, identity, login, relay, or execution APIs.
 
 The masthead also carries an **Offline self-test** — a fixed, local
 demonstration that needs no Azure subscription, no credential, and no network.
@@ -160,7 +163,8 @@ npm run start:execute
 Operator mode is deliberately separate from ordinary startup. It probes only
 local runtimes at boot; it does not contact Azure or a gateway until **Run this
 plan** is selected. Local execution is refused unless the server binds to
-loopback.
+loopback. The launch capability and cookie rotate on restart; hosted deployments
+keep their trusted proxy and Entra authentication boundary.
 
 Available commands:
 

@@ -164,6 +164,7 @@ export function createRelayExecutor({
       try {
         response = await doFetch(endpoint, {
           method: 'POST',
+          credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
           body: JSON.stringify(body),
           signal,

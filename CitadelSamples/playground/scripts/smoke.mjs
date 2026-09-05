@@ -23,6 +23,8 @@ import { existsSync } from 'node:fs';
 
 import { createPlaygroundServer } from '../server.mjs';
 
+const TEST_BOOTSTRAP_CAPABILITY = 'A'.repeat(43);
+
 const CHROME_CANDIDATES = [
   process.env.CITADEL_SMOKE_CHROME,
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -152,7 +154,7 @@ async function main() {
   }
 
   const port = await reserveLoopbackPort();
-  const server = createPlaygroundServer({ port });
+  const server = createPlaygroundServer({ port, testBootstrapCapability: TEST_BOOTSTRAP_CAPABILITY });
   server.listen(port, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${port}`;
@@ -204,7 +206,9 @@ async function main() {
       deviceScaleFactor: 1,
       mobile: false,
     });
-    await page.send('Page.navigate', { url: `${base}/?testExecutor` });
+    await page.send('Page.navigate', {
+      url: `${base}/?testExecutor#bootstrap=${encodeURIComponent(TEST_BOOTSTRAP_CAPABILITY)}`,
+    });
     await waitFor(page, 'document.querySelectorAll(".dir-item").length === 19', {
       label: 'the recipe directory to render',
     });

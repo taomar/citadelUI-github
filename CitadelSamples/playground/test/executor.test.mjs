@@ -494,9 +494,10 @@ test('the server sends restrictive security headers and answers the capability p
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sampleId: 'a2a-agent-card', inputs: {} }),
     });
-    assert.equal(execute.status, 501, 'with no relay configured, execution is not implemented');
+    assert.equal(execute.status, 401, 'an unclaimed plain URL cannot invoke the relay proxy');
     const body = await execute.json();
     assert.equal(body.state, 'blocked');
+    assert.equal(body.code, 'local-session-required');
   } finally {
     server.close();
     await once(server, 'close');

@@ -45,6 +45,11 @@ import { createSharedSecretAuthenticator, createDenyAllAuthenticator } from '../
 import { buildSamplePlan, CATALOGUE, requirementsFor } from '../../src/catalogue/index.mjs';
 import { EXECUTION_PROTOCOL_VERSION } from '../../src/core/types.mjs';
 import { FAKE_API_KEY } from '../helpers/fixtures.mjs';
+import {
+  claimLocalSession,
+  createAuthenticatedFetch,
+  TEST_BOOTSTRAP_CAPABILITY,
+} from '../helpers/localSession.mjs';
 import { fakeFetch, sseFrame } from '../helpers/transports.mjs';
 
 const GATEWAY_ORIGIN = 'https://apim-citadel-test.azure-api.net';
@@ -88,8 +93,13 @@ async function listenLoopback(server) {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const { port } = server.address();
+  const base = `http://127.0.0.1:${port}`;
+  const claimed = server.localSessionAuth ? await claimLocalSession(base) : null;
   return {
-    base: `http://127.0.0.1:${port}`,
+    base,
+    call: claimed
+      ? createAuthenticatedFetch(base, claimed.cookie)
+      : (path, init = {}) => fetch(new URL(path, base), init),
     async close() {
       server.close();
       await once(server, 'close');
@@ -145,6 +155,7 @@ function realRelayServer({
 function realProxyServer(relayBase) {
   return createPlaygroundServer({
     mode: 'preview',
+    testBootstrapCapability: TEST_BOOTSTRAP_CAPABILITY,
     relay: {
       enabled: true,
       url: `${relayBase}/execute`,
@@ -166,7 +177,7 @@ test('a real request round-trips proxy -> relay -> (mocked gateway) over real lo
       // The test itself is the "browser": a loopback fetch straight to the
       // proxy's public surface, presenting nothing but the same-origin
       // guard headers a real browser would send.
-      const response = await fetch(`${proxy.base}/api/execute`, {
+      const response = await proxy.call('/api/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -210,10 +221,10 @@ test('the configured one-sample subset disables every other eligible sample befo
   try {
     const proxy = await listenLoopback(realProxyServer(relay.base));
     try {
-      const capabilities = await (await fetch(`${proxy.base}/api/capabilities`)).json();
+      const capabilities = await (await proxy.call('/api/capabilities')).json();
       assert.deepEqual(capabilities.executor.allowedSampleIds, ['weather-mcp-discovery']);
 
-      const response = await fetch(`${proxy.base}/api/execute`, {
+      const response = await proxy.call('/api/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -242,7 +253,7 @@ test('a request the relay refuses (wrong destination allowlisted for this tenant
   try {
     const proxy = await listenLoopback(realProxyServer(relay.base));
     try {
-      const response = await fetch(`${proxy.base}/api/execute`, {
+      const response = await proxy.call('/api/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -271,6 +282,7 @@ test('a shared-secret credential the relay does not recognise is refused before 
     const proxy = await listenLoopback(
       createPlaygroundServer({
         mode: 'preview',
+        testBootstrapCapability: TEST_BOOTSTRAP_CAPABILITY,
         relay: {
           enabled: true,
           url: `${relay.base}/execute`,
@@ -284,7 +296,7 @@ test('a shared-secret credential the relay does not recognise is refused before 
       }),
     );
     try {
-      const response = await fetch(`${proxy.base}/api/execute`, {
+      const response = await proxy.call('/api/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

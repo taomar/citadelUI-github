@@ -1565,13 +1565,20 @@ async function main() {
 
   const harness = await launchBrowserHarness({
     browserPath: argumentValue('--chrome'),
-    createServer: ({ port }) => createPlaygroundServer({ port, mode: 'execute' }),
+    createServer: ({ port, testBootstrapCapability }) =>
+      createPlaygroundServer({ port, mode: 'execute', testBootstrapCapability }),
   });
   try {
     await harness.waitFor('document.querySelectorAll(".dir-item").length === 19', {
       label: 'the 19-recipe directory',
     });
     await harness.waitFor('Boolean(globalThis.__citadelTestHooks)', { label: 'the loopback-only test executor seam' });
+    const sessionCapability = await browserJson(harness, '/api/capabilities');
+    reporter.equal('the browser claims the per-launch local session', sessionCapability.body?.sessionAuth?.state, 'claimed');
+    reporter.equal('the bootstrap fragment is removed immediately after boot', await harness.evaluate('location.hash'), '');
+    const browserCookies = await harness.page.send('Network.getCookies', { urls: [harness.baseUrl] });
+    const localSessionCookie = browserCookies.cookies.find((cookie) => cookie.name === 'citadel_playground_session');
+    reporter.check('the local session cookie is present and HttpOnly', localSessionCookie?.httpOnly === true);
 
     const sourceBySample = await checkSourceContracts(harness, notebook, notebookMeta);
     await checkCodeParameterWorkspace(harness);

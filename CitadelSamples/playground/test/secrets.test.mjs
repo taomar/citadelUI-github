@@ -196,7 +196,16 @@ test('no source file writes a secret into a URL or the console', async () => {
       !/(searchParams\.set|URLSearchParams)[^\n]*(apiKey|accessToken)/i.test(text),
       `${relative(ROOT, file)} may put a credential in a URL`,
     );
-    assert.ok(!/history\.(pushState|replaceState)/.test(text), `${relative(ROOT, file)} writes to the URL`);
+    const historyWrites = text.match(/history\.(pushState|replaceState)/g) ?? [];
+    if (historyWrites.length > 0) {
+      assert.equal(relative(ROOT, file), join('web', 'js', 'main.mjs'));
+      assert.deepEqual(historyWrites, ['history.replaceState']);
+      assert.match(
+        text,
+        /history\.replaceState\(null, '', `\$\{location\.pathname\}\$\{location\.search\}\$\{remaining \? `#\$\{remaining\}` : ''\}`\)/,
+        'the only URL write must remove the bootstrap fragment without copying it',
+      );
+    }
   }
 });
 
