@@ -50,8 +50,16 @@ function contextItem(label, value, detail, { mono = false, state = '' } = {}) {
 }
 
 function authorizationContext(value = {}) {
+  const authorized = value.proven === true || value.state === 'authorized';
   const ready = value.readyToAttempt === true || value.state === 'ready-to-attempt';
   const blocked = value.readyToAttempt === false || value.state === 'blocked';
+  if (authorized) {
+    return {
+      state: 'authorized',
+      label: 'Authorized to operate',
+      detail: 'The hosted operator entitlement was enforced by the server.',
+    };
+  }
   if (ready) {
     return {
       state: 'ready-to-attempt',
@@ -404,6 +412,7 @@ export function renderShell({
   const recipe = model.recipe ?? {};
   const runner = model.runner ?? {};
   const notebook = model.notebook ?? {};
+  const operatorAuthorization = model.operatorAuthorization ?? {};
   const identity = model.identity ?? {};
   const directoryOpen = model.directoryOpen === true;
   const directoryModal = model.directoryModal === true;
@@ -506,6 +515,20 @@ export function renderShell({
     ]),
     el('div', { class: 'dossier-masthead-status' }, [
       badge(runner.label ?? 'Preview only', runner.tone),
+      operatorAuthorization.required === true
+        ? badge(
+            operatorAuthorization.signedIn === true ? 'Signed in' : 'Not signed in',
+            operatorAuthorization.signedIn === true ? 'success' : 'warning',
+          )
+        : null,
+      operatorAuthorization.required === true
+        ? badge(
+            operatorAuthorization.authorized === true
+              ? 'Authorized to operate'
+              : 'Not authorized to operate',
+            operatorAuthorization.authorized === true ? 'success' : 'danger',
+          )
+        : null,
       badge(
         notebook.verified === true ? 'Notebook verified' : 'Notebook not verified',
         notebook.verified === true ? 'success' : 'warning',

@@ -53,6 +53,12 @@ import {
   createDenyAllAuthenticator,
   createSharedSecretAuthenticator,
 } from './src/relay/principalAuth.mjs';
+import {
+  HostedAuthorizationConfigurationError,
+  hostedAuthorizationConfigurationError,
+  readHostedAuthorizationPolicy,
+  validateHostedAuthorizationPolicy,
+} from './src/relay/operatorAuthorization.mjs';
 import { parseRelayAllowedSampleIds, rebuildRelayPlan, validateExecuteRequest } from './src/relay/requestSchema.mjs';
 import { mintAcknowledgement, planRequestUrls } from './src/relay/acknowledgement.mjs';
 import {
@@ -145,10 +151,17 @@ export function parseTrustedPublicOrigin(rawValue, { name = 'CITADEL_PLAYGROUND_
  */
 export function buildRelayConfig(env = process.env) {
   const url = env.CITADEL_PLAYGROUND_RELAY_URL ?? '';
-  if (url === '') return Object.freeze({ enabled: false });
+  const trustedEntraProxy = env.CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED === 'true';
+  if (url === '') {
+    if (trustedEntraProxy) {
+      throw new RelayTokenConfigurationError(
+        'CITADEL_PLAYGROUND_RELAY_URL must be configured for the hosted playground.',
+      );
+    }
+    return Object.freeze({ enabled: false });
+  }
 
   const authMode = env.CITADEL_PLAYGROUND_RELAY_AUTH_MODE ?? 'managed-identity';
-  const trustedEntraProxy = env.CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED === 'true';
   if (trustedEntraProxy && authMode !== 'managed-identity') {
     throw new RelayTokenConfigurationError(
       'CITADEL_PLAYGROUND_RELAY_AUTH_MODE must be exactly managed-identity for the hosted playground.',
@@ -172,6 +185,9 @@ export function buildRelayConfig(env = process.env) {
       'CITADEL_PLAYGROUND_ENTRA_TENANT_ID must exactly match CITADEL_PLAYGROUND_RELAY_TENANT.',
     );
   }
+  const operatorAuthorizationPolicy = trustedEntraProxy
+    ? readHostedAuthorizationPolicy(env)
+    : null;
   const credentialProvider =
     authMode === 'static-token'
       ? createStaticTokenCredentialProvider({ token: env.CITADEL_PLAYGROUND_RELAY_TOKEN ?? '' })
@@ -193,7 +209,11 @@ export function buildRelayConfig(env = process.env) {
   // Fail closed: a non-loopback bind with nothing configured refuses every
   // `/api/execute` caller rather than accepting them all.
   const authenticator = trustedEntraProxy
-    ? createContainerAppsEntraAuthenticator({ tenantId: tokenContract.tenantId })
+    ? createContainerAppsEntraAuthenticator({
+        tenantId: tokenContract.tenantId,
+        clientId: env.CITADEL_PLAYGROUND_ENTRA_CLIENT_ID,
+        ...operatorAuthorizationPolicy,
+      })
     : executeToken
       ? createSharedSecretAuthenticator({ token: executeToken })
       : createDenyAllAuthenticator();
@@ -222,6 +242,7 @@ export function buildRelayConfig(env = process.env) {
     tenant,
     hosted: trustedEntraProxy,
     tokenContract,
+    operatorAuthorizationPolicy,
   });
 }
 
@@ -229,12 +250,20 @@ function buildDefaultRelayConfig(env = process.env) {
   try {
     return buildRelayConfig(env);
   } catch (error) {
-    if (!(error instanceof RelayTokenConfigurationError)) throw error;
+    if (
+      !(error instanceof RelayTokenConfigurationError) &&
+      !(error instanceof HostedAuthorizationConfigurationError)
+    ) {
+      throw error;
+    }
     return Object.freeze({
       enabled: true,
       hosted: true,
       allowedSampleIds: Object.freeze([]),
-      configurationError: relayTokenConfigurationError(error),
+      configurationError:
+        error instanceof RelayTokenConfigurationError
+          ? relayTokenConfigurationError(error)
+          : hostedAuthorizationConfigurationError(error),
     });
   }
 }
@@ -393,12 +422,24 @@ export function capabilitiesPayload({
   relay = DEFAULT_RELAY_CONFIG,
   allowSystemAzureLogin = false,
   sessionAuth = { required: false, state: 'not-required', claimEndpoint: null, message: '' },
+  operatorAuthorization = {
+    required: false,
+    signedIn: false,
+    authorized: true,
+    state: 'not-required',
+    message: '',
+  },
 } = {}) {
   const capability = summariseCapability(CATALOGUE.samples, { ...probe, mode });
   const relayStatus = relayConfigurationStatus(relay);
   const sessionReady = sessionAuth.required !== true || sessionAuth.state === 'claimed';
+  const operatorReady = operatorAuthorization.required !== true || operatorAuthorization.authorized === true;
   const azureControlsAvailable =
-    mode === 'execute' && allowSystemAzureLogin === true && sessionReady && relay.enabled !== true;
+    mode === 'execute' &&
+    allowSystemAzureLogin === true &&
+    sessionReady &&
+    operatorReady &&
+    relay.enabled !== true;
   const secureLaunchMessage = sessionAuth.message || 'Open the secure launch URL shown in the terminal.';
   return {
     status: relayStatus.ok ? 'ok' : 'error',
@@ -423,6 +464,14 @@ export function capabilitiesPayload({
           supportedStepTypes: [],
           reason: secureLaunchMessage,
         }
+      : !operatorReady
+        ? {
+            kind: 'unavailable',
+            canExecute: false,
+            endpoint: null,
+            supportedStepTypes: [],
+            reason: operatorAuthorization.message || 'This signed-in account is not authorized to operate the hosted playground.',
+          }
       : relay.enabled
         ? {
             kind: 'relay',
@@ -454,13 +503,14 @@ export function capabilitiesPayload({
                 'No execution runtime is attached. Plans are generated and previewed only; nothing is sent anywhere. Start with `npm run start:execute` to attach the local executor.',
             },
     sessionAuth,
+    operatorAuthorization,
     // Presence only. The URL and every credential are never disclosed.
     relayConfigured: relay.enabled,
     // Always available, in every mode: it never depends on Azure CLI, Python,
     // a relay, or an operator credential — see `src/server/selfTest.mjs`.
     selfTest: Object.freeze({
       endpoint: '/api/self-test',
-      available: sessionReady,
+      available: sessionReady && operatorReady,
       scenario: SELF_TEST_SCENARIO,
     }),
     protectedSource: Object.freeze({
@@ -471,7 +521,7 @@ export function capabilitiesPayload({
     }),
     sourceValidation: Object.freeze({
       endpointTemplate: '/api/source/{sampleId}/validate',
-      available: mode === 'execute' && sessionReady,
+      available: mode === 'execute' && sessionReady && operatorReady,
       scenario: CODE_VALIDATION_SCENARIO,
       mode: 'offline-local',
       validation: 'python-compile-only',
@@ -482,7 +532,7 @@ export function capabilitiesPayload({
       executionIdentity: 'local-python-parser',
     }),
     executionContext: Object.freeze({
-      endpoint: sessionReady ? '/api/execution-context' : null,
+      endpoint: sessionReady && operatorReady ? '/api/execution-context' : null,
     }),
     azureAuth: Object.freeze({
       systemLogin: Object.freeze({
@@ -504,14 +554,30 @@ export function capabilitiesPayload({
 }
 
 export function relayConfigurationStatus(relay) {
-  if (!relay?.enabled || relay.hosted !== true) return Object.freeze({ ok: true });
+  if (relay?.hosted !== true) return Object.freeze({ ok: true });
   if (relay.configurationError) return Object.freeze({ ok: false, ...relay.configurationError });
   try {
+    if (!relay.enabled) {
+      throw new RelayTokenConfigurationError(
+        'CITADEL_PLAYGROUND_RELAY_URL must be configured for the hosted playground.',
+      );
+    }
     validateRelayTokenContract(relay.tokenContract);
+    validateHostedAuthorizationPolicy(relay.operatorAuthorizationPolicy);
+    if (relay.authenticator?.mode !== 'container-apps-entra') {
+      throw new HostedAuthorizationConfigurationError(
+        'the hosted playground must use the Container Apps Entra authenticator.',
+      );
+    }
     return Object.freeze({ ok: true });
   } catch (error) {
-    if (!(error instanceof RelayTokenConfigurationError)) throw error;
-    return Object.freeze({ ok: false, ...relayTokenConfigurationError(error) });
+    if (error instanceof RelayTokenConfigurationError) {
+      return Object.freeze({ ok: false, ...relayTokenConfigurationError(error) });
+    }
+    if (error instanceof HostedAuthorizationConfigurationError) {
+      return Object.freeze({ ok: false, ...hostedAuthorizationConfigurationError(error) });
+    }
+    throw error;
   }
 }
 
@@ -629,6 +695,81 @@ function requireLocalSession(request, response, localSessionAuth) {
   return false;
 }
 
+function hostedAuthorizationDescriptor(result) {
+  if (result?.ok) {
+    return Object.freeze({
+      required: true,
+      signedIn: true,
+      authorized: true,
+      state: 'authorized',
+      message: 'Signed in. Authorized to operate.',
+    });
+  }
+  if (result?.authenticated === true || result?.status === 403) {
+    return Object.freeze({
+      required: true,
+      signedIn: true,
+      authorized: false,
+      state: 'signed-in-not-authorized',
+      message: 'Signed in. Not authorized to operate.',
+    });
+  }
+  return Object.freeze({
+    required: true,
+    signedIn: false,
+    authorized: false,
+    state: 'not-signed-in',
+    message: 'Not signed in. Hosted operator authorization is required.',
+  });
+}
+
+async function authenticateHostedOperator(request, relay) {
+  const status = relayConfigurationStatus(relay);
+  if (!status.ok) {
+    return {
+      ok: false,
+      status: 503,
+      configurationError: status,
+      descriptor: Object.freeze({
+        required: true,
+        signedIn: false,
+        authorized: false,
+        state: 'configuration-error',
+        message: 'Hosted operator authorization is not configured.',
+      }),
+    };
+  }
+  const result = await relay.authenticator.authenticate(request);
+  return { ...result, descriptor: hostedAuthorizationDescriptor(result) };
+}
+
+function sendHostedAuthorizationFailure(response, authorization) {
+  if (authorization.configurationError) {
+    sendJson(response, 503, {
+      state: 'blocked',
+      summary: 'Hosted operator authorization configuration is invalid.',
+      ...authorization.configurationError,
+    });
+    return;
+  }
+  const status = authorization.status ?? 401;
+  sendJson(response, status, {
+    state: 'blocked',
+    summary:
+      status === 403
+        ? 'Signed in, but not authorized to operate.'
+        : status === 431
+          ? 'The authentication context is too large.'
+          : 'The caller could not be authenticated.',
+    code:
+      status === 403
+        ? 'hosted-operator-not-authorized'
+        : status === 431
+          ? 'authentication-header-too-large'
+          : 'unauthenticated',
+  });
+}
+
 async function handleSessionClaim(request, response, { localSessionAuth, port, host, browserHost, publicOrigin }) {
   if (!localSessionAuth) {
     send(response, 404, securityHeaders('text/plain; charset=utf-8'), 'Not found');
@@ -695,7 +836,11 @@ function httpOrigin(host, port) {
   return url.origin;
 }
 
-async function handleExecute(request, response, { port, host, browserHost, publicOrigin, relay }) {
+async function handleExecute(
+  request,
+  response,
+  { port, host, browserHost, publicOrigin, relay, authorizedCaller = null },
+) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
@@ -730,17 +875,15 @@ async function handleExecute(request, response, { port, host, browserHost, publi
   // The router has already authenticated loopback callers with the per-launch
   // browser session. A non-loopback bind must present a principal the configured
   // authenticator accepts; nothing here fails open.
-  const auth = await authenticatePrincipal(request, {
-    isLoopbackHost,
-    host,
-    authenticator: relay.authenticator ?? createDenyAllAuthenticator(),
-  });
+  const auth =
+    authorizedCaller ??
+    (await authenticatePrincipal(request, {
+      isLoopbackHost,
+      host,
+      authenticator: relay.authenticator ?? createDenyAllAuthenticator(),
+    }));
   if (!auth.ok) {
-    sendJson(response, 401, {
-      state: 'blocked',
-      summary: 'Not run — the caller could not be authenticated.',
-      code: 'unauthenticated',
-    });
+    sendHostedAuthorizationFailure(response, auth);
     return;
   }
 
@@ -1020,7 +1163,11 @@ async function handleRun(request, response, { mode, manager, port, host, browser
   }
 }
 
-async function handleExecutionContext(request, response, { manager, port, host, browserHost, publicOrigin }) {
+async function handleExecutionContext(
+  request,
+  response,
+  { manager, port, host, browserHost, publicOrigin, authorizedCaller = null },
+) {
   const guard = checkStateChangingRequest(request, {
     port,
     host,
@@ -1041,7 +1188,14 @@ async function handleExecutionContext(request, response, { manager, port, host, 
   response.once('close', abortOnClose);
   try {
     const payload = JSON.parse(await readBody(request, 16 * 1024));
-    sendJson(response, 200, await manager.describe(payload, CATALOGUE, { signal: controller.signal }));
+    sendJson(
+      response,
+      200,
+      await manager.describe(payload, CATALOGUE, {
+        signal: controller.signal,
+        operatorAuthorization: authorizedCaller,
+      }),
+    );
   } catch (error) {
     if (controller.signal.aborted && response.destroyed) return;
     if (error instanceof RequestRefused) {
@@ -1541,6 +1695,18 @@ export function createPlaygroundServer({
           sendJson(response, 405, { status: 'error', detail: 'Use GET.' });
           return;
         }
+        const operatorAuthorization =
+          path === '/api/capabilities' && relay.hosted === true
+            ? (await authenticateHostedOperator(request, relay)).descriptor
+            : relay.hosted === true
+              ? Object.freeze({
+                  required: true,
+                  signedIn: false,
+                  authorized: false,
+                  state: 'not-evaluated',
+                  message: 'Hosted operator authorization is configured and evaluated on caller requests.',
+                })
+              : undefined;
         const payload = capabilitiesPayload({
           mode,
           probe: runtimeProbe,
@@ -1558,6 +1724,7 @@ export function createPlaygroundServer({
               claimEndpoint: null,
               message: '',
             }),
+          ...(operatorAuthorization ? { operatorAuthorization } : {}),
         });
         sendJson(response, payload.status === 'ok' ? 200 : 503, payload);
         return;
@@ -1565,6 +1732,31 @@ export function createPlaygroundServer({
 
       if (request.method === 'POST' && isPrivilegedLocalPath(path)) {
         if (!requireLocalSession(request, response, localSessionAuth)) return;
+      }
+
+      let authorizedCaller = null;
+      if (
+        request.method === 'POST' &&
+        isPrivilegedLocalPath(path) &&
+        relay.hosted === true &&
+        !isLoopbackHost(host)
+      ) {
+        const guard = checkStateChangingRequest(request, {
+          port,
+          host,
+          browserHost,
+          publicOrigin,
+          requireOrigin: false,
+        });
+        if (!guard.ok) {
+          sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
+          return;
+        }
+        authorizedCaller = await authenticateHostedOperator(request, relay);
+        if (!authorizedCaller.ok) {
+          sendHostedAuthorizationFailure(response, authorizedCaller);
+          return;
+        }
       }
 
       if (path === '/api/run') {
@@ -1604,6 +1796,7 @@ export function createPlaygroundServer({
           host,
           browserHost,
           publicOrigin,
+          authorizedCaller,
         });
         return;
       }
@@ -1656,7 +1849,14 @@ export function createPlaygroundServer({
           sendJson(response, 405, { state: 'failed', summary: 'Use POST.' });
           return;
         }
-        await handleExecute(request, response, { port, host, browserHost, publicOrigin, relay });
+        await handleExecute(request, response, {
+          port,
+          host,
+          browserHost,
+          publicOrigin,
+          relay,
+          authorizedCaller,
+        });
         return;
       }
 

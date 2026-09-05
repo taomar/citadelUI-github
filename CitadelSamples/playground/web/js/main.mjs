@@ -799,6 +799,7 @@ function shellModel(models) {
       tone: effectiveExecutorCapability().canExecute ? 'success' : 'warning',
       mode: models.environment.mode,
     },
+    operatorAuthorization: models.capabilities?.operatorAuthorization ?? null,
     notebook: {
       verified: models.dossier.source.state === 'ready',
       label: models.dossier.source.state === 'ready' ? 'Notebook verified' : 'Notebook verification pending',

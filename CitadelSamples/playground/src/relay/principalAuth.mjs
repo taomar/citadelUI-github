@@ -10,6 +10,139 @@
  */
 
 import { timingSafeEqual } from 'node:crypto';
+import {
+  HostedAuthorizationConfigurationError,
+  validateHostedAuthorizationPolicy,
+} from './operatorAuthorization.mjs';
+
+const CLIENT_PRINCIPAL_HEADER = 'x-ms-client-principal';
+const DEFAULT_CLIENT_PRINCIPAL_LIMIT_BYTES = 16 * 1024;
+const MAX_CLIENT_PRINCIPAL_CLAIMS = 256;
+const TENANT_CLAIM_TYPES = Object.freeze([
+  'tid',
+  'http://schemas.microsoft.com/identity/claims/tenantid',
+]);
+const PRINCIPAL_CLAIM_TYPES = Object.freeze([
+  'oid',
+  'http://schemas.microsoft.com/identity/claims/objectidentifier',
+]);
+const AUDIENCE_CLAIM_TYPES = Object.freeze([
+  'aud',
+  'http://schemas.microsoft.com/identity/claims/audience',
+]);
+const ROLE_CLAIM_TYPES = new Set([
+  'roles',
+  'http://schemas.microsoft.com/ws/2008/06/identity/claims/role',
+]);
+const GROUP_CLAIM_TYPES = new Set([
+  'groups',
+  'http://schemas.microsoft.com/ws/2008/06/identity/claims/groups',
+]);
+const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function configuredGuid(value, label) {
+  if (typeof value !== 'string' || value.trim() !== value || value !== value.toLowerCase() || !GUID_PATTERN.test(value)) {
+    throw new HostedAuthorizationConfigurationError(`${label} must be a canonical lowercase Microsoft Entra GUID.`);
+  }
+  return value;
+}
+
+function rawClientPrincipalHeader(request) {
+  const rawHeaders = Array.isArray(request.rawHeaders) ? request.rawHeaders : [];
+  let occurrences = 0;
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    if (String(rawHeaders[index]).toLowerCase() === CLIENT_PRINCIPAL_HEADER) occurrences += 1;
+  }
+  if (occurrences > 1) return { ok: false, reason: 'duplicate-container-apps-principal-header' };
+  const encoded = request.headers?.[CLIENT_PRINCIPAL_HEADER];
+  if (Array.isArray(encoded) || (typeof encoded === 'string' && encoded.includes(','))) {
+    return { ok: false, reason: 'duplicate-container-apps-principal-header' };
+  }
+  if (typeof encoded !== 'string' || encoded === '') {
+    return { ok: false, reason: 'missing-container-apps-principal' };
+  }
+  return { ok: true, encoded };
+}
+
+function decodeClientPrincipal(encoded, maxHeaderBytes) {
+  if (Buffer.byteLength(encoded, 'ascii') > maxHeaderBytes) {
+    return { ok: false, status: 431, reason: 'container-apps-principal-header-too-large' };
+  }
+  if (
+    !/^[A-Za-z0-9+/_-]+={0,2}$/.test(encoded) ||
+    encoded.length % 4 === 1 ||
+    (/[+/]/.test(encoded) && /[-_]/.test(encoded))
+  ) {
+    return { ok: false, reason: 'malformed-container-apps-principal' };
+  }
+  let decoded;
+  try {
+    decoded = Buffer.from(encoded, 'base64');
+    const canonical = decoded.toString('base64url');
+    const presented = encoded.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    if (canonical !== presented) return { ok: false, reason: 'malformed-container-apps-principal' };
+    return { ok: true, text: new TextDecoder('utf-8', { fatal: true }).decode(decoded) };
+  } catch {
+    return { ok: false, reason: 'malformed-container-apps-principal' };
+  }
+}
+
+function safeClaimString(value, maxLength) {
+  return (
+    typeof value === 'string' &&
+    value !== '' &&
+    value.length <= maxLength &&
+    !/[\u0000-\u001f\u007f]/.test(value)
+  );
+}
+
+function parseClientPrincipal(text) {
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    return { ok: false, reason: 'malformed-container-apps-principal' };
+  }
+  if (
+    !payload ||
+    typeof payload !== 'object' ||
+    Array.isArray(payload) ||
+    !['aad', 'azureactivedirectory'].includes(payload.auth_typ) ||
+    !safeClaimString(payload.role_typ, 256) ||
+    !ROLE_CLAIM_TYPES.has(payload.role_typ) ||
+    !Array.isArray(payload.claims) ||
+    payload.claims.length === 0 ||
+    payload.claims.length > MAX_CLIENT_PRINCIPAL_CLAIMS
+  ) {
+    return { ok: false, reason: 'malformed-container-apps-principal' };
+  }
+  const claims = new Map();
+  for (const claim of payload.claims) {
+    if (
+      !claim ||
+      typeof claim !== 'object' ||
+      Array.isArray(claim) ||
+      !safeClaimString(claim.typ, 256) ||
+      !safeClaimString(claim.val, 2048)
+    ) {
+      return { ok: false, reason: 'malformed-container-apps-principal' };
+    }
+    const values = claims.get(claim.typ) ?? [];
+    values.push(claim.val);
+    claims.set(claim.typ, values);
+  }
+  return { ok: true, payload, claims };
+}
+
+function exactlyOneClaim(claims, types) {
+  const values = types.flatMap((type) => claims.get(type) ?? []);
+  return values.length === 1 ? values[0] : null;
+}
+
+function repeatedValues(claims, types) {
+  const values = types.flatMap((type) => claims.get(type) ?? []);
+  return values.length !== new Set(values).size;
+}
 
 /**
  * The server-owned identity a loopback bind is implicitly given. Loopback
@@ -111,42 +244,72 @@ export function createDenyAllAuthenticator(reason = 'No authenticator is configu
  * It is not a replacement for validating a bearer token at an arbitrary HTTP
  * listener.
  */
-export function createContainerAppsEntraAuthenticator({ tenantId } = {}) {
-  if (typeof tenantId !== 'string' || tenantId === '') {
-    throw new TypeError('createContainerAppsEntraAuthenticator requires a non-empty tenantId.');
+export function createContainerAppsEntraAuthenticator({
+  tenantId,
+  clientId,
+  requiredRole = '',
+  allowedPrincipalIds = [],
+  allowedGroupIds = [],
+  maxHeaderBytes = DEFAULT_CLIENT_PRINCIPAL_LIMIT_BYTES,
+} = {}) {
+  const expectedTenantId = configuredGuid(tenantId, 'tenantId');
+  const expectedClientId = configuredGuid(clientId, 'clientId');
+  const policy = validateHostedAuthorizationPolicy({ requiredRole, allowedPrincipalIds, allowedGroupIds });
+  if (!Number.isSafeInteger(maxHeaderBytes) || maxHeaderBytes < 1024 || maxHeaderBytes > 64 * 1024) {
+    throw new HostedAuthorizationConfigurationError('maxHeaderBytes must be an integer between 1024 and 65536.');
   }
+  const allowedPrincipals = new Set(policy.allowedPrincipalIds);
+  const allowedGroups = new Set(policy.allowedGroupIds);
   return Object.freeze({
     mode: 'container-apps-entra',
+    policy,
     async authenticate(request) {
-      const encoded = request.headers?.['x-ms-client-principal'];
-      if (typeof encoded !== 'string' || encoded === '') {
-        return { ok: false, reason: 'missing-container-apps-principal' };
+      const header = rawClientPrincipalHeader(request);
+      if (!header.ok) return { ...header, status: 401, authenticated: false };
+      const decoded = decodeClientPrincipal(header.encoded, maxHeaderBytes);
+      if (!decoded.ok) return { ...decoded, status: decoded.status ?? 401, authenticated: false };
+      const parsed = parseClientPrincipal(decoded.text);
+      if (!parsed.ok) return { ...parsed, status: 401, authenticated: false };
+
+      const tenant = exactlyOneClaim(parsed.claims, TENANT_CLAIM_TYPES);
+      const audience = exactlyOneClaim(parsed.claims, AUDIENCE_CLAIM_TYPES);
+      const principal = exactlyOneClaim(parsed.claims, PRINCIPAL_CLAIM_TYPES);
+      if (!tenant || !audience || !principal || !GUID_PATTERN.test(tenant) || !GUID_PATTERN.test(principal)) {
+        return { ok: false, status: 401, authenticated: false, reason: 'malformed-container-apps-principal' };
       }
-      let payload;
-      try {
-        payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf-8'));
-      } catch {
-        return { ok: false, reason: 'malformed-container-apps-principal' };
+      const canonicalTenant = tenant.toLowerCase();
+      const canonicalPrincipal = principal.toLowerCase();
+      if (canonicalTenant !== expectedTenantId || audience !== expectedClientId) {
+        return { ok: false, status: 403, authenticated: true, reason: 'container-apps-principal-not-authorized' };
       }
-      const claims = new Map(
-        Array.isArray(payload.claims)
-          ? payload.claims
-              .filter((claim) => claim && typeof claim.typ === 'string' && typeof claim.val === 'string')
-              .map((claim) => [claim.typ, claim.val])
-          : [],
-      );
-      const tenant = claims.get('tid') ?? claims.get('http://schemas.microsoft.com/identity/claims/tenantid');
-      const principal =
-        claims.get('oid') ??
-        claims.get('http://schemas.microsoft.com/identity/claims/objectidentifier') ??
-        claims.get(payload.name_typ);
-      if (tenant !== tenantId || typeof principal !== 'string' || principal === '') {
-        return { ok: false, reason: 'container-apps-principal-not-authorized' };
+
+      const roleTypes = [...new Set([parsed.payload.role_typ, ...ROLE_CLAIM_TYPES])];
+      const roles = roleTypes.flatMap((type) => parsed.claims.get(type) ?? []);
+      const groups = [...GROUP_CLAIM_TYPES].flatMap((type) => parsed.claims.get(type) ?? []);
+      if (repeatedValues(parsed.claims, roleTypes) || repeatedValues(parsed.claims, [...GROUP_CLAIM_TYPES])) {
+        return { ok: false, status: 401, authenticated: false, reason: 'malformed-container-apps-principal' };
       }
-      const roles = Array.isArray(payload.claims)
-        ? payload.claims.filter((claim) => claim?.typ === payload.role_typ && typeof claim.val === 'string').map((claim) => claim.val)
-        : [];
-      return { ok: true, principal, tenant, roles };
+      if (groups.some((group) => !GUID_PATTERN.test(group))) {
+        return { ok: false, status: 401, authenticated: false, reason: 'malformed-container-apps-principal' };
+      }
+
+      const roleAuthorized = policy.requiredRole !== '' && roles.includes(policy.requiredRole);
+      const principalAuthorized = allowedPrincipals.has(canonicalPrincipal);
+      const groupAuthorized = groups.some((group) => allowedGroups.has(group.toLowerCase()));
+      if (!roleAuthorized && !principalAuthorized && !groupAuthorized) {
+        return { ok: false, status: 403, authenticated: true, reason: 'hosted-operator-entitlement-required' };
+      }
+      return {
+        ok: true,
+        principal: canonicalPrincipal,
+        tenant: canonicalTenant,
+        roles: roleAuthorized ? [policy.requiredRole] : [],
+        authorization: Object.freeze({
+          role: roleAuthorized,
+          principal: principalAuthorized,
+          group: groupAuthorized,
+        }),
+      };
     },
   });
 }
@@ -179,5 +342,11 @@ export async function authenticatePrincipal(request, { isLoopbackHost, host, aut
   if (typeof result.tenant !== 'string' || result.tenant === '') {
     return { ok: false, reason: 'authenticator-did-not-resolve-a-tenant' };
   }
-  return { ok: true, principal: result.principal, tenant: result.tenant, roles: Array.isArray(result.roles) ? result.roles : [] };
+  return {
+    ok: true,
+    principal: result.principal,
+    tenant: result.tenant,
+    roles: Array.isArray(result.roles) ? result.roles : [],
+    ...(result.authorization ? { authorization: result.authorization } : {}),
+  };
 }

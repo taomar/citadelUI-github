@@ -528,7 +528,7 @@ test('gateway context reports only key presence and the configured header name',
   assert.equal(spawn.calls.length, 0);
 });
 
-test('hosted HTTP relay context names the Entra, managed identity, and Key Vault authority chain', async () => {
+test('a non-hosted relay is ready to attempt without claiming authorization proof', async () => {
   const spawn = recordingSpawn(() => {
     throw new Error('relay context must not spawn locally');
   });
@@ -540,9 +540,10 @@ test('hosted HTTP relay context names the Entra, managed identity, and Key Vault
   });
   const ready = await manager.describe(contextRequest('a2a-agent-card'), CATALOGUE);
   assert.equal(ready.context.kind, 'hosted-relay');
-  assert.equal(ready.context.state, 'ready');
+  assert.equal(ready.context.state, 'ready-to-attempt');
+  assert.equal(ready.context.authorization.state, 'not-checked');
   assert.deepEqual(ready.context.hostedRelay, {
-    callerAuthorization: 'entra',
+    callerAuthorization: 'request-authenticator',
     relayIdentity: 'tenant-scoped-managed-identity',
     keySource: 'key-vault-mapping',
   });
@@ -551,6 +552,35 @@ test('hosted HTTP relay context names the Entra, managed identity, and Key Vault
   assert.equal(unavailable.context.code, 'relay-sample-unavailable');
   assert.match(unavailable.context.summary, /not allowlisted/);
   assert.equal(spawn.calls.length, 0);
+});
+
+test('a hosted relay reports authorization proof only for an authorized caller', async () => {
+  const manager = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'preview',
+    relay: { enabled: true, hosted: true, allowedSampleIds: ['a2a-agent-card'] },
+    transports: {
+      spawn: recordingSpawn(() => {
+        throw new Error('relay context must not spawn locally');
+      }),
+    },
+  });
+  const refused = await manager.describe(
+    contextRequest('a2a-agent-card'),
+    CATALOGUE,
+    { operatorAuthorization: { ok: false } },
+  );
+  assert.equal(refused.context.state, 'unavailable');
+  assert.equal(refused.context.code, 'hosted-operator-not-authorized');
+
+  const authorized = await manager.describe(
+    contextRequest('a2a-agent-card'),
+    CATALOGUE,
+    { operatorAuthorization: { ok: true } },
+  );
+  assert.equal(authorized.context.state, 'ready');
+  assert.equal(authorized.context.authorization.proven, true);
+  assert.equal(authorized.context.hostedRelay.callerAuthorization, 'entra');
 });
 
 test('a configured relay never changes the authority used by a direct local run', async () => {

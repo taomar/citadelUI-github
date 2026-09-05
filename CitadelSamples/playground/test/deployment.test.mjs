@@ -21,6 +21,14 @@ test('Container Apps deployment keeps public playground and relay boundaries exp
   assert.match(bicep, /unauthenticatedClientAction: 'Return401'/);
   assert.match(bicep, /unauthenticatedClientAction: 'RedirectToLoginPage'/);
   assert.match(bicep, /allowedAudiences:[\s\S]*relayEntraClientId/);
+  assert.match(bicep, /defaultAuthorizationPolicy:[\s\S]*allowedApplications:[\s\S]*allowedPrincipals:/);
+  assert.match(bicep, /param hostedOperatorRequiredAppRole string = 'Citadel\.Operator'/);
+  assert.match(bicep, /param hostedOperatorAllowedPrincipalIds array = \[\]/);
+  assert.match(bicep, /param hostedOperatorAllowedGroupIds array = \[\]/);
+  for (const suffix of ['PrincipalIds', 'GroupIds']) {
+    const parameter = ['hosted', 'Operator', 'Platform', 'Allowed', suffix].join('');
+    assert.match(bicep, new RegExp(`param ${parameter} array = \\[\\]`));
+  }
   assert.match(bicep, /param relayRequestedAccessTokenVersion int/);
   assert.match(bicep, /@allowed\(\[\s*2\s*\]\)/);
   assert.match(bicep, /openIdIssuer: relayTokenIssuer/);
@@ -53,6 +61,10 @@ test('deployment passes managed-identity service authentication and exact relay 
     'CITADEL_PLAYGROUND_RELAY_CLIENT_ID',
     'CITADEL_PLAYGROUND_RELAY_CALLER_PRINCIPAL',
     'CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS',
+    'CITADEL_PLAYGROUND_ENTRA_CLIENT_ID',
+    'CITADEL_PLAYGROUND_OPERATOR_REQUIRED_APP_ROLE',
+    'CITADEL_PLAYGROUND_OPERATOR_ALLOWED_PRINCIPAL_IDS',
+    'CITADEL_PLAYGROUND_OPERATOR_ALLOWED_GROUP_IDS',
     'CITADEL_PLAYGROUND_PUBLIC_ORIGIN',
     'CITADEL_RELAY_ALLOWED_ORIGINS',
     'CITADEL_RELAY_TOKEN_VERSION',
@@ -101,7 +113,14 @@ test('deployment passes managed-identity service authentication and exact relay 
   assert.match(deploymentGuide, /"requestedAccessTokenVersion": 2/);
   assert.match(deploymentGuide, /relay-token-configuration-invalid/);
   assert.match(deploymentGuide, /npm run check:relay-app/);
+  assert.match(deploymentGuide, /npm run check:playground-app/);
   assert.match(await read('infra/main.bicepparam'), /relayRequestedAccessTokenVersion = 2/);
+  assert.match(await read('infra/main.bicepparam'), /hostedOperatorRequiredAppRole = 'Citadel\.Operator'/);
+  const parameterFile = await read('infra/main.bicepparam');
+  for (const suffix of ['PrincipalIds', 'GroupIds']) {
+    const parameter = ['hosted', 'Operator', 'Platform', 'Allowed', suffix].join('');
+    assert.match(parameterFile, new RegExp(`${parameter} = \\[\\]`));
+  }
 });
 
 test('the example Weather MCP request policy names and authorizes the canonical rebuilt plan exactly', async () => {
@@ -188,26 +207,60 @@ test('relay image is non-root, zero-dependency, and excludes local process execu
 });
 
 test('hosted Entra trust accepts only the deployment tenant and a valid platform principal', async () => {
-  const authenticator = createContainerAppsEntraAuthenticator({ tenantId: 'tenant-a' });
+  const tenantId = '11111111-1111-1111-1111-111111111111';
+  const clientId = '22222222-2222-2222-2222-222222222222';
+  const principalId = '33333333-3333-3333-3333-333333333333';
+  const roleType = 'http://schemas.microsoft.com/ws/2008/06/identity/claims/role';
+  const authenticator = createContainerAppsEntraAuthenticator({
+    tenantId,
+    clientId,
+    requiredRole: 'Citadel.Operator',
+  });
   const principal = Buffer.from(
     JSON.stringify({
+      auth_typ: 'aad',
       name_typ: 'name',
       claims: [
-        { typ: 'tid', val: 'tenant-a' },
-        { typ: 'oid', val: 'playground-principal' },
-        { typ: 'roles', val: 'relay.invoke' },
+        { typ: 'tid', val: tenantId },
+        { typ: 'aud', val: clientId },
+        { typ: 'oid', val: principalId },
+        { typ: roleType, val: 'Citadel.Operator' },
       ],
-      role_typ: 'roles',
+      role_typ: roleType,
     }),
-  ).toString('base64url');
+  ).toString('base64');
   assert.deepEqual(
     await authenticator.authenticate({ headers: { 'x-ms-client-principal': principal } }),
-    { ok: true, principal: 'playground-principal', tenant: 'tenant-a', roles: ['relay.invoke'] },
+    {
+      ok: true,
+      principal: principalId,
+      tenant: tenantId,
+      roles: ['Citadel.Operator'],
+      authorization: { role: true, principal: false, group: false },
+    },
   );
   assert.deepEqual(
     await authenticator.authenticate({
-      headers: { 'x-ms-client-principal': Buffer.from(JSON.stringify({ claims: [{ typ: 'tid', val: 'tenant-b' }] })).toString('base64url') },
+      headers: {
+        'x-ms-client-principal': Buffer.from(
+          JSON.stringify({
+            auth_typ: 'aad',
+            role_typ: roleType,
+            claims: [
+              { typ: 'tid', val: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' },
+              { typ: 'aud', val: clientId },
+              { typ: 'oid', val: principalId },
+              { typ: roleType, val: 'Citadel.Operator' },
+            ],
+          }),
+        ).toString('base64'),
+      },
     }),
-    { ok: false, reason: 'container-apps-principal-not-authorized' },
+    {
+      ok: false,
+      status: 403,
+      authenticated: true,
+      reason: 'container-apps-principal-not-authorized',
+    },
   );
 });

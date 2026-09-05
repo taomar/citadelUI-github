@@ -27,6 +27,7 @@ import {
   isLoopbackHost,
   parseTrustedPublicOrigin,
   probeRuntimes,
+  relayConfigurationStatus,
   resolvePlaygroundPort,
   resolveServedPath,
 } from '../server.mjs';
@@ -36,7 +37,12 @@ import { describeSampleCapability, probeFromCapabilityPayload, summariseCapabili
 import { canonicalInputDigest } from '../src/relay/acknowledgement.mjs';
 import { resolveSpawnInvocation, spawnProcess } from '../src/server/transports.mjs';
 import { createRunManager } from '../src/server/runManager.mjs';
-import { createDenyAllAuthenticator, createSharedSecretAuthenticator } from '../src/relay/principalAuth.mjs';
+import {
+  createContainerAppsEntraAuthenticator,
+  createDenyAllAuthenticator,
+  createSharedSecretAuthenticator,
+} from '../src/relay/principalAuth.mjs';
+import { validateHostedAuthorizationPolicy } from '../src/relay/operatorAuthorization.mjs';
 
 test('local startup defaults to a fresh per-launch origin', () => {
   assert.equal(resolvePlaygroundPort('127.0.0.1'), 0);
@@ -993,6 +999,66 @@ const WEATHER_MCP_REQUEST = {
   sampleId: 'weather-mcp-discovery',
   inputs: { 'hub.gatewayUrl': 'https://gw.example.net' },
 };
+const HOSTED_TENANT_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+const HOSTED_PLAYGROUND_CLIENT_ID = '11111111-1111-1111-1111-111111111111';
+const HOSTED_RELAY_CLIENT_ID = '22222222-2222-2222-2222-222222222222';
+const HOSTED_OPERATOR_ID = '33333333-3333-3333-3333-333333333333';
+const HOSTED_ROLE_TYPE = 'http://schemas.microsoft.com/ws/2008/06/identity/claims/role';
+
+function hostedPrincipalHeader({
+  tenantId = HOSTED_TENANT_ID,
+  clientId = HOSTED_PLAYGROUND_CLIENT_ID,
+  principalId = HOSTED_OPERATOR_ID,
+  roles = [],
+  groups = [],
+} = {}) {
+  return Buffer.from(
+    JSON.stringify({
+      auth_typ: 'aad',
+      name_typ: 'name',
+      role_typ: HOSTED_ROLE_TYPE,
+      claims: [
+        { typ: 'tid', val: tenantId },
+        { typ: 'aud', val: clientId },
+        { typ: 'oid', val: principalId },
+        ...roles.map((role) => ({ typ: HOSTED_ROLE_TYPE, val: role })),
+        ...groups.map((group) => ({ typ: 'groups', val: group })),
+      ],
+    }),
+  ).toString('base64');
+}
+
+function fakeHostedRelay({
+  fetchImpl,
+  requiredRole = 'Citadel.Operator',
+  allowedPrincipalIds = [],
+  allowedGroupIds = [],
+} = {}) {
+  const operatorAuthorizationPolicy = validateHostedAuthorizationPolicy({
+    requiredRole,
+    allowedPrincipalIds,
+    allowedGroupIds,
+  });
+  return {
+    ...fakeRelay({ fetchImpl }),
+    hosted: true,
+    tokenContract: {
+      version: 2,
+      issuer: `https://login.microsoftonline.com/${HOSTED_TENANT_ID}/v2.0`,
+      resource: `api://${HOSTED_RELAY_CLIENT_ID}`,
+      audience: HOSTED_RELAY_CLIENT_ID,
+      tenantId: HOSTED_TENANT_ID,
+      clientId: HOSTED_RELAY_CLIENT_ID,
+    },
+    operatorAuthorizationPolicy,
+    authenticator: createContainerAppsEntraAuthenticator({
+      tenantId: HOSTED_TENANT_ID,
+      clientId: HOSTED_PLAYGROUND_CLIENT_ID,
+      ...operatorAuthorizationPolicy,
+    }),
+  };
+}
+
 const PLAYGROUND_RELAY_ENV = Object.freeze({
   CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.example/execute',
   CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS: '["weather-mcp-discovery"]',
@@ -1000,6 +1066,22 @@ const PLAYGROUND_RELAY_ENV = Object.freeze({
 
 test('buildRelayConfig is disabled with no URL configured, and never touches other env vars', () => {
   assert.deepEqual(buildRelayConfig({}), { enabled: false });
+});
+
+test('hosted mode refuses a missing relay URL instead of disabling authorization', () => {
+  assert.throws(
+    () => buildRelayConfig({ CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED: 'true' }),
+    /CITADEL_PLAYGROUND_RELAY_URL must be configured/,
+  );
+  assert.deepEqual(
+    relayConfigurationStatus({ enabled: false, hosted: true }),
+    {
+      ok: false,
+      code: 'relay-token-configuration-invalid',
+      detail:
+        'Hosted relay authentication configuration error: CITADEL_PLAYGROUND_RELAY_URL must be configured for the hosted playground.',
+    },
+  );
 });
 
 test('buildRelayConfig defaults callerPrincipal/tenant to fixed, non-blank values when unset', () => {
@@ -1046,6 +1128,10 @@ test('buildRelayConfig binds managed identity to the supplied Container Apps env
       CITADEL_PLAYGROUND_RELAY_TENANT: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
       CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED: 'true',
       CITADEL_PLAYGROUND_ENTRA_TENANT_ID: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      CITADEL_PLAYGROUND_ENTRA_CLIENT_ID: HOSTED_PLAYGROUND_CLIENT_ID,
+      CITADEL_PLAYGROUND_OPERATOR_REQUIRED_APP_ROLE: 'Citadel.Operator',
+      CITADEL_PLAYGROUND_OPERATOR_ALLOWED_PRINCIPAL_IDS: '[]',
+      CITADEL_PLAYGROUND_OPERATOR_ALLOWED_GROUP_IDS: '[]',
       IDENTITY_ENDPOINT: 'http://localhost:42356/msi/token',
       IDENTITY_HEADER: 'playground-identity-header',
     });
@@ -1073,6 +1159,10 @@ test('the hosted playground requires its deployment-owned user-assigned client i
         CITADEL_PLAYGROUND_RELAY_TENANT: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
         CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED: 'true',
         CITADEL_PLAYGROUND_ENTRA_TENANT_ID: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        CITADEL_PLAYGROUND_ENTRA_CLIENT_ID: HOSTED_PLAYGROUND_CLIENT_ID,
+        CITADEL_PLAYGROUND_OPERATOR_REQUIRED_APP_ROLE: 'Citadel.Operator',
+        CITADEL_PLAYGROUND_OPERATOR_ALLOWED_PRINCIPAL_IDS: '[]',
+        CITADEL_PLAYGROUND_OPERATOR_ALLOWED_GROUP_IDS: '[]',
         IDENTITY_ENDPOINT: 'http://localhost:42356/msi/token',
         IDENTITY_HEADER: 'playground-identity-header',
       }),
@@ -1093,6 +1183,10 @@ test('the hosted playground permits only managed identity and one exact canonica
     CITADEL_PLAYGROUND_RELAY_TENANT: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED: 'true',
     CITADEL_PLAYGROUND_ENTRA_TENANT_ID: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    CITADEL_PLAYGROUND_ENTRA_CLIENT_ID: HOSTED_PLAYGROUND_CLIENT_ID,
+    CITADEL_PLAYGROUND_OPERATOR_REQUIRED_APP_ROLE: 'Citadel.Operator',
+    CITADEL_PLAYGROUND_OPERATOR_ALLOWED_PRINCIPAL_IDS: '[]',
+    CITADEL_PLAYGROUND_OPERATOR_ALLOWED_GROUP_IDS: '[]',
   };
   assert.throws(
     () => buildRelayConfig({ ...hosted, CITADEL_PLAYGROUND_RELAY_AUTH_MODE: 'static-token' }),
@@ -1105,6 +1199,30 @@ test('the hosted playground permits only managed identity and one exact canonica
         CITADEL_PLAYGROUND_ENTRA_TENANT_ID: hosted.CITADEL_PLAYGROUND_ENTRA_TENANT_ID.toUpperCase(),
       }),
     /must exactly match/,
+  );
+});
+
+test('the hosted playground refuses startup when no operator entitlement policy is configured', () => {
+  assert.throws(
+    () =>
+      buildRelayConfig({
+        CITADEL_PLAYGROUND_RELAY_URL: 'https://relay.internal.example/execute',
+        CITADEL_PLAYGROUND_RELAY_ALLOWED_SAMPLE_IDS: '["weather-mcp-discovery"]',
+        CITADEL_PLAYGROUND_RELAY_RESOURCE: `api://${HOSTED_RELAY_CLIENT_ID}`,
+        CITADEL_PLAYGROUND_RELAY_AUDIENCE: HOSTED_RELAY_CLIENT_ID,
+        CITADEL_PLAYGROUND_RELAY_TOKEN_VERSION: '2',
+        CITADEL_PLAYGROUND_RELAY_TOKEN_ISSUER: `https://login.microsoftonline.com/${HOSTED_TENANT_ID}/v2.0`,
+        CITADEL_PLAYGROUND_RELAY_ENTRA_CLIENT_ID: HOSTED_RELAY_CLIENT_ID,
+        CITADEL_PLAYGROUND_RELAY_CLIENT_ID: 'playground-user-assigned-id',
+        CITADEL_PLAYGROUND_RELAY_TENANT: HOSTED_TENANT_ID,
+        CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED: 'true',
+        CITADEL_PLAYGROUND_ENTRA_TENANT_ID: HOSTED_TENANT_ID,
+        CITADEL_PLAYGROUND_ENTRA_CLIENT_ID: HOSTED_PLAYGROUND_CLIENT_ID,
+        CITADEL_PLAYGROUND_OPERATOR_REQUIRED_APP_ROLE: '',
+        CITADEL_PLAYGROUND_OPERATOR_ALLOWED_PRINCIPAL_IDS: '[]',
+        CITADEL_PLAYGROUND_OPERATOR_ALLOWED_GROUP_IDS: '[]',
+      }),
+    /at least one required app role/,
   );
 });
 
@@ -1435,6 +1553,135 @@ test('a non-loopback bind trusts no forwarded host and refuses state changes wit
   });
 });
 
+test('a signed-in tenant user without the hosted operator role gets 403 before relay forwarding', async () => {
+  const calls = [];
+  const relay = fakeHostedRelay({
+    fetchImpl: async () => {
+      calls.push(1);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ state: 'completed' }) };
+    },
+  });
+  await withServer(
+    {
+      mode: 'preview',
+      relay,
+      host: '0.0.0.0',
+      publicOrigin: 'https://playground.example.net',
+    },
+    async ({ call }) => {
+      const capabilities = await call('/api/capabilities', {
+        headers: { 'X-MS-CLIENT-PRINCIPAL': hostedPrincipalHeader() },
+      });
+      assert.equal(capabilities.status, 200);
+      assert.deepEqual((await capabilities.json()).operatorAuthorization, {
+        required: true,
+        signedIn: true,
+        authorized: false,
+        state: 'signed-in-not-authorized',
+        message: 'Signed in. Not authorized to operate.',
+      });
+
+      const response = await call('/api/execute', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: 'https://playground.example.net',
+          'X-MS-CLIENT-PRINCIPAL': hostedPrincipalHeader(),
+        },
+        body: JSON.stringify(WEATHER_MCP_REQUEST),
+      });
+      assert.equal(response.status, 403);
+      assert.equal((await response.json()).code, 'hosted-operator-not-authorized');
+      assert.equal(calls.length, 0);
+    },
+  );
+});
+
+test('the hosted operator role authorizes the browser proxy and exposes no identity details', async () => {
+  const calls = [];
+  const relay = fakeHostedRelay({
+    fetchImpl: async () => {
+      calls.push(1);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ state: 'completed', summary: 'ok' }),
+      };
+    },
+  });
+  const principal = hostedPrincipalHeader({ roles: ['Citadel.Operator'] });
+  await withServer(
+    {
+      mode: 'preview',
+      relay,
+      host: '0.0.0.0',
+      publicOrigin: 'https://playground.example.net',
+    },
+    async ({ call }) => {
+      const capabilities = await call('/api/capabilities', {
+        headers: { 'X-MS-CLIENT-PRINCIPAL': principal },
+      });
+      assert.equal(capabilities.status, 200);
+      const capabilityPayload = await capabilities.json();
+      assert.equal(capabilityPayload.operatorAuthorization.signedIn, true);
+      assert.equal(capabilityPayload.operatorAuthorization.authorized, true);
+      assert.equal(capabilityPayload.executor.kind, 'relay');
+      assert.doesNotMatch(JSON.stringify(capabilityPayload), new RegExp(HOSTED_OPERATOR_ID));
+
+      const response = await call('/api/execute', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: 'https://playground.example.net',
+          'X-MS-CLIENT-PRINCIPAL': principal,
+        },
+        body: JSON.stringify(WEATHER_MCP_REQUEST),
+      });
+      assert.equal(response.status, 200);
+      assert.equal(calls.length, 1);
+    },
+  );
+});
+
+test('every hosted privileged POST route requires operator authorization before route behavior', async () => {
+  const routes = [
+    '/api/run',
+    '/api/run/cancel',
+    '/api/execution-context',
+    '/api/azure-auth/start',
+    '/api/azure-auth/status',
+    '/api/azure-auth/cancel',
+    '/api/azure-subscriptions/list',
+    '/api/azure-subscriptions/activate',
+    '/api/execute',
+    '/api/self-test',
+    '/api/source/weather-mcp-discovery/validate',
+  ];
+  await withServer(
+    {
+      mode: 'preview',
+      relay: fakeHostedRelay(),
+      host: '0.0.0.0',
+      publicOrigin: 'https://playground.example.net',
+    },
+    async ({ call }) => {
+      for (const route of routes) {
+        const response = await call(route, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Origin: 'https://playground.example.net',
+            'X-MS-CLIENT-PRINCIPAL': hostedPrincipalHeader(),
+          },
+          body: '{}',
+        });
+        assert.equal(response.status, 403, `${route} must require hosted operator authorization`);
+        assert.equal((await response.json()).code, 'hosted-operator-not-authorized');
+      }
+    },
+  );
+});
+
 test('a non-loopback bind accepts a caller that presents the configured shared secret', async () => {
   const calls = [];
   const relay = fakeRelay({
@@ -1541,8 +1788,42 @@ test('hosted relay capability and health fail closed on an incomplete v2 token c
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(WEATHER_MCP_REQUEST),
     });
+
     assert.equal(execute.status, 503);
     assert.equal((await execute.json()).code, 'relay-token-configuration-invalid');
+  });
+});
+
+test('liveness stays up but readiness fails when hosted operator authorization has no policy', async () => {
+  const valid = fakeHostedRelay();
+  const relay = {
+    ...valid,
+    operatorAuthorizationPolicy: undefined,
+  };
+  const payload = capabilitiesPayload({ mode: 'preview', relay });
+  assert.equal(payload.status, 'error');
+  assert.equal(payload.code, 'hosted-authorization-configuration-invalid');
+  assert.equal(payload.executor.canExecute, false);
+
+  await withServer({ mode: 'preview', relay }, async ({ call }) => {
+    const live = await call('/api/live');
+    assert.equal(live.status, 200);
+
+    const health = await call('/api/health');
+    assert.equal(health.status, 503);
+    assert.equal((await health.json()).code, 'hosted-authorization-configuration-invalid');
+  });
+});
+
+test('liveness stays up but readiness fails when hosted mode has no relay URL', async () => {
+  const relay = { enabled: false, hosted: true };
+  await withServer({ mode: 'preview', relay }, async ({ call }) => {
+    const live = await call('/api/live');
+    assert.equal(live.status, 200);
+
+    const health = await call('/api/health');
+    assert.equal(health.status, 503);
+    assert.equal((await health.json()).code, 'relay-token-configuration-invalid');
   });
 });
 

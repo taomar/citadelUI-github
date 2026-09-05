@@ -88,7 +88,7 @@ identity, command, executable, argument, token, or credential value.
 | Foundry REST | A `https://ai.azure.com` audience token minted for that launch-private Azure CLI principal; the token is never returned |
 | Gateway REST, MCP, and A2A | The memory-only APIM subscription key under the configured header; only presence and header name are reported |
 | Offline source validation | The local Python parser, with no Azure identity or network |
-| Hosted HTTP relay | The authenticated Entra caller authorizes the request; the relay uses tenant-scoped managed identity and a Key Vault key mapping |
+| Hosted HTTP relay | Easy Auth authenticates the caller, the server requires `Citadel.Operator` or an explicit allowlist, and the relay uses tenant-scoped managed identity plus a Key Vault key mapping |
 | Future hosted process run | Deferred and unproven: one no-ingress job and one managed identity per run |
 
 `POST /api/execution-context` accepts exactly:
@@ -259,6 +259,17 @@ deletion, and hosted quarantine remain future capabilities.
 The existing hosted relay is intentionally limited to allowlisted HTTP and
 assertion work. Its image and import graph must remain free of Python, Azure CLI,
 process transports, arbitrary files, and artifact writers.
+
+Hosted sign-in is not hosted authorization. The public Container App accepts only
+the configured tenant and client audience, then the server requires the exact
+`Citadel.Operator` app role or an explicit deployment-owned principal/group
+allowlist before any privileged POST route runs. A tenant user without that
+entitlement receives 403 and the relay is not called. The UI reports **Signed
+in** and **Authorized to operate** separately without exposing the principal ID
+or raw claims. See `infra/README.md` for the exact app-role definition,
+assignment, direct group-claim prerequisite, optional constrained platform
+allowlist, export, and offline preflight steps.
+
 One deployment-owned JSON array configures the allowed sample IDs in both the
 playground and relay. The browser capability response and executor expose only
 that subset; a disabled sample is rejected by the playground before it calls the

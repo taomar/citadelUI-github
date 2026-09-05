@@ -141,10 +141,16 @@ function runsAsLabel(context) {
 function authorizationModel(context, contextState, account) {
   const contextReady = context?.canExecute === true;
   const ready = contextReady;
+  const proven = context?.authorization?.proven === true;
   return Object.freeze({
     ready,
-    backendProven: context?.authorization?.proven === true,
-    label: ready ? 'Ready to Attempt' : 'Not Ready',
+    backendProven: proven,
+    state: proven ? 'authorized' : ready ? 'ready-to-attempt' : 'blocked',
+    label: proven
+      ? context.authorization.label || 'Authorized to operate'
+      : ready
+        ? 'Ready to Attempt'
+        : 'Not Ready',
     detail:
       context?.summary ||
       safeText(contextState?.message) ||

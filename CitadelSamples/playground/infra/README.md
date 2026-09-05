@@ -5,8 +5,8 @@ managed environment, registry, and Key Vault in the same resource group:
 
 | App | Ingress | Identity and authorization |
 | --- | --- | --- |
-| `citadel-playground` | Public (`external: true`) | Container Apps Entra auth requires sign-in. Its user-assigned identity gets only `AcrPull` and requests short-lived tokens for the relay. |
-| `citadel-relay` | Internal (`external: false`) | Container Apps Entra auth accepts only the configured relay audience. Its separate user-assigned identity gets `AcrPull` and Key Vault Secrets User on the configured vault. |
+| `citadel-playground` | Public (`external: true`) | Container Apps Entra auth validates the exact tenant and client audience. The server then requires `Citadel.Operator` or an explicit deployment-owned principal/group allowlist. Its user-assigned identity gets only `AcrPull` and requests short-lived tokens for the relay. |
+| `citadel-relay` | Internal (`external: false`) | Container Apps Entra auth accepts only the configured relay audience, calling application, and playground managed-identity principal. Its separate user-assigned identity gets `AcrPull` and Key Vault Secrets User on the configured vault. |
 
 The relay never receives a static shared token. The playground requests a
 managed-identity token for `relayTokenResource` (`api://<relay-app-id>`). A v2
@@ -19,6 +19,25 @@ playground identity's exact principal ID.
 
 Provide a real parameter file outside source control. `main.bicepparam` is a
 non-deployable shape example only: angle-bracket values must be replaced.
+
+`hostedOperatorRequiredAppRole` defaults to the exact app-role value
+`Citadel.Operator`. `hostedOperatorAllowedPrincipalIds` and
+`hostedOperatorAllowedGroupIds` default to empty arrays and are optional
+break-glass or constrained-deployment alternatives. The server authorizes a
+caller only when the trusted Easy Auth principal has the required role, an
+allowed object ID, or an allowed group ID. Tenant membership by itself is never
+enough. Empty role plus empty allowlists is a configuration error, so readiness
+returns 503 and every privileged POST fails closed.
+
+`hostedOperatorPlatformAllowedPrincipalIds` and
+`hostedOperatorPlatformAllowedGroupIds` are separate, optional constrained-mode
+lists. When either is nonempty, Bicep writes them to Easy Auth
+`defaultAuthorizationPolicy.allowedPrincipals`, so that outer gate must pass
+before the server evaluates its role-or-allowlist policy. Leave both empty when
+app-role, principal, and group membership are alternatives. The internal relay separately uses
+`allowedApplications` and `allowedPrincipals` so only the playground managed
+identity can reach it. Easy Auth cannot enforce the `roles` claim directly; the
+playground server's app-role check is mandatory.
 
 `relayAllowedOrigins`, `relayAllowedSampleIds`, `relayRequestPolicy`, and
 `relayLogicalRefMappings` are required policy input. The same serialized
@@ -38,6 +57,33 @@ resolves values with its assigned identity at runtime.
 
 The Entra applications and application ID URI must already exist; this ARM
 template cannot provision or inspect Microsoft Graph application objects.
+Before deployment, define the operator role on the **playground** app
+registration:
+
+1. In **Microsoft Entra admin center > App registrations**, open the application
+   whose client ID is `playgroundEntraClientId`.
+2. Open **App roles > Create app role**.
+3. Set **Display name** to `Citadel Operator`, **Allowed member types** to
+   `Users/Groups`, **Value** to `Citadel.Operator`, **Description** to
+   `Operate the hosted Citadel Publish Playground`, and enable the role.
+4. In **Enterprise applications**, open the service principal for the same
+   application, select **Users and groups > Add user/group**, choose each
+   operator user or security group, and assign **Citadel Operator**.
+5. Sign out and back in after assignment so Microsoft Entra issues a fresh ID
+   token containing `roles: ["Citadel.Operator"]`.
+
+The role belongs on the playground application because it is included in the ID
+token used for interactive sign-in. Assigning a tenant directory role, Azure RBAC
+role, or a role on the relay application does not satisfy this policy.
+
+Direct group authorization through `hostedOperatorAllowedGroupIds` or
+`hostedOperatorPlatformAllowedGroupIds` also requires the playground registration
+to emit group claims. In **Token configuration**, add a groups claim to the ID token and select **Security groups** (manifest
+`groupMembershipClaims: "SecurityGroup"`) or **All groups**. Group-overage tokens
+do not carry direct group IDs and therefore fail closed; for operators with large
+group memberships, assign `Citadel.Operator` to the group instead and leave the
+direct group allowlist empty.
+
 The relay resource application must expose the exact
 `relayTokenResource` value `api://<relayEntraClientId>` and its manifest must
 contain the numeric value:
@@ -78,6 +124,31 @@ is the trusted signature/JWKS boundary for both apps; never set
 `CITADEL_PLAYGROUND_EXECUTE_TOKEN`,
 `CITADEL_PLAYGROUND_RELAY_TOKEN`, or
 `CITADEL_PLAYGROUND_RELAY_AUTH_MODE=static-token` in this deployment.
+
+Export the playground application and its service principal's app-role
+assignments, then validate both offline:
+
+```powershell
+az ad app show --id '<playground-app-id>' > .\playground-app-registration.json
+$servicePrincipalId = az ad sp show --id '<playground-app-id>' --query id -o tsv
+az rest --method get `
+  --url "https://graph.microsoft.com/v1.0/servicePrincipals/$servicePrincipalId/appRoleAssignedTo" `
+  > .\playground-app-role-assignments.json
+
+npm run check:playground-app -- `
+  --manifest .\playground-app-registration.json `
+  --assignments .\playground-app-role-assignments.json `
+  --client-id '<playground-app-id>' `
+  --required-app-role 'Citadel.Operator' `
+  --allowed-group-ids '[]'
+```
+
+This preflight makes no Azure or Graph call itself. It requires one enabled
+`Citadel.Operator` role that accepts Users/Groups and at least one matching User
+or Group assignment. Pass one JSON array containing every direct group ID configured in
+`hostedOperatorAllowedGroupIds` or `hostedOperatorPlatformAllowedGroupIds`; when
+it is nonempty, the checker also requires `groupMembershipClaims` to be
+`SecurityGroup` or `All`. It reports counts and types only, never principal IDs.
 
 ## Exact container environment
 
@@ -123,11 +194,38 @@ receives `CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED=true`,
 the same serialized `relayAllowedSampleIds` value the relay receives. It does
 not receive a relay token: it obtains one from its managed identity.
 
+The hosted operator policy is passed separately:
+
+| Playground variable | Source |
+| --- | --- |
+| `CITADEL_PLAYGROUND_ENTRA_TENANT_ID` | `entraTenantId` |
+| `CITADEL_PLAYGROUND_ENTRA_CLIENT_ID` | `playgroundEntraClientId`, the exact interactive token audience |
+| `CITADEL_PLAYGROUND_OPERATOR_REQUIRED_APP_ROLE` | `hostedOperatorRequiredAppRole` |
+| `CITADEL_PLAYGROUND_OPERATOR_ALLOWED_PRINCIPAL_IDS` | `hostedOperatorAllowedPrincipalIds` JSON |
+| `CITADEL_PLAYGROUND_OPERATOR_ALLOWED_GROUP_IDS` | `hostedOperatorAllowedGroupIds` JSON |
+
+The process trusts `X-MS-CLIENT-PRINCIPAL` only when
+`CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED=true` selects the hosted Easy Auth mode.
+Microsoft documents that external requests cannot set the identity headers Easy
+Auth injects. Local and static-token modes never derive authorization from these
+headers. The parser bounds the header, requires one unambiguous tenant,
+audience, and object ID, rejects malformed or duplicate claims, and returns only
+the safe principal/tenant plus the configured role match. Names, email
+addresses, raw group membership, and unrelated claims are not returned to the
+browser.
+
 Both processes validate this tuple before relay use. An incomplete or
 inconsistent hosted configuration disables execution, reports
-`relay-token-configuration-invalid` through capability/health with HTTP 503, and
-never falls back to v1, a different issuer, a different tenant, or a different
-audience.
+`relay-token-configuration-invalid` or
+`hosted-authorization-configuration-invalid` through capability/health with HTTP
+503, and never falls back to v1, tenant membership, a different issuer, a
+different tenant, or a different audience.
+
+Every hosted privileged POST route applies the same exact-origin check and
+operator authorization before route-specific behavior. `/api/execute` cannot
+request a managed-identity token or call the relay before that gate passes.
+`/api/capabilities` exposes only `Signed in` and `Authorized to operate` state,
+not the principal ID or claims.
 
 Bicep also sets `CITADEL_PLAYGROUND_PUBLIC_ORIGIN` to
 `https://<playground-name>.<managed-environment-default-domain>`, derived from the
@@ -161,7 +259,8 @@ Both apps use 0.5 CPU, 1 GiB memory and HTTP probes. Process-liveness endpoints
 (`/api/live` and `/livez`) remain 200 while the Node process can answer, so a
 static configuration error does not create a restart loop. Configuration health
 and readiness (`/api/health`, `/healthz`, and `/readyz`) return 503 until the
-v2 token contract is valid. The playground uses 1--2 replicas. The relay scale
+v2 token contract and hosted operator policy are valid. The playground uses
+1--2 replicas. The relay scale
 block fixes each active revision at exactly one replica
 because direct `/execute` nonce consumption and admission are process-local.
 Horizontal scale-out is prohibited until one actually shared atomic adapter backs

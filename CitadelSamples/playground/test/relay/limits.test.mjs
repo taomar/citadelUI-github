@@ -69,7 +69,7 @@ test('the hosted entrypoint wires every static environment limit to the enforcin
     CITADEL_RELAY_TOKEN_AUDIENCE: '22222222-2222-4222-8222-222222222222',
     CITADEL_RELAY_ENTRA_CLIENT_ID: '22222222-2222-4222-8222-222222222222',
     CITADEL_RELAY_TENANT_ID: '11111111-1111-4111-8111-111111111111',
-    CITADEL_RELAY_ALLOWED_PRINCIPAL_ID: 'principal-a',
+    CITADEL_RELAY_ALLOWED_PRINCIPAL_ID: '33333333-3333-3333-3333-333333333333',
     CITADEL_RELAY_ALLOWED_SAMPLE_IDS: '[]',
     CITADEL_RELAY_ALLOWED_ORIGINS: '["https://gateway.example.test"]',
     CITADEL_RELAY_REQUEST_POLICY: '{}',
@@ -90,7 +90,7 @@ test('the hosted entrypoint wires every static environment limit to the enforcin
   });
   const bundle = await server.tenantPolicy.resolve({
     tenant: '11111111-1111-4111-8111-111111111111',
-    principal: 'principal-a',
+    principal: '33333333-3333-3333-3333-333333333333',
     roles: [],
   });
   assert.equal(bundle.httpExecutor.limits.stepTimeoutMs, 4000);

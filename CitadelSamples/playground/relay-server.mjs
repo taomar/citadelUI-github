@@ -13,6 +13,10 @@ import { createOriginAllowlist } from './src/relay/originAllowlist.mjs';
 import { createSampleRequestPolicy } from './src/relay/requestPolicy.mjs';
 import { createKeyVaultSecretProvider } from './src/relay/secretProvider.mjs';
 import { createContainerAppsEntraAuthenticator } from './src/relay/principalAuth.mjs';
+import {
+  HostedAuthorizationConfigurationError,
+  hostedAuthorizationConfigurationError,
+} from './src/relay/operatorAuthorization.mjs';
 import { createRelayTenantBundle, createStaticTenantPolicy } from './src/relay/tenantPolicy.mjs';
 import { createRelayServer } from './src/relay/server.mjs';
 import {
@@ -103,7 +107,11 @@ export function buildHostedRelay(env = process.env) {
   );
   const server = createRelayServer({
     tenantPolicy,
-    authenticator: createContainerAppsEntraAuthenticator({ tenantId }),
+    authenticator: createContainerAppsEntraAuthenticator({
+      tenantId,
+      clientId: tokenContract.clientId,
+      allowedPrincipalIds: [allowedPrincipalId],
+    }),
     host: env.CITADEL_RELAY_HOST ?? '0.0.0.0',
     ...relayServerLimitsFromHosted(hostedLimits),
   });
@@ -112,7 +120,10 @@ export function buildHostedRelay(env = process.env) {
 }
 
 function createConfigurationErrorServer(error) {
-  const configurationError = relayTokenConfigurationError(error);
+  const configurationError =
+    error instanceof RelayTokenConfigurationError
+      ? relayTokenConfigurationError(error)
+      : hostedAuthorizationConfigurationError(error);
   return createServer((request, response) => {
     const path = (request.url ?? '/').split('?')[0];
     const live = path === '/livez';
@@ -141,7 +152,12 @@ if (invokedDirectly) {
   try {
     server = buildHostedRelay(process.env);
   } catch (error) {
-    if (!(error instanceof RelayTokenConfigurationError)) throw error;
+    if (
+      !(error instanceof RelayTokenConfigurationError) &&
+      !(error instanceof HostedAuthorizationConfigurationError)
+    ) {
+      throw error;
+    }
     process.stderr.write(`${error.message}\n`);
     server = createConfigurationErrorServer(error);
   }

@@ -13,6 +13,7 @@
     "start:execute:system-login": "node server.mjs --execute --allow-system-azure-login",
     "test": "node --test",
     "check": "node scripts/check.mjs",
+    "check:playground-app": "node scripts/check-playground-app-registration.mjs",
     "check:relay-app": "node scripts/check-relay-app-registration.mjs",
     "smoke": "node scripts/smoke.mjs",
     "acceptance:dossier": "node scripts/dossier-browser-acceptance.mjs",

@@ -105,6 +105,10 @@ test('gateway, Azure, hosted, and offline identity directions remain distinct', 
   assert.match(shell, /Sign in with Microsoft/);
   assert.match(shell, /Switch Azure account/);
   assert.match(shell, /Set Active changes only this Citadel playground launch/);
+  assert.match(shell, /Signed in/);
+  assert.match(shell, /Authorized to operate/);
+  assert.match(shell, /Not authorized to operate/);
+  assert.match(main, /operatorAuthorization: models\.capabilities\?\.operatorAuthorization/);
 });
 
 test('system-browser account controls are capability-gated without exposing a terminal fallback', () => {

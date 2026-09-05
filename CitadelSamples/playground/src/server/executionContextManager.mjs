@@ -174,9 +174,12 @@ export function createExecutionContextManager({
   const subscriptionReads = new Set();
   let closed = false;
 
-  async function describe(payload, catalogue, { signal } = {}) {
+  async function describe(payload, catalogue, { signal, operatorAuthorization } = {}) {
     const request = validateExecutionContextRequest(payload, catalogue);
-    return responseFor(request.sampleId, await contextFor(request, { useRelay: true, signal }));
+    return responseFor(
+      request.sampleId,
+      await contextFor(request, { useRelay: true, signal, operatorAuthorization }),
+    );
   }
 
   async function forRun({
@@ -200,10 +203,17 @@ export function createExecutionContextManager({
     return context;
   }
 
-  async function contextFor({ sampleId, configuredSubscriptionId, gateway }, { useRelay, signal }) {
+  async function contextFor(
+    { sampleId, configuredSubscriptionId, gateway },
+    { useRelay, signal, operatorAuthorization },
+  ) {
     const descriptor = sampleExecutionContext(sampleId);
     if (useRelay && relay.enabled) {
-      return hostedRelayContext({ available: relay.allowedSampleIds?.includes(sampleId) === true });
+      return hostedRelayContext({
+        available: relay.allowedSampleIds?.includes(sampleId) === true,
+        hosted: relay.hosted === true,
+        authorized: relay.hosted === true ? operatorAuthorization?.ok === true : null,
+      });
     }
     if (mode !== 'execute') return unavailableSampleContext(descriptor);
     if (descriptor.kind === 'gateway-key') return gatewayContext(descriptor, gateway);

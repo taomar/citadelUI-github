@@ -30,6 +30,23 @@ param entraTenantId string
 @description('Application (client) ID registered for the public playground.')
 param playgroundEntraClientId string
 
+@description('Exact app-role value required for hosted playground operators. Define and assign this role on the playground app registration before deployment.')
+@minLength(1)
+@maxLength(120)
+param hostedOperatorRequiredAppRole string = 'Citadel.Operator'
+
+@description('Optional Microsoft Entra user or service-principal object IDs allowed to operate the hosted playground without the app role.')
+param hostedOperatorAllowedPrincipalIds array = []
+
+@description('Optional Microsoft Entra group object IDs allowed to operate the hosted playground without the app role.')
+param hostedOperatorAllowedGroupIds array = []
+
+@description('Optional Microsoft Entra user or service-principal object IDs enforced by Easy Auth as an additional outer restriction before server authorization.')
+param hostedOperatorPlatformAllowedPrincipalIds array = []
+
+@description('Optional Microsoft Entra group object IDs enforced by Easy Auth as an additional outer restriction before server authorization.')
+param hostedOperatorPlatformAllowedGroupIds array = []
+
 @description('Application (client) ID registered for the internal relay.')
 param relayEntraClientId string
 
@@ -84,6 +101,7 @@ var acrPullRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/ro
 var keyVaultSecretsUserRoleDefinitionId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
 var managedEnvironmentName = last(split(managedEnvironmentId, '/'))
 var relayTokenIssuer = '${environment().authentication.loginEndpoint}${entraTenantId}/v2.0'
+var hasHostedOperatorPlatformAllowlist = length(hostedOperatorPlatformAllowedPrincipalIds) > 0 || length(hostedOperatorPlatformAllowedGroupIds) > 0
 
 resource managedEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
   name: managedEnvironmentName
@@ -259,6 +277,16 @@ resource relayAuth 'Microsoft.App/containerApps/authConfigs@2024-03-01' = {
           allowedAudiences: [
             relayEntraClientId
           ]
+          defaultAuthorizationPolicy: {
+            allowedApplications: [
+              playgroundIdentity.properties.clientId
+            ]
+            allowedPrincipals: {
+              identities: [
+                playgroundIdentity.properties.principalId
+              ]
+            }
+          }
         }
       }
     }
@@ -331,6 +359,10 @@ resource playground 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'CITADEL_PLAYGROUND_HOST', value: '0.0.0.0' }
             { name: 'CITADEL_PLAYGROUND_ENTRA_AUTHENTICATED', value: 'true' }
             { name: 'CITADEL_PLAYGROUND_ENTRA_TENANT_ID', value: entraTenantId }
+            { name: 'CITADEL_PLAYGROUND_ENTRA_CLIENT_ID', value: playgroundEntraClientId }
+            { name: 'CITADEL_PLAYGROUND_OPERATOR_REQUIRED_APP_ROLE', value: hostedOperatorRequiredAppRole }
+            { name: 'CITADEL_PLAYGROUND_OPERATOR_ALLOWED_PRINCIPAL_IDS', value: string(hostedOperatorAllowedPrincipalIds) }
+            { name: 'CITADEL_PLAYGROUND_OPERATOR_ALLOWED_GROUP_IDS', value: string(hostedOperatorAllowedGroupIds) }
             { name: 'CITADEL_PLAYGROUND_PUBLIC_ORIGIN', value: playgroundPublicOrigin }
             { name: 'CITADEL_PLAYGROUND_RELAY_URL', value: 'https://${relay.properties.configuration.ingress.fqdn}/execute' }
             { name: 'CITADEL_PLAYGROUND_RELAY_RESOURCE', value: relayTokenResource }
@@ -371,11 +403,23 @@ resource playgroundAuth 'Microsoft.App/containerApps/authConfigs@2024-03-01' = {
           clientId: playgroundEntraClientId
           openIdIssuer: relayTokenIssuer
         }
-        validation: {
-          allowedAudiences: [
-            'api://${playgroundEntraClientId}'
-          ]
-        }
+        validation: union(
+          {
+            allowedAudiences: [
+              playgroundEntraClientId
+            ]
+          },
+          hasHostedOperatorPlatformAllowlist
+            ? {
+                defaultAuthorizationPolicy: {
+                  allowedPrincipals: {
+                    identities: hostedOperatorPlatformAllowedPrincipalIds
+                    groups: hostedOperatorPlatformAllowedGroupIds
+                  }
+                }
+              }
+            : {}
+        )
       }
     }
   }

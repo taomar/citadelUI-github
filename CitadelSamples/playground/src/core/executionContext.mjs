@@ -157,16 +157,23 @@ export function offlinePythonContext({ available }) {
   });
 }
 
-export function hostedRelayContext({ available }) {
+export function hostedRelayContext({ available, hosted = false, authorized = null }) {
+  const authorizationProven = hosted && authorized === true;
+  const authorizationRefused = hosted && authorized === false;
+  const canExecute = Boolean(available && !authorizationRefused);
   return Object.freeze({
     kind: 'hosted-relay',
-    label: 'Entra-authorized hosted relay',
-    summary: available
-      ? 'The authenticated Entra caller authorizes the request. The relay uses a tenant-scoped managed identity and resolves the APIM key through its Key Vault mapping.'
-      : 'This sample is not allowlisted for the configured hosted relay.',
-    state: available ? 'ready' : 'unavailable',
-    code: available ? null : 'relay-sample-unavailable',
-    canExecute: Boolean(available),
+    label: hosted ? 'Entra-authorized hosted relay' : 'Approved execution relay',
+    summary: authorizationProven
+      ? 'Signed in and authorized to operate. The relay uses a tenant-scoped managed identity and resolves the APIM key through its Key Vault mapping.'
+      : authorizationRefused
+        ? 'Signed in, but the hosted operator entitlement has not been proven.'
+        : available
+          ? 'The approved relay is available. Caller authorization is evaluated when the execution request is made.'
+          : 'This sample is not allowlisted for the configured relay.',
+    state: canExecute ? (authorizationProven ? 'ready' : 'ready-to-attempt') : 'unavailable',
+    code: canExecute ? null : authorizationRefused ? 'hosted-operator-not-authorized' : 'relay-sample-unavailable',
+    canExecute,
     signedInAccount: null,
     executionCredential: Object.freeze({
       type: 'entra-caller-and-managed-identity',
@@ -177,10 +184,22 @@ export function hostedRelayContext({ available }) {
     }),
     activeCliSubscription: null,
     intendedTarget: null,
-    authorization: authorizationNotChecked(),
+    authorization: authorizationProven
+      ? Object.freeze({
+          state: 'authorized',
+          label: 'Authorized to operate',
+          proven: true,
+        })
+      : authorizationRefused
+        ? Object.freeze({
+            state: 'blocked',
+            label: 'Not authorized to operate',
+            proven: false,
+          })
+        : authorizationNotChecked(),
     gateway: null,
     hostedRelay: Object.freeze({
-      callerAuthorization: 'entra',
+      callerAuthorization: hosted ? 'entra' : 'request-authenticator',
       relayIdentity: 'tenant-scoped-managed-identity',
       keySource: 'key-vault-mapping',
     }),
