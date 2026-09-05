@@ -173,9 +173,9 @@ Available commands:
 | --- | --- |
 | `npm start` | Safe preview-only server |
 | `npm run start:execute` | Loopback-only local execution |
-| `npm test` | 670 recursive Node tests |
+| `npm test` | 991 recursive Node tests |
 | `npm run check` | Static imports, zero dependencies, and isolation checks |
-| `npm run smoke` | 89 browser interaction and responsive checks |
+| `npm run smoke` | 22 browser interaction and responsive checks |
 | `npm run verify` | Check, unit/integration tests, then browser smoke |
 
 Environment variables:
@@ -488,10 +488,10 @@ mistake, they have not arrived.
 ## Tests
 
 ```
-npm test                 977/977 pass, node --test, no dependencies
+npm test                 991/991 pass, node --test, no dependencies
 npm run check            147 modules, 0 dependencies, nothing outside scope
 npm run smoke            22/22 headless-browser interaction checks
-npm run acceptance:dossier  136/136 browser checks, 15 screenshots
+npm run acceptance:dossier  139/139 browser checks, 15 screenshots
 npm run verify           all three, in order
 ```
 

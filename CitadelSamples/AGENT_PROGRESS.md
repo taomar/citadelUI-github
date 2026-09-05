@@ -153,11 +153,18 @@ inputs. Do not introduce a general-purpose editable notebook.
 
 - `npm run check` — 147 modules, 0 dependencies, nothing outside
   `CitadelSamples`;
-- `node --test` — 977/977 passing;
+- `node --test` — 991/991 passing;
 - `npm run smoke` — 22/22 passing.
 
-The wizard browser acceptance passed 136/136 checks and regenerated 15 responsive
+The wizard browser acceptance passed 139/139 checks and regenerated 15 responsive
 screenshots. The Impeccable detector returned no findings.
+
+The final integrated correctness pass also proves that hosted relay recipes remain
+runnable while the public container is in preview mode, Azure China validates the
+`login.partner.microsoftonline.cn` v2 token issuer separately from its login
+endpoint, relay admission deadlines include authentication and request-body
+receipt, and expired managed-worker leases retain capacity until inactivity is
+authoritatively established. Recovery activity probes are bounded and fail closed.
 
 No Azure endpoint, subscription, gateway key, Foundry project, Policy burst, or
 Cleanup operation was used by this verification.
