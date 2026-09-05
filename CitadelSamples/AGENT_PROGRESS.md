@@ -2,11 +2,23 @@
 
 ## Current Milestone
 
-The protected-source playground now uses the verified per-recipe Signed Run
-Dossier wizard. The product decision is final:
-retain the server-authoritative catalogue and typed allowlisted local executor,
-add a notebook-like read-only source surface, and allow edits only to declared
-inputs. Do not introduce a general-purpose editable notebook.
+The coordinator accepted application candidate
+`72efec891c69003ea3055c28ccc40b0974742d07` after the independent v2 recheck.
+Its application web tree is `5209f90c1d1e9bb8826624e43c2781a73fc8680f`.
+A subsequent documentation-only commit is a handover update, not a new
+application candidate.
+
+The workspace has one bounded task column, one recipe heading, inline progress,
+contextual identity and an action adjacent to core inputs. The compact,
+searchable directory is name-only with one open browse group; compact screens
+use a focus-contained recipe picker. Stable logical controls preserve focus,
+caret and scroll across same-step refreshes.
+
+The architecture boundary remains fixed: retain the server-authoritative
+catalogue, typed allowlisted execution, protected source and declared inputs.
+Do not introduce a general-purpose editable notebook. Coordinator acceptance is
+not explicit user aesthetic or live execution approval. All
+[seven external gates](CONTINUATION-PLAN.md#external-gates) remain open.
 
 ## Redesign Decision Record
 
@@ -147,24 +159,36 @@ inputs. Do not introduce a general-purpose editable notebook.
 - Full static, recursive Node, and browser verification passes after route,
   provenance, protected-source acceptance, and smoke reconciliation.
 
-### Final verified baseline
+### Accepted application evidence
 
-`npm run verify` for the wizard exited 0:
+Results belong to the stated application candidate, not to a later docs commit:
 
-- `npm run check` — 147 modules, 0 dependencies, nothing outside
-  `CitadelSamples`;
-- `node --test` — 994/994 passing;
-- `npm run smoke` — 23/23 passing.
+| Candidate | Evidence |
+| --- | --- |
+| `72efec8` | Implementation: 71/71 frontend Node, 89/89 dossier regressions, 23/23 smoke, 203/203 navigation; repository check passed with 147 modules and zero dependencies |
+| `72efec8` | Independent v2 recheck: 71/71 frontend Node, 30/30 reviewer-native focus, 89/89 regressions, 23/23 smoke; model updates and context invalidation remain safe |
+| `ad720f0` | 168/168 dossier/gallery checks, before the focus-only correction; the CSS tree remains unchanged at `72efec8` |
+| `0adcd54` | 995/995 full recursive Node tests on the earlier v1 web tree `d3f1b485fc6e67f31e8ea1fa494c0d5727516558`, not on the accepted v2 application |
 
-The wizard browser acceptance passed 145/145 checks and regenerated 18 responsive
-screenshots. The Impeccable detector returned no findings.
+There is no recorded full-suite aggregate for `72efec8`. Do not add targeted
+results to the earlier total or describe documentation closeout as a new test
+run. Frozen implementation records are `workspace-implementation-result.md` and
+`workspace-focus-v2-result.md`; the coordinator retains these session artifacts
+and the original independent review/recheck packets.
 
-The final UX simplification removed the mandatory review page from read-only
-recipes, reduced risky confirmation to the target, impact, recovery, and
-one-run acknowledgement, collapsed execution details on constrained screens,
-made the recipe picker prominent and focus-contained, and reduced directory
-rows to decision-relevant status. Exact operations and technical provenance
-remain available on demand.
+V1 independent review held `ad720f0` for City-to-action and acknowledgement focus
+loss. V2 corrects stable control identity and overlapping same-step restoration,
+with real pointer and native Tab/ShiftTab/Space traces. The earlier independent
+22/23 smoke result remains preserved; its initial-cycle timing cause is unknown,
+not retrospectively resolved by later 23/23 runs.
+
+The accepted composition keeps Weather City immediately before Run, with
+Advanced settings afterward. Azure account and target controls are contextual;
+active and intended subscriptions remain separate. Gateway context shows the
+exact planned endpoint and key presence without Azure sign-in. Execution details,
+hosted identity hops, source, help and exports remain secondary disclosures.
+Read-only recipes skip mandatory review; risky confirmation retains target,
+actor, impact, recovery and one-run acknowledgement.
 
 The final edge pass also makes cleanup acknowledgement and the non-production
 guard conditional on an actual deletion, lets the all-off residue-only plan run
@@ -180,8 +204,9 @@ endpoint, relay admission deadlines include authentication and request-body
 receipt, and expired managed-worker leases retain capacity until inactivity is
 authoritatively established. Recovery activity probes are bounded and fail closed.
 
-No Azure endpoint, subscription, gateway key, Foundry project, Policy burst, or
-Cleanup operation was used by this verification.
+These results use offline fixtures and do not prove live Azure, gateway,
+Foundry, Policy burst or Cleanup outcomes. No explicit user aesthetic or live
+execution approval is inferred from them.
 
 ## Earlier Executable Playground Checkpoint
 

@@ -18,16 +18,46 @@ specific Windows username, drive, or local checkout path.
 | Item | Value |
 | --- | --- |
 | Repository | `taomar/citadelUI-github` |
-| Main handover | `CitadelSamples/AGENT_PROGRESS.md` |
+| Main handover | [AGENT_PROGRESS.md](AGENT_PROGRESS.md#accepted-application-evidence) |
 | Product decision | Protected fixed code; declared typed inputs only |
 | Runner labels | `PREVIEW ONLY`, `OFFLINE SELF-TEST`, `LOCAL OPERATOR`, `HOSTED RELAY` |
 | Evidence labels | `NOT RUN`, `LOCAL CHECKOUT EVIDENCE`, `LIVE TARGET EVIDENCE` |
 | Local execution | Server-authoritative registered operations with streamed progress, exact-run cancellation, and contained artifacts |
 | Hosted relay | HTTP/assertion-only; no process, Python, Azure CLI, or artifact execution |
 | Future hosted process execution | Fresh per-run no-ingress isolated jobs only |
-| Verified integration reference | `03ffac8` |
-| Automated baseline | 147 modules, 0 dependencies/out-of-scope; 994/994 Node tests; 23/23 wizard smoke; 145/145 wizard browser acceptance; 18 screenshots |
+| Accepted application reference | `72efec891c69003ea3055c28ccc40b0974742d07` |
+| Application web tree | `5209f90c1d1e9bb8826624e43c2781a73fc8680f` |
+| Documentation reference | A later docs-only commit does not replace the accepted application reference |
+| Application evidence | Implementation: 71 frontend Node / 89 regressions / 23 smoke / 203 navigation; independent v2 recheck: 71 frontend Node / 30 native focus / 89 regressions / 23 smoke |
+| Earlier evidence | Full 995 Node on `0adcd54` and its prior v1 web tree, not `72efec8`; gallery 168 on `ad720f0`, with CSS unchanged by the later focus correction |
+| Full-suite aggregate at accepted application | Not recorded; do not infer a total from targeted results |
 | Live Azure validation | Not performed |
+
+The coordinator accepted this application after independent workspace and
+focus-continuity review. It uses one bounded task column, inline step progress,
+contextual identity, actions adjacent to core inputs and a compact name-only
+recipe directory. This is not explicit user aesthetic or live execution
+approval, nor proof that integration/publication has occurred.
+
+The earlier independent v1 22/23 smoke failure and unknown timing cause remain
+preserved alongside later passing evidence. Candidate-specific detail is in the
+[accepted application evidence record](AGENT_PROGRESS.md#accepted-application-evidence).
+
+### External gates
+
+All seven remain open; local application acceptance does not satisfy them.
+The detailed [release tiers](#phase-5-release-gates) and execution queue still
+govern continuation.
+
+| Gate | Required external evidence |
+| --- | --- |
+| 1. Browser matrix | Firefox and Safari validation |
+| 2. Assistive technology | A real NVDA, JAWS or VoiceOver pass |
+| 3. Approved live scenario matrix | Owner-approved isolated non-production target, region and cost boundary; scenarios 1-16 before Policy bursts, Cleanup and residue verification |
+| 4. APIM preview API compatibility | Live verification or correction of `a2aProperties` / BCP089 against the target API version |
+| 5. Golden live fixtures | Redacted, attributable live results without credentials |
+| 6. Hosted HTTP/assertion relay | Real deployment and identity, authorization, target-policy, rotation, cancellation, timeout, retry and partial-failure integration evidence |
+| 7. Hosted process isolation | Dedicated platform controls and independent security approval before any future per-run process capability |
 
 ### Decision inputs
 
@@ -265,8 +295,8 @@ Get-FileHash ..\citadel-publish-contract-tests.ipynb -Algorithm SHA256
 Do not rely only on the existing automated suite. Confirm:
 
 1. All 19 samples are present and grouped correctly.
-2. Each Code workspace renders one canonical Parameters pane containing only
-   fields used by that sample.
+2. Each recipe workspace renders only that sample's declared fields, with one
+   task column, inline progress and a primary action beside the core inputs.
 3. Mandatory values block execution when blank.
 4. Conditional values block only while their condition is active.
 5. Optional values show their notebook-derived fallback.
@@ -289,8 +319,10 @@ Do not rely only on the existing automated suite. Confirm:
 19. Failed or inconclusive dependencies stop later effects.
 20. No credential appears in errors, evidence, logs, clipboard data, downloads,
     or browser persistence.
-21. Keyboard tabs, labels, focus, status announcements, reduced motion, 320px,
-    tablet, desktop, and 200 percent zoom remain usable.
+21. Native Tab/ShiftTab/Space preserves logical focus through queued same-step
+    refreshes, including City-to-action and acknowledgement transitions; labels,
+    status announcements, reduced motion, 320px, tablet, desktop and 200 percent
+    effective reflow remain usable.
 22. No file outside `CitadelSamples` changes.
 
 ## Phase 2: prepare an isolated non-production environment

@@ -15,6 +15,13 @@ the selected catalogue sample. The server remains authoritative for source
 selection, validation, plan construction, operation registration, and
 execution.
 
+The coordinator accepted application candidate
+`72efec891c69003ea3055c28ccc40b0974742d07` after independent workspace and
+focus-continuity review. This application reference is separate from any later
+documentation-only commit. Acceptance does not claim explicit user aesthetic
+approval, live execution approval, or completion of the
+[seven external gates](CONTINUATION-PLAN.md#external-gates).
+
 ---
 
 ## Provenance
@@ -173,9 +180,10 @@ Available commands:
 | --- | --- |
 | `npm start` | Safe preview-only server |
 | `npm run start:execute` | Loopback-only local execution |
-| `npm test` | 991 recursive Node tests |
+| `npm test` | Recursive Node unit and integration tests |
 | `npm run check` | Static imports, zero dependencies, and isolation checks |
-| `npm run smoke` | 22 browser interaction and responsive checks |
+| `npm run smoke` | Browser interaction and responsive smoke checks |
+| `npm run acceptance:dossier` | Dossier workflows, focus continuity and responsive gallery |
 | `npm run verify` | Check, unit/integration tests, then browser smoke |
 
 Environment variables:
@@ -217,13 +225,16 @@ step count is renumbered.
 | **Generated / override** | Produced by discovery or an earlier recipe; may be overridden |
 | **Secrets** | Required only for samples that present a credential; memory-only |
 
-Required inputs lead their task. Conditional fields appear only while their
-condition applies; defaulted and generated/override values use progressive
-disclosure. Every field states its purpose, readiness, expected format, and
-concise recovery action. Inline errors name the correction needed.
+Core inputs lead their task, with the primary action immediately following in
+normal form flow. Weather City is immediately editable; Advanced settings follow
+Run rather than separating it from City. Conditional requirements follow the
+declared model, while optional and generated settings use progressive disclosure.
+Labels and concise help lead; detailed acquisition guidance and formats remain
+available on demand. Untouched missing inputs are not presented as errors.
 
-The summary names missing values, identity mismatches, and runtime dependencies
-before Run can be enabled. **Copy configuration (JSON)** and
+One blocking reason beside the action explains missing values, identity
+mismatches or runtime dependencies before Run can be enabled.
+**Copy configuration (JSON)** and
 **Download configuration** produce a deterministic manifest containing source
 cells, prerequisites, grouped inputs, risk, runtime requirements, missing
 values, and generated operations.
@@ -426,7 +437,8 @@ CLI execution remain disabled and unproven.
 ## Where the per-sample guides live
 
 Each recipe carries its own guide **inside the catalogue**, rendered in the app's
-Guide tab. There is no parallel Markdown copy to drift out of date. Every recipe
+Guide and provenance inspector. There is no parallel Markdown copy to drift out
+of date. Every recipe
 supplies:
 
 - **Purpose** — why you would run it;
@@ -459,51 +471,71 @@ weaknesses in the source, all disclosed rather than silently applied:
 The Control Plane visual world is **reproduced locally, not imported**. Nothing
 under `playground/` reads, links or modifies `CitadelUI`; a test asserts it.
 
-The surface is a per-recipe Signed Run Dossier wizard using Azure deployment
-conventions. A grouped recipe directory occupies the left rail on wide screens
-and becomes one drawer or full-height picker on compact screens. Wide layouts
-add a compact step rail beside a centered task surface; compact layouts replace
-it with a current-step selector. Sticky footer actions expose one contextual
-primary action. Protected source, guide content, provenance, and diagnostics
-open as secondary inspectors. Only Output uses internal tabs.
+The surface is a task-first Signed Run Dossier using Azure deployment conventions:
+one recipe heading, compact inline step progress, and one task column capped at
+736px. Identifier fields cap at 448px and URLs at 544px, narrowing with the
+viewport. There is no second step rail or fixed action dock. Long forms and their
+following action share one scroll flow.
 
-At 768–1199px the directory becomes a drawer and the dossier becomes one column.
-At 767px and below, the recipe picker fills the available height and the action
-dock respects the safe area. The 320x480 and 200% zoom layouts avoid page-level
-horizontal overflow and keep focused controls clear of sticky regions.
+The compact, searchable, name-only recipe directory uses one open browse group.
+It occupies the left rail on wide screens and becomes **Browse Recipes** with a
+focus-contained drawer or full-height picker below 1200px. Search can expose
+matches across groups. Inline step progress remains within the task at all
+widths; keyboard navigation and same-step refreshes preserve logical focus,
+field values, caret and scroll.
+
+Azure identity and subscription controls appear beside the target fields. The
+active subscription remains distinct from the intended target, with explicit
+Set Active and capability-gated sign-in/cancellation. Gateway tasks show the
+exact planned endpoint, memory-only key presence and unverified target
+authorization, without Azure sign-in. Hosted operator access and identity hops
+remain in contextual execution details.
+
+Protected source, exact operations, exports, guide content and diagnostics remain
+deliberate secondary disclosures or inspectors. Only Output uses internal tabs.
+Blocked mobile Azure views may require scrolling to retain truthful private-CLI
+and unavailable-sign-in guidance; no readiness is invented to shorten the view.
 
 Deep Azure-blue masthead, bright paper sheet, cool chrome rails; Fluent blue for
 action and current position, cloud teal for values sourced outside the page,
 semantic status hues; hairline rules, recessed control wells, Segoe UI Variable
 for prose and Cascadia Mono for every identifier, endpoint and value. No
 gradients, no glass, no same-size card grid, no nested cards, or fake dashboard
-metrics. The only modal is the native destructive confirmation that protects an
-irreversible target.
+metrics. Native destructive confirmation repeats the actual identity, target,
+effect, blast radius and recovery before acknowledgement and execution.
 
 Accessibility targets WCAG 2.2 AA: landmarks, a skip link, programmatic labels,
 Output-only roving tabs, `aria-invalid` and `aria-describedby` on every control
 that needs them, a bounded `role="log"`, visible focus everywhere, forced-colors
-support, and honoured `prefers-reduced-motion`. A required field the user has
-not reached yet reads as *needed*, not as an *error* — the user has not made a
-mistake, they have not arrived.
+support, and honoured `prefers-reduced-motion`. Untouched required inputs do not
+produce an error wall; the nearby action explains what is blocking progress.
 
 ---
 
 ## Tests
 
-```
-npm test                 994/994 pass, node --test, no dependencies
-npm run check            147 modules, 0 dependencies, nothing outside scope
-npm run smoke            23/23 headless-browser interaction checks
-npm run acceptance:dossier  145/145 browser checks, 18 screenshots
-npm run verify           all three, in order
-```
+Commands and their purposes are listed under [Quick start](#quick-start).
+Results are candidate-specific, not a rolling aggregate:
 
-These totals were verified for the per-recipe wizard. The browser acceptance
-matrix covers desktop, tablet, 390px, 320x480, true 200% zoom, reduced motion,
-forced colors, protected source, concise acquisition help, approval invalidation,
-exact active-run isolation, compact destructive confirmation, and the constrained
-recipe picker. The Impeccable detector returned no findings.
+| Application candidate | Recorded evidence |
+| --- | --- |
+| `72efec8` | Implementation: 71 frontend Node, 89 dossier regressions, 23 smoke and 203 navigation checks passed |
+| `72efec8` | Independent recheck: 71 frontend Node, 30 reviewer-native focus, 89 regressions and 23 smoke checks passed |
+| `ad720f0` | 168 dossier/gallery checks passed before the focus-only correction; CSS is unchanged at `72efec8` |
+| `0adcd54` | Full recursive Node suite: 995/995, on the earlier v1 application web tree, not on `72efec8` |
+
+No final full-suite aggregate is claimed for `72efec8`, and documentation
+closeout does not rerun or extend those results. The earlier independent v1
+22/23 smoke result remains historical failure evidence with an unknown timing
+cause; later passing runs do not retroactively explain it. See the
+[candidate evidence record](AGENT_PROGRESS.md#accepted-application-evidence).
+
+The retained browser evidence covers desktop, tablet, 390px, 320x480, 200%
+effective reflow, reduced motion, forced colors, protected source, acquisition
+help, approval invalidation, active-run isolation, destructive confirmation and
+the compact recipe picker. V2 adds real pointer and native Tab/ShiftTab/Space
+traces across queued refreshes. These are offline Chromium results, not live
+target, cross-browser, screen-reader or user preference approval.
 
 | File | Covers |
 | --- | --- |
