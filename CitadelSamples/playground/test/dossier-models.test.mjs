@@ -8,6 +8,8 @@ import {
   buildLedgerAction,
   normalizeAccountControlState,
 } from '../src/view/dossierModels.mjs';
+import { CATALOGUE, fieldByPath } from '../src/catalogue/index.mjs';
+import { createPlaygroundState } from '../src/core/state.mjs';
 
 test('the account control supports the complete launch-gated state vocabulary', () => {
   assert.deepEqual(ACCOUNT_CONTROL_STATES, [
@@ -113,4 +115,20 @@ test('the ledger exposes one contextual action', () => {
 test('the dossier view layer contains no device-code contract fields', async () => {
   const source = await readFile(new URL('../src/view/dossierModels.mjs', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /device-code|verificationUrl|userCode/i);
+});
+
+test('playground state tracks dossier stage and unsaved input loss', () => {
+  const state = createPlaygroundState({ catalogue: CATALOGUE });
+  assert.equal(state.activeStage, 'configure');
+  assert.equal(state.hasUnsavedChanges, false);
+
+  state.setActiveStage('review');
+  state.set('hub.subscriptionId', '00000000-1111-2222-3333-444444444444', fieldByPath('hub.subscriptionId'));
+  assert.equal(state.activeStage, 'review');
+  assert.equal(state.hasUnsavedChanges, true);
+
+  state.markInputsHandled();
+  assert.equal(state.hasUnsavedChanges, false);
+  state.selectSample('apim-discovery');
+  assert.equal(state.activeStage, 'configure');
 });
