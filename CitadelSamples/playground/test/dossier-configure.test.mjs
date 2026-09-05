@@ -8,14 +8,57 @@ import { buildConfigureModel } from '../src/view/models.mjs';
 import {
   buildConfigureRenderContract,
   buildSourceInspectorContract,
+  captureFocus,
   configureFieldControlId,
   renderConfigure,
   renderSourceInspector,
+  restoreFocus,
 } from '../web/js/render/configure.mjs';
 import { makeFixtureReader } from './helpers/fixtures.mjs';
 
 const MODULE_PATH = fileURLToPath(new URL('../web/js/render/configure.mjs', import.meta.url));
 const CSS_PATH = fileURLToPath(new URL('../web/css/configure.css', import.meta.url));
+
+test('shared logical focus snapshots retain selection and restore only within their owner', () => {
+  const controls = new Map();
+  const documentRef = { activeElement: null, getElementById: (id) => controls.get(id) };
+  const container = { ownerDocument: documentRef, contains: (control) => control?.owner === container };
+  const original = {
+    owner: container, id: 'field-control', type: 'text',
+    selectionStart: 2, selectionEnd: 5, selectionDirection: 'backward',
+  };
+  documentRef.activeElement = original;
+  const snapshot = captureFocus(container);
+  assert.deepEqual(snapshot, {
+    id: original.id, value: null, selection: { start: 2, end: 5, direction: 'backward' },
+  });
+  const replacement = {
+    ...original, selectionStart: 0,
+    focus(options) { documentRef.activeElement = this; assert.equal(options.preventScroll, true); },
+    setSelectionRange(start, end, direction) { this.selection = { start, end, direction }; },
+  };
+  controls.set(original.id, replacement);
+  restoreFocus(container, snapshot);
+  assert.equal(documentRef.activeElement, replacement);
+  assert.deepEqual(replacement.selection, snapshot.selection);
+  documentRef.activeElement = { owner: container, id: '' };
+  assert.equal(captureFocus(container), null);
+  replacement.owner = null;
+  restoreFocus(container, snapshot);
+  assert.notEqual(documentRef.activeElement, replacement, 'matching IDs outside the owner cannot receive focus');
+});
+
+test('logical button focus does not invent text selection or expose an ordinary field value', () => {
+  const documentRef = { activeElement: null };
+  const container = { ownerDocument: documentRef, contains: () => true };
+  const button = { id: 'logical-action', focus() { documentRef.activeElement = this; } };
+  documentRef.activeElement = button;
+  documentRef.getElementById = () => button;
+  const snapshot = captureFocus(container);
+  assert.deepEqual(snapshot, { id: 'logical-action', value: null, selection: null });
+  restoreFocus(container, snapshot);
+  assert.equal(documentRef.activeElement, button);
+});
 
 test('the integration surface exports the configure document and source inspector', () => {
   assert.equal(typeof renderConfigure, 'function');

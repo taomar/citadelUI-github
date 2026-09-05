@@ -170,6 +170,7 @@ function renderAcknowledgement(model, callbacks) {
     }),
     el('label', { class: 'review-check' }, [
       el('input', {
+        id: 'review-acknowledgement',
         type: 'checkbox',
         'data-acknowledgement': 'true',
         checked: acknowledgement.satisfied === true,
@@ -185,11 +186,11 @@ function renderAcknowledgement(model, callbacks) {
 }
 
 function exactOperationDetails(operation, summary = 'Exact Operation') {
-  return el('details', { class: 'review-details review-operation-details' }, [
-    el('summary', { text: summary }),
+  return el('details', { class: 'review-details review-operation-details', 'data-disclosure-key': 'review-operation' }, [
+    el('summary', { id: 'review-operation-toggle', text: summary }),
     el('div', { class: 'review-details-body' }, [
       el('p', { class: 'review-copy', text: operation.summary }),
-      el('pre', { class: 'review-operation', tabindex: '0', text: operation.text }),
+      el('pre', { id: 'review-operation-text', class: 'review-operation', tabindex: '0', text: operation.text }),
     ]),
   ]);
 }
@@ -202,8 +203,8 @@ function technicalDetails(model, operation, deviations, placeholders) {
   const details = asList(model.technicalDetails ?? model.planDetails);
   const steps = asList(operation.steps);
   if (!details.length && !steps.length && !deviations.length && !placeholders.length) return null;
-  return el('details', { class: 'review-details' }, [
-    el('summary', { text: 'Technical Details' }),
+  return el('details', { class: 'review-details', 'data-disclosure-key': 'review-technical' }, [
+    el('summary', { id: 'review-technical-toggle', text: 'Technical Details' }),
     el('div', { class: 'review-details-body' }, [
       details.length ? textList(details, '') : null,
       steps.length

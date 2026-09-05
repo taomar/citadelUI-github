@@ -165,7 +165,7 @@ export function buildSourceInspectorContract(source = {}, selectedCellIndex = nu
   });
 }
 
-function captureFocus(container) {
+export function captureFocus(container) {
   const documentRef = container?.ownerDocument;
   const active = documentRef?.activeElement;
   if (!active || !container.contains(active) || !active.id) return null;
@@ -174,19 +174,19 @@ function captureFocus(container) {
     value: active.type === 'password' ? active.value : null,
     selection:
       typeof active.selectionStart === 'number'
-        ? { start: active.selectionStart, end: active.selectionEnd }
+        ? { start: active.selectionStart, end: active.selectionEnd, direction: active.selectionDirection }
         : null,
   };
 }
 
-function restoreFocus(container, snapshot) {
+export function restoreFocus(container, snapshot) {
   if (!snapshot) return;
   const target = container.ownerDocument?.getElementById(snapshot.id);
   if (!target || !container.contains(target)) return;
   if (snapshot.value !== null && target.type === 'password') target.value = snapshot.value;
   target.focus({ preventScroll: true });
-  if (snapshot.selection && typeof target.setSelectionRange === 'function') {
-    target.setSelectionRange(snapshot.selection.start, snapshot.selection.end);
+  if (snapshot.selection && typeof target.selectionStart === 'number' && typeof target.setSelectionRange === 'function') {
+    target.setSelectionRange(snapshot.selection.start, snapshot.selection.end, snapshot.selection.direction);
   }
 }
 
@@ -334,6 +334,7 @@ function renderAcquisitionHelp(field, callbacks, label = 'Get this value') {
     el('div', { class: 'configure-field-help-body' }, [
       producer
         ? el('button', {
+            id: `${field.controlId}-producer`,
             type: 'button',
             class: 'btn configure-recovery-action',
             text: producerActionLabel(producer),
@@ -341,6 +342,7 @@ function renderAcquisitionHelp(field, callbacks, label = 'Get this value') {
           })
         : null,
       el('button', {
+        id: `${field.controlId}-manual`,
         type: 'button',
         class: 'btn configure-manual-action',
         text: 'Enter manually',
@@ -351,11 +353,12 @@ function renderAcquisitionHelp(field, callbacks, label = 'Get this value') {
         },
       }),
       command
-        ? el('details', { class: 'configure-cli-disclosure' }, [
-            el('summary', { text: 'Show CLI command' }),
+        ? el('details', { class: 'configure-cli-disclosure', 'data-disclosure-key': `${field.controlId}-cli` }, [
+            el('summary', { id: `${field.controlId}-cli-toggle`, text: 'Show CLI command' }),
             el('div', { class: 'configure-cli-command' }, [
               el('code', { text: command, translate: 'no' }),
               el('button', {
+                id: `${field.controlId}-cli-copy`,
                 type: 'button',
                 class: 'btn btn-sm',
                 text: 'Copy',
@@ -365,8 +368,8 @@ function renderAcquisitionHelp(field, callbacks, label = 'Get this value') {
           ])
         : null,
       technical.length || field.help || field.fallback || field.secretNote || list(field.links).length
-        ? el('details', { class: 'configure-technical-details' }, [
-            el('summary', { text: 'Technical details' }),
+        ? el('details', { class: 'configure-technical-details', 'data-disclosure-key': `${field.controlId}-technical` }, [
+            el('summary', { id: `${field.controlId}-technical-toggle`, text: 'Technical details' }),
             field.requirementReason ? el('p', { class: 'configure-help-copy', text: field.requirementReason }) : null,
             el('p', { class: 'configure-field-pattern', text: fieldPattern(field) }),
             field.help ? el('p', { class: 'configure-help-copy', text: field.help }) : null,
@@ -527,7 +530,7 @@ function renderGroup(group, callbacks, { compact = false } = {}) {
         'data-disclosure-key': 'configure-advanced',
       },
       [
-        el('summary', {}, [
+        el('summary', { id: `${titleId}-toggle` }, [
           el('span', { text: compact ? 'Advanced settings' : group.title }),
         ]),
         el('div', { class: 'configure-advanced-body' }, content.slice(1)),
@@ -551,28 +554,32 @@ function renderExports(configure, callbacks) {
   const exports = configure?.exports;
   if (!exports) return null;
   return el('details', { class: 'configure-exports', 'data-disclosure-key': 'configuration-exports' }, [
-    el('summary', { text: 'Configuration exports' }),
+    el('summary', { id: 'configure-exports-toggle', text: 'Configuration exports' }),
     el('div', { class: 'configure-export-body' }, [
       el('div', { class: 'configure-actions' }, [
         el('button', {
+          id: 'configure-export-copy-json',
           type: 'button',
           class: 'btn btn-sm configure-action',
           text: 'Copy configuration (JSON)',
           onclick: () => callbacks.onCopy?.(exports.json),
         }),
         el('button', {
+          id: 'configure-export-download-json',
           type: 'button',
           class: 'btn btn-sm configure-action',
           text: `Download ${exports.fileNames.json}`,
           onclick: () => callbacks.onDownload?.(exports.fileNames.json, exports.json, 'application/json'),
         }),
         el('button', {
+          id: 'configure-export-copy-env',
           type: 'button',
           class: 'btn btn-sm configure-action',
           text: 'Copy .env.example',
           onclick: () => callbacks.onCopy?.(exports.env),
         }),
         el('button', {
+          id: 'configure-export-download-env',
           type: 'button',
           class: 'btn btn-sm configure-action',
           text: `Download ${exports.fileNames.env}`,

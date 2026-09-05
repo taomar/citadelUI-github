@@ -426,7 +426,7 @@ async function waitForWizard(harness, recipeId) {
 
 async function installTestExecutor(harness) {
   await harness.evaluate(`(() => {
-    globalThis.__citadelTestHooks.installExecutor({
+    globalThis.__refreshAcceptanceContext = () => globalThis.__citadelTestHooks.installExecutor({
       describeCapability: () => ({
         id: 'wizard-acceptance',
         kind: 'local',
@@ -465,6 +465,7 @@ async function installTestExecutor(harness) {
         };
       }
     });
+    globalThis.__refreshAcceptanceContext();
     return true;
   })()`);
   await settle(harness);
@@ -2375,6 +2376,147 @@ async function runWorkspaceComposition(harness, reporter) {
   }
 }
 
+async function runFocusAcceptance(harness, reporter) {
+  const traces = [];
+  const record = async (label, selector) => {
+    const trace = await harness.evaluate(`(() => {
+      const active = document.activeElement;
+      const workspace = document.getElementById('run-dossier');
+      const city = document.getElementById('f-samples-weather-tools-call-city');
+      const acknowledgement = document.querySelector('[data-acknowledgement="true"]');
+      const run = document.querySelector('#wizard-action-bar .wizard-primary');
+      const ids = [...document.querySelectorAll('#dossier-shell [id]')].map(node => node.id);
+      const rect = active.getBoundingClientRect();
+      const bounds = workspace.getBoundingClientRect();
+      return {
+        label: ${JSON.stringify(label)}, expected: ${JSON.stringify(selector)},
+        focused: active.matches(${JSON.stringify(selector)}),
+        activeId: active.id, activeTag: active.tagName,
+        duplicateIds: ids.filter((id, index) => ids.indexOf(id) !== index),
+        insideWorkspace: workspace.contains(active),
+        visible: rect.width > 0 && rect.height > 0 &&
+          rect.top >= Math.max(0, bounds.top) - 1 && rect.bottom <= Math.min(innerHeight, bounds.bottom) + 1,
+        scrollTop: workspace.scrollTop, city: city?.value,
+        caret: city?.selectionStart, selectionEnd: city?.selectionEnd,
+        acknowledged: acknowledgement?.checked, runEnabled: run?.disabled === false,
+        step: document.querySelector('[data-wizard-step]')?.dataset.wizardStep
+      };
+    })()`);
+    traces.push(trace);
+    return trace;
+  };
+  const refresh = async () => {
+    await harness.evaluate(`(() => {
+      globalThis.__focusRefreshDone = false;
+      setTimeout(() => {
+        globalThis.__refreshAcceptanceContext();
+        globalThis.__refreshAcceptanceContext();
+        globalThis.__focusRefreshDone = true;
+      }, 60);
+    })()`);
+    await harness.waitFor('globalThis.__focusRefreshDone === true');
+    await settle(harness);
+  };
+  const expectFocus = async (label, selector, { refreshContext = false } = {}) => {
+    if (refreshContext) await refresh();
+    const trace = await record(label, selector);
+    reporter.check(label, trace.focused && trace.visible && trace.duplicateIds.length === 0, JSON.stringify(trace));
+    return trace;
+  };
+  const settledBlur = () => harness.evaluate('new Promise(resolve => setTimeout(resolve, 400))');
+  try {
+    await harness.setViewport({ width: 390, height: 844, mobile: true });
+    await navigateToRecipe(harness, 'weather-tools-call');
+    await setValues(harness, { 'hub.gatewayUrl': 'https://gateway.example.test', 'gatewayAccess.apiKey': SECRET });
+    await clickContinue(harness);
+    await workspacePointer(harness, '#f-samples-weather-tools-call-city');
+    await navigationKey(harness, 'Home', 36);
+    await navigationKey(harness, 'End', 35, 8);
+    await harness.page.send('Input.insertText', { text: 'Seattle' });
+    await navigationKey(harness, 'ArrowLeft', 37);
+    await navigationKey(harness, 'ArrowLeft', 37);
+    await harness.page.send('Input.insertText', { text: 'X' });
+    const editing = await record('City real edit before queued refresh', '#f-samples-weather-tools-call-city');
+    const refreshed = await expectFocus('City keeps native caret and focus through queued refresh',
+      '#f-samples-weather-tools-call-city', { refreshContext: true });
+    reporter.check('City value, caret and scroll are unchanged by queued refresh',
+      refreshed.city === 'SeattXle' && refreshed.caret === 6 && refreshed.selectionEnd === 6 &&
+      refreshed.scrollTop === editing.scrollTop, JSON.stringify({ editing, refreshed }));
+    await navigationKey(harness, 'Tab', 9);
+    await settledBlur();
+    await expectFocus('City Tab retains Back after delayed blur', '.wizard-back', { refreshContext: true });
+    await navigationKey(harness, 'Tab', 9);
+    await expectFocus('Back Tab reaches Run in form order', '#wizard-action-bar .wizard-primary', { refreshContext: true });
+    await navigationKey(harness, 'Tab', 9, 8);
+    await expectFocus('Run ShiftTab returns to Back', '.wizard-back', { refreshContext: true });
+    await navigationKey(harness, 'Tab', 9, 8);
+    await expectFocus('Back ShiftTab returns to City without losing its value', '#f-samples-weather-tools-call-city');
+    reporter.equal('City still contains the actual edit after the round trip',
+      await harness.evaluate("document.getElementById('f-samples-weather-tools-call-city').value"), 'SeattXle');
+
+    await workspacePointer(harness, '.configure-advanced > summary');
+    await expectFocus('Advanced summary retains focus and its open state', '.configure-advanced > summary', { refreshContext: true });
+    reporter.check('Advanced stays open after refresh', await harness.evaluate("document.querySelector('.configure-advanced').open"));
+    await navigationKey(harness, 'Tab', 9);
+    await expectFocus('Advanced Tab reaches its first typed field', '#f-samples-weather-tools-call-assetPath');
+    await workspacePointer(harness, '.configure-exports > summary');
+    await expectFocus('Export summary retains focus across refresh', '.configure-exports > summary', { refreshContext: true });
+    await navigationKey(harness, 'Tab', 9);
+    await expectFocus('Export copy button retains logical focus', '.configure-export-body button:first-child', { refreshContext: true });
+    await navigationKey(harness, 'Tab', 9);
+    await expectFocus('Export Tab advances to download rather than the page header', '.configure-export-body button:nth-child(2)');
+
+    await workspacePointer(harness, '.task-support > summary');
+    await expectFocus('Support summary retains focus across refresh', '.task-support > summary', { refreshContext: true });
+    await navigationKey(harness, 'Tab', 9);
+    await expectFocus('Protected source button retains logical focus', '.task-support button:first-child', { refreshContext: true });
+    await navigationKey(harness, 'Tab', 9);
+    await expectFocus('Support Tab advances to Guide in document order', '.task-support button:nth-child(2)');
+
+    await navigateToRecipe(harness, 'publish-assets');
+    reporter.check('Focus regression reaches the actual acknowledgement', await preparePublishReview(harness));
+    await workspacePointer(harness, '[data-acknowledgement="true"]');
+    await settledBlur();
+    await record('Pointer acknowledgement before queued refresh', '[data-acknowledgement="true"]');
+    const checked = await expectFocus('Pointer acknowledgement retains focus while enabling Run',
+      '[data-acknowledgement="true"]', { refreshContext: true });
+    reporter.check('Pointer acknowledgement truthfully enables Run', checked.acknowledged && checked.runEnabled, JSON.stringify(checked));
+    await navigationKey(harness, 'Tab', 9);
+    await expectFocus('Acknowledgement Tab reaches Back', '.wizard-back', { refreshContext: true });
+    await navigationKey(harness, 'Tab', 9);
+    await expectFocus('Acknowledged Back Tab reaches Run', '#wizard-action-bar .wizard-primary', { refreshContext: true });
+    await navigationKey(harness, 'Tab', 9, 8);
+    await expectFocus('Acknowledged Run ShiftTab reaches Back', '.wizard-back');
+    await navigationKey(harness, 'Tab', 9, 8);
+    await expectFocus('Review Back ShiftTab reaches acknowledgement', '[data-acknowledgement="true"]');
+    await navigationKey(harness, ' ', 32);
+    const unchecked = await expectFocus('Native Space unchecks without dropping focus',
+      '[data-acknowledgement="true"]', { refreshContext: true });
+    reporter.check('Unchecked acknowledgement truthfully disables Run', !unchecked.acknowledged && !unchecked.runEnabled, JSON.stringify(unchecked));
+    await navigationKey(harness, ' ', 32);
+    const rechecked = await expectFocus('Native Space rechecks without dropping focus',
+      '[data-acknowledgement="true"]', { refreshContext: true });
+    reporter.check('Rechecked acknowledgement truthfully enables Run', rechecked.acknowledged && rechecked.runEnabled, JSON.stringify(rechecked));
+    await navigationKey(harness, 'Tab', 9);
+    await expectFocus('Tab after a keyboard toggle stays in the review form', '.wizard-back');
+
+    await openNavigationPicker(harness);
+    await navigationPointer(harness, '#recipe-directory-search');
+    await navigationKey(harness, 'Tab', 9, 8);
+    await refresh();
+    const close = await record('Picker Close across refresh', '.recipe-directory-close');
+    reporter.check('Focused picker Close survives same-context refresh', close.focused, JSON.stringify(close));
+    await navigationKey(harness, 'Tab', 9);
+    reporter.check('Picker Close Tab retains the existing search-first order',
+      await harness.evaluate("document.activeElement.id === 'recipe-directory-search'"));
+    await navigationKey(harness, 'Escape', 27);
+    const { data } = await harness.page.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    await writeFile(resolve(ARTIFACT_DIRECTORY, 'focus-review-390.png'), Buffer.from(data, 'base64'));
+  } finally {
+    await writeFile(resolve(ARTIFACT_DIRECTORY, 'focus-traces.json'), JSON.stringify({ traces, checks: reporter.results }, null, 2));
+  }
+}
+
 async function navigationTabTo(harness, selector) {
   for (let index = 0; index < 60; index += 1) {
     if (await harness.evaluate(`document.activeElement?.matches(${JSON.stringify(selector)})`)) return;
@@ -2760,6 +2902,13 @@ async function main() {
     await waitForWizard(harness, 'azure-context-check');
     guard = await installRequestGuard(harness);
 
+    if (!process.argv.includes('--workspace-only')) await runFocusAcceptance(harness, reporter);
+    if (process.argv.includes('--focus-only')) {
+      reportIssues(reporter, 'focus checks attempted no live request', nonLoopbackRequestIssues(guard.requests, harness.baseUrl));
+      reporter.check('focus checks have no browser errors', harness.pageErrors.length === 0, harness.pageErrors.join('; '));
+      if (!reporter.finish().ok) process.exitCode = 1;
+      return;
+    }
     await runWorkspaceComposition(harness, reporter);
     if (process.argv.includes('--workspace-only')) {
       reportIssues(reporter, 'workspace attempted no live request', nonLoopbackRequestIssues(guard.requests, harness.baseUrl));

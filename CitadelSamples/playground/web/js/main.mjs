@@ -22,9 +22,11 @@ import {
 import { createLocalExecutorClient } from './localClient.mjs';
 import { renderShell } from './render/shell.mjs';
 import {
+  captureFocus,
   configureFieldControlId,
   renderConfigure,
   renderSourceInspector,
+  restoreFocus,
 } from './render/configure.mjs';
 import {
   createDestructiveConfirmationController,
@@ -1020,6 +1022,7 @@ function renderWizardStepNav(container, steps) {
     node('ol', {}, steps.map((step, index) =>
       node('li', {}, [
         node('button', {
+          id: `wizard-step-${step.id}`,
           type: 'button',
           class: 'wizard-step-link',
           disabled: step.enabled === false,
@@ -1051,6 +1054,7 @@ function renderWizardContext(container, models, shell) {
     node('div', { class: 'task-target-heading' }, [
       node('span', { text: 'Intended target' }),
       state.wizardStep !== 'account-target' ? node('button', {
+        id: 'wizard-edit-context',
         type: 'button',
         class: 'task-context-edit',
         text: kind === 'gateway' ? 'Edit connection' : 'Edit account & target',
@@ -1174,6 +1178,7 @@ function renderWizardActions(container, models, steps) {
   });
   if (currentIndex > 0 && !running) {
     bar.append(node('button', {
+      id: 'wizard-action-back',
       type: 'button',
       class: 'btn wizard-back',
       text: 'Back',
@@ -1192,6 +1197,7 @@ function renderWizardActions(container, models, steps) {
     const acknowledgementMissing =
       !destructive && acknowledgement.required === true && acknowledgement.satisfied !== true;
     const primary = node('button', {
+      id: 'wizard-action-run',
       type: 'button',
       class: 'btn btn-primary wizard-primary',
       disabled: models.dossier.ledger.canRun !== true || acknowledgementMissing,
@@ -1203,6 +1209,7 @@ function renderWizardActions(container, models, steps) {
     });
     if (acknowledgementMissing) {
       bar.append(node('button', {
+        id: 'wizard-action-acknowledge',
         type: 'button',
         class: 'wizard-action-gate',
         text: 'Acknowledge Impact to Enable Run',
@@ -1222,6 +1229,7 @@ function renderWizardActions(container, models, steps) {
     if (running) {
       const canCancel = typeof state.executor?.cancel === 'function';
       bar.append(node('button', {
+        id: 'wizard-action-cancel',
         type: 'button',
         class: 'btn wizard-primary',
         disabled: !canCancel || state.cancelling,
@@ -1236,6 +1244,7 @@ function renderWizardActions(container, models, steps) {
         }));
       }
       bar.append(node('button', {
+        id: 'wizard-action-run',
         type: 'button',
         class: 'btn btn-primary wizard-primary',
         disabled: models.dossier.ledger.canRun !== true,
@@ -1245,6 +1254,7 @@ function renderWizardActions(container, models, steps) {
     } else {
       const recommended = models.directory.flat.find((sample) => sample.recommendedNext);
       bar.append(node('button', {
+        id: 'wizard-action-next',
         type: 'button',
         class: 'btn btn-primary wizard-primary',
         text: recommended
@@ -1274,6 +1284,7 @@ function renderWizardActions(container, models, steps) {
       }));
     }
     bar.append(node('button', {
+      id: directReadOnlyRun ? 'wizard-action-run' : 'wizard-action-continue',
       type: 'button',
       class: 'btn btn-primary wizard-primary',
       disabled: directReadOnlyRun && models.dossier.ledger.canRun !== true,
@@ -1309,7 +1320,10 @@ function render() {
   const openDisclosures = new Set(preserveWorkspace
     ? [...priorWorkspace.querySelectorAll('details[open][data-disclosure-key]')].map((item) => item.dataset.disclosureKey)
     : []);
-  const focusId = state.pendingFocusId || document.activeElement?.id || '';
+  // A delayed blur must not override a control the user has focused since then.
+  const focusSnapshot = captureFocus(app) ?? (document.activeElement === document.body && state.pendingFocusId
+    ? { id: state.pendingFocusId, value: null, selection: null }
+    : null);
   state.pendingFocusId = '';
   const models = currentModels();
   const steps = wizardSteps(models);
@@ -1463,11 +1477,11 @@ function render() {
   stepHost.append(shell.contextBar);
   if (showReadOnlyOperation) stepHost.append(renderOperationDisclosure(models.dossier.reviewDecision));
   stepHost.append(node('details', { class: 'task-support', 'data-disclosure-key': 'source-help' }, [
-    node('summary', { text: 'Protected source & help' }),
+    node('summary', { id: 'wizard-support-toggle', text: 'Protected source & help' }),
     node('div', { class: 'configure-actions' }, [
-      node('button', { type: 'button', class: 'btn', text: 'Inspect protected source', onclick: openSourceInspector }),
-      node('button', { type: 'button', class: 'btn', text: 'Guide & provenance', onclick: openProvenance }),
-      node('button', { type: 'button', class: 'btn', text: 'Diagnostics', onclick: openDiagnostics }),
+      node('button', { id: 'wizard-support-source', type: 'button', class: 'btn', text: 'Inspect protected source', onclick: openSourceInspector }),
+      node('button', { id: 'wizard-support-guide', type: 'button', class: 'btn', text: 'Guide & provenance', onclick: openProvenance }),
+      node('button', { id: 'wizard-support-diagnostics', type: 'button', class: 'btn', text: 'Diagnostics', onclick: openDiagnostics }),
     ]),
   ]));
   for (const disclosure of shell.dossier.querySelectorAll('details[data-disclosure-key]')) {
@@ -1499,14 +1513,14 @@ function render() {
     });
   }
 
-  if (focusId) {
-    requestAnimationFrame(() => {
-      const target = document.getElementById(focusId);
-      if (!target) return;
-      if (target.closest('#recipe-directory')) return;
-      if (shell.dossier.contains(target) && !preserveWorkspace) focusWorkspaceTarget(target, { block: 'nearest' });
-      else target.focus({ preventScroll: true });
-    });
+  if (focusSnapshot) {
+    const target = document.getElementById(focusSnapshot.id);
+    if (target && !target.closest('#recipe-directory')
+      && (document.activeElement === document.body || document.activeElement === target)) {
+      // Restore before a second same-step render can capture an unfocused body.
+      restoreFocus(app, focusSnapshot);
+      if (shell.dossier.contains(target) && !preserveWorkspace) scrollTargetIntoWorkspace(target);
+    }
   }
   if (sourceDialog.open) renderSourceDialog();
 }

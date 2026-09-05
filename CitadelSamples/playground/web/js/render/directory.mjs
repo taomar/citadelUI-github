@@ -181,6 +181,7 @@ export function renderDirectory({
       el('button', {
         type: 'button',
         class: 'recipe-directory-close',
+        id: 'recipe-directory-close',
         'aria-label': 'Close recipe picker',
         text: 'Close',
         onclick: () => onClose?.(),

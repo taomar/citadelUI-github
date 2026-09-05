@@ -140,6 +140,7 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
         }),
       ]),
       el('button', {
+        id: 'dossier-identity-sign-in',
         type: 'button',
         class: 'dossier-identity-action dossier-identity-action-primary',
         disabled: !launchAvailable || identity.canSignIn === false || busy
@@ -154,6 +155,7 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
       : null,
     loginBusy && identity.canCancel === true
       ? el('button', {
+          id: 'dossier-identity-cancel',
           type: 'button',
           class: 'dossier-identity-action',
           disabled: typeof callbacks.onIdentityCancel !== 'function',
@@ -168,7 +170,7 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
         ])
       : null,
     el('details', { class: 'task-account-controls', 'data-disclosure-key': 'account-controls' }, [
-      el('summary', { text: signedIn ? 'Account / subscription' : 'Azure CLI status' }),
+      el('summary', { id: 'dossier-account-toggle', text: signedIn ? 'Account / subscription' : 'Azure CLI status' }),
       !showStatus && identity.message
         ? el('p', { class: 'dossier-identity-status', text: identity.message })
         : null,
@@ -205,6 +207,7 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
         ),
       ]),
         el('button', {
+          id: 'dossier-subscription-set-active',
           type: 'button',
           class: 'dossier-identity-action',
           disabled:
@@ -216,6 +219,7 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
         }),
       ]) : null,
       el('button', {
+        id: 'dossier-identity-refresh',
         type: 'button',
         class: 'dossier-identity-action',
         disabled: identity.canVerify !== true || identity.verifying === true
@@ -306,7 +310,7 @@ function renderContextBar(execution = {}, identity = {}, { runner = {}, notebook
       class: 'execution-context-disclosure',
       'data-disclosure-key': 'execution-details',
     }, [
-      el('summary', { class: 'execution-context-summary' }, [
+      el('summary', { id: 'dossier-execution-toggle', class: 'execution-context-summary' }, [
         el('span', { class: 'execution-context-summary-label', text: 'Execution Details' }),
       ]),
       body,
@@ -475,12 +479,14 @@ export function renderShell({
 
   const mobileActions = el('details', { class: 'dossier-mobile-actions' }, [
     el('summary', {
+      id: 'dossier-mobile-actions-toggle',
       class: 'dossier-mobile-actions-summary',
       'aria-label': 'Open guide and diagnostics',
       text: 'More',
     }),
     el('div', { class: 'dossier-mobile-actions-panel' }, [
       el('button', {
+        id: 'dossier-mobile-guide',
         type: 'button',
         class: 'dossier-identity-action',
         text: 'Guide and provenance',
@@ -490,6 +496,7 @@ export function renderShell({
         },
       }),
       el('button', {
+        id: 'dossier-mobile-diagnostics',
         type: 'button',
         class: 'dossier-identity-action',
         text: 'Diagnostics',
@@ -518,6 +525,7 @@ export function renderShell({
     ]),
     el('div', { class: 'dossier-masthead-actions' }, [
       el('button', {
+        id: 'dossier-guide',
         type: 'button',
         class: 'dossier-inspector-button dossier-desktop-command',
         'data-short-label': 'Guide',
@@ -527,6 +535,7 @@ export function renderShell({
         onclick: () => onOpenProvenance?.(),
       }),
       el('button', {
+        id: 'dossier-diagnostics',
         type: 'button',
         class: 'dossier-inspector-button dossier-desktop-command',
         'data-short-label': 'Checks',
@@ -545,6 +554,7 @@ export function renderShell({
     inert: inertWhenDirectoryOpen,
   }, [
     el('button', {
+      id: 'dossier-directory-toggle',
       type: 'button',
       class: 'dossier-directory-toggle',
       'aria-controls': DOSSIER_IDS.recipeDrawer,
