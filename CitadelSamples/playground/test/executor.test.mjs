@@ -175,6 +175,7 @@ test('the relay posts to its fixed same-origin endpoint and nowhere else', async
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, '/api/execute');
   assert.equal(calls[0].init.method, 'POST');
+  assert.equal(calls[0].init.credentials, 'same-origin');
   assert.equal(result.state, 'completed');
   assert.equal(result.meta.executor, 'relay');
 });
@@ -322,6 +323,8 @@ test('the local client learns the run id before completion so it can cancel the 
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(client.activeRunId, 'weather-run-1');
   assert.deepEqual(await client.cancel(), { cancelled: true, runId: 'weather-run-1' });
+  assert.equal(calls[0].init.credentials, 'same-origin');
+  assert.equal(calls[1].init.credentials, 'same-origin');
   assert.equal(JSON.parse(calls[1].init.body).runId, 'weather-run-1');
 
   finishRun({

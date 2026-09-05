@@ -140,14 +140,12 @@ or `.env.example`, and inspect the exact protected source and generated plan. It
 executes nothing. Opening the plain `http://127.0.0.1:4173/` URL is read-only and
 cannot invoke self-test, validation, identity, login, relay, or execution APIs.
 
-The masthead also carries an **Offline self-test** — a fixed, local
+The diagnostics drawer includes an **Offline self-test** — a fixed, local
 demonstration that needs no Azure subscription, no credential, and no network.
-It runs a handful of deterministic checks against this exact checkout (imported
-notebook provenance, the catalogue's fixed size, the vendored offline bundle,
-workspace isolation, and the same-origin guard itself) through the real
-`/api/self-test` route, in both preview and operator mode. Its result always
-reports `azureContacted: false` and `liveEvidence: false` and can never be
-mistaken for a live scenario outcome.
+It runs deterministic checks against this exact checkout through the real
+`/api/self-test` route in preview and operator mode. Its result always reports
+`azureContacted: false` and `liveEvidence: false` and can never be mistaken for a
+live scenario outcome.
 
 To execute samples from this machine:
 
@@ -161,8 +159,8 @@ npm run start:execute
 ```
 
 Operator mode is deliberately separate from ordinary startup. It probes only
-local runtimes at boot; it does not contact Azure or a gateway until **Run this
-plan** is selected. Local execution is refused unless the server binds to
+local runtimes at boot; it does not contact Azure or a gateway until **Run
+Sample** is selected. Local execution is refused unless the server binds to
 loopback. The launch capability and cookie rotate on restart; hosted deployments
 keep their trusted proxy and Entra authentication boundary.
 
@@ -197,12 +195,12 @@ matched exactly; forwarded host and protocol headers do not broaden it.
 
 ---
 
-## Prepare the Code workspace
+## Prepare the Signed Run Dossier wizard
 
-Every sample declares its configuration explicitly. The Code workspace keeps
-the protected notebook source in the centre and renders one canonical task pane
-beside it. The task pane identifies the execution principal and target first,
-then shows only fields that sample uses, grouped by execution meaning:
+Every sample declares its configuration explicitly. The wizard derives only the
+steps that recipe needs: Azure account and target, gateway connection, hosted
+context, required inputs, credentials and options, review, and run/result.
+Inapplicable steps are omitted and the displayed step count is renumbered.
 
 | Group | Meaning |
 | --- | --- |
@@ -212,10 +210,10 @@ then shows only fields that sample uses, grouped by execution meaning:
 | **Generated / override** | Produced by discovery or an earlier recipe; may be overridden |
 | **Secrets** | Required only for samples that present a credential; memory-only |
 
-Required inputs lead the pane. Conditional fields appear only while their
+Required inputs lead their task. Conditional fields appear only while their
 condition applies; defaulted and generated/override values use progressive
 disclosure. Every field states its purpose, readiness, expected format, and
-where to obtain it. Inline errors name the correction needed.
+concise recovery action. Inline errors name the correction needed.
 
 The summary names missing values, identity mismatches, and runtime dependencies
 before Run can be enabled. **Copy configuration (JSON)** and
@@ -454,51 +452,50 @@ weaknesses in the source, all disclosed rather than silently applied:
 The Control Plane visual world is **reproduced locally, not imported**. Nothing
 under `playground/` reads, links or modifies `CitadelUI`; a test asserts it.
 
-The surface is a notebook-like operations workbench: a grouped, searchable
-recipe directory on the left, one selected sample in the centre under Guide /
-Code / Configure / Review & approve / Output views, and a compact readiness and
-provenance rail on the right. The Code view renders protected source rather than
-an editor. Only one sample is rendered at a time.
+The surface is a per-recipe Signed Run Dossier wizard using Azure deployment
+conventions. A grouped recipe directory occupies the left rail on wide screens
+and becomes one drawer or full-height picker on compact screens. Wide layouts
+add a compact step rail beside a centered task surface; compact layouts replace
+it with a current-step selector. Sticky footer actions expose one contextual
+primary action. Protected source, guide content, provenance, and diagnostics
+open as secondary inspectors. Only Output uses internal tabs.
 
-The longer-term product direction is a linear runbook rather than mutually
-exclusive tabs: protected source, declared playground inputs, generated
-operation, review and approval, then runner transcript and evidence. The
-protected-source release is an incremental step toward that shape.
-
-Below ~66rem both rails are replaced rather than squeezed — a native `<select>`
-for the directory and a disclosure for the context — so the layout changes shape
-instead of shrinking. Verified with no horizontal overflow at 320px and at 200%
-zoom.
+At 768–1199px the directory becomes a drawer and the dossier becomes one column.
+At 767px and below, the recipe picker fills the available height and the action
+dock respects the safe area. The 320x480 and 200% zoom layouts avoid page-level
+horizontal overflow and keep focused controls clear of sticky regions.
 
 Deep Azure-blue masthead, bright paper sheet, cool chrome rails; Fluent blue for
 action and current position, cloud teal for values sourced outside the page,
 semantic status hues; hairline rules, recessed control wells, Segoe UI Variable
 for prose and Cascadia Mono for every identifier, endpoint and value. No
-gradients, no glass, no same-size card grid, no nested cards, no modals, no fake
-dashboard metrics — compact rows and progressive disclosure instead.
+gradients, no glass, no same-size card grid, no nested cards, or fake dashboard
+metrics. The only modal is the native destructive confirmation that protects an
+irreversible target.
 
 Accessibility targets WCAG 2.2 AA: landmarks, a skip link, programmatic labels,
-roving-tabindex tabs with arrow/Home/End keys, `aria-invalid` and
-`aria-describedby` on every control that needs them, an `aria-live` status
-region, visible focus everywhere, and honoured `prefers-reduced-motion`. A
-required field the user has not reached yet reads as *needed* in brand blue, not
-as an *error* in red — the user has not made a mistake, they have not arrived.
+Output-only roving tabs, `aria-invalid` and `aria-describedby` on every control
+that needs them, a bounded `role="log"`, visible focus everywhere, forced-colors
+support, and honoured `prefers-reduced-motion`. A required field the user has
+not reached yet reads as *needed*, not as an *error* — the user has not made a
+mistake, they have not arrived.
 
 ---
 
 ## Tests
 
 ```
-npm test                 805/805 pass, node --test, no dependencies
-npm run check            117 modules, 0 dependencies, nothing outside scope
-npm run smoke            89/89 headless-browser interaction checks
+npm test                 872/872 pass, node --test, no dependencies
+npm run check            136 modules, 0 dependencies, nothing outside scope
+npm run smoke            22/22 headless-browser interaction checks
+npm run acceptance:dossier  113/113 browser checks, 15 screenshots
 npm run verify           all three, in order
 ```
 
-These totals were verified at integration reference
-`7f325bd`; `npm run verify` exited 0. The separate protected-source browser
-acceptance passed 160/160 checks at the same reference, and the Impeccable layout
-detector returned no findings.
+These totals were verified for the per-recipe wizard. The browser acceptance
+matrix covers desktop, tablet, 390px, 320x480, true 200% zoom, reduced motion,
+forced colors, protected source, concise acquisition help, approval invalidation,
+and exact active-run isolation. The Impeccable detector returned no findings.
 
 | File | Covers |
 | --- | --- |
@@ -517,20 +514,20 @@ detector returned no findings.
 | `runProgress.test.mjs` | Ordered bounded partial state, terminal-state monotonicity, identifier/path refusal, and no raw evidence retention |
 | `viewmodels.test.mjs` | Directory, protected Code, declared zones, configure, review, output, environment, and evidence models |
 | `browser-acceptance.test.mjs` | Protected-source contracts and real Chromium flows for all 19 scenarios, validation gating, execution state, keyboard order, responsive layout, and redaction |
-| `markup.test.mjs` | Direction contract, landmarks, five-view tab wiring, component states, no gradients/nested cards/pixel tracks, responsive shape change |
+| `markup.test.mjs` | Wizard direction contract, landmarks, dynamic step wiring, component states, no gradients/nested cards/pixel tracks, responsive shape change |
 | `requirements.test.mjs` | Exact relevant fields and mandatory/conditional/optional/generated/secret manifests for all 19 samples |
 | `execution.test.mjs` | Allowlisted CLI/HTTP/Python/artifact/assertion execution with fake transports, bindings, redaction, limits, and cancellation |
 | `runmanager.test.mjs` | Server reconstruction, risk gates, concurrency, run IDs, workspaces, updates, and secret handling |
 | `server.test.mjs` | Preview/operator modes, loopback restriction, same-origin JSON guard, body limits, capability, and vendored runtime closure |
 | `selftest.test.mjs` | `/api/self-test` exact-schema validation and the five offline checks it runs, including that it never contacts Azure or the network |
 
-`scripts/smoke.mjs` and the protected-source browser acceptance harness drive
-headless Chromium over the DevTools Protocol using Node built-ins—no Playwright,
-Puppeteer, or dependency. They cover selection, all five views, exact protected
-source for all 19 scenarios, editable zones, configuration copy/download,
-compile-validation gating, risk acknowledgement, secret redaction, run/cancel
-state, search, keyboard order, 320px layout, 200% zoom, and the offline self-test
-through the real server.
+`scripts/smoke.mjs` and the wizard browser acceptance harness drive headless
+Chromium over the DevTools Protocol using Node built-ins—no Playwright,
+Puppeteer, or dependency. They cover recipe and step URL state, dynamic identity
+tasks, exact protected source, configuration copy/download, validation focus,
+risk approval invalidation, secret redaction, active-run navigation and
+cancellation isolation, keyboard order, mobile and 200% layouts, reduced motion,
+forced colors, and the offline self-test through the real server.
 
 ---
 

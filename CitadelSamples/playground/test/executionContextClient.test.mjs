@@ -85,6 +85,7 @@ test('the execution-context client sends only the safe per-sample context shape'
     gateway: { keyPresent: true, headerName: 'api-key' },
   });
   assert.equal(calls[0].path, '/api/execution-context');
+  assert.equal(calls[0].options.credentials, 'same-origin');
   assert.deepEqual(calls[0].options.headers, { Accept: 'application/json', 'Content-Type': 'application/json' });
 });
 

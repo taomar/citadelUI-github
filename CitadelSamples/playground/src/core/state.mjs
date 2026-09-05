@@ -41,7 +41,9 @@ export function createPlaygroundState({ catalogue }) {
   const listeners = new Set();
   let selectedSampleId = catalogue.samples[0]?.id ?? null;
   let activeTab = 'code';
+  let activeStage = 'configure';
   let directoryQuery = '';
+  let hasUnsavedChanges = false;
 
   const secretPaths = new Set(catalogue.secretFieldPaths);
 
@@ -69,14 +71,23 @@ export function createPlaygroundState({ catalogue }) {
       return activeTab;
     },
 
+    get activeStage() {
+      return activeStage;
+    },
+
     get directoryQuery() {
       return directoryQuery;
+    },
+
+    get hasUnsavedChanges() {
+      return hasUnsavedChanges;
     },
 
     selectSample(sampleId) {
       if (!catalogue.byId.has(sampleId) || sampleId === selectedSampleId) return;
       selectedSampleId = sampleId;
       activeTab = 'code';
+      activeStage = 'configure';
       emit('selection');
     },
 
@@ -84,6 +95,12 @@ export function createPlaygroundState({ catalogue }) {
       if (tab === activeTab) return;
       activeTab = tab;
       emit('tab');
+    },
+
+    setActiveStage(stage) {
+      if (!['configure', 'review', 'run', 'result'].includes(stage) || stage === activeStage) return;
+      activeStage = stage;
+      emit('stage');
     },
 
     setDirectoryQuery(query) {
@@ -113,6 +130,7 @@ export function createPlaygroundState({ catalogue }) {
     set(path, rawValue, field) {
       const value = field ? coerceValue(field, rawValue) : rawValue;
       touched.add(path);
+      hasUnsavedChanges = true;
       if (secretPaths.has(path)) {
         if (typeof value === 'string' && value.length > 0) secrets.set(path, value);
         else secrets.delete(path);
@@ -123,6 +141,12 @@ export function createPlaygroundState({ catalogue }) {
       // risky action can never inherit consent given for different inputs.
       if (acknowledgements.size > 0) acknowledgements.clear();
       emit('value');
+    },
+
+    markInputsHandled() {
+      if (!hasUnsavedChanges) return;
+      hasUnsavedChanges = false;
+      emit('handled');
     },
 
     /**
