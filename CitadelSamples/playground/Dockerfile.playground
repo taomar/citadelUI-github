@@ -1,9 +1,13 @@
+# Build from CitadelSamples: docker build -f playground/Dockerfile.playground .
 FROM node:20-alpine
 
-WORKDIR /app
-COPY --chown=node:node package.json server.mjs ./
-COPY --chown=node:node src ./src
-COPY --chown=node:node web ./web
+WORKDIR /app/playground
+COPY playground/package.json playground/server.mjs ./
+COPY playground/src ./src
+COPY playground/web ./web
+COPY playground/runtime ./runtime
+COPY playground/.gitignore ./.gitignore
+COPY citadel-publish-contract-tests.ipynb /app/citadel-publish-contract-tests.ipynb
 
 ENV NODE_ENV=production \
     CITADEL_PLAYGROUND_PORT=8080 \

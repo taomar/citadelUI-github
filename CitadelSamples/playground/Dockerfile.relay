@@ -1,11 +1,14 @@
+# Build from CitadelSamples: docker build -f playground/Dockerfile.relay .
 FROM node:20-alpine
 
 WORKDIR /app
-COPY --chown=node:node relay-server.mjs ./
-COPY --chown=node:node src/catalogue ./src/catalogue
-COPY --chown=node:node src/core ./src/core
-COPY --chown=node:node src/relay ./src/relay
-COPY --chown=node:node src/server/runRequest.mjs ./src/server/runRequest.mjs
+COPY playground/relay-server.mjs ./
+COPY playground/src/catalogue ./src/catalogue
+COPY playground/src/core ./src/core
+COPY playground/src/relay ./src/relay
+COPY playground/src/server/assertions.mjs ./src/server/assertions.mjs
+COPY playground/src/server/redaction.mjs ./src/server/redaction.mjs
+COPY playground/src/server/runRequest.mjs ./src/server/runRequest.mjs
 
 ENV NODE_ENV=production \
     CITADEL_RELAY_PORT=8080 \

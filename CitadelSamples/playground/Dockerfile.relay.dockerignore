@@ -1,0 +1,17 @@
+*
+!playground/
+playground/*
+!playground/relay-server.mjs
+!playground/src/
+playground/src/*
+!playground/src/catalogue/
+!playground/src/catalogue/**
+!playground/src/core/
+!playground/src/core/**
+!playground/src/relay/
+!playground/src/relay/**
+!playground/src/server/
+playground/src/server/*
+!playground/src/server/assertions.mjs
+!playground/src/server/redaction.mjs
+!playground/src/server/runRequest.mjs

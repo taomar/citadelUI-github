@@ -1,0 +1,13 @@
+*
+!citadel-publish-contract-tests.ipynb
+!playground/
+playground/*
+!playground/.gitignore
+!playground/package.json
+!playground/server.mjs
+!playground/src/
+!playground/src/**
+!playground/web/
+!playground/web/**
+!playground/runtime/
+!playground/runtime/**

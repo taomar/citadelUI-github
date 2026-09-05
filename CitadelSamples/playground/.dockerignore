@@ -1,6 +1,10 @@
-.git
-node_modules
-test
-runtime
-scripts
-README.md
+*
+!.gitignore
+!package.json
+!server.mjs
+!src/
+!src/**
+!web/
+!web/**
+!runtime/
+!runtime/**

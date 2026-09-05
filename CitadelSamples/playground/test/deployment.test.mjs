@@ -73,7 +73,10 @@ test('relay image is non-root, zero-dependency, and excludes local process execu
   ]);
   assert.match(dockerfile, /^FROM node:20-alpine/m);
   assert.match(dockerfile, /^USER node$/m);
-  assert.match(dockerfile, /COPY --chown=node:node src\/server\/runRequest\.mjs/);
+  assert.match(dockerfile, /COPY playground\/src\/server\/assertions\.mjs/);
+  assert.match(dockerfile, /COPY playground\/src\/server\/redaction\.mjs/);
+  assert.match(dockerfile, /COPY playground\/src\/server\/runRequest\.mjs/);
+  assert.doesNotMatch(dockerfile, /--chown=node:node/);
   assert.doesNotMatch(dockerfile, /npm (install|ci)|apk add|azure-cli|python|child_process|localExecutor|transports\.mjs/i);
   assert.deepEqual(JSON.parse(packageJson).dependencies, {});
 });
