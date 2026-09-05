@@ -479,14 +479,14 @@ as an *error* in red — the user has not made a mistake, they have not arrived.
 ## Tests
 
 ```
-npm test                 777/777 pass, node --test, no dependencies
-npm run check            115 modules, 0 dependencies, nothing outside scope
+npm test                 805/805 pass, node --test, no dependencies
+npm run check            117 modules, 0 dependencies, nothing outside scope
 npm run smoke            89/89 headless-browser interaction checks
 npm run verify           all three, in order
 ```
 
 These totals were verified at integration reference
-`6c91be1`; `npm run verify` exited 0. The separate protected-source browser
+`7f325bd`; `npm run verify` exited 0. The separate protected-source browser
 acceptance passed 160/160 checks at the same reference, and the Impeccable layout
 detector returned no findings.
 
