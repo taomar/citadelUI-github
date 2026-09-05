@@ -75,15 +75,20 @@ and executor while borrowing notebook interaction patterns.
 
 ## Experience Model
 
-The product direction is a Signed Run Dossier:
+The product direction is a per-recipe, Azure-style Signed Run Dossier wizard.
+Its steps are derived from the selected recipe rather than repeated mechanically:
 
-`Configure -> Review -> Run -> Result`
+1. the applicable Azure account, gateway connection, or hosted execution context;
+2. required and active conditional inputs;
+3. ephemeral credentials plus optional, generated, and advanced values;
+4. review and risk-specific approval; and
+5. the active run and its result.
 
-The primary semantic document starts with purpose, prerequisites, execution
-context, and required inputs. It continues into a decision-first review and the
-runner result. Protected source, guide content, provenance, and diagnostics are
-secondary inspectors: they remain attributable and immutable, but they never
-appear before an actionable blocker on compact layouts.
+Steps that do not apply are omitted and the displayed count is renumbered
+honestly. The current recipe and step are URL-owned so browser history restores
+the operator's place without persisting secrets. Protected source, guide content,
+provenance, and diagnostics are secondary inspectors: they remain attributable
+and immutable, but they never displace an actionable blocker.
 
 The trust boundary stays visible through separate **Identity**, **Target**, and
 **Authorization** facts. Authorization uses **Ready to Attempt** when the known
@@ -144,8 +149,10 @@ as a synonym for simulated or offline.
 - Show the exact cited notebook cells in a read-only, notebook-like surface with
   per-cell provenance.
 - Show only the fields a selected sample actually uses, grouped as mandatory, conditional, optional/defaulted, generated/override, or secret.
-- Provide one continuous dossier for context, inputs, review, and output. Source
-  and guide content open as inspectors rather than top-level workflow tabs.
+- Provide one per-recipe wizard whose steps are derived from execution context and
+  declared requirements. Preserve entered values between steps, validate before
+  advancing, and allow direct navigation only to the current or completed steps.
+  Source and guide content open as inspectors rather than workflow tabs.
 - Keep one global execution-context surface. Gateway-key recipes show key
   presence and never offer Azure sign-in. Hosted relay recipes show the Entra
   caller, playground identity, relay managed identity, Key Vault mapping, and

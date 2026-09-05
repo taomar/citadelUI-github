@@ -2,8 +2,8 @@
 
 ## Current Milestone
 
-Protected-source playground redesign implemented and verified at integration
-reference `7f325bd`. The product decision is final:
+The protected-source playground now uses the verified per-recipe Signed Run
+Dossier wizard. The product decision is final:
 retain the server-authoritative catalogue and typed allowlisted local executor,
 add a notebook-like read-only source surface, and allow edits only to declared
 inputs. Do not introduce a general-purpose editable notebook.
@@ -79,8 +79,9 @@ inputs. Do not introduce a general-purpose editable notebook.
   required, conditional, secret, defaulted, and generated inputs.
 - Azure management, Python management, and Foundry samples identify the local
   Azure CLI principal, tenant, and active/configured subscription match before
-  execution. Explicit device-code sign-in uses only
-  `az login --use-device-code`; tokens are never returned to the browser.
+  execution. Account switching is exposed only when the server advertises its
+  launch-gated system-browser capability; otherwise the UI fails closed to an
+  explicit terminal handoff.
 - Gateway samples identify the memory-only APIM subscription-key context without
   exposing the key. Offline validation and hosted relay samples use separately
   labelled local-parser and managed-identity contexts.
@@ -127,15 +128,15 @@ inputs. Do not introduce a general-purpose editable notebook.
 
 ### Final verified baseline
 
-`npm run verify` at `7f325bd` exited 0:
+`npm run verify` for the wizard exited 0:
 
-- `npm run check` — 117 modules, 0 dependencies, nothing outside
+- `npm run check` — 136 modules, 0 dependencies, nothing outside
   `CitadelSamples`;
-- `node --test` — 805/805 passing;
-- `npm run smoke` — 89/89 passing.
+- `node --test` — 872/872 passing;
+- `npm run smoke` — 22/22 passing.
 
-The separate protected-source browser acceptance passed 160/160 checks, and the
-Impeccable layout detector returned no findings.
+The wizard browser acceptance passed 113/113 checks and regenerated 15 responsive
+screenshots. The Impeccable detector returned no findings.
 
 No Azure endpoint, subscription, gateway key, Foundry project, Policy burst, or
 Cleanup operation was used by this verification.

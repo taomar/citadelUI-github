@@ -2,9 +2,6 @@
 
 import {
   DOSSIER_IDS,
-  DOSSIER_STAGE_LABELS,
-  DOSSIER_STAGES,
-  normalizeDossierStage,
 } from './dossier-contract.mjs';
 import { el, replace } from './dom.mjs';
 import { renderDirectory } from './directory.mjs';
@@ -110,12 +107,15 @@ function identityFact(label, value, { mono = false } = {}) {
 function renderIdentitySurface(identity = {}, callbacks = {}) {
   const kind = identity.kind ?? 'unavailable';
   const launchAvailable = kind !== 'gateway-key' && systemLaunchAvailable(identity);
-  const subscriptions = Array.isArray(identity.subscriptions) ? identity.subscriptions : [];
+  const subscriptions = Array.isArray(identity.subscriptions)
+    ? identity.subscriptions.filter((subscription) => subscription.enabled !== false)
+    : [];
   const requestedSubscriptionId = identity.selectedSubscriptionId ?? identity.activeSubscription?.id ?? '';
   let selectedId = subscriptions.find((subscription) => subscription.id === requestedSubscriptionId)?.id
     ?? subscriptions[0]?.id
     ?? '';
   const signedIn = identity.state === 'ready' || Boolean(identity.account);
+  const busy = ['starting', 'waiting-system-ui', 'verifying'].includes(identity.state);
 
   let body;
   if (kind === 'gateway-key') {
@@ -138,13 +138,19 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
         class: 'dossier-identity-action dossier-identity-action-primary',
         disabled:
           identity.canSignIn === false
-          || identity.state === 'launching'
-          || identity.state === 'waiting'
+          || busy
           || typeof (callbacks.onIdentitySignIn ?? callbacks.onIdentity) !== 'function',
-        'aria-busy': identity.state === 'launching' || identity.state === 'waiting' ? 'true' : undefined,
+        'aria-busy': busy ? 'true' : undefined,
         text: signedIn ? 'Switch Azure account' : 'Sign in with Microsoft',
         onclick: () => (callbacks.onIdentitySignIn ?? callbacks.onIdentity)?.(),
       }),
+      identity.message
+        ? el('p', {
+            class: 'dossier-identity-status',
+            role: 'status',
+            text: identity.message,
+          })
+        : null,
       el('label', {
         class: 'dossier-identity-field',
         for: 'dossier-account-subscription',
@@ -197,7 +203,20 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
           text: 'Set Active',
           onclick: () => callbacks.onIdentitySetActive?.(selectedId),
         }),
+        busy && identity.canCancel === true
+          ? el('button', {
+              type: 'button',
+              class: 'dossier-identity-action',
+              disabled: typeof callbacks.onIdentityCancel !== 'function',
+              text: 'Cancel sign-in',
+              onclick: () => callbacks.onIdentityCancel?.(),
+            })
+          : null,
       ]),
+      el('p', {
+        class: 'dossier-identity-warning',
+        text: 'Set Active changes the shared Azure CLI default subscription for other terminal sessions.',
+      }),
     ];
   } else if (localAuthContext(identity)) {
     body = [
@@ -235,6 +254,8 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
   }, [
     el('summary', {
       class: 'dossier-identity-summary',
+      'aria-label': identitySummary(identity),
+      'data-compact-label': identity.kind === 'gateway-key' ? 'Gateway key' : 'Identity',
       text: identitySummary(identity),
     }),
     el('div', { class: 'dossier-identity-panel' }, body),
@@ -304,24 +325,30 @@ function renderContextBar(execution = {}, identity = {}) {
   ]);
 }
 
-function stageNavigation(currentStage, onStageChange) {
-  return el('nav', { class: 'dossier-stage-navigation', 'aria-label': 'Dossier stages' }, [
+function stageProgress(wizard = {}, onStageChange) {
+  const steps = Array.isArray(wizard.steps) ? wizard.steps : [];
+  const currentIndex = Math.max(0, steps.findIndex((step) => step.id === wizard.currentStep));
+  return el('label', {
+    class: 'dossier-stage-progress',
+    'data-dossier-stage-progress': 'true',
+  }, [
+    el('span', {
+      text: `Step ${currentIndex + 1} of ${Math.max(steps.length, 1)}`,
+    }),
     el(
-      'ol',
-      {},
-      DOSSIER_STAGES.map((stage, index) =>
-        el('li', {}, [
-          el('button', {
-            type: 'button',
-            class: 'dossier-stage-button',
-            'aria-current': stage === currentStage ? 'step' : undefined,
-            'data-stage': stage,
-            onclick: () => onStageChange?.(stage),
-          }, [
-            el('span', { class: 'dossier-stage-number', 'aria-hidden': 'true', text: String(index + 1) }),
-            el('span', { text: DOSSIER_STAGE_LABELS[stage] }),
-          ]),
-        ]),
+      'select',
+      {
+        name: 'wizard-step',
+        'aria-label': 'Current wizard step',
+        onchange: (event) => onStageChange?.(event.target.value),
+      },
+      steps.map((step, index) =>
+        el('option', {
+          value: step.id,
+          selected: step.id === wizard.currentStep,
+          disabled: step.enabled === false,
+          text: `${index + 1}. ${step.title}`,
+        }),
       ),
     ),
   ]);
@@ -336,6 +363,7 @@ export function renderShell({
   onIdentitySubscriptionChange,
   onIdentityVerify,
   onIdentitySetActive,
+  onIdentityCancel,
   onIdentityTerminalFallback,
   onDirectoryToggle,
   onRecipeSelect,
@@ -351,7 +379,8 @@ export function renderShell({
   const notebook = model.notebook ?? {};
   const identity = model.identity ?? {};
   const directoryOpen = model.directoryOpen === true;
-  const currentStage = normalizeDossierStage(model.stage);
+  const directoryModal = model.directoryModal === true;
+  const wizard = model.wizard ?? {};
   const ownerDocument = container.ownerDocument ?? globalThis.document;
   const priorActive = ownerDocument?.activeElement ?? null;
   const priorDirectoryFocused = priorActive?.closest?.(`#${DOSSIER_IDS.recipeDrawer}`) != null;
@@ -359,7 +388,7 @@ export function renderShell({
     && typeof priorActive.selectionStart === 'number'
     ? { start: priorActive.selectionStart, end: priorActive.selectionEnd }
     : null;
-  const inertWhenDirectoryOpen = directoryOpen ? true : undefined;
+  const inertWhenDirectoryOpen = directoryOpen && directoryModal ? true : undefined;
   const identityCallbacks = {
     onIdentity,
     onIdentityToggle,
@@ -367,6 +396,7 @@ export function renderShell({
     onIdentitySubscriptionChange,
     onIdentityVerify,
     onIdentitySetActive,
+    onIdentityCancel,
     onIdentityTerminalFallback,
   };
 
@@ -379,15 +409,15 @@ export function renderShell({
     id: DOSSIER_IDS.recipeDrawer,
     class: 'dossier-recipe-drawer',
     'data-open': directoryOpen ? 'true' : 'false',
-    role: directoryOpen ? 'dialog' : undefined,
-    'aria-modal': directoryOpen ? 'true' : undefined,
-    'aria-label': directoryOpen ? 'Recipe picker' : undefined,
+    role: directoryOpen && directoryModal ? 'dialog' : undefined,
+    'aria-modal': directoryOpen && directoryModal ? 'true' : undefined,
+    'aria-label': directoryOpen && directoryModal ? 'Recipe picker' : undefined,
   }, [
     el('button', {
       type: 'button',
       class: 'dossier-drawer-scrim',
       'aria-label': 'Close recipe picker',
-      tabindex: directoryOpen ? '0' : '-1',
+      tabindex: directoryOpen && directoryModal ? '0' : '-1',
       onclick: () => onDirectoryToggle?.(false),
     }),
     directory,
@@ -400,6 +430,33 @@ export function renderShell({
     inert: inertWhenDirectoryOpen,
   });
 
+  const mobileActions = el('details', { class: 'dossier-mobile-actions' }, [
+    el('summary', {
+      class: 'dossier-mobile-actions-summary',
+      'aria-label': 'Open guide and diagnostics',
+      text: 'More',
+    }),
+    el('div', { class: 'dossier-mobile-actions-panel' }, [
+      el('button', {
+        type: 'button',
+        class: 'dossier-identity-action',
+        text: 'Guide and provenance',
+        onclick: (event) => {
+          event.currentTarget.closest('details').open = false;
+          onOpenProvenance?.();
+        },
+      }),
+      el('button', {
+        type: 'button',
+        class: 'dossier-identity-action',
+        text: 'Diagnostics',
+        onclick: (event) => {
+          event.currentTarget.closest('details').open = false;
+          onOpenDiagnostics?.();
+        },
+      }),
+    ]),
+  ]);
   const masthead = el('header', {
     id: DOSSIER_IDS.masthead,
     class: 'dossier-masthead',
@@ -425,25 +482,28 @@ export function renderShell({
     el('div', { class: 'dossier-masthead-actions' }, [
       el('button', {
         type: 'button',
-        class: 'dossier-inspector-button',
-        'aria-label': 'Open provenance',
+        class: 'dossier-inspector-button dossier-desktop-command',
+        'data-short-label': 'Guide',
+        'aria-label': 'Open guide and provenance',
         'aria-controls': DOSSIER_IDS.provenanceDrawer,
-        text: 'Provenance',
+        text: 'Guide',
         onclick: () => onOpenProvenance?.(),
       }),
       el('button', {
         type: 'button',
-        class: 'dossier-inspector-button',
+        class: 'dossier-inspector-button dossier-desktop-command',
+        'data-short-label': 'Checks',
         'aria-label': 'Open diagnostics',
         'aria-controls': DOSSIER_IDS.diagnosticsDrawer,
-        text: 'Diagnostics',
+        text: 'Checks',
         onclick: () => onOpenDiagnostics?.(),
       }),
+      mobileActions,
       renderIdentitySurface(identity, identityCallbacks),
     ]),
   ]);
   const contextBar = renderContextBar(model.execution, identity);
-  if (directoryOpen) contextBar.setAttribute('inert', '');
+  if (directoryOpen && directoryModal) contextBar.setAttribute('inert', '');
   const workspaceBar = el('div', {
     class: 'dossier-workspace-bar',
     inert: inertWhenDirectoryOpen,
@@ -456,7 +516,7 @@ export function renderShell({
       text: 'Recipes',
       onclick: () => onDirectoryToggle?.(!directoryOpen),
     }),
-    stageNavigation(currentStage, onStageChange),
+    stageProgress(wizard, onStageChange),
   ]);
 
   const root = el('div', {
@@ -465,7 +525,7 @@ export function renderShell({
     'data-directory-open': directoryOpen ? 'true' : 'false',
     'data-runner-mode': runner.mode ?? 'preview',
     onkeydown: (event) => {
-      if (directoryOpen && event.key === 'Escape') {
+      if (directoryOpen && directoryModal && event.key === 'Escape') {
         event.preventDefault();
         onDirectoryToggle?.(false);
       }

@@ -456,7 +456,11 @@ export function renderLedger(container, model, callbacks = {}) {
       el('h3', { text: 'Blockers' }),
       renderBlockers(model, callbacks),
     ]),
-    el('div', { class: 'ledger-actions' }, [
+    el('div', {
+      class: 'ledger-actions dossier-action-bar',
+      'data-dossier-action-bar': 'true',
+      'data-dossier-bottom-dock': 'true',
+    }, [
       primary,
       model.running
         ? el('button', {

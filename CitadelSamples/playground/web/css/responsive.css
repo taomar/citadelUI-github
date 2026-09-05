@@ -1,35 +1,57 @@
-/* Signed Run Dossier responsive and high-contrast integration layer. */
+/* Signed Run Dossier layout, responsive behavior, and platform adaptations. */
 
 :root {
-  --dossier-theme-color: var(--nav, #0b3c68);
   --dossier-control-size: 2.5rem;
   --dossier-dock-size: 3.5rem;
-  --dossier-masthead-offset: 3rem;
+  --dossier-masthead-size: 3rem;
+  --dossier-context-size: 3.75rem;
   color-scheme: light;
 }
 
-html {
+html,
+body {
   max-inline-size: 100%;
   overflow-x: clip;
 }
 
+dialog:not([open]) {
+  display: none;
+}
+
 body {
-  max-inline-size: 100%;
-  overscroll-behavior: none;
+  min-block-size: 100dvh;
+  background: var(--ground);
+}
+
+.skip-link {
+  position: fixed;
+  inset-block-start: var(--sp-3);
+  inset-inline-start: var(--sp-3);
+  z-index: 200;
+  translate: 0 -150%;
+  padding: var(--sp-3) var(--sp-5);
+  border-radius: var(--r-2);
+  background: var(--sheet);
+  color: var(--brand);
+  font-weight: 700;
+}
+
+.skip-link:focus {
+  translate: 0;
 }
 
 #dossier-shell {
   display: grid;
   grid-template-areas:
-    'masthead masthead masthead'
-    'directory dossier ledger';
-  grid-template-columns: minmax(12rem, 15rem) minmax(0, 1fr) clamp(18.75rem, 22vw, 20rem);
-  grid-template-rows: auto minmax(0, 1fr);
+    'masthead masthead'
+    'context context'
+    'drawer workspace'
+    'drawer content';
+  grid-template-columns: 15rem minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   min-inline-size: 0;
-  block-size: 100dvh;
-  overflow: hidden auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  min-block-size: 100dvh;
+  overflow: visible;
   background: var(--ground);
 }
 
@@ -37,41 +59,166 @@ body {
   grid-area: masthead;
   position: sticky;
   inset-block-start: 0;
-  z-index: 40;
-  min-inline-size: 0;
+  z-index: 50;
+  min-block-size: var(--dossier-masthead-size);
   padding-inline:
     max(var(--gutter), env(safe-area-inset-left))
     max(var(--gutter), env(safe-area-inset-right));
-  background: var(--dossier-theme-color);
 }
 
-#global-identity {
+.execution-context-bar {
+  grid-area: context;
+  position: sticky;
+  inset-block-start: var(--dossier-masthead-size);
+  z-index: 40;
   min-inline-size: 0;
+}
+
+.dossier-workspace-bar {
+  grid-area: workspace;
+  position: sticky;
+  inset-block-start: calc(var(--dossier-masthead-size) + var(--dossier-context-size));
+  z-index: 35;
+  min-inline-size: 0;
+}
+
+.dossier-stage-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-inline-size: 0;
+  margin-inline-start: auto;
+  color: var(--ink-2);
+  font-size: var(--t-small);
+  font-weight: 700;
+}
+
+.dossier-stage-progress select {
+  display: none;
+  min-inline-size: min(20rem, 45vw);
+  min-block-size: var(--dossier-control-size);
+  border: 1px solid var(--control-stroke);
+  border-radius: var(--r-2);
+  background: var(--sheet);
+  color: var(--ink-1);
+  font: inherit;
+}
+
+#recipe-drawer {
+  grid-area: drawer;
+  position: sticky;
+  inset-block-start: calc(var(--dossier-masthead-size) + var(--dossier-context-size));
+  align-self: start;
+  block-size: calc(100dvh - var(--dossier-masthead-size) - var(--dossier-context-size));
+  min-inline-size: 0;
+  min-block-size: 0;
 }
 
 #recipe-directory {
-  grid-area: directory;
+  display: block;
   min-inline-size: 0;
   min-block-size: 0;
-  overscroll-behavior: contain;
 }
 
 #run-dossier {
-  grid-area: dossier;
+  grid-area: content;
   min-inline-size: 0;
   min-block-size: 0;
   inline-size: 100%;
-  max-inline-size: 100%;
   padding:
     var(--sp-7)
-    max(var(--gutter), env(safe-area-inset-right))
-    calc(var(--sp-9) + env(safe-area-inset-bottom))
-    max(var(--gutter), env(safe-area-inset-left));
+    max(var(--sp-7), env(safe-area-inset-right))
+    var(--sp-10)
+    max(var(--sp-7), env(safe-area-inset-left));
   overflow: visible;
-  scroll-padding-block:
-    calc(var(--dossier-masthead-offset) + var(--sp-5))
-    calc(var(--dossier-dock-size) + env(safe-area-inset-bottom) + var(--sp-5));
   background: var(--sheet);
+  scroll-padding-block:
+    calc(var(--dossier-masthead-size) + var(--dossier-context-size) + 3rem)
+    calc(var(--dossier-dock-size) + env(safe-area-inset-bottom) + var(--sp-5));
+}
+
+.recipe-wizard {
+  display: grid;
+  grid-template-columns: 12rem minmax(0, 1fr);
+  gap: var(--sp-7);
+  inline-size: min(100%, 72rem);
+  margin-inline: auto;
+}
+
+.wizard-step-nav {
+  min-inline-size: 0;
+}
+
+.wizard-step-nav ol {
+  position: sticky;
+  inset-block-start: calc(var(--dossier-masthead-size) + var(--dossier-context-size) + 4rem);
+  display: grid;
+  gap: 0;
+  border-inline-end: 1px solid var(--rule);
+}
+
+.wizard-step-link {
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1fr);
+  gap: var(--sp-3);
+  align-items: start;
+  inline-size: 100%;
+  padding: var(--sp-4);
+  border: 0;
+  border-inline-end: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: var(--t-small);
+  text-align: start;
+}
+
+.wizard-step-link[aria-current='step'] {
+  border-inline-end-color: var(--brand);
+  background: var(--brand-wash);
+  color: var(--brand);
+  font-weight: 700;
+}
+
+.wizard-step-link:disabled {
+  color: var(--ink-3);
+  opacity: 0.62;
+}
+
+.wizard-step-index {
+  font-family: var(--mono);
+  text-align: end;
+}
+
+.wizard-main {
+  display: grid;
+  gap: var(--sp-7);
+  min-inline-size: 0;
+}
+
+.wizard-heading {
+  display: grid;
+  gap: var(--sp-3);
+  padding-block-end: var(--sp-5);
+  border-block-end: 1px solid var(--rule-strong);
+}
+
+.wizard-heading h1 {
+  font-size: var(--t-h1);
+}
+
+.wizard-step-summary {
+  max-inline-size: 70ch;
+  color: var(--ink-2);
+}
+
+.wizard-step-content {
+  min-inline-size: 0;
+}
+
+.wizard-step-content .configure-header {
+  display: none;
 }
 
 #dossier-context,
@@ -80,20 +227,30 @@ body {
 #dossier-output {
   min-inline-size: 0;
   max-inline-size: 100%;
-  scroll-margin-block-start: calc(var(--dossier-masthead-offset) + var(--sp-5));
+  scroll-margin-block-start: calc(var(--dossier-masthead-size) + var(--dossier-context-size) + 3rem);
 }
 
-#dossier-context + #dossier-inputs,
-#dossier-inputs + #dossier-review,
-#dossier-review + #dossier-output {
-  margin-block-start: var(--sp-9);
+.wizard-action-bar {
+  position: sticky;
+  inset-block-end: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+  inline-size: min(100%, 62rem);
+  min-block-size: var(--dossier-dock-size);
+  margin-inline: auto;
+  margin-block-start: var(--sp-8);
+  padding: var(--sp-3) var(--sp-5);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-3) var(--r-3) 0 0;
+  background: var(--sheet);
+  box-shadow: 0 -0.25rem 1rem rgb(15 18 22 / 0.08);
 }
 
-#run-ledger {
-  grid-area: ledger;
-  min-inline-size: 0;
-  inline-size: clamp(18.75rem, 22vw, 20rem);
-  max-inline-size: 100%;
+.wizard-primary {
+  min-inline-size: 12rem;
 }
 
 #run-dossier form,
@@ -122,58 +279,126 @@ body {
   min-inline-size: 0;
   max-inline-size: 100%;
   overflow-wrap: anywhere;
-  word-break: break-word;
 }
 
 #dossier-shell pre {
   white-space: pre-wrap;
 }
 
-#dossier-shell :focus-visible {
+#dossier-shell :focus-visible,
+dialog :focus-visible {
   outline: 0.1875rem solid var(--brand);
   outline-offset: 0.125rem;
   box-shadow: none;
 }
 
-:where(
-  #recipe-drawer,
-  #source-inspector,
-  #provenance-drawer,
-  #diagnostics-drawer,
-  #destructive-run-dialog
-) {
-  max-inline-size: 100%;
-  max-block-size: 100dvh;
-  overscroll-behavior: contain;
+.evidence-drawer {
+  inline-size: min(42rem, calc(100vw - 2rem));
+  max-block-size: min(42rem, calc(100dvh - 2rem));
+  padding: 0;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-3);
+  background: var(--sheet);
+  color: var(--ink-1);
+  box-shadow: var(--lift);
 }
 
-:where(
-  #recipe-drawer,
-  #source-inspector,
-  #provenance-drawer,
-  #diagnostics-drawer,
-  #destructive-run-dialog
-)::backdrop {
+.evidence-drawer::backdrop,
+#source-inspector::backdrop,
+#destructive-run-dialog::backdrop {
   background: rgb(17 24 39 / 0.58);
 }
 
-[data-dossier-action-bar],
-.dossier-action-bar {
-  min-inline-size: 0;
-  padding-inline:
-    max(var(--gutter), env(safe-area-inset-left))
-    max(var(--gutter), env(safe-area-inset-right));
+.evidence-drawer-header {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--sp-5);
+  padding: var(--sp-6);
+  border-block-end: 1px solid var(--rule);
+  background: var(--sheet);
 }
 
-[data-dossier-bottom-dock],
-.dossier-bottom-dock {
-  min-block-size: calc(var(--dossier-dock-size) + env(safe-area-inset-bottom));
-  padding-block-end: env(safe-area-inset-bottom);
+.evidence-drawer-body {
+  display: grid;
+  gap: var(--sp-6);
+  padding: var(--sp-6);
+}
+
+.drawer-guide {
+  display: grid;
+  gap: var(--sp-3);
+  padding-block-end: var(--sp-5);
+  border-block-end: 1px solid var(--rule);
+}
+
+.drawer-guide ul {
+  display: grid;
+  gap: var(--sp-2);
+  padding-inline-start: var(--sp-6);
+}
+
+.evidence-facts {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.evidence-facts > div {
+  display: grid;
+  grid-template-columns: minmax(8rem, max-content) minmax(0, 1fr);
+  gap: var(--sp-4);
+}
+
+.evidence-facts dt {
+  color: var(--ink-3);
+  font-size: var(--t-small);
+  font-weight: 700;
+}
+
+.evidence-facts dd,
+.drawer-digest {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.drawer-digest {
+  display: block;
+  margin-block-start: var(--sp-4);
+  padding: var(--sp-4);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--well);
+}
+
+.diagnostic-list {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.diagnostic-list li[data-state='pass'] {
+  color: var(--success);
+}
+
+.diagnostic-list li[data-state='fail'],
+.drawer-alert {
+  color: var(--danger);
+}
+
+.terminal-handoff {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  border: 1px solid var(--warning-line);
+  border-radius: var(--r-2);
+  background: var(--warning-wash);
 }
 
 @media (pointer: fine) {
   :root {
-    --dossier-control-size: 2.25rem;
+    --dossier-control-size: 2.5rem;
   }
 }
 
@@ -183,187 +408,158 @@ body {
   }
 }
 
-@media (min-width: 75rem) {
-  #recipe-directory {
+@media (max-width: 74.999rem) {
+  #dossier-shell {
+    grid-template-areas:
+      'masthead'
+      'context'
+      'workspace'
+      'content';
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  @media (max-width: 62rem) {
+    .recipe-wizard {
+      display: block;
+      inline-size: min(100%, 50rem);
+    }
+
+    .wizard-step-nav {
+      display: none;
+    }
+
+    .dossier-stage-progress select {
+      display: block;
+    }
+  }
+
+  .execution-context-grid {
     display: flex;
+    min-inline-size: 0;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
   }
 
-  #recipe-drawer,
-  [aria-controls='recipe-drawer'],
-  [popovertarget='recipe-drawer'],
-  [commandfor='recipe-drawer'] {
-    display: none;
-  }
-
-  #run-ledger {
-    position: sticky;
-    inset-block-start: calc(var(--dossier-masthead-offset) + var(--sp-5));
-    align-self: start;
-    max-block-size: calc(100dvh - var(--dossier-masthead-offset) - var(--sp-9));
-    overflow: hidden auto;
-    overscroll-behavior: contain;
-  }
-
-  [data-dossier-stage] {
-    display: block;
-  }
-}
-
-@media (min-width: 48rem) and (max-width: 74.9375rem) {
-  #dossier-shell {
-    display: block;
-  }
-
-  #recipe-directory {
-    display: none;
-  }
-
-  #recipe-drawer {
-    position: fixed;
-    inset-block: 0;
-    inset-inline-start: 0;
-    z-index: 80;
-    inline-size: min(26rem, 100%);
-    block-size: 100dvh;
-    margin: 0;
-    padding:
-      max(var(--sp-6), env(safe-area-inset-top))
-      max(var(--sp-6), env(safe-area-inset-right))
-      max(var(--sp-6), env(safe-area-inset-bottom))
-      max(var(--sp-6), env(safe-area-inset-left));
-    overflow: hidden auto;
-    overscroll-behavior: contain;
-    background: var(--sheet);
-  }
-
-  #run-dossier {
-    display: block;
-  }
-
-  #run-ledger {
-    position: static;
-    inline-size: auto;
-    max-block-size: none;
-    overflow: visible;
-  }
-
-  [data-dossier-action-bar],
-  .dossier-action-bar {
-    position: sticky;
-    inset-block-end: 0;
-    z-index: 35;
-    padding-block:
-      var(--sp-4)
-      max(var(--sp-4), env(safe-area-inset-bottom));
-    border-block-start: 1px solid var(--rule-strong);
-    background: var(--sheet);
-  }
-}
-
-@media (max-width: 47.9375rem) {
-  :root {
-    --dossier-masthead-offset: 2.75rem;
-  }
-
-  #dossier-shell {
-    display: block;
-    inline-size: 100%;
-    overflow-x: clip;
-  }
-
-  #masthead {
-    padding-block-start: env(safe-area-inset-top);
-  }
-
-  #recipe-directory {
-    display: none;
+  .execution-context-item {
+    flex: 0 0 min(15rem, 75vw);
+    min-block-size: var(--dossier-context-size);
+    border-block-end: 0;
   }
 
   #recipe-drawer {
     position: fixed;
     inset: 0;
     z-index: 90;
-    inline-size: 100%;
     block-size: 100dvh;
-    max-inline-size: none;
-    max-block-size: none;
-    margin: 0;
-    padding:
-      max(var(--sp-5), env(safe-area-inset-top))
-      max(var(--sp-5), env(safe-area-inset-right))
-      max(var(--sp-5), env(safe-area-inset-bottom))
-      max(var(--sp-5), env(safe-area-inset-left));
-    overflow: hidden auto;
-    overscroll-behavior: contain;
-    background: var(--sheet);
+    max-block-size: 100dvh;
+  }
+
+  #recipe-drawer .recipe-directory {
+    block-size: 100dvh;
+    padding-block:
+      env(safe-area-inset-top)
+      env(safe-area-inset-bottom);
   }
 
   #run-dossier {
-    padding-block-end: calc(var(--dossier-dock-size) + env(safe-area-inset-bottom) + var(--sp-7));
+    padding-block-end: calc(var(--dossier-dock-size) + env(safe-area-inset-bottom) + var(--sp-9));
   }
 
-  #run-dossier[data-mobile-stage] [data-dossier-stage]:not([data-stage-active='true']):not([aria-current='step']) {
-    display: none;
-  }
-
-  [data-dossier-stage-progress],
-  .dossier-stage-progress {
-    display: flex;
-    align-items: center;
-    min-block-size: var(--dossier-control-size);
-    overflow-wrap: anywhere;
-  }
-
-  #run-ledger {
-    position: static;
-    inline-size: auto;
-    max-block-size: none;
-    overflow: visible;
-  }
-
-  [data-dossier-action-bar],
-  .dossier-action-bar,
-  [data-dossier-bottom-dock],
-  .dossier-bottom-dock {
+  .wizard-action-bar {
     position: fixed;
     inset-inline: 0;
     inset-block-end: 0;
-    z-index: 60;
+    z-index: 70;
     display: flex;
     align-items: center;
     gap: var(--sp-3);
+    inline-size: 100%;
     min-block-size: calc(var(--dossier-dock-size) + env(safe-area-inset-bottom));
+    margin: 0;
     padding:
       var(--sp-3)
-      max(var(--sp-4), env(safe-area-inset-right))
+      max(var(--sp-5), env(safe-area-inset-right))
       calc(var(--sp-3) + env(safe-area-inset-bottom))
-      max(var(--sp-4), env(safe-area-inset-left));
-    border-block-start: 1px solid var(--rule-strong);
-    background: var(--sheet);
+      max(var(--sp-5), env(safe-area-inset-left));
+    border-inline: 0;
+    border-block-end: 0;
+    border-radius: 0;
+  }
+}
+
+@media (max-width: 47.999rem) {
+  :root {
+    --dossier-control-size: 2.75rem;
   }
 
-  :where(
-    #source-inspector,
-    #provenance-drawer,
-    #diagnostics-drawer,
-    #destructive-run-dialog
-  ) {
+  .dossier-masthead {
+    min-inline-size: 0;
+  }
+
+  .dossier-brand {
+    flex: 0 0 auto;
+  }
+
+  .dossier-masthead-actions {
+    min-inline-size: 0;
+    margin-inline-start: auto;
+  }
+
+  .dossier-identity-summary {
+    box-sizing: border-box;
+    max-inline-size: 7rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dossier-workspace-bar {
+    justify-content: space-between;
+  }
+
+  .dossier-stage-progress {
+    flex: 1 1 auto;
+    justify-content: flex-end;
+  }
+
+  .dossier-stage-progress select {
+    display: block;
+    min-inline-size: 0;
+    inline-size: min(12rem, 52vw);
+  }
+
+  .execution-context-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow-x: visible;
+  }
+
+  .execution-context-item {
+    flex: none;
+  }
+
+  .execution-context-item:last-child {
+    grid-column: 1 / -1;
+  }
+
+  #recipe-drawer .recipe-directory {
+    inline-size: 100vw;
+    max-inline-size: none;
+  }
+
+  .evidence-drawer,
+  #source-inspector,
+  #destructive-run-dialog {
     position: fixed;
     inset: 0;
-    z-index: 100;
     inline-size: 100%;
     block-size: 100dvh;
     max-inline-size: none;
     max-block-size: none;
     margin: 0;
-    padding:
-      max(var(--sp-5), env(safe-area-inset-top))
-      max(var(--sp-5), env(safe-area-inset-right))
-      max(var(--sp-5), env(safe-area-inset-bottom))
-      max(var(--sp-5), env(safe-area-inset-left));
-    overflow: hidden auto;
-    overscroll-behavior: contain;
-    background: var(--sheet);
+    border: 0;
+    border-radius: 0;
   }
 }
 
@@ -374,16 +570,17 @@ body {
       max(var(--sp-4), env(safe-area-inset-right));
   }
 
-  #dossier-context + #dossier-inputs,
-  #dossier-inputs + #dossier-review,
-  #dossier-review + #dossier-output {
-    margin-block-start: var(--sp-7);
+  .dossier-brand-product,
+  .dossier-current-recipe,
+  .dossier-masthead-status {
+    display: none;
   }
 
-  [data-dossier-action-bar],
-  .dossier-action-bar,
-  [data-dossier-bottom-dock],
-  .dossier-bottom-dock {
+  .execution-context-detail {
+    display: none;
+  }
+
+  .wizard-action-bar {
     overflow-x: auto;
     overscroll-behavior-inline: contain;
   }
@@ -414,7 +611,10 @@ body {
 }
 
 @media (forced-colors: active) {
-  #dossier-shell {
+  #dossier-shell,
+  .evidence-drawer,
+  #source-inspector,
+  #destructive-run-dialog {
     --ground: Canvas;
     --band: Canvas;
     --sheet: Canvas;
@@ -422,28 +622,14 @@ body {
     --ink-1: CanvasText;
     --ink-2: CanvasText;
     --ink-3: CanvasText;
+    --brand: LinkText;
     --rule: CanvasText;
     --rule-strong: CanvasText;
-    --control-stroke: CanvasText;
-    --brand: Highlight;
-    --on-brand: HighlightText;
     forced-color-adjust: auto;
   }
 
-  #masthead,
-  #dossier-shell .btn-primary,
-  #dossier-shell [aria-current='page'],
-  #dossier-shell [aria-current='step'] {
-    background: Highlight;
-    color: HighlightText;
-  }
-
-  #dossier-shell :where(button, input, select, textarea, summary, [role='tab']) {
-    border: 1px solid ButtonText;
-  }
-
-  #dossier-shell :focus-visible {
-    outline: 0.1875rem solid Highlight;
-    outline-offset: 0.125rem;
+  #dossier-shell :focus-visible,
+  dialog :focus-visible {
+    outline-color: Highlight;
   }
 }

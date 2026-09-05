@@ -103,20 +103,27 @@ shared Azure CLI default.
 
 ## What the interface shows
 
-One of the 19 catalogue samples is selected at a time. Its Signed Run Dossier
-keeps the operator path in one semantic document:
+One of the 19 catalogue samples is selected at a time. Its Signed Run Dossier is
+a task-focused wizard whose steps are derived from that recipe:
 
-1. purpose, prerequisites, and the global execution context;
-2. required, conditional, secret, defaulted, and generated inputs;
-3. a decision-first review of identity, target, authorization, effect, blast
+1. Azure account and target, gateway connection, or hosted context when applicable;
+2. required and active conditional inputs;
+3. ephemeral credentials plus optional, generated, and advanced values when present;
+4. a decision-first review of identity, target, authorization, effect, blast
    radius, reversibility, and the deterministic operation; and
-4. streamed progress, final assertions, evidence, and artifacts.
+5. streamed progress, final assertions, evidence, artifacts, and recommended next recipe.
+
+Inapplicable steps are skipped and the step count is renumbered. Back and
+Continue preserve safe in-memory state, validation focuses the first blocker,
+and the URL owns the current recipe and step without containing secret values.
 
 Source remains fixed. Configuration controls are the only editable surface.
 Protected source and guide content open as secondary inspectors and never
 precede blockers on compact layouts. Risk acknowledgement and destructive
 confirmation are fresh per run and are invalidated when an input or execution
-context changes. Output alone uses internal Transcript, Evidence, and Artifacts
+context changes. Recipe and step navigation lock while a run is active so
+progress, cancellation, updates, and results remain bound to the originating
+recipe and run. Output alone uses internal Transcript, Evidence, and Artifacts
 tabs.
 
 ## Runner and evidence meanings

@@ -1,1155 +1,1736 @@
-/**
- * Application bootstrap.
- *
- * Owns: state, capability discovery, tab keyboard behaviour, re-render, the
- * guarded run/cancel actions, and the configuration exports. Everything it
- * renders comes from a pure view model, so the decisions this file makes are
- * about the DOM only.
- */
-
-import { CATALOGUE, acknowledgementFor, buildSamplePlan, fieldByPath, getSample } from '../../src/catalogue/index.mjs';
+import { CATALOGUE, acknowledgementFor, buildSamplePlan, fieldByPath } from '../../src/catalogue/index.mjs';
 import { probeFromCapabilityPayload } from '../../src/core/capability.mjs';
 import { createPlaygroundState } from '../../src/core/state.mjs';
 import { createRelayExecutor, createUnavailableExecutor, runPlan } from '../../src/core/executor.mjs';
-import {
-  LOCAL_SESSION_BOOTSTRAP_HEADER,
-  LOCAL_SESSION_CLAIM_PATH,
-  LOCAL_SESSION_PROTOCOL_VERSION,
-} from '../../src/core/localSession.mjs';
 import { assertNoSecretValues } from '../../src/core/secrets.mjs';
 import { EXECUTION_PROTOCOL_VERSION } from '../../src/core/types.mjs';
+import { isAzureCliContext, sampleExecutionContext } from '../../src/core/executionContext.mjs';
 import {
   buildDirectoryModel,
   buildExecutionEnvironmentModel,
-  buildExecutionIdentityModel,
-  buildWorkbenchModel,
+  buildGuideModel,
 } from '../../src/view/models.mjs';
 import { createRunProgress, reduceRunProgress } from '../../src/view/runProgress.mjs';
+import { buildDossierModel } from '../../src/view/dossierModels.mjs';
+import { claimBrowserSession, consumeBootstrapCapability } from './sessionAuth.mjs';
 import { buildExecutionContextProjection, createExecutionContextClient } from './executionContextClient.mjs';
 import { createLocalExecutorClient } from './localClient.mjs';
-import { chip, el, replace } from './render/dom.mjs';
-import { renderDirectory, renderSampleSelect } from './render/directory.mjs';
-import { renderGuide, renderRequest, renderResponse, renderSource } from './render/panels.mjs';
+import { renderShell } from './render/shell.mjs';
+import {
+  configureFieldControlId,
+  renderConfigure,
+  renderSourceInspector,
+} from './render/configure.mjs';
+import {
+  createDestructiveConfirmationController,
+  renderReview,
+} from './render/review.mjs';
+import { renderOutput } from './render/output.mjs';
 
-const TABS = ['code', 'guide', 'request', 'response'];
-const TEST_EXECUTOR_ENABLED =
-  location.hostname === '127.0.0.1' && new URLSearchParams(location.search).has('testExecutor');
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
+const ACCOUNT_BUSY_STATES = new Set(['starting', 'waiting-system-ui', 'verifying']);
+const TEST_SUBSCRIPTION_ID = '00000000-1111-2222-3333-444444444444';
+const SERVER_RESOLVED_CREDENTIAL = 'server-resolved-credential';
+const WIZARD_STEP_DEFINITIONS = Object.freeze([
+  Object.freeze({ id: 'account-target', title: 'Account & target' }),
+  Object.freeze({ id: 'required-inputs', title: 'Required inputs' }),
+  Object.freeze({ id: 'credentials-options', title: 'Credentials & options' }),
+  Object.freeze({ id: 'review-approve', title: 'Review & approve' }),
+  Object.freeze({ id: 'run-result', title: 'Run & result' }),
+]);
+const recipeIds = CATALOGUE.samples.map((sample) => sample.id);
+const sampleById = new Map(CATALOGUE.samples.map((sample) => [sample.id, sample]));
+const app = document.getElementById('app');
+const sourceDialog = document.getElementById('source-inspector');
+const provenanceDialog = document.getElementById('provenance-drawer');
+const diagnosticsDialog = document.getElementById('diagnostics-drawer');
+const destructiveHost = document.getElementById('destructive-dialog-host');
+const destructiveController = createDestructiveConfirmationController(destructiveHost);
+const executionContextClient = createExecutionContextClient();
+const playgroundState = createPlaygroundState({ catalogue: CATALOGUE });
 
-function takeBootstrapCapability() {
-  const parameters = new URLSearchParams(location.hash.startsWith('#') ? location.hash.slice(1) : '');
-  if (!parameters.has('bootstrap')) return null;
-  const capability = parameters.get('bootstrap');
-  parameters.delete('bootstrap');
-  const remaining = parameters.toString();
-  history.replaceState(null, '', `${location.pathname}${location.search}${remaining ? `#${remaining}` : ''}`);
-  return capability;
+const state = {
+  sample: sampleById.get(recipeIds[0]),
+  sourceBundle: { status: 'loading' },
+  sourceValidation: { status: 'not-run', available: false },
+  sourceCellIndex: null,
+  wrapSource: false,
+  capabilities: null,
+  executionContext: null,
+  accountUi: null,
+  selectedSubscriptionId: '',
+  selfTests: null,
+  progress: null,
+  activeRunId: null,
+  outputView: 'transcript',
+  autoFollow: true,
+  directoryOpen: window.innerWidth >= 1200,
+  directoryQuery: '',
+  stage: 'configure',
+  wizardStep: 'account-target',
+  completedWizardSteps: new Set(),
+  completedWizardStepsByRecipe: new Map(),
+  cancelling: false,
+  testExecutor: null,
+  testContext: null,
+  sessionClaimError: '',
+  lastRevealedRunId: null,
+  sourceRequest: 0,
+  sourceValidationRequest: 0,
+  contextRequest: 0,
+  contextFingerprint: null,
+  contextRefreshTimer: null,
+  destructiveArmed: false,
+  runGeneration: 0,
+  activeRunToken: null,
+  renderPending: false,
+  activeEditingPath: null,
+  runtimeProbe: { mode: 'preview' },
+  executor: createUnavailableExecutor(),
+  executorCapability: createUnavailableExecutor().describeCapability(),
+};
+state.completedWizardStepsByRecipe.set(state.sample.id, state.completedWizardSteps);
+
+let appReady = false;
+let dialogReturnFocus = null;
+
+function replace(container, children) {
+  container.replaceChildren(...children.filter(Boolean));
 }
 
-let pendingBootstrapCapability = takeBootstrapCapability();
+function node(tag, attributes = {}, children = []) {
+  const element = document.createElement(tag);
+  for (const [name, value] of Object.entries(attributes)) {
+    if (value === undefined || value === null || value === false) continue;
+    if (name === 'class') element.className = value;
+    else if (name === 'text') element.textContent = value;
+    else if (name.startsWith('on') && typeof value === 'function') {
+      element.addEventListener(name.slice(2).toLowerCase(), value);
+    } else if (value === true) element.setAttribute(name, '');
+    else element.setAttribute(name, String(value));
+  }
+  const entries = Array.isArray(children) ? children : [children];
+  for (const child of entries.filter(Boolean)) {
+    element.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return element;
+}
 
-const nodes = {
-  sourceFile: document.getElementById('source-file'),
-  sourceHash: document.getElementById('source-hash'),
-  capability: document.getElementById('capability'),
-  capabilityLabel: document.getElementById('capability-label'),
-  directoryGroups: document.getElementById('directory-groups'),
-  directoryCount: document.getElementById('directory-count'),
-  directorySearch: document.getElementById('directory-search'),
-  directoryToggle: document.getElementById('directory-toggle'),
-  sampleSelect: document.getElementById('sample-select'),
-  title: document.getElementById('sample-title'),
-  meta: document.getElementById('sample-meta'),
-  summary: document.getElementById('sample-summary'),
-  tablist: document.getElementById('tablist'),
-  panels: {
-    guide: document.getElementById('panel-guide'),
-    code: document.getElementById('panel-code'),
-    request: document.getElementById('panel-request'),
-    response: document.getElementById('panel-response'),
-  },
-  live: document.getElementById('live'),
-  selfTestRun: document.getElementById('self-test-run'),
-  selfTestStatus: document.getElementById('self-test-status'),
-  selfTestSummary: document.getElementById('self-test-summary'),
-  selfTestChecks: document.getElementById('self-test-checks'),
-};
-
-const state = createPlaygroundState({ catalogue: CATALOGUE });
-const executionContextClient = createExecutionContextClient();
-
-let executor = createUnavailableExecutor();
-let capability = executor.describeCapability();
-/** Per-dependency probe results from the server. Empty means "preview only". */
-let runtimeProbe = { mode: 'preview' };
-let capabilitySummary = null;
-let sourceValidationAvailable = false;
-let executionContextAvailable = false;
-let selfTestAvailable = true;
-let localSessionAuth = { required: false, state: 'not-required', message: '' };
-const results = new Map();
-const sourceStates = new Map();
-const sourceValidationStates = new Map();
-let running = false;
-let runningSampleId = null;
-let sourceRequest = null;
-let sourceRequestVersion = 0;
-let validationRequest = null;
-let validationRequestVersion = 0;
-let executionContextState = TEST_EXECUTOR_ENABLED
-  ? { status: 'unavailable', message: 'Execution identity awaits the loopback-only test executor.' }
-  : { status: 'loading' };
-let executionContextRequestVersion = 0;
-let executionContextTimer = null;
-let executionContextController = null;
-let azureLoginState = { status: 'idle' };
-let azureLoginPollTimer = null;
-let azureLoginPollCount = 0;
-let azureLoginController = null;
-let azureLoginGeneration = 0;
-let azureLoginStartedAt = 0;
-let azureLoginCancelRequested = false;
-let sourceWrap = false;
-let testExecutionContextOverride = TEST_EXECUTOR_ENABLED;
-let secretInputInProgress = false;
+function hasActiveTextEntry() {
+  const element = document.activeElement;
+  if (!state.activeEditingPath || !element || !app?.contains(element)) return false;
+  const path = element.closest('[data-parameter-path]')?.dataset.parameterPath;
+  if (path !== state.activeEditingPath) return false;
+  if (element instanceof HTMLTextAreaElement) return true;
+  return element instanceof HTMLInputElement
+    && !['button', 'checkbox', 'radio', 'range', 'submit'].includes(element.type);
+}
 
 function announce(message) {
-  nodes.live.textContent = message;
-}
-
-function refreshExecutionContext() {
-  announce('Checking execution identity…');
-  if (executionContextAvailable || testExecutionContextOverride) loadExecutionContext();
-  else probeCapability();
-}
-
-/* ------------------------------------------------------ capability probe */
-
-async function claimLocalSession() {
-  const capabilityValue = pendingBootstrapCapability;
-  pendingBootstrapCapability = null;
-  if (!capabilityValue) return;
-  try {
-    await fetch(LOCAL_SESSION_CLAIM_PATH, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        [LOCAL_SESSION_BOOTSTRAP_HEADER]: capabilityValue,
-      },
-      body: JSON.stringify({ protocolVersion: LOCAL_SESSION_PROTOCOL_VERSION }),
-    });
-  } catch {
-    // The capability probe below reports the authoritative claimed state.
-  }
-}
-
-async function probeCapability() {
-  try {
-    const response = await fetch('/api/capabilities', {
-      credentials: 'same-origin',
-      headers: { Accept: 'application/json' },
-    });
-    if (!response.ok) throw new Error(`Capability probe failed with HTTP ${response.status}.`);
-    const payload = await response.json();
-    localSessionAuth = payload.sessionAuth ?? { required: false, state: 'not-required', message: '' };
-    runtimeProbe = {
-      mode: payload.mode ?? 'preview',
-      ...probeFromCapabilityPayload(payload, CATALOGUE.byId),
-    };
-    capabilitySummary = payload.capability ?? null;
-    sourceValidationAvailable = payload.sourceValidation?.available === true;
-    executionContextAvailable = typeof payload.executionContext?.endpoint === 'string';
-    selfTestAvailable = payload.selfTest?.available === true;
-    if (payload.executor?.kind === 'local' && payload.executor.canExecute) {
-      executor = createLocalExecutorClient({
-        allowedSampleIds: CATALOGUE.samples.map((sample) => sample.id),
-        supportedStepTypes: payload.executor.supportedStepTypes ?? [],
-      });
-    } else if (payload.executor?.kind === 'relay' && payload.executor.canExecute) {
-      executor = createRelayExecutor({
-        // The relay only ever runs a fixed, server-reported subset. Falling
-        // back to the full catalogue here would let the UI offer a "run"
-        // affordance for samples the relay will always refuse.
-        allowedSampleIds: payload.executor.allowedSampleIds ?? [],
-        endpoint: '/api/execute',
-        supportedStepTypes: payload.executor.supportedStepTypes ?? ['http'],
-      });
-    } else {
-      executor = createUnavailableExecutor({ reason: payload?.executor?.reason });
-    }
-    capability = executor.describeCapability();
-    if (localSessionAuth.required && localSessionAuth.state !== 'claimed' && !testExecutionContextOverride) {
-      executionContextState = {
-        status: 'unavailable',
-        message: localSessionAuth.message || 'Open the secure launch URL shown in the terminal.',
-      };
-    } else if (executionContextAvailable && !testExecutionContextOverride) {
-      loadExecutionContext();
-    } else if (!testExecutionContextOverride) {
-      executionContextState = {
-        status: 'unavailable',
-        message:
-          'Execution identity is not available from this server. Start the playground with npm run start:execute, then refresh.',
-      };
-    }
-  } catch {
-    // Keep the unavailable executor. A failed probe must never be read as
-    // "execution is available".
-    capability = executor.describeCapability();
-    if (!testExecutionContextOverride) {
-      executionContextState = {
-        status: 'unavailable',
-        message: 'Execution identity could not be checked. Retry the capability check before approving a run.',
-      };
-    }
-  }
-  renderCapability();
-  render();
-}
-
-function renderCapability() {
-  if (localSessionAuth.required && localSessionAuth.state !== 'claimed') {
-    nodes.capability.dataset.canExecute = 'false';
-    nodes.capability.dataset.executionMode = 'unclaimed';
-    nodes.capabilityLabel.textContent = 'Secure launch required';
-    nodes.capability.title = localSessionAuth.message || 'Open the secure launch URL shown in the terminal.';
-    return;
-  }
-  const environment = buildExecutionEnvironmentModel(capability);
-  nodes.capability.dataset.canExecute = capability.canExecute ? 'true' : 'false';
-  nodes.capability.dataset.executionMode = environment.mode;
-  nodes.capabilityLabel.textContent = environment.label;
-  nodes.capability.title = capabilitySummary?.detail ?? environment.detail ?? capability.reason ?? '';
-}
-
-/* --------------------------------------------------- execution identity */
-
-function executionContextRequest(sample) {
-  return buildExecutionContextProjection({
-    sample,
-    read: (path) => state.read(path),
-    hasSecret: (path) => state.hasSecret(path),
+  const live = document.getElementById('live');
+  if (!live) return;
+  live.textContent = '';
+  requestAnimationFrame(() => {
+    live.textContent = message;
   });
 }
 
-function executionContextFingerprint(sample) {
-  return JSON.stringify(executionContextRequest(sample));
+function safeMessage(error, fallback) {
+  return error instanceof Error && error.message ? error.message : fallback;
 }
 
-function executionIdentityIsCurrent(sample, identity) {
-  if (testExecutionContextOverride) return identity.canExecute === true;
-  if (!executionContextAvailable) return true;
-  return (
-    identity.canExecute === true &&
-    executionContextState.status === 'ready' &&
-    executionContextState.fingerprint === executionContextFingerprint(sample)
-  );
+function readWizardUrl() {
+  const url = new URL(location.href);
+  const requestedRecipe = url.searchParams.get('recipe');
+  const recipeId = sampleById.has(requestedRecipe) ? requestedRecipe : recipeIds[0];
+  const requestedStep = url.hash.startsWith('#step=')
+    ? decodeURIComponent(url.hash.slice('#step='.length))
+    : url.hash === '#stage=review'
+      ? 'review-approve'
+      : ['#stage=run', '#stage=result'].includes(url.hash)
+        ? 'run-result'
+        : 'account-target';
+  const stepId = WIZARD_STEP_DEFINITIONS.some((step) => step.id === requestedStep)
+    ? requestedStep
+    : 'account-target';
+  const runId = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(url.searchParams.get('run') ?? '')
+    ? url.searchParams.get('run')
+    : null;
+  return { recipeId, stepId, runId };
 }
 
-async function loadExecutionContext(sampleId = state.selectedSampleId) {
-  if (!executionContextAvailable && !testExecutionContextOverride) {
-    executionContextState = {
-      status: 'unavailable',
-      message:
-        'Execution identity is not available from this server. Start the playground with npm run start:execute, then refresh.',
-    };
-    render();
-    return;
-  }
-  executionContextController?.abort();
-  const controller = new AbortController();
-  executionContextController = controller;
-  const version = ++executionContextRequestVersion;
-  const sample = getSample(sampleId);
-  const request = executionContextRequest(sample);
-  const fingerprint = JSON.stringify(request);
-  executionContextState = { status: 'loading', fingerprint };
-  render();
-  let timedOut = false;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, 15_000);
-  try {
-    const context = await executionContextClient.getContext(request, { signal: controller.signal });
-    if (version !== executionContextRequestVersion || state.selectedSampleId !== sampleId) return;
-    executionContextState = { status: 'ready', context, fingerprint };
-  } catch (error) {
-    if (version !== executionContextRequestVersion || state.selectedSampleId !== sampleId) return;
-    executionContextState = {
-      status: 'unavailable',
-      message:
-        timedOut
-          ? 'Execution identity check timed out. Retry before approving a run.'
-          : error?.status === 404
-          ? 'Execution identity is unavailable in preview mode. Start with npm run start:execute to inspect or sign in.'
-          : 'Execution identity could not be checked. Retry before approving a run.',
-    };
-  } finally {
-    clearTimeout(timeout);
-    if (executionContextController === controller) executionContextController = null;
-  }
-  render();
-  announce(
-    executionContextState.status === 'ready'
-      ? `${executionContextState.context.label}: ${executionContextState.context.summary}`
-      : executionContextState.message,
-  );
+function writeWizardUrl({ replaceHistory = false } = {}) {
+  const url = new URL(location.href);
+  const testExecutor = url.searchParams.has('testExecutor');
+  url.search = '';
+  url.searchParams.set('recipe', state.sample.id);
+  if (testExecutor && isTestExecutorAllowed()) url.searchParams.set('testExecutor', '');
+  if (state.activeRunId) url.searchParams.set('run', state.activeRunId);
+  url.hash = `step=${encodeURIComponent(state.wizardStep)}`;
+  history[replaceHistory ? 'replaceState' : 'pushState'](null, '', `${url.pathname}${url.search}${url.hash}`);
 }
 
-function scheduleExecutionContext() {
-  if (testExecutionContextOverride || !executionContextAvailable) return;
-  clearTimeout(executionContextTimer);
-  executionContextController?.abort();
-  executionContextRequestVersion += 1;
-  executionContextState = {
-    status: 'stale',
-    message: 'Execution identity is being rechecked for the changed subscription or gateway settings.',
-  };
-  executionContextTimer = setTimeout(() => loadExecutionContext(), 250);
+async function selectRecipeFromUi(id) {
+  if (!sampleById.has(id) || id === state.sample.id) return false;
+  if (state.progress?.state === 'running') {
+    announce('Cancel the active run before changing recipes.');
+    return false;
+  }
+  if (
+    playgroundState.hasUnsavedChanges
+    && !window.confirm('Change recipes and discard unsaved input changes? Credentials are never persisted.')
+  ) {
+    return false;
+  }
+  await selectSample(id);
+  writeWizardUrl();
+  return true;
 }
 
-function applyAzureLogin(login) {
-  const focusedId = document.activeElement?.id ?? '';
-  azureLoginState = { status: 'ready', login };
-  render();
-  clearTimeout(azureLoginPollTimer);
-  if (login.state === 'succeeded') {
-    if (focusedId === 'cancel-azure-login') {
-      requestAnimationFrame(() => document.getElementById('refresh-execution-context')?.focus());
-    }
-    announce('Azure sign-in completed. Refreshing execution identity.');
-    loadExecutionContext();
-    return;
-  }
-  if (!['starting', 'waiting-for-user'].includes(login.state)) {
-    if (focusedId === 'cancel-azure-login') {
-      requestAnimationFrame(() => {
-        const target =
-          document.getElementById('cancel-azure-login') ?? document.getElementById('start-azure-login');
-        target?.focus();
-      });
-    }
-    announce(login.message || `Azure sign-in ${login.state}.`);
-    return;
-  }
-  announce(login.message || 'Azure device sign-in is waiting for you.');
-  if (azureLoginPollCount >= 120) {
-    azureLoginState = {
-      status: 'ready',
-      login: {
-        ...login,
-        state: 'failed',
-        message: 'Azure sign-in reached its polling limit. Cancel this sign-in or start again.',
-      },
-    };
-    render();
-    announce(azureLoginState.login.message);
-    return;
-  }
-  azureLoginPollCount += 1;
-  const generation = azureLoginGeneration;
-  azureLoginPollTimer = setTimeout(() => pollAzureLogin(generation), 2_000);
+function inputFingerprint() {
+  return JSON.stringify(playgroundState.toPersistable());
 }
 
-async function loginRequest(action, generation, timeoutMs = 10_000) {
-  azureLoginController?.abort();
-  const controller = new AbortController();
-  azureLoginController = controller;
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const result = await action(controller.signal);
-    if (generation !== azureLoginGeneration) return null;
-    return result;
-  } finally {
-    clearTimeout(timeout);
-    if (azureLoginController === controller) azureLoginController = null;
+function executionContextFingerprint(contextState) {
+  const context = contextState?.context ?? null;
+  if (!context) return '';
+  return JSON.stringify({
+    kind: context.kind,
+    state: context.state,
+    canExecute: context.canExecute,
+    authority: context.authority ?? null,
+    subscription: context.subscription ?? null,
+    gateway: context.gateway ?? null,
+    hostedRelay: context.hostedRelay ?? null,
+  });
+}
+
+function updateContextFingerprint(contextState) {
+  const nextFingerprint = executionContextFingerprint(contextState);
+  if (state.contextFingerprint && nextFingerprint !== state.contextFingerprint) {
+    invalidateApproval({ returnToReview: true });
+  }
+  state.contextFingerprint = nextFingerprint || null;
+}
+
+function invalidateApproval({ returnToReview = false } = {}) {
+  playgroundState.setAcknowledged(state.sample.id, false);
+  state.completedWizardSteps.delete('review-approve');
+  state.completedWizardSteps.delete('run-result');
+  state.destructiveArmed = false;
+  destructiveController.destroy();
+  if (
+    returnToReview
+    && state.progress?.state !== 'running'
+    && ['review-approve', 'run-result'].includes(state.wizardStep)
+  ) {
+    state.wizardStep = 'review-approve';
+    updateDossierStage();
+    writeWizardUrl({ replaceHistory: true });
   }
 }
 
-async function startAzureLogin() {
-  clearTimeout(azureLoginPollTimer);
-  azureLoginController?.abort();
-  const generation = ++azureLoginGeneration;
-  azureLoginPollCount = 0;
-  azureLoginStartedAt = Date.now();
-  azureLoginCancelRequested = false;
-  azureLoginState = { status: 'starting' };
-  render();
-  requestAnimationFrame(() => document.getElementById('cancel-azure-login')?.focus());
-  announce('Starting Azure device sign-in…');
-  try {
-    const login = await loginRequest(
-      (signal) => executionContextClient.startAzureLogin({ signal }),
-      generation,
-      15_000,
-    );
-    if (login && azureLoginCancelRequested) {
-      azureLoginState = { status: 'ready', login };
-      await cancelAzureLogin('Azure sign-in cancelled.');
-    } else if (login) {
-      applyAzureLogin(login);
-    }
-  } catch (error) {
-    if (generation !== azureLoginGeneration) return;
-    if (error?.code === 'login-in-progress' && error.login) {
-      if (azureLoginCancelRequested) {
-        azureLoginState = { status: 'ready', login: error.login };
-        await cancelAzureLogin('Azure sign-in cancelled.');
-      } else {
-        applyAzureLogin(error.login);
+function isTestExecutorAllowed() {
+  return LOOPBACK_HOSTS.has(location.hostname) && new URLSearchParams(location.search).has('testExecutor');
+}
+
+function effectiveContext() {
+  return state.testExecutor ? state.testContext : state.executionContext;
+}
+
+function effectiveExecutorCapability() {
+  return state.testExecutor
+    ? state.testExecutor.describeCapability()
+    : state.executorCapability;
+}
+
+function accountControlState(contextState) {
+  return contextState?.accountControl
+    ?? contextState?.context?.accountControl
+    ?? contextState?.context?.systemBrowserAzureLogin
+    ?? {};
+}
+
+function currentModels() {
+  const context = effectiveContext();
+  const capability = effectiveExecutorCapability();
+  const runtimeProbe = state.testExecutor
+    ? {
+        mode: 'execute',
+        azureCli: { available: true, version: 'test' },
+        python: { available: true, version: 'test', modules: {} },
+        accelerator: { available: true, files: 1 },
       }
-      return;
-    }
-    azureLoginState = {
-      status: 'error',
-      message:
-        'Azure sign-in start could not be confirmed. Refresh the execution identity or retry sign-in; cancellation is unavailable until the server returns a current login ID.',
-    };
-    render();
-    requestAnimationFrame(() => {
-      const target = document.getElementById('start-azure-login') ?? document.getElementById('refresh-execution-context');
-      target?.focus();
-    });
-    announce(azureLoginState.message);
-  }
+    : state.runtimeProbe;
+  const dossier = buildDossierModel({
+    sample: state.sample,
+    read: readCurrentValue,
+    hasSecret: hasCurrentSecret,
+    isTouched: (path) => playgroundState.isTouched(path),
+    secrets: playgroundState.secretValues(),
+    acknowledged: playgroundState.isAcknowledged(state.sample.id),
+    result: state.progress,
+    running: state.progress?.state === 'running',
+    runId: state.activeRunId,
+    capability,
+    runtimeProbe,
+    sourceState: state.sourceBundle,
+    sourceValidationState: state.sourceValidation,
+    contextState: context,
+    accountControlState: accountControlState(context),
+    stage: state.stage,
+    selectedSourceCellIndex: state.sourceCellIndex,
+  });
+  const directory = buildDirectoryModel({
+    query: state.directoryQuery,
+    selectedSampleId: state.sample.id,
+    read: (path) => playgroundState.read(path),
+    hasSecret: (path) => playgroundState.hasSecret(path),
+    runtimeProbe,
+  });
+  return {
+    capabilities: state.capabilities,
+    context,
+    guide: buildGuideModel(state.sample),
+    configure: dossier.configure,
+    environment: buildExecutionEnvironmentModel(capability),
+    directory,
+    dossier,
+  };
 }
 
-async function pollAzureLogin(generation = azureLoginGeneration) {
-  if (generation !== azureLoginGeneration) return;
-  const loginId = azureLoginState.login?.loginId;
-  if (!loginId) return;
-  const remainingMs = 240_000 - (Date.now() - azureLoginStartedAt);
-  if (remainingMs <= 0) {
-    await cancelAzureLogin('Azure sign-in timed out after 4 minutes.');
-    return;
-  }
-  try {
-    const login = await loginRequest(
-      (signal) => executionContextClient.getAzureLogin(loginId, { signal }),
-      generation,
-      Math.min(10_000, remainingMs),
-    );
-    if (login && login.loginId === loginId) applyAzureLogin(login);
-  } catch {
-    if (generation !== azureLoginGeneration) return;
-    if (Date.now() - azureLoginStartedAt >= 240_000) {
-      await cancelAzureLogin('Azure sign-in timed out after 4 minutes.');
-      return;
-    }
-    azureLoginState = {
-      status: 'ready',
-      login: {
-        ...azureLoginState.login,
-        state: 'failed',
-        message: 'Azure sign-in status could not be refreshed. Cancel this sign-in or start again.',
-      },
-    };
-    render();
-    announce(azureLoginState.login.message);
-  }
+function activeAccount(accountControl) {
+  return accountControl.accounts?.find((account) => account.id === accountControl.activeAccountId) ?? null;
 }
 
-async function cancelAzureLogin(message = 'Azure sign-in cancelled.') {
-  const loginId = azureLoginState.login?.loginId;
-  clearTimeout(azureLoginPollTimer);
-  if (!loginId) {
-    azureLoginCancelRequested = true;
-    azureLoginState = {
-      status: 'starting',
-      message: 'Cancellation requested. Waiting for the server login ID.',
+function shellIdentity(models) {
+  const identity = models.dossier.identity;
+  const contextKind = models.context?.context?.kind;
+  const projectedContext = buildExecutionContextProjection({
+    sample: state.sample,
+    read: (path) => playgroundState.read(path),
+    hasSecret: (path) => playgroundState.hasSecret(path),
+  });
+  const gatewayRecipe = projectedContext.gateway != null;
+  const accountControl = identity.accountControl;
+  const account = activeAccount(accountControl);
+  const activeSubscription =
+    accountControl.subscriptions?.find((subscription) => subscription.id === accountControl.activeSubscriptionId)
+    ?? null;
+  const isUnclaimed = models.capabilities?.sessionAuth?.state === 'unclaimed';
+  const accountState = state.accountUi?.state ?? accountControl.state;
+  const accountMessage = state.accountUi?.message ?? accountControl.message;
+  const selectedSubscriptionId =
+    state.selectedSubscriptionId
+    || accountControl.intendedSubscriptionId
+    || accountControl.activeSubscriptionId
+    || '';
+  const base = {
+    kind:
+      contextKind === 'hosted-relay'
+        ? 'hosted-relay'
+        : gatewayRecipe || contextKind === 'gateway-key'
+          ? 'gateway-key'
+          : !isUnclaimed
+            ? 'local-operator'
+            : 'unavailable',
+    state: accountState,
+    account: account
+      ? {
+          name: account.name || account.username,
+          username: account.username,
+          tenant: account.tenantId,
+        }
+      : null,
+    systemBrowser: { available: accountControl.launchMode === 'system-browser' },
+    launchCapability: accountControl.launchMode,
+    canSignIn: accountControl.canLaunch && !ACCOUNT_BUSY_STATES.has(accountState),
+    canVerify: accountControl.canVerify && !ACCOUNT_BUSY_STATES.has(accountState),
+    canSetActive: accountControl.canSetActive && !ACCOUNT_BUSY_STATES.has(accountState),
+    canCancel: accountControl.canCancel,
+    subscriptions: accountControl.subscriptions,
+    selectedSubscriptionId,
+    activeSubscription,
+    message: accountMessage,
+    keyPresent: identity.gateway?.keyPresent ?? projectedContext.gateway?.keyPresent,
+    headerName: identity.gateway?.headerName ?? projectedContext.gateway?.headerName,
+    canManage: true,
+  };
+  if (
+    !isUnclaimed
+    && identity.kind === 'local-operator'
+    && accountControl.launchMode !== 'system-browser'
+  ) {
+    base.terminalFallback = {
+      available: true,
+      message: 'Use az login in the terminal, then verify the execution context here.',
     };
-    render();
-    requestAnimationFrame(() => document.getElementById('cancel-azure-login')?.focus());
-    announce(azureLoginState.message);
-    return;
   }
-  azureLoginController?.abort();
-  const generation = ++azureLoginGeneration;
-  try {
-    const login = await loginRequest(
-      (signal) => executionContextClient.cancelAzureLogin(loginId, { signal }),
-      generation,
-    );
-    if (login && login.loginId === loginId) applyAzureLogin({ ...login, message: message || login.message });
-  } catch {
-    if (generation !== azureLoginGeneration) return;
-    azureLoginState = {
-      status: 'ready',
-      login: {
-        ...azureLoginState.login,
-        loginId,
-        state: 'failed',
-        message: 'Azure sign-in cancellation could not be confirmed. Retry the cancellation.',
-      },
-    };
-    render();
-    announce(azureLoginState.login.message);
-  }
+  return base;
 }
 
-async function copyDeviceCode(code) {
-  try {
-    await navigator.clipboard.writeText(code);
-    announce('Azure device code copied.');
-  } catch {
-    announce('The device code could not be copied. Select the code and copy it manually.');
-  }
+function shellExecution(models) {
+  const identity = models.dossier.identity;
+  const hosted = models.context?.context?.hostedRelay;
+  const gateway = wizardIdentityKind() === 'gateway';
+  const subscriptionValue = gateway
+    ? 'Not applicable'
+    : identity.subscription
+      ? [identity.subscription.activeName, identity.subscription.activeId].filter(Boolean).join(' — ')
+      : 'Not reported';
+  return {
+    human: { value: identity.human },
+    runsAs: { value: identity.runsAs, credential: identity.credential },
+    activeSubscription: {
+      value: subscriptionValue,
+      detail: gateway
+        ? 'Gateway recipes do not use Azure account or subscription controls.'
+        : identity.targetSubscriptionMismatch
+          ? 'The Azure CLI default and intended target do not match.'
+          : 'Azure CLI default; the intended target remains separate.',
+    },
+    target: {
+      value: models.dossier.reviewDecision.target.exact,
+      detail: 'The exact intended target for this attempt.',
+    },
+    authorization: {
+      readyToAttempt: identity.authorization.ready,
+      state: identity.authorization.state,
+    },
+    hosted: hosted
+      ? {
+          entraCaller: identity.human,
+          playgroundIdentity: 'Hosted playground identity',
+          relayIdentity: hosted.relayIdentity,
+          keyReference: hosted.keySource,
+          target: models.dossier.reviewDecision.target.exact,
+        }
+      : null,
+  };
 }
 
-/* ----------------------------------------------------- protected source */
+function focusPath(path) {
+  const control = document.getElementById(configureFieldControlId(path));
+  if (!control) return false;
+  const advanced = control.closest('details');
+  if (advanced) advanced.open = true;
+  control.focus();
+  control.scrollIntoView({ block: 'center', inline: 'nearest' });
+  return true;
+}
 
-async function loadProtectedSource(sampleId = state.selectedSampleId) {
-  sourceRequest?.controller.abort();
-  const version = ++sourceRequestVersion;
-  const controller = new AbortController();
-  sourceRequest = { sampleId, version, controller };
-  sourceStates.set(sampleId, { status: 'loading' });
-  render();
+function download(name, text, mediaType = 'text/plain;charset=utf-8') {
+  const blob = new Blob([text], { type: mediaType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
 
+async function copyText(text) {
   try {
-    const response = await fetch(`/api/source/${encodeURIComponent(sampleId)}`, {
-      credentials: 'same-origin',
-      headers: { Accept: 'application/json' },
-      signal: controller.signal,
-    });
-    if (version !== sourceRequestVersion || state.selectedSampleId !== sampleId) return;
-    if (!response.ok) {
-      sourceStates.set(sampleId, {
-        status: 'error',
-        message: `The protected source could not be loaded (HTTP ${response.status}).`,
-      });
-    } else {
-      const payload = await response.json();
-      if (version !== sourceRequestVersion || state.selectedSampleId !== sampleId) return;
-      sourceStates.set(sampleId, { status: 'ready', payload });
-    }
+    await navigator.clipboard.writeText(text);
+    announce('Copied to the clipboard.');
   } catch (error) {
-    if (error?.name === 'AbortError' || version !== sourceRequestVersion || state.selectedSampleId !== sampleId) return;
-    sourceStates.set(sampleId, {
-      status: 'error',
-      message: 'The protected source could not be loaded. Check that the playground server is available.',
-    });
+    announce(safeMessage(error, 'Clipboard access was not available.'));
   }
-  if (version !== sourceRequestVersion || state.selectedSampleId !== sampleId) return;
-  render();
 }
 
-async function validateProtectedSource() {
-  const sampleId = state.selectedSampleId;
-  if (!sourceValidationAvailable) {
-    announce('Offline Python validation requires the loopback execute server.');
-    return;
-  }
-  if (sourceStates.get(sampleId)?.status !== 'ready') {
-    announce('Load the protected source before validating it.');
-    return;
-  }
-  validationRequest?.controller.abort();
-  const version = ++validationRequestVersion;
-  const controller = new AbortController();
-  validationRequest = { sampleId, version, controller };
-  sourceValidationStates.set(sampleId, { status: 'loading' });
-  render();
-  announce('Validating protected Python cells offline. No source is executed.');
+function showDialog(dialog, opener = document.activeElement) {
+  dialogReturnFocus = opener?.focus ? opener : null;
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => dialog.querySelector('button, [href], input, select, textarea, [tabindex="0"]')?.focus());
+}
 
+function closeDialog(dialog) {
+  if (dialog.open) dialog.close();
+}
+
+for (const dialog of [sourceDialog, provenanceDialog, diagnosticsDialog]) {
+  dialog.addEventListener('close', () => {
+    const target = dialogReturnFocus;
+    dialogReturnFocus = null;
+    target?.focus?.();
+  });
+}
+
+function renderSourceDialog() {
+  const models = currentModels();
+  renderSourceInspector(sourceDialog, models.dossier.source, models.dossier.sourceValidation, {
+    selectedCellIndex: state.sourceCellIndex,
+    wrapSource: state.wrapSource,
+    onSelectCell(index) {
+      state.sourceCellIndex = index;
+      renderSourceDialog();
+    },
+    onToggleWrap(next) {
+      state.wrapSource = next;
+      renderSourceDialog();
+    },
+    onRetry: loadSource,
+    onValidate: validateSource,
+    onDownload: download,
+    onClose: () => closeDialog(sourceDialog),
+  });
+}
+
+function openSourceInspector() {
+  renderSourceDialog();
+  showDialog(sourceDialog);
+}
+
+function drawerHeader(title, eyebrow, dialog) {
+  return node('header', { class: 'evidence-drawer-header' }, [
+    node('div', {}, [
+      node('p', { class: 'review-eyebrow', text: eyebrow }),
+      node('h2', { text: title }),
+    ]),
+    node('button', {
+      type: 'button',
+      class: 'btn btn-sm',
+      text: 'Close',
+      onclick: () => closeDialog(dialog),
+    }),
+  ]);
+}
+
+function openProvenance() {
+  const notebook = CATALOGUE.sourceNotebook;
+  const source = state.sourceBundle;
+  const guide = buildGuideModel(state.sample);
+  replace(provenanceDialog, [
+    drawerHeader('Guide & provenance', 'Recipe evidence', provenanceDialog),
+    node('div', { class: 'evidence-drawer-body' }, [
+      node('section', { class: 'drawer-guide' }, [
+        node('h3', { text: 'Purpose' }),
+        node('p', { text: guide.purpose || guide.summary }),
+        node('h3', { text: 'Prerequisites' }),
+        guide.prerequisites.length
+          ? node('ul', {}, guide.prerequisites.map((item) => node('li', { text: item.title })))
+          : node('p', { text: 'No recipe-specific prerequisites are declared.' }),
+      ]),
+      node('dl', { class: 'evidence-facts' }, [
+        node('div', {}, [node('dt', { text: 'Notebook' }), node('dd', { text: notebook.fileName })]),
+        node('div', {}, [node('dt', { text: 'Notebook cells' }), node('dd', { text: notebook.cellCount })]),
+        node('div', {}, [
+          node('dt', { text: 'Source state' }),
+          node('dd', { text: source.status === 'ready' ? 'Protected source loaded' : source.message || source.status }),
+        ]),
+        node('div', {}, [
+          node('dt', { text: 'Source validation' }),
+          node('dd', { text: state.sourceValidation.message || state.sourceValidation.state }),
+        ]),
+      ]),
+      node('details', {}, [
+        node('summary', { text: 'Full notebook digest' }),
+        node('code', { class: 'drawer-digest', text: notebook.sha256, translate: 'no' }),
+      ]),
+      node('button', {
+        type: 'button',
+        class: 'btn',
+        text: 'Inspect cited source',
+        onclick: () => {
+          closeDialog(provenanceDialog);
+          openSourceInspector();
+        },
+      }),
+    ]),
+  ]);
+  showDialog(provenanceDialog);
+}
+
+function openDiagnostics() {
+  const capabilities = state.capabilities;
+  const context = effectiveContext();
+  const checks = state.selfTests?.checks ?? [];
+  replace(diagnosticsDialog, [
+    drawerHeader('Diagnostics', 'Local capability', diagnosticsDialog),
+    node('div', { class: 'evidence-drawer-body' }, [
+      state.sessionClaimError
+        ? node('p', { class: 'drawer-alert', role: 'alert', text: state.sessionClaimError })
+        : null,
+      node('dl', { class: 'evidence-facts' }, [
+        node('div', {}, [
+          node('dt', { text: 'Browser session' }),
+          node('dd', { text: capabilities?.sessionAuth?.message || 'Not reported' }),
+        ]),
+        node('div', {}, [
+          node('dt', { text: 'Executor' }),
+          node('dd', { text: capabilities?.executor?.reason || capabilities?.executor?.kind || 'Not reported' }),
+        ]),
+        node('div', {}, [
+          node('dt', { text: 'Execution context' }),
+          node('dd', { text: context?.message || context?.context?.summary || context?.context?.state || 'Not reported' }),
+        ]),
+      ]),
+      checks.length
+        ? node('ul', { class: 'diagnostic-list' }, checks.map((check) =>
+            node('li', { 'data-state': check.ok ? 'pass' : 'fail', text: `${check.ok ? 'Pass' : 'Fail'} — ${check.name}` }),
+          ))
+        : node('p', { text: 'Offline diagnostics are unavailable for this browser session.' }),
+      !capabilities?.executionContext?.systemBrowserAzureLogin?.available
+        && capabilities?.sessionAuth?.state !== 'unclaimed'
+        ? node('div', { class: 'terminal-handoff' }, [
+            node('h3', { text: 'Terminal fallback' }),
+            node('p', { text: 'Run az login in a trusted terminal. Authentication instructions stay in the terminal.' }),
+            node('code', { text: 'az login', translate: 'no' }),
+          ])
+        : null,
+    ]),
+  ]);
+  showDialog(diagnosticsDialog);
+}
+
+function shellModel(models) {
+  const running = state.progress?.state === 'running';
+  return {
+    recipe: {
+      id: state.sample.id,
+      title: state.sample.shortTitle,
+      group: state.sample.group,
+    },
+    runner: {
+      label: models.environment.label,
+      tone: effectiveExecutorCapability().canExecute ? 'success' : 'warning',
+      mode: models.environment.mode,
+    },
+    notebook: {
+      verified: models.dossier.source.state === 'ready',
+      label: models.dossier.source.state === 'ready' ? 'Notebook verified' : 'Notebook verification pending',
+    },
+    identity: shellIdentity(models),
+    execution: shellExecution(models),
+    stage: state.stage,
+    directoryOpen: state.directoryOpen,
+    directoryModal: window.innerWidth < 1200,
+    directory: {
+      ...models.directory,
+      groups: models.directory.groups.map((group) => ({
+        ...group,
+        samples: group.samples.map((sample) => ({ ...sample, disabled: running })),
+      })),
+    },
+  };
+}
+
+function declaredArtifactPaths(request) {
+  return (request?.plan?.steps ?? [])
+    .filter((step) => step.type === 'artifact' && typeof step.artifact?.path === 'string')
+    .map((step) => step.artifact.path);
+}
+
+function authorizedArtifactPaths(response) {
+  return (response?.meta?.artifacts ?? [])
+    .map((artifact) => typeof artifact === 'string' ? artifact : artifact?.path)
+    .filter((path) => typeof path === 'string');
+}
+
+function fieldsForWizardStep(configure, stepId) {
+  const identityKind = wizardIdentityKind();
+  const serverManagedCredential = (field) =>
+    identityKind === 'hosted' && field.path === 'gatewayAccess.apiKey';
+  const identityField = (field) => {
+    if (identityKind === 'gateway') {
+      return /(^gatewayAccess\.|gatewayUrl$|deployedEndpoint$|subscriptionKeyHeader$)/i.test(field.path);
+    }
+    if (identityKind === 'azure') {
+      return /^(hub\.(subscriptionId|resourceGroupName|apimName|location)|keyVault\.subscriptionId)$/i.test(field.path);
+    }
+    return false;
+  };
+  const required = (field) =>
+    field.requirement === 'mandatory'
+    || (field.requirement === 'conditional' && field.conditionActive === true);
+  const predicate =
+    stepId === 'account-target'
+      ? identityField
+      : stepId === 'required-inputs'
+        ? (field) => required(field) && !identityField(field)
+        : (field) => !required(field) && !identityField(field);
+  const groups = configure.groups
+    .map((group) => ({
+      ...group,
+      fields: group.fields.filter((field) => !serverManagedCredential(field) && predicate(field)),
+    }))
+    .filter((group) => group.fields.length > 0);
+  const paths = new Set(groups.flatMap((group) => group.fields.map((field) => field.path)));
+  const blocking = configure.blocking.filter((field) => paths.has(field.path));
+  const invalid = groups
+    .flatMap((group) => group.fields)
+    .filter((field) => field.errors.length > 0);
+  return {
+    ...configure,
+    groups,
+    blocking,
+    blockingCount: blocking.length,
+    invalid,
+    invalidCount: invalid.length,
+    satisfied: blocking.length === 0 && invalid.length === 0,
+  };
+}
+
+function wizardIdentityKind() {
+  const liveKind = effectiveContext()?.context?.kind;
+  if (liveKind === 'hosted-relay') return 'hosted';
+  if (liveKind === 'offline-python') return null;
+  const descriptor = sampleExecutionContext(state.sample.id);
+  if (descriptor.kind === 'gateway-key') return 'gateway';
+  if (isAzureCliContext(descriptor.kind)) return 'azure';
+  return null;
+}
+
+function identityStepTitle() {
+  return {
+    azure: 'Azure account & target',
+    gateway: 'Gateway connection',
+    hosted: 'Hosted execution context',
+  }[wizardIdentityKind()] ?? '';
+}
+
+function wizardSteps(models) {
+  const required = fieldsForWizardStep(models.configure, 'required-inputs');
+  const options = fieldsForWizardStep(models.configure, 'credentials-options');
+  const identityKind = wizardIdentityKind();
+  const definitions = WIZARD_STEP_DEFINITIONS
+    .filter((step) => step.id !== 'account-target' || identityKind)
+    .filter((step) => step.id !== 'required-inputs' || required.groups.length > 0)
+    .filter((step) => step.id !== 'credentials-options' || options.groups.length > 0)
+    .map((step) => step.id === 'account-target' ? { ...step, title: identityStepTitle() } : step);
+  if (!definitions.some((step) => step.id === state.wizardStep)) {
+    state.wizardStep = definitions[0].id;
+  }
+  return definitions.map((step, index) => ({
+    ...step,
+    completed: state.completedWizardSteps.has(step.id),
+    enabled:
+      step.id === state.wizardStep
+      || (state.progress?.state !== 'running' && state.completedWizardSteps.has(step.id)),
+  }));
+}
+
+function wizardDescription(stepId) {
+  if (stepId === 'account-target') {
+    return {
+      azure: 'Verify the local Azure CLI account, active subscription, intended target, and execution credential path.',
+      gateway: 'Confirm the gateway endpoint, header, and memory-only API Management key. Azure login is not used.',
+      hosted: 'Confirm the Entra requester, managed identity, target policy, and hosted relay boundary.',
+    }[wizardIdentityKind()] ?? '';
+  }
+  return {
+    'required-inputs': 'Supply only the values that block this recipe now.',
+    'credentials-options': 'Add ephemeral credentials, then review defaults, generated values, and advanced options.',
+    'review-approve': 'Make the decision from identity, target, effect, reversibility, and the exact operation.',
+    'run-result': 'Follow the attempt, cancel if needed, and inspect transcript, evidence, and artifacts.',
+  }[stepId] ?? '';
+}
+
+function updateDossierStage() {
+  state.stage =
+    state.wizardStep === 'review-approve'
+      ? 'review'
+      : state.wizardStep === 'run-result'
+        ? state.progress?.state === 'running'
+          ? 'run'
+          : 'result'
+        : 'configure';
+}
+
+function producerRecipeId(field) {
+  const normalize = (value) => String(value)
+    .replace(/\bapi management\b/gi, 'apim')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  const tail = String(field.producedBy ?? '')
+    .replace(/^Produced by\s+/i, '')
+    .replace(/\s*\(cell\s+\d+\)\.?$/i, '')
+    .split('›')
+    .at(-1)
+    ?.trim();
+  if (!tail) return null;
+  return CATALOGUE.samples.find((sample) =>
+    [sample.shortTitle, sample.title].some((label) => normalize(label) === normalize(tail)),
+  )?.id ?? null;
+}
+
+function renderWizardHeading(container, steps) {
+  const currentIndex = steps.findIndex((step) => step.id === state.wizardStep);
+  const current = steps[currentIndex] ?? steps[0];
+  container.append(
+    node('header', { class: 'wizard-heading' }, [
+      node('p', {
+        class: 'review-eyebrow',
+        text: `Step ${currentIndex + 1} of ${steps.length}`,
+      }),
+      node('h1', { id: 'wizard-step-title', tabindex: '-1', text: current.title }),
+      node('p', { class: 'wizard-step-summary', text: wizardDescription(current.id) }),
+    ]),
+  );
+}
+
+function renderWizardStepNav(container, steps) {
+  container.append(node('nav', { class: 'wizard-step-nav', 'aria-label': 'Recipe setup steps' }, [
+    node('ol', {}, steps.map((step, index) =>
+      node('li', {}, [
+        node('button', {
+          type: 'button',
+          class: 'wizard-step-link',
+          disabled: step.enabled === false,
+          'aria-current': step.id === state.wizardStep ? 'step' : undefined,
+          onclick: () => navigateWizardStep(step.id),
+        }, [
+          node('span', { class: 'wizard-step-index', text: String(index + 1) }),
+          node('span', { text: step.title }),
+        ]),
+      ]),
+    )),
+  ]));
+}
+
+function openDestructiveConfirmation(trigger, model) {
+  const approvedFingerprint = model.confirmationFingerprint;
+  state.destructiveArmed = true;
+  destructiveController.render(model, {
+    onConfirm() {
+      if (currentModels().dossier.reviewDecision.confirmationFingerprint !== approvedFingerprint) {
+        invalidateApproval({ returnToReview: true });
+        announce('The run context changed. Review the operation again before running.');
+        render();
+        return;
+      }
+      state.destructiveArmed = false;
+      startRun({ confirmed: true });
+    },
+    onCancel() {
+      state.destructiveArmed = false;
+    },
+  });
+  destructiveController.open(trigger);
+}
+
+function navigateWizardStep(stepId, { replaceHistory = false, force = false } = {}) {
+  if (state.progress?.state === 'running' && stepId !== 'run-result') {
+    announce('Cancel the active run before leaving Run & result.');
+    return false;
+  }
+  const models = currentModels();
+  const steps = wizardSteps(models);
+  const target = steps.find((step) => step.id === stepId);
+  if (!target || (!force && !target.enabled)) return false;
+  state.wizardStep = target.id;
+  updateDossierStage();
+  writeWizardUrl({ replaceHistory });
+  render();
+  requestAnimationFrame(() => {
+    const heading = document.getElementById('wizard-step-title');
+    heading?.focus?.();
+    heading?.scrollIntoView?.({ block: 'start', inline: 'nearest' });
+  });
+  return true;
+}
+
+function continueWizard(models, steps) {
+  const currentIndex = steps.findIndex((step) => step.id === state.wizardStep);
+  const current = steps[currentIndex];
+  if (!current) return;
+  if (current.id === 'review-approve') return;
+  const configure = ['account-target', 'required-inputs', 'credentials-options'].includes(current.id)
+    ? fieldsForWizardStep(models.configure, current.id)
+    : null;
+  if (configure && (configure.blockingCount > 0 || configure.invalidCount > 0)) {
+    const blockingPaths = new Set(configure.blocking.map((field) => field.path));
+    const first = configure.groups
+      .flatMap((group) => group.fields)
+      .find((field) => blockingPaths.has(field.path) || field.errors.length > 0);
+    playgroundState.markTouched(first.path);
+    render();
+    requestAnimationFrame(() => focusPath(first.path));
+    const issueCount = configure.blockingCount + configure.invalidCount;
+    announce(`${issueCount} input${issueCount === 1 ? '' : 's'} still need attention.`);
+    return;
+  }
+  state.completedWizardSteps.add(current.id);
+  const next = steps[currentIndex + 1];
+  if (next) navigateWizardStep(next.id, { force: true });
+}
+
+function rememberCurrentWizardStep() {
+  if (!state.sample || !state.wizardStep) return;
+  if (state.wizardStep === 'review-approve') {
+    state.completedWizardSteps.add(state.wizardStep);
+    return;
+  }
+  if (state.wizardStep === 'run-result') {
+    if (state.progress && state.progress.state !== 'running') {
+      state.completedWizardSteps.add(state.wizardStep);
+    }
+    return;
+  }
+  const models = currentModels();
+  if (fieldsForWizardStep(models.configure, state.wizardStep).satisfied) {
+    state.completedWizardSteps.add(state.wizardStep);
+  }
+}
+
+function renderWizardActions(container, models, steps) {
+  const currentIndex = steps.findIndex((step) => step.id === state.wizardStep);
+  const current = steps[currentIndex];
+  const running = state.progress?.state === 'running';
+  const bar = node('div', {
+    id: 'wizard-action-bar',
+    class: 'wizard-action-bar dossier-action-bar',
+    'data-dossier-action-bar': 'true',
+    'data-dossier-bottom-dock': 'true',
+  });
+  if (currentIndex > 0 && !running) {
+    bar.append(node('button', {
+      type: 'button',
+      class: 'btn wizard-back',
+      text: 'Back',
+      onclick: () => navigateWizardStep(steps[currentIndex - 1].id, { force: true }),
+    }));
+  }
+  const target = models.dossier.reviewDecision.target.actionLabel;
+  if (current.id === 'review-approve') {
+    const destructive = models.dossier.reviewDecision.risk?.level === 'destructive';
+    const acknowledgement = models.dossier.reviewDecision.acknowledgement ?? {};
+    const acknowledgementMissing =
+      !destructive && acknowledgement.required === true && acknowledgement.satisfied !== true;
+    const primary = node('button', {
+      type: 'button',
+      class: 'btn btn-primary wizard-primary',
+      disabled: models.dossier.ledger.canRun !== true || acknowledgementMissing,
+      text: `Run sample${target ? ` on ${target}` : ''}`,
+      onclick: () =>
+        destructive
+          ? openDestructiveConfirmation(primary, models.dossier.reviewDecision)
+          : startRun(),
+    });
+    bar.append(primary);
+  } else if (current.id === 'run-result') {
+    if (running) {
+      bar.append(node('button', {
+        type: 'button',
+        class: 'btn wizard-primary',
+        text: 'Cancel run',
+        onclick: cancelRun,
+      }));
+    } else {
+      const recommended = models.directory.flat.find((sample) => sample.recommendedNext);
+      bar.append(node('button', {
+        type: 'button',
+        class: 'btn btn-primary wizard-primary',
+        text: recommended ? `Next: ${recommended.title}` : 'Review this recipe',
+        onclick: () => {
+          if (recommended) selectRecipeFromUi(recommended.id);
+          else navigateWizardStep('review-approve', { force: true });
+        },
+      }));
+    }
+  } else {
+    bar.append(node('button', {
+      type: 'button',
+      class: 'btn btn-primary wizard-primary',
+      text: 'Continue',
+      onclick: () => continueWizard(models, steps),
+    }));
+  }
+  container.append(bar);
+}
+
+function render() {
+  if (!state.sample || !app) return;
+  if (hasActiveTextEntry()) {
+    state.renderPending = true;
+    return;
+  }
+  state.renderPending = false;
+  const focusId = document.activeElement?.id ?? '';
+  const models = currentModels();
+  const steps = wizardSteps(models);
+  updateDossierStage();
+  const shell = renderShell({
+    container: app,
+    model: {
+      ...shellModel(models),
+      wizard: {
+        currentStep: state.wizardStep,
+        steps,
+      },
+    },
+    onIdentity() {
+      if (state.wizardStep !== 'account-target') {
+        navigateWizardStep('account-target', { force: true });
+        requestAnimationFrame(() => focusPath('gatewayAccess.apiKey'));
+        return;
+      }
+      focusPath('gatewayAccess.apiKey');
+    },
+    onIdentityToggle: () => {},
+    onIdentitySignIn: startSystemBrowserLogin,
+    onIdentitySubscriptionChange(id) {
+      state.selectedSubscriptionId = id;
+      render();
+    },
+    onIdentityVerify: verifySystemBrowserLogin,
+    onIdentitySetActive: setActiveSubscription,
+    onIdentityCancel: cancelSystemBrowserLogin,
+    onIdentityTerminalFallback: openDiagnostics,
+    onDirectoryToggle() {
+      state.directoryOpen = !state.directoryOpen;
+      render();
+    },
+    onRecipeSelect(id) {
+      selectRecipeFromUi(id);
+    },
+    onDirectoryQuery(query) {
+      state.directoryQuery = query;
+      render();
+    },
+    onStageChange(stepId) {
+      navigateWizardStep(stepId);
+    },
+    onOpenProvenance: openProvenance,
+    onOpenDiagnostics: openDiagnostics,
+  });
+
+  const wizard = node('section', {
+    class: 'recipe-wizard',
+    'aria-labelledby': 'wizard-step-title',
+    'data-wizard-step': state.wizardStep,
+  });
+  renderWizardStepNav(wizard, steps);
+  const wizardMain = node('div', { class: 'wizard-main' });
+  renderWizardHeading(wizardMain, steps);
+  const stepHost = node('div', { class: 'wizard-step-content' });
+  wizardMain.append(stepHost);
+  wizard.append(wizardMain);
+  shell.dossier.append(wizard);
+
+  const configureCallbacks = {
+    onChange: changeInput,
+    onBlur(path) {
+      if (state.activeEditingPath === path) state.activeEditingPath = null;
+      playgroundState.markTouched(path);
+      clearTimeout(state.contextRefreshTimer);
+      state.contextRefreshTimer = setTimeout(async () => {
+        render();
+        await refreshExecutionContext();
+      }, 0);
+    },
+    onCopy: copyText,
+    onDownload: download,
+    onOpenSource: openSourceInspector,
+    onOpenProducer(field) {
+      const recipeId = producerRecipeId(field);
+      if (recipeId) selectRecipeFromUi(recipeId);
+    },
+    onFocusFirstBlocker: () => {},
+  };
+  if (state.wizardStep === 'account-target') {
+    renderConfigure(stepHost, {
+      guide: models.guide,
+      configure: fieldsForWizardStep(models.configure, 'account-target'),
+      source: models.dossier.source,
+      sourceValidation: models.dossier.sourceValidation,
+      mode: 'account-target',
+    }, configureCallbacks);
+  } else if (state.wizardStep === 'required-inputs' || state.wizardStep === 'credentials-options') {
+    renderConfigure(stepHost, {
+      guide: models.guide,
+      configure: fieldsForWizardStep(models.configure, state.wizardStep),
+      source: models.dossier.source,
+      sourceValidation: models.dossier.sourceValidation,
+      mode: state.wizardStep,
+    }, configureCallbacks);
+  } else if (state.wizardStep === 'review-approve') {
+    renderReview(stepHost, models.dossier.reviewDecision, {
+      onAcknowledge(value) {
+        playgroundState.setAcknowledged(state.sample.id, value);
+        render();
+      },
+    });
+  } else {
+    renderOutput(stepHost, models.dossier.response, {
+      activeRunId: state.activeRunId,
+      activeView: state.outputView,
+      autoFollow: state.autoFollow,
+      declaredArtifactPaths: declaredArtifactPaths(models.dossier.request),
+      authorizedArtifactPaths: authorizedArtifactPaths(state.progress),
+      secretValues: playgroundState.secretValues(),
+      azureContacted: state.progress?.meta?.azureContacted,
+      liveEvidence: state.progress?.meta?.liveEvidence,
+      stream: { partial: state.progress?.state === 'running' },
+      onViewChange(view) {
+        state.outputView = view;
+        render();
+      },
+      onAutoFollowChange(enabled) {
+        state.autoFollow = enabled;
+        render();
+      },
+      onRevealOutput({ runId }) {
+        if (state.lastRevealedRunId === runId) return;
+        state.lastRevealedRunId = runId;
+        document.getElementById('dossier-output')?.scrollIntoView({ block: 'start' });
+      },
+      onFollowTranscript({ log }) {
+        log.scrollTop = log.scrollHeight;
+      },
+    });
+  }
+  renderWizardActions(shell.dossier, models, steps);
+
+  if (state.destructiveArmed) {
+    const approvedFingerprint = models.dossier.reviewDecision.confirmationFingerprint;
+    destructiveController.render(models.dossier.reviewDecision, {
+      onConfirm() {
+        if (currentModels().dossier.reviewDecision.confirmationFingerprint !== approvedFingerprint) {
+          invalidateApproval({ returnToReview: true });
+          announce('The run context changed. Review the operation again before running.');
+          render();
+          return;
+        }
+        state.destructiveArmed = false;
+        startRun({ confirmed: true });
+      },
+      onCancel() {
+        state.destructiveArmed = false;
+      },
+    });
+  }
+
+  if (focusId) {
+    requestAnimationFrame(() => document.getElementById(focusId)?.focus({ preventScroll: true }));
+  }
+  if (sourceDialog.open) renderSourceDialog();
+}
+
+function changeInput(path, value, { commit = false } = {}) {
+  const field = fieldByPath(path);
+  playgroundState.set(path, value, field);
+  state.activeEditingPath = commit ? null : path;
+  invalidateApproval({ returnToReview: true });
+  if (commit) {
+    render();
+    clearTimeout(state.contextRefreshTimer);
+    state.contextRefreshTimer = setTimeout(refreshExecutionContext, 250);
+  }
+}
+
+async function loadSource() {
+  const requestId = ++state.sourceRequest;
+  state.sourceValidationRequest += 1;
+  state.sourceBundle = { status: 'loading' };
+  state.sourceValidation = { status: 'not-run', available: false };
+  render();
+  try {
+    const response = await fetch(`/api/source/${encodeURIComponent(state.sample.id)}`, {
+      headers: { Accept: 'application/json' },
+      credentials: 'same-origin',
+    });
+    if (!response.ok) throw new Error(`Protected source request failed with HTTP ${response.status}.`);
+    const bundle = await response.json();
+    if (requestId !== state.sourceRequest) return;
+    state.sourceBundle = { status: 'ready', payload: bundle };
+    state.sourceCellIndex = bundle.cells?.[0]?.cellIndex ?? null;
+  } catch (error) {
+    if (requestId !== state.sourceRequest) return;
+    state.sourceBundle = { status: 'error', message: safeMessage(error, 'Protected source could not be loaded.') };
+  }
+  render();
+  if (state.capabilities?.sourceValidation?.available === true) await validateSource();
+}
+
+async function validateSource() {
+  const requestId = ++state.sourceValidationRequest;
+  const sampleId = state.sample.id;
+  if (state.capabilities?.sourceValidation?.available !== true) {
+    state.sourceValidation = {
+      status: 'not-run',
+      available: false,
+      message: 'Local protected-source validation is unavailable for this browser session.',
+    };
+    render();
+    return;
+  }
+  state.sourceValidation = { status: 'loading', available: true };
+  render();
   try {
     const response = await fetch(`/api/source/${encodeURIComponent(sampleId)}/validate`, {
       method: 'POST',
-      credentials: 'same-origin',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
       body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
-      signal: controller.signal,
     });
-    if (version !== validationRequestVersion || state.selectedSampleId !== sampleId) return;
-    if (!response.ok) {
-      sourceValidationStates.set(sampleId, {
-        status: 'error',
-        message: `Offline source validation could not be completed (HTTP ${response.status}).`,
+    const result = await response.json();
+    if (!response.ok) throw new Error(result?.summary || `Protected-source validation failed with HTTP ${response.status}.`);
+    if (requestId !== state.sourceValidationRequest || state.sample.id !== sampleId) return;
+    if (result.sampleId && result.sampleId !== sampleId) {
+      throw new Error('Protected-source validation returned evidence for a different recipe.');
+    }
+    state.sourceValidation = { status: 'ready', available: true, result };
+  } catch (error) {
+    if (requestId !== state.sourceValidationRequest || state.sample.id !== sampleId) return;
+    state.sourceValidation = {
+      status: 'error',
+      available: true,
+      message: safeMessage(error, 'Protected-source validation failed.'),
+    };
+  }
+  render();
+}
+
+async function fetchCapabilities() {
+  try {
+    const response = await fetch('/api/capabilities', { credentials: 'same-origin' });
+    if (!response.ok) throw new Error(`Capability probe failed with HTTP ${response.status}.`);
+    state.capabilities = await response.json();
+    state.runtimeProbe = {
+      mode: state.capabilities.mode ?? 'preview',
+      ...probeFromCapabilityPayload(state.capabilities, CATALOGUE.byId),
+    };
+    if (state.capabilities.executor?.kind === 'local' && state.capabilities.executor.canExecute) {
+      state.executor = createLocalExecutorClient({
+        allowedSampleIds: recipeIds,
+        supportedStepTypes: state.capabilities.executor.supportedStepTypes ?? [],
+      });
+    } else if (state.capabilities.executor?.kind === 'relay' && state.capabilities.executor.canExecute) {
+      state.executor = createRelayExecutor({
+        allowedSampleIds: state.capabilities.executor.allowedSampleIds ?? [],
+        endpoint: state.capabilities.executor.endpoint ?? '/api/execute',
+        supportedStepTypes: state.capabilities.executor.supportedStepTypes ?? ['http'],
       });
     } else {
-      const result = await response.json();
-      if (version !== validationRequestVersion || state.selectedSampleId !== sampleId) return;
-      sourceValidationStates.set(sampleId, { status: 'ready', result });
+      state.executor = createUnavailableExecutor({ reason: state.capabilities.executor?.reason });
     }
+    state.executorCapability = state.executor.describeCapability();
   } catch (error) {
-    if (error?.name === 'AbortError' || version !== validationRequestVersion || state.selectedSampleId !== sampleId) return;
-    sourceValidationStates.set(sampleId, {
-      status: 'error',
-      message: 'Offline source validation could not reach the playground server.',
-    });
-  }
-  if (version !== validationRequestVersion || state.selectedSampleId !== sampleId) return;
-  validationRequest = null;
-  render();
-  const outcome = sourceValidationStates.get(sampleId);
-  announce(outcome.status === 'ready' ? 'Offline source validation finished.' : outcome.message);
-}
-
-function openParameterField(path) {
-  state.setActiveTab('code');
-  requestAnimationFrame(() => document.getElementById(`f-${path.replace(/[^a-zA-Z0-9-]/g, '-')}`)?.focus());
-}
-
-function openReview() {
-  state.setActiveTab('request');
-  requestAnimationFrame(() => document.getElementById('tab-request')?.focus());
-}
-
-function toggleSourceWrap() {
-  sourceWrap = !sourceWrap;
-  render();
-}
-
-function toggleDirectory() {
-  const collapsed = document.querySelector('.shell')?.dataset.directoryCollapsed === 'true';
-  const next = !collapsed;
-  document.querySelector('.shell').dataset.directoryCollapsed = String(next);
-  nodes.directoryToggle.textContent = next ? 'Recipes' : 'Hide';
-  nodes.directoryToggle.setAttribute('aria-label', next ? 'Expand recipe navigator' : 'Collapse recipe navigator');
-  nodes.directoryToggle.setAttribute('aria-expanded', String(!next));
-}
-
-function setParameter(path, value) {
-  const field = fieldByPath(path);
-  secretInputInProgress = field?.classification === 'secret';
-  try {
-    state.set(path, value, field);
-  } finally {
-    secretInputInProgress = false;
+    state.capabilities = {
+      executor: {
+        id: 'unavailable',
+        kind: 'unavailable',
+        canExecute: false,
+        supportedStepTypes: [],
+        reason: safeMessage(error, 'Execution capability is unavailable.'),
+      },
+      executionContext: { available: false, endpoint: null, login: { available: false } },
+      sourceValidation: { available: false, endpoint: null },
+      selfTest: { available: false, endpoint: null },
+      sessionAuth: { required: true, state: 'unclaimed', claimEndpoint: null, message: 'Secure browser session unavailable.' },
+    };
+    state.runtimeProbe = { mode: 'preview' };
+    state.executor = createUnavailableExecutor({ reason: state.capabilities.executor.reason });
+    state.executorCapability = state.executor.describeCapability();
   }
 }
 
-function commitParameter(path) {
-  if (fieldByPath(path)?.classification === 'secret') {
-    scheduleExecutionContext();
+async function refreshExecutionContext() {
+  if (state.testExecutor) {
     render();
     return;
   }
-  state.markTouched(path);
+  const priorFingerprint = state.contextFingerprint;
+  const requestId = ++state.contextRequest;
+  state.executionContext = {
+    status: 'loading',
+    message: 'Checking execution identity.',
+  };
+  render();
+  const request = buildExecutionContextProjection({
+    sample: state.sample,
+    read: (path) => playgroundState.read(path),
+    hasSecret: (path) => playgroundState.hasSecret(path),
+  });
+  let response;
+  if (state.capabilities?.executionContext?.endpoint) {
+    try {
+      response = { status: 'ready', context: await executionContextClient.getContext(request) };
+    } catch (error) {
+      response = {
+        status: 'unavailable',
+        message: safeMessage(error, 'Execution identity could not be checked.'),
+      };
+    }
+  } else {
+    response = {
+      status: 'unavailable',
+      message: state.capabilities?.executor?.reason || 'Execution identity is unavailable for this browser session.',
+    };
+  }
+  if (requestId !== state.contextRequest) return;
+  state.executionContext = response;
+  if (priorFingerprint !== state.contextFingerprint) return;
+  updateContextFingerprint(response);
+  const activeId = response?.context?.subscription?.id;
+  if (activeId && !state.selectedSubscriptionId) state.selectedSubscriptionId = activeId;
+  if (state.accountUi && !ACCOUNT_BUSY_STATES.has(response?.context?.systemBrowserAzureLogin?.state)) {
+    state.accountUi = null;
+  }
+  render();
 }
 
-/* ------------------------------------------------------------ self-test */
-
-/**
- * A fixed, local demonstration of this checkout: no Azure credential, no
- * network call, and — because `azureContacted`/`liveEvidence` are always
- * `false` — a result that can never be read as live evidence. This state is
- * intentionally separate from `results` (which holds real recipe runs) so
- * the two can never be confused in the UI.
- */
-let selfTest = { state: 'idle' };
-
-const SELF_TEST_CHIP = {
-  idle: ['Not run', 'neutral'],
-  running: ['Running…', 'neutral'],
-  passed: ['Passed — offline only', 'success'],
-  failed: ['Failed — offline only', 'danger'],
-  blocked: ['Blocked', 'warning'],
-  error: ['Error', 'danger'],
-};
-
-function renderSelfTest() {
-  const [label, tone] = SELF_TEST_CHIP[selfTest.state] ?? SELF_TEST_CHIP.idle;
-  replace(nodes.selfTestStatus, [chip(label, tone)]);
-  nodes.selfTestRun.disabled = !selfTestAvailable || selfTest.state === 'running';
-  nodes.selfTestSummary.textContent = selfTest.summary ?? '';
-  replace(
-    nodes.selfTestChecks,
-    (selfTest.checks ?? []).map((check) =>
-      el('li', { class: 'mh-selftest-check' }, [
-        el('div', { class: 'mh-selftest-check-head' }, [
-          chip(check.passed ? 'Pass' : 'Fail', check.passed ? 'success' : 'danger'),
-          el('span', { class: 'mh-selftest-check-label', text: check.label }),
-        ]),
-        el('div', { class: 'mh-selftest-check-detail', text: check.detail }),
-      ]),
-    ),
-  );
-}
-
-/**
- * Run the offline self-test through the real `/api/self-test` route. This is
- * never faked and never uses the browser smoke driver's test-hook seam: the
- * whole point is that it is safe to run for real, always, with zero setup.
- */
-async function runSelfTestCheck() {
-  if (selfTest.state === 'running') return;
-  if (!selfTestAvailable) {
-    announce(localSessionAuth.message || 'Open the secure launch URL shown in the terminal.');
+async function runDiagnostics() {
+  if (state.capabilities?.selfTest?.available !== true) {
+    state.selfTests = null;
     return;
   }
-  selfTest = { state: 'running' };
-  renderSelfTest();
   try {
-    const response = await fetch('/api/self-test', {
+    const response = await fetch(state.capabilities.selfTest.endpoint ?? '/api/self-test', {
       method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ protocolVersion: EXECUTION_PROTOCOL_VERSION }),
     });
     const payload = await response.json();
-    selfTest = {
-      state: response.ok ? payload.state : (payload.state ?? 'error'),
-      summary: payload.summary ?? '',
-      checks: payload.checks ?? [],
+    if (!response.ok) throw new Error(payload?.summary || `Offline diagnostics failed with HTTP ${response.status}.`);
+    state.selfTests = payload;
+  } catch (error) {
+    state.selfTests = {
+      ok: false,
+      checks: [{ name: safeMessage(error, 'Offline diagnostics failed.'), ok: false }],
+    };
+  }
+  render();
+}
+
+async function selectSample(id) {
+  const sample = sampleById.get(id) ?? sampleById.get(recipeIds[0]);
+  if (state.sample?.id !== sample.id) rememberCurrentWizardStep();
+  state.sample = sample;
+  playgroundState.selectSample(sample.id);
+  playgroundState.setAcknowledged(sample.id, false);
+  playgroundState.markInputsHandled();
+  state.progress = null;
+  state.activeRunId = null;
+  state.activeRunToken = null;
+  state.contextFingerprint = null;
+  state.directoryQuery = '';
+  state.accountUi = null;
+  state.selectedSubscriptionId = '';
+  state.destructiveArmed = false;
+  state.lastRevealedRunId = null;
+  state.wizardStep = 'account-target';
+  state.completedWizardSteps =
+    state.completedWizardStepsByRecipe.get(sample.id) ?? new Set();
+  state.completedWizardSteps.delete('run-result');
+  state.completedWizardStepsByRecipe.set(sample.id, state.completedWizardSteps);
+  updateDossierStage();
+  if (window.innerWidth < 1200) state.directoryOpen = false;
+  render();
+  await Promise.allSettled([loadSource(), refreshExecutionContext()]);
+}
+
+async function startSystemBrowserLogin() {
+  const models = currentModels();
+  const control = models.dossier.identity.accountControl;
+  if (!control.canLaunch || control.launchMode !== 'system-browser') return;
+  invalidateApproval({ returnToReview: true });
+  state.accountUi = {
+    state: 'starting',
+    message: control.accounts?.length ? 'Opening Microsoft account switching in the system browser.' : 'Opening Microsoft sign-in in the system browser.',
+  };
+  render();
+  try {
+    const response = await executionContextClient.startSystemBrowserLogin({
+      switchAccount: Boolean(control.accounts?.length),
+    });
+    state.accountUi = {
+      state: response.state || 'waiting-system-ui',
+      message: response.message || 'Complete sign-in in the trusted system window, then verify here.',
+    };
+    render();
+    if (response.state === 'ready') await refreshExecutionContext();
+  } catch (error) {
+    state.accountUi = { state: 'failed', message: safeMessage(error, 'Microsoft sign-in could not be started.') };
+    render();
+  }
+}
+
+async function verifySystemBrowserLogin() {
+  invalidateApproval({ returnToReview: true });
+  state.accountUi = { state: 'verifying', message: 'Verifying the Azure account and subscription.' };
+  render();
+  try {
+    const response = await executionContextClient.verifySystemBrowserLogin();
+    state.accountUi = {
+      state: response.state || 'status-unknown',
+      message: response.message || 'Azure account status was refreshed.',
+    };
+    await refreshExecutionContext();
+  } catch (error) {
+    state.accountUi = { state: 'failed', message: safeMessage(error, 'Azure account verification failed.') };
+    render();
+  }
+}
+
+async function cancelSystemBrowserLogin() {
+  invalidateApproval({ returnToReview: true });
+  try {
+    const response = await executionContextClient.cancelSystemBrowserLogin();
+    state.accountUi = {
+      state: response.state || 'cancelled',
+      message: response.message || 'Microsoft sign-in was cancelled.',
     };
   } catch (error) {
-    selfTest = { state: 'error', summary: `The self-test request failed: ${error.message}`, checks: [] };
+    state.accountUi = { state: 'failed', message: safeMessage(error, 'Sign-in cancellation failed.') };
   }
-  renderSelfTest();
-  announce(`Offline self-test ${selfTest.state}. ${selfTest.summary ?? ''}`);
+  render();
 }
 
-/* ---------------------------------------------------------------- tabs */
-
-function renderTabs(model) {
-  replace(
-    nodes.tablist,
-    model.tabs.map((tab) =>
-      el(
-        'button',
-        {
-          type: 'button',
-          class: 'tab',
-          role: 'tab',
-          id: `tab-${tab.id}`,
-          'aria-selected': tab.id === model.activeTab ? 'true' : 'false',
-          'aria-controls': `panel-${tab.id}`,
-          tabindex: tab.id === model.activeTab ? '0' : '-1',
-          onclick: () => state.setActiveTab(tab.id),
-          onkeydown: onTabKeydown,
-        },
-        [
-          tab.label,
-          tab.id === 'code' && tab.count > 0 ? chip(String(tab.count), 'warning', { mono: true }) : null,
-          tab.id === 'response' && tab.state !== 'not-run' ? chip(tab.state, 'neutral', { mono: true }) : null,
-        ],
-      ),
-    ),
-  );
-  for (const id of TABS) {
-    nodes.panels[id].hidden = id !== model.activeTab;
-  }
-}
-
-function onTabKeydown(event) {
-  // Roving tabindex with automatic activation: move relative to the tab the
-  // key was pressed on, not to whatever happens to be active in the model.
-  const fromId = event.currentTarget?.id?.replace(/^tab-/, '');
-  const index = TABS.indexOf(fromId);
-  if (index < 0) return;
-  let next = null;
-  if (event.key === 'ArrowRight') next = TABS[(index + 1) % TABS.length];
-  else if (event.key === 'ArrowLeft') next = TABS[(index - 1 + TABS.length) % TABS.length];
-  else if (event.key === 'Home') next = TABS[0];
-  else if (event.key === 'End') next = TABS[TABS.length - 1];
-  if (!next) return;
-  event.preventDefault();
-  state.setActiveTab(next);
-  document.getElementById(`tab-${next}`)?.focus();
-}
-
-/* ------------------------------------------------------------ actions */
-
-async function copyText(text) {
-  // Neither the plan nor the configuration document holds a secret value, and
-  // this re-checks before the clipboard ever sees the string.
+async function setActiveSubscription(subscriptionId) {
+  if (!subscriptionId) return;
+  invalidateApproval({ returnToReview: true });
+  state.accountUi = { state: 'verifying', message: 'Changing and verifying the shared Azure CLI default subscription.' };
+  render();
   try {
-    assertNoSecretValues(text, state.secretValues(), 'Copied text');
-  } catch {
-    announce('Copy refused: the text contained a credential.');
-    return;
-  }
-  try {
-    await navigator.clipboard.writeText(text);
-    announce('Copied. Credentials are placeholders, not values.');
-  } catch {
-    announce('Copy failed. Select the text and copy it manually.');
+    const response = await executionContextClient.setActiveSubscription(subscriptionId);
+    state.selectedSubscriptionId = subscriptionId;
+    state.accountUi = {
+      state: response.state || 'verifying',
+      message: response.message || 'The Azure CLI default subscription was changed; verifying the execution context.',
+    };
+    await refreshExecutionContext();
+  } catch (error) {
+    state.accountUi = { state: 'failed', message: safeMessage(error, 'The Azure CLI default subscription could not be changed.') };
+    render();
   }
 }
 
-function downloadText(fileName, text, mimeType) {
-  try {
-    assertNoSecretValues(text, state.secretValues(), 'Downloaded file');
-  } catch {
-    announce('Download refused: the file contained a credential.');
-    return;
-  }
-  const blob = new Blob([text], { type: `${mimeType}; charset=utf-8` });
-  const url = URL.createObjectURL(blob);
-  const anchor = el('a', { href: url, download: fileName });
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
-  announce(`${fileName} downloaded. It carries placeholders, never a credential.`);
-}
-
-/** The catalogue-shaped public inputs for one sample. Never a secret. */
 function publicInputsFor(sample) {
   const inputs = {};
   for (const entry of sample.configurationEntries) {
     if (entry.secret) continue;
-    const value = state.read(entry.path);
+    const value = playgroundState.read(entry.path);
     if (value !== undefined) inputs[entry.path] = value;
   }
   return inputs;
 }
 
-/** The transient secrets this sample declares, and only those. */
 function secretsFor(sample) {
   const secrets = {};
   for (const entry of sample.configurationEntries) {
     if (!entry.secret) continue;
-    const value = state.read(entry.path);
+    const value = playgroundState.read(entry.path);
     if (typeof value === 'string' && value.length > 0) secrets[entry.path] = value;
   }
   return secrets;
 }
 
-async function runSelected() {
-  const sample = getSample(state.selectedSampleId);
-  const identity = buildExecutionIdentityModel({ contextState: executionContextState, loginState: azureLoginState });
-  if (!executionIdentityIsCurrent(sample, identity)) {
-    announce(`Not run: ${identity.summary}`);
-    render();
-    return;
-  }
-  const acknowledged = state.isAcknowledged(sample.id);
-  const { plan, validation } = buildSamplePlan(sample, (path) => state.read(path));
-  if (!plan) {
-    announce('Not run: required values are missing.');
-    render();
-    return;
-  }
-  running = true;
-  runningSampleId = sample.id;
-  results.set(
-    sample.id,
-    createRunProgress({
-      sampleId: sample.id,
-      mode: runtimeProbe.mode,
-      executorKind: capability.kind,
-    }),
-  );
-  state.setActiveTab('response');
-  announce(`Running ${sample.title}…`);
-  const result = await runPlan(executor, plan, {
-    sampleId: sample.id,
-    inputs: publicInputsFor(sample),
-    secrets: secretsFor(sample),
-    acknowledgement: acknowledgementFor(sample, acknowledged),
-    acknowledgementPayload: acknowledged ? { accepted: true, sampleId: sample.id } : null,
-    validation,
-    onProgress: (event) => applyRunProgress(sample, event),
-  });
-  // Consent is per run, so it is spent whether or not the run got anywhere.
-  state.consumeAcknowledgement(sample.id);
-  applyUpdates(result);
-  const progress = reduceRunProgress(results.get(sample.id), { type: 'result', result });
-  const displayedResult = Object.freeze({
-    ...result,
-    meta: Object.freeze({
-      ...(result.meta ?? {}),
-      runId: result.meta?.runId ?? progress.meta.runId,
-      workspace: result.meta?.workspace ?? progress.meta.workspace,
-      evidenceClass: progress.meta.evidenceClass,
-    }),
-  });
-  results.set(sample.id, displayedResult);
-  running = false;
-  runningSampleId = null;
-  render();
-  announce(`${sample.title}: ${result.summary}`);
-}
-
-function applyRunProgress(sample, event) {
+function applyRunProgress(runToken, sampleId, event) {
+  if (state.activeRunToken !== runToken) return;
   if (!event || typeof event !== 'object') return;
+  const eventSampleId = event.sampleId ?? event.result?.sampleId;
+  const eventRunId = event.runId ?? event.result?.meta?.runId;
+  if (eventSampleId && eventSampleId !== sampleId) {
+    announce('A progress update was hidden because it belonged to a different recipe.');
+    return;
+  }
+  if (state.activeRunId && eventRunId && eventRunId !== state.activeRunId) {
+    announce('A progress update was hidden because it belonged to a different run.');
+    return;
+  }
   try {
-    assertNoSecretValues(event, state.secretValues(), 'Execution progress');
+    assertNoSecretValues(event, playgroundState.secretValues(), 'Execution progress');
   } catch {
     announce('A progress update was hidden because it contained a credential.');
     return;
   }
-  const current =
-    results.get(sample.id) ??
-    createRunProgress({
-      sampleId: sample.id,
-      mode: runtimeProbe.mode,
-      executorKind: capability.kind,
-    });
-  const next = reduceRunProgress(current, event);
-  results.set(sample.id, next);
+  state.progress = reduceRunProgress(
+    state.progress
+      ?? createRunProgress({
+        sampleId,
+        mode: state.runtimeProbe.mode,
+        executorKind: effectiveExecutorCapability().kind,
+      }),
+    event,
+  );
+  state.activeRunId = state.progress.meta?.runId ?? state.activeRunId;
   render();
 }
 
-/**
- * Apply what the run discovered.
- *
- * Public values fill in the generated fields later recipes need. A returned
- * credential goes straight into the in-memory secret store and is never
- * rendered, persisted, or logged.
- */
 function applyUpdates(result) {
   for (const [path, value] of Object.entries(result.configurationUpdates ?? {})) {
-    if (fieldByPath(path)) state.set(path, value, fieldByPath(path));
+    const field = fieldByPath(path);
+    if (field) playgroundState.set(path, value, field);
   }
   for (const [path, value] of Object.entries(result.secretUpdates ?? {})) {
-    if (fieldByPath(path)) state.set(path, value, fieldByPath(path));
+    const field = fieldByPath(path);
+    if (field) playgroundState.set(path, value, field);
+  }
+}
+
+function hasCurrentSecret(path) {
+  if (playgroundState.hasSecret(path)) return true;
+  return (
+    path === 'gatewayAccess.apiKey'
+    && effectiveContext()?.status === 'ready'
+    && effectiveContext()?.context?.kind === 'hosted-relay'
+    && effectiveContext()?.context?.canExecute === true
+  );
+}
+
+function readCurrentValue(path) {
+  return hasCurrentSecret(path) && !playgroundState.hasSecret(path)
+    ? SERVER_RESOLVED_CREDENTIAL
+    : playgroundState.read(path);
+}
+
+async function startRun({ confirmed = false } = {}) {
+  const models = currentModels();
+  const { ledger, reviewDecision } = models.dossier;
+  if (state.progress?.state === 'running') return;
+  if (reviewDecision.risk?.level === 'destructive' && !confirmed) return;
+  if (confirmed) playgroundState.setAcknowledged(state.sample.id, true);
+  const acknowledged = playgroundState.isAcknowledged(state.sample.id);
+  const runSample = state.sample;
+  const acknowledgement = acknowledgementFor(runSample, acknowledged);
+  if (acknowledgement.required && !acknowledgement.satisfied) {
+    announce('Acknowledge the effect before running this recipe.');
+    return;
+  }
+  const runToken = ++state.runGeneration;
+  const runInputs = publicInputsFor(runSample);
+  const runSecrets = secretsFor(runSample);
+  const { plan, validation } = buildSamplePlan(runSample, readCurrentValue);
+  if (!plan || !ledger.canRun) return;
+  state.completedWizardSteps.add('review-approve');
+  state.wizardStep = 'run-result';
+  state.stage = 'run';
+  state.progress = createRunProgress({
+    sampleId: runSample.id,
+    mode: state.runtimeProbe.mode,
+    executorKind: effectiveExecutorCapability().kind,
+  });
+  state.activeRunId = null;
+  state.activeRunToken = runToken;
+  state.outputView = 'transcript';
+  state.cancelling = false;
+  playgroundState.markInputsHandled();
+  state.destructiveArmed = false;
+  writeWizardUrl();
+  render();
+  document.getElementById('dossier-output')?.scrollIntoView({ block: 'start' });
+  announce(`Running ${runSample.shortTitle}.`);
+  try {
+    const result = await runPlan(state.executor, plan, {
+      sampleId: runSample.id,
+      inputs: runInputs,
+      secrets: runSecrets,
+      acknowledgement,
+      acknowledgementPayload: acknowledged ? { accepted: true, sampleId: runSample.id } : null,
+      validation,
+      onProgress: (event) => applyRunProgress(runToken, runSample.id, event),
+    });
+    if (state.activeRunToken !== runToken) return;
+    if (result.sampleId && result.sampleId !== runSample.id) {
+      throw new Error('The runner returned a result for a different recipe.');
+    }
+    if (state.activeRunId && result.meta?.runId && result.meta.runId !== state.activeRunId) {
+      throw new Error('The runner returned a result for a different run.');
+    }
+    playgroundState.consumeAcknowledgement(runSample.id);
+    applyUpdates(result);
+    const progress = reduceRunProgress(state.progress, { type: 'result', result });
+    state.activeRunId = result.meta?.runId ?? progress.meta?.runId ?? state.activeRunId;
+    state.progress = {
+      ...result,
+      meta: {
+        ...(result.meta ?? {}),
+        runId: state.activeRunId,
+        workspace: result.meta?.workspace ?? progress.meta?.workspace,
+        evidenceClass: progress.meta?.evidenceClass,
+      },
+    };
+    state.stage = 'result';
+    state.completedWizardSteps.add('run-result');
+    writeWizardUrl({ replaceHistory: true });
+    announce(state.progress?.summary || `${runSample.shortTitle} completed.`);
+  } catch (error) {
+    if (state.activeRunToken !== runToken) return;
+    playgroundState.consumeAcknowledgement(runSample.id);
+    state.progress = {
+      state: 'failed',
+      sampleId: runSample.id,
+      summary: 'The run could not complete.',
+      detail: safeMessage(error, 'The runner returned an unknown failure.'),
+      steps: state.progress?.steps ?? [],
+      assertions: [],
+      configurationUpdates: {},
+      secretUpdates: {},
+      meta: { runId: state.activeRunId },
+    };
+    state.stage = 'result';
+    state.completedWizardSteps.add('run-result');
+    writeWizardUrl({ replaceHistory: true });
+    announce('The run failed. Review the result evidence.');
+  } finally {
+    if (state.activeRunToken === runToken) state.activeRunToken = null;
+    state.cancelling = false;
+    render();
   }
 }
 
 async function cancelRun() {
-  if (!running) return;
-  announce('Cancelling…');
-  await executor.cancel?.();
-}
-
-/* ------------------------------------------------------------- render */
-
-function render() {
-  const focusedId = document.activeElement?.id ?? '';
-  const focusedParameter = document.activeElement?.closest?.('[data-parameter-path]')?.dataset.parameterPath;
-  const activeControl = focusedId ? document.activeElement : null;
-  const activeSecretValue = activeControl?.type === 'password' ? activeControl.value : null;
-  const selection =
-    activeControl && typeof activeControl.selectionStart === 'number'
-      ? { start: activeControl.selectionStart, end: activeControl.selectionEnd }
-      : null;
-  const priorPane = document.getElementById('code-parameters');
-  const paneState = priorPane ? { open: priorPane.open, scrollTop: priorPane.scrollTop } : null;
-  const disclosureState = new Map(
-    [...document.querySelectorAll('#panel-code details[data-disclosure-key]')].map((details) => [
-      details.dataset.disclosureKey,
-      details.open,
-    ]),
-  );
-
-  const directory = buildDirectoryModel({
-    query: state.directoryQuery,
-    selectedSampleId: state.selectedSampleId,
-  });
-  renderDirectory({
-    container: nodes.directoryGroups,
-    countNode: nodes.directoryCount,
-    model: directory,
-    onSelect: (id) => state.selectSample(id),
-  });
-  renderSampleSelect({
-    select: nodes.sampleSelect,
-    model: buildDirectoryModel({ selectedSampleId: state.selectedSampleId }),
-    selectedId: state.selectedSampleId,
-    onSelect: (id) => state.selectSample(id),
-  });
-
-  const sample = getSample(state.selectedSampleId);
-  const executionIdentity = buildExecutionIdentityModel({
-    contextState: executionContextState,
-    loginState: azureLoginState,
-  });
-  const identityCurrent = executionIdentityIsCurrent(sample, executionIdentity);
-  const model = buildWorkbenchModel({
-    sample,
-    read: (path) => state.read(path),
-    hasSecret: (path) => state.hasSecret(path),
-    isTouched: (path) => state.isTouched(path),
-    secrets: {},
-    activeTab: state.activeTab,
-    acknowledged: state.isAcknowledged(sample.id),
-    result: results.get(sample.id) ?? null,
-    running: running && runningSampleId === sample.id,
-    runId: results.get(sample.id)?.meta?.runId ?? null,
-    capability,
-    runtimeProbe,
-    sourceState: sourceStates.get(sample.id) ?? { status: 'loading' },
-    sourceValidationState: {
-      ...(sourceValidationStates.get(sample.id) ?? { status: 'not-run' }),
-      available: sourceValidationAvailable,
-    },
-  });
-
-  nodes.title.textContent = model.sample.title;
-  nodes.summary.textContent = model.sample.summary;
-  replace(nodes.meta, [
-    chip(model.sample.groupTitle, 'neutral'),
-    chip(model.sample.risk.badge.label, model.sample.risk.badge.tone),
-    chip(`cell ${model.sample.sourceCells.join(', ')}`, 'cloud', { mono: true }),
-  ]);
-
-  renderTabs(model);
-  renderGuide(nodes.panels.guide, model.guide);
-  renderSource(nodes.panels.code, model.source, model.sourceValidation, model.configure, executionIdentity, {
-    onRetry: () => loadProtectedSource(sample.id),
-    onConfigure: openParameterField,
-    onValidate: validateProtectedSource,
-    onChange: setParameter,
-    onBlur: commitParameter,
-    onCopy: copyText,
-    onDownload: downloadText,
-    onReview: openReview,
-    onRefreshIdentity: refreshExecutionContext,
-    onSignIn: startAzureLogin,
-    onCancelLogin: cancelAzureLogin,
-    onCopyCode: copyDeviceCode,
-    wrapSource: sourceWrap,
-    onToggleWrap: toggleSourceWrap,
-  });
-  renderRequest(nodes.panels.request, model.request, {
-    onCopy: copyText,
-    canRun:
-      model.canRun &&
-      identityCurrent &&
-      !running,
-    runBlockedReason:
-      !identityCurrent
-        ? executionIdentity.summary
-        : model.runBlockedReason,
-    acknowledged: state.isAcknowledged(sample.id),
-    onAcknowledge: (checked) => state.setAcknowledged(sample.id, checked),
-    onRun: runSelected,
-    onCancel: cancelRun,
-    running,
-    runtime: model.runtime,
-    environment: model.environment,
-  });
-  renderResponse(nodes.panels.response, model.response);
-
-  const nextPane = document.getElementById('code-parameters');
-  if (nextPane && paneState) {
-    nextPane.open = paneState.open;
-    nextPane.scrollTop = paneState.scrollTop;
-  }
-  for (const details of document.querySelectorAll('#panel-code details[data-disclosure-key]')) {
-    if (disclosureState.has(details.dataset.disclosureKey)) {
-      details.open = disclosureState.get(details.dataset.disclosureKey);
-    }
-  }
-  const nextFocused =
-    (focusedId && document.getElementById(focusedId)) ||
-    (focusedParameter && document.getElementById(`f-${focusedParameter.replace(/[^a-zA-Z0-9-]/g, '-')}`));
-  if (nextFocused) {
-    if (activeSecretValue !== null && nextFocused.type === 'password') {
-      nextFocused.value = activeSecretValue;
-    }
-    nextFocused.focus({ preventScroll: true });
-    if (selection && typeof nextFocused.setSelectionRange === 'function') {
-      nextFocused.setSelectionRange(selection.start, selection.end);
-    }
-  }
-}
-
-/* ---------------------------------------------------------------- boot */
-nodes.sourceFile.textContent = CATALOGUE.sourceNotebook.fileName;
-nodes.sourceHash.textContent = `sha256 ${CATALOGUE.sourceNotebook.sha256}`;
-nodes.directorySearch.addEventListener('input', (event) => state.setDirectoryQuery(event.target.value));
-nodes.directoryToggle.addEventListener('click', toggleDirectory);
-nodes.selfTestRun.addEventListener('click', runSelfTestCheck);
-
-state.subscribe((reason) => {
-  if (reason === 'selection' && validationRequest) {
-    const abortedSampleId = validationRequest.sampleId;
-    validationRequest.controller.abort();
-    validationRequest = null;
-    validationRequestVersion += 1;
-    sourceValidationStates.set(abortedSampleId, { status: 'not-run' });
-  }
-  if (reason === 'value' && secretInputInProgress) return;
-  if (reason === 'value') scheduleExecutionContext();
+  if (state.progress?.state !== 'running' || state.cancelling) return;
+  state.cancelling = true;
   render();
-  if (reason === 'selection') {
-    sourceRequest?.controller.abort();
-    announce(`${getSample(state.selectedSampleId).title} selected.`);
-    loadProtectedSource(state.selectedSampleId);
-    if (executionContextAvailable && !testExecutionContextOverride) loadExecutionContext(state.selectedSampleId);
+  try {
+    if (typeof state.executor.cancel !== 'function') {
+      throw new Error('This runner did not advertise cancellation.');
+    }
+    await state.executor.cancel();
+  } catch (error) {
+    state.cancelling = false;
+    announce(safeMessage(error, 'The run could not be cancelled.'));
+    render();
   }
-});
+}
 
-renderCapability();
-renderSelfTest();
-render();
-loadProtectedSource(state.selectedSampleId);
-void (async () => {
-  await claimLocalSession();
-  await probeCapability();
-})();
-
-/*
- * A seam for the browser smoke driver.
- *
- * Real execution needs a live Azure environment, which the test suite must
- * never touch, so the driver installs a fake executor instead. The seam exists
- * only when the page is opened from loopback WITH an explicit `?testExecutor`
- * flag, so a normal session — and any deployed copy — never has it. A "fake
- * success" is therefore not reachable in production.
- */
-if (TEST_EXECUTOR_ENABLED) {
+function installTestHooks() {
+  if (!isTestExecutorAllowed()) return;
   globalThis.__citadelTestHooks = Object.freeze({
-    installExecutor(fake) {
-      executor = fake;
-      capability = fake.describeCapability();
-      capabilitySummary = {
-        label: 'Local execution ready (test executor)',
-        detail: 'A test executor is installed for this page only. Nothing reaches Azure.',
-      };
-      runtimeProbe = {
-        mode: 'execute',
-        azureCli: { available: true, version: 'test' },
-        python: { available: true, version: 'test', modules: {} },
-        accelerator: { available: true, files: 1 },
-      };
-      clearTimeout(executionContextTimer);
-      testExecutionContextOverride = true;
-      executionContextRequestVersion += 1;
-      executionContextState = {
+    installExecutor(executor) {
+      if (!executor || typeof executor.execute !== 'function') {
+        throw new TypeError('A loopback dossier test executor must define execute().');
+      }
+      state.testExecutor = executor;
+      state.executor = executor;
+      state.executorCapability = executor.describeCapability();
+      state.testContext = {
         status: 'ready',
         context: {
           kind: 'azure-cli',
           label: 'Loopback test identity',
-          summary: 'A loopback-only test identity is attached. It cannot contact Azure.',
           state: 'ready',
           code: 'test-only',
           canExecute: true,
-          authority: { type: 'test', principalName: 'Loopback test executor', principalType: 'test', tenantId: '' },
-          subscription: null,
+          summary: 'Loopback acceptance identity',
+          authority: {
+            type: 'test',
+            principalName: 'acceptance@example.test',
+            principalType: 'test',
+            tenantId: 'acceptance-tenant',
+          },
+          subscription: {
+            activeId: TEST_SUBSCRIPTION_ID,
+            activeName: 'Acceptance subscription',
+            configuredId: TEST_SUBSCRIPTION_ID,
+            matches: true,
+          },
           gateway: null,
           hostedRelay: null,
           guarantees: ['Available only on loopback with the explicit test flag.'],
-          futureHostedProcess: null,
         },
       };
-      renderCapability();
+      updateContextFingerprint(state.testContext);
       render();
     },
-    setValue: (path, value) => state.set(path, value, fieldByPath(path)),
-    setExecutionContext(context) {
-      clearTimeout(executionContextTimer);
-      testExecutionContextOverride = true;
-      executionContextRequestVersion += 1;
-      executionContextState = { status: 'ready', context };
+    installContext(context, status = 'ready') {
+      state.testContext =
+        status === 'ready'
+          ? {
+              status: 'ready',
+              context: {
+                ...context,
+                canExecute: context?.canExecute === true,
+              },
+            }
+          : {
+              status,
+              message: 'The test execution context is unavailable.',
+            };
+      updateContextFingerprint(state.testContext);
       render();
     },
-    setAdvertisedExecutionContext(context) {
-      clearTimeout(executionContextTimer);
-      testExecutionContextOverride = false;
-      executionContextAvailable = true;
-      executionContextRequestVersion += 1;
-      executionContextState = {
-        status: 'ready',
-        context,
-        fingerprint: executionContextFingerprint(getSample(state.selectedSampleId)),
-      };
-      render();
+    setValue(path, value) {
+      changeInput(path, value, { commit: true });
     },
-    setAzureLogin(login) {
-      azureLoginState = { status: 'ready', login };
-      render();
+    selectRecipe(id) {
+      return selectRecipeFromUi(id);
     },
-    startAzureLogin,
-    cancelAzureLogin,
-    refreshExecutionContext,
-    validateProtectedSource,
-    isRunning: () => running,
+    snapshot() {
+      return currentModels().dossier;
+    },
   });
 }
+
+async function boot() {
+  try {
+    const capability = consumeBootstrapCapability();
+    if (capability) {
+      const claim = await claimBrowserSession({
+        descriptor: {
+          required: true,
+          state: 'unclaimed',
+          claimEndpoint: '/api/session/claim',
+        },
+        capability,
+      });
+      if (!claim.claimed) throw new Error('The secure browser capability was rejected or expired.');
+    }
+  } catch (error) {
+    state.sessionClaimError = safeMessage(error, 'The secure browser capability could not be claimed.');
+  }
+  await fetchCapabilities();
+  const initial = readWizardUrl();
+  await selectSample(initial.recipeId);
+  state.wizardStep = initial.stepId;
+  wizardSteps(currentModels());
+  updateDossierStage();
+  writeWizardUrl({ replaceHistory: true });
+  appReady = true;
+  installTestHooks();
+  await runDiagnostics();
+  render();
+}
+
+window.addEventListener('popstate', async () => {
+  if (!appReady) return;
+  const next = readWizardUrl();
+  if (state.progress?.state === 'running') {
+    writeWizardUrl({ replaceHistory: true });
+    announce('Cancel the active run before leaving Run & result.');
+    return;
+  }
+  if (
+    next.recipeId !== state.sample.id
+    && playgroundState.hasUnsavedChanges
+    && !window.confirm('Change recipes and discard unsaved input changes? Credentials are never persisted.')
+  ) {
+    writeWizardUrl({ replaceHistory: true });
+    return;
+  }
+  if (next.recipeId !== state.sample.id) await selectSample(next.recipeId);
+  if (!navigateWizardStep(next.stepId, { replaceHistory: true })) {
+    writeWizardUrl({ replaceHistory: true });
+    render();
+  }
+});
+
+window.addEventListener('beforeunload', (event) => {
+  if (!playgroundState.hasUnsavedChanges) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
+
+window.addEventListener('resize', () => {
+  const shouldOpen = window.innerWidth >= 1200;
+  if (shouldOpen !== state.directoryOpen) {
+    state.directoryOpen = shouldOpen;
+    render();
+  }
+});
+
+boot().catch((error) => {
+  replace(app, [
+    node('main', { class: 'fatal-state' }, [
+      node('h1', { text: 'Citadel Publish Playground could not start' }),
+      node('p', { role: 'alert', text: safeMessage(error, 'An unknown startup failure occurred.') }),
+    ]),
+  ]);
+});

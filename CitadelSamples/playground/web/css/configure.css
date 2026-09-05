@@ -269,6 +269,12 @@
   font-weight: 600;
 }
 
+.configure-field-origin {
+  color: var(--success);
+  font-size: var(--t-micro);
+  font-weight: 700;
+}
+
 .configure-field-reason {
   color: var(--ink-2);
   font-size: var(--t-small);
@@ -354,10 +360,75 @@ textarea.configure-field-control {
 
 .configure-field-help-body,
 .source-integrity-body {
-  display: grid;
-  gap: var(--sp-3);
   min-width: 0;
   padding: var(--sp-3) 0 var(--sp-5);
+}
+
+.configure-field-help-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+}
+
+.source-integrity-body {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.configure-field-help-body > .btn {
+  justify-self: start;
+}
+
+.configure-recovery-action {
+  border-color: var(--brand);
+  background: var(--brand-wash);
+  color: var(--brand);
+}
+
+.configure-cli-disclosure,
+.configure-technical-details {
+  flex: 0 1 auto;
+  min-width: 0;
+  border-top: 0;
+}
+
+.configure-field-help-body > details[open] {
+  flex-basis: 100%;
+  border-top: 1px solid var(--rule-soft);
+}
+
+.configure-cli-disclosure > summary,
+.configure-technical-details > summary {
+  min-height: var(--ctl-h);
+  padding-block: var(--sp-3);
+  color: var(--ink-2);
+  font-size: var(--t-small);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.configure-cli-command {
+  display: flex;
+  align-items: start;
+  gap: var(--sp-3);
+  min-width: 0;
+  padding-bottom: var(--sp-4);
+}
+
+.configure-cli-command code {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  padding: var(--sp-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--well);
+  white-space: pre;
+}
+
+.configure-technical-details > :not(summary) {
+  margin-block-end: var(--sp-3);
 }
 
 .configure-advanced {

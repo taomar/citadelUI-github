@@ -145,6 +145,45 @@
   position: relative;
 }
 
+.dossier-mobile-actions {
+  position: relative;
+  display: none;
+}
+
+.dossier-mobile-actions-summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.875rem;
+  padding-inline: var(--sp-4, 0.5rem);
+  border: 1px solid var(--nav-rule, #2a6ba3);
+  border-radius: var(--r-2, 5px);
+  background: var(--nav-hover, #10497b);
+  color: var(--nav-ink, #fff);
+  font-size: var(--t-small, 0.78125rem);
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
+}
+
+.dossier-mobile-actions-summary::-webkit-details-marker {
+  display: none;
+}
+
+.dossier-mobile-actions-panel {
+  position: absolute;
+  top: calc(100% + var(--sp-3, 0.25rem));
+  right: 0;
+  z-index: 60;
+  display: grid;
+  gap: var(--sp-3, 0.25rem);
+  width: 13rem;
+  padding: var(--sp-4, 0.5rem);
+  border: 1px solid var(--rule-strong, #b3c3d2);
+  border-radius: var(--r-3, 6px);
+  background: var(--sheet, #fff);
+  box-shadow: var(--lift, 0 6px 20px -6px rgba(15, 18, 22, 0.18));
+}
+
 .dossier-identity-summary {
   display: inline-flex;
   align-items: center;
@@ -249,6 +288,19 @@ code.dossier-identity-value {
 .dossier-terminal-fallback-note {
   color: var(--ink-2, #344150);
   font-size: var(--t-small, 0.78125rem);
+}
+
+.dossier-identity-status,
+.dossier-identity-warning {
+  color: var(--ink-2, #344150);
+  font-size: var(--t-small, 0.78125rem);
+  overflow-wrap: anywhere;
+}
+
+.dossier-identity-warning {
+  padding-top: var(--sp-3, 0.25rem);
+  border-top: 1px solid var(--rule, #d8e2ec);
+  color: var(--warning, #8a3707);
 }
 
 .execution-context-bar {
@@ -719,30 +771,25 @@ code.execution-context-value {
     margin-left: auto;
   }
 
-  .dossier-inspector-button {
-    width: 2rem;
-    padding: 0;
-    overflow: hidden;
-    font-size: 0;
+  .dossier-desktop-command {
+    display: none;
   }
 
-  .dossier-inspector-button::before {
-    font-size: var(--t-small, 0.78125rem);
-  }
-
-  .dossier-inspector-button:first-child::before {
-    content: 'P';
-  }
-
-  .dossier-inspector-button:nth-child(2)::before {
-    content: 'D';
+  .dossier-mobile-actions {
+    display: block;
   }
 
   .dossier-identity-summary {
-    max-width: 9rem;
+    max-width: 7rem;
     overflow: hidden;
+    font-size: 0;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .dossier-identity-summary::after {
+    content: attr(data-compact-label);
+    font-size: var(--t-micro, 0.6875rem);
   }
 
   .dossier-identity-panel {

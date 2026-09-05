@@ -1,45 +1,169 @@
 #!/usr/bin/env node
 /**
- * Browser acceptance for the Signed Run Dossier integration.
+ * Browser acceptance for the per-recipe Citadel run wizard.
  *
- * The runner starts the preview-only loopback server, enables the explicit
- * testExecutor seam, blocks every non-loopback request, and uses CDP directly.
- * It is expected to pass after the dossier renderers and stylesheet link are
- * integrated with the shared contract.
- *
- * Usage: node scripts/dossier-browser-acceptance.mjs [--chrome <path>]
+ * The runner uses only the loopback preview server and the explicit test
+ * executor seam. Every non-loopback request is blocked.
  */
 
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { CATALOGUE } from '../src/catalogue/index.mjs';
 import { createPlaygroundServer } from '../server.mjs';
-import {
-  DOSSIER_IDS,
-  DOSSIER_OUTPUT_VIEWS,
-  DOSSIER_STAGES,
-  DOSSIER_URL,
-} from '../web/js/render/dossier-contract.mjs';
 import { createCheckReporter, launchBrowserHarness } from './browser-harness.mjs';
 
 const ARTIFACT_DIRECTORY = fileURLToPath(new URL('../.artifacts/dossier/', import.meta.url));
 const SECRET = 'DOSSIER-ACCEPTANCE-SECRET';
-const SOURCE_CELL_SELECTOR =
-  '[data-source-cell][data-cell-index][data-protected="true"][data-editable="false"]';
-const BASE_DOSSIER_IDS = Object.freeze(
-  Object.values(DOSSIER_IDS).filter((id) => id !== DOSSIER_IDS.destructiveDialog),
-);
 
 export const DOSSIER_ACCEPTANCE_SCENARIOS = Object.freeze([
-  Object.freeze({ order: 1, name: 'desktop', width: 1440, height: 900, mobile: false, breakpoint: 'desktop' }),
-  Object.freeze({ order: 2, name: 'tablet', width: 820, height: 800, mobile: false, breakpoint: 'tablet' }),
-  Object.freeze({ order: 3, name: 'phone', width: 390, height: 844, mobile: true, breakpoint: 'phone' }),
-  Object.freeze({ order: 4, name: 'phone-small', width: 320, height: 480, mobile: true, breakpoint: 'phone' }),
-  Object.freeze({ order: 5, name: 'zoom-200-percent', width: 1280, height: 900, mobile: false, breakpoint: 'zoom' }),
-  Object.freeze({ order: 6, name: 'reduced-motion', width: 820, height: 800, mobile: false, breakpoint: 'tablet' }),
-  Object.freeze({ order: 7, name: 'forced-colors', width: 820, height: 800, mobile: false, breakpoint: 'tablet' }),
+  Object.freeze({
+    order: 1,
+    name: 'azure-account-desktop',
+    recipeId: 'apim-discovery',
+    width: 1440,
+    height: 900,
+    mobile: false,
+    breakpoint: 'desktop',
+  }),
+  Object.freeze({
+    order: 2,
+    name: 'gateway-connection-desktop',
+    recipeId: 'weather-mcp-discovery',
+    width: 1440,
+    height: 900,
+    mobile: false,
+    breakpoint: 'desktop',
+    openHelpPath: 'hub.gatewayUrl',
+  }),
+  Object.freeze({
+    order: 3,
+    name: 'gateway-help-mobile',
+    recipeId: 'weather-mcp-discovery',
+    width: 390,
+    height: 844,
+    mobile: true,
+    breakpoint: 'phone',
+    openHelpPath: 'hub.gatewayUrl',
+  }),
+  Object.freeze({
+    order: 4,
+    name: 'publish-assets-desktop',
+    recipeId: 'publish-assets',
+    width: 1440,
+    height: 900,
+    mobile: false,
+    breakpoint: 'desktop',
+  }),
+  Object.freeze({
+    order: 5,
+    name: 'publish-assets-tablet',
+    recipeId: 'publish-assets',
+    width: 768,
+    height: 800,
+    mobile: false,
+    breakpoint: 'tablet',
+  }),
+  Object.freeze({
+    order: 6,
+    name: 'publish-assets-phone',
+    recipeId: 'publish-assets',
+    width: 390,
+    height: 844,
+    mobile: true,
+    breakpoint: 'phone',
+  }),
+  Object.freeze({
+    order: 7,
+    name: 'publish-assets-phone-small',
+    recipeId: 'publish-assets',
+    width: 320,
+    height: 480,
+    mobile: true,
+    breakpoint: 'phone',
+  }),
+  Object.freeze({
+    order: 8,
+    name: 'publish-assets-zoom-200-percent',
+    recipeId: 'publish-assets',
+    width: 640,
+    height: 450,
+    screenshotWidth: 1280,
+    screenshotHeight: 900,
+    mobile: false,
+    breakpoint: 'zoom',
+    deviceScaleFactor: 2,
+  }),
+  Object.freeze({
+    order: 9,
+    name: 'publish-assets-source-desktop',
+    recipeId: 'publish-assets',
+    width: 1440,
+    height: 900,
+    mobile: false,
+    breakpoint: 'desktop',
+    openSource: true,
+  }),
+  Object.freeze({
+    order: 10,
+    name: 'publish-assets-source-mobile',
+    recipeId: 'publish-assets',
+    width: 390,
+    height: 844,
+    mobile: true,
+    breakpoint: 'phone',
+    openSource: true,
+  }),
+  Object.freeze({
+    order: 11,
+    name: 'cleanup-review-desktop',
+    recipeId: 'cleanup',
+    width: 1440,
+    height: 900,
+    mobile: false,
+    breakpoint: 'desktop',
+    review: true,
+  }),
+  Object.freeze({
+    order: 12,
+    name: 'cleanup-review-mobile',
+    recipeId: 'cleanup',
+    width: 390,
+    height: 844,
+    mobile: true,
+    breakpoint: 'phone',
+    review: true,
+  }),
+  Object.freeze({
+    order: 13,
+    name: 'offline-diagnostics',
+    recipeId: 'azure-context-check',
+    width: 820,
+    height: 800,
+    mobile: false,
+    breakpoint: 'tablet',
+    openDiagnostics: true,
+  }),
+  Object.freeze({
+    order: 14,
+    name: 'reduced-motion',
+    recipeId: 'publish-assets',
+    width: 820,
+    height: 800,
+    mobile: false,
+    breakpoint: 'tablet',
+    reducedMotion: true,
+  }),
+  Object.freeze({
+    order: 15,
+    name: 'forced-colors',
+    recipeId: 'publish-assets',
+    width: 820,
+    height: 800,
+    mobile: false,
+    breakpoint: 'tablet',
+    forcedColors: true,
+  }),
 ]);
 
 export function dossierScreenshotName(scenario) {
@@ -47,10 +171,7 @@ export function dossierScreenshotName(scenario) {
     throw new TypeError('A numbered dossier acceptance scenario is required.');
   }
   const prefix = String(scenario.order).padStart(2, '0');
-  const size = scenario.name.includes('zoom') || scenario.name.includes('motion') || scenario.name.includes('colors')
-    ? ''
-    : `-${scenario.width}x${scenario.height}`;
-  return `${prefix}-${scenario.name}${size}.png`;
+  return `${prefix}-${scenario.name}-${scenario.screenshotWidth ?? scenario.width}x${scenario.screenshotHeight ?? scenario.height}.png`;
 }
 
 export function dossierBreakpoint(width) {
@@ -60,17 +181,19 @@ export function dossierBreakpoint(width) {
   return 'phone';
 }
 
-export function semanticOrderIssues(actualIds) {
-  const expected = [
-    DOSSIER_IDS.context,
-    DOSSIER_IDS.inputs,
-    DOSSIER_IDS.review,
-    DOSSIER_IDS.output,
-  ];
-  if (!Array.isArray(actualIds)) return ['semantic order must be an array'];
-  return JSON.stringify(actualIds) === JSON.stringify(expected)
-    ? []
-    : [`primary dossier order must be ${expected.join(' -> ')}, got ${actualIds.join(' -> ')}`];
+export function wizardStepIssues(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return ['wizard snapshot is required'];
+  const issues = [];
+  if (snapshot.wizardCount !== 1) issues.push(`expected one recipe wizard, got ${snapshot.wizardCount}`);
+  if (snapshot.currentStepCount !== 1) issues.push(`expected one current wizard step, got ${snapshot.currentStepCount}`);
+  if (snapshot.stepCount < 2 || snapshot.stepCount > 5) {
+    issues.push(`expected 2-5 dynamically derived steps, got ${snapshot.stepCount}`);
+  }
+  if (!/^Step \d+ of \d+$/.test(snapshot.stepProgress)) {
+    issues.push(`invalid step progress text: ${snapshot.stepProgress}`);
+  }
+  if (snapshot.topLevelTabs !== 0) issues.push('top-level workflow tabs are present');
+  return issues;
 }
 
 export function fieldContractIssues(fields) {
@@ -99,54 +222,52 @@ export function nonLoopbackRequestIssues(urls, baseUrl) {
 }
 
 export function viewportContractIssues(snapshot, scenario) {
-  const issues = [];
   if (!snapshot || typeof snapshot !== 'object') return ['viewport snapshot is required'];
+  const issues = [];
   if (snapshot.documentWidth > snapshot.viewportWidth + 1) {
     issues.push(`document width ${snapshot.documentWidth} exceeds viewport ${snapshot.viewportWidth}`);
   }
   if (snapshot.shellWidth > snapshot.viewportWidth + 1) {
-    issues.push(`dossier shell width ${snapshot.shellWidth} exceeds viewport ${snapshot.viewportWidth}`);
+    issues.push(`wizard shell width ${snapshot.shellWidth} exceeds viewport ${snapshot.viewportWidth}`);
+  }
+  if (snapshot.mastheadScrollWidth > snapshot.mastheadClientWidth + 1) {
+    issues.push('masthead commands overflow their visible row');
+  }
+  if (snapshot.clippedMastheadControls > 0) {
+    issues.push(
+      `${snapshot.clippedMastheadControls} masthead controls are clipped: ${snapshot.clippedMastheadControlLabels.join(', ')}`,
+    );
   }
   if (snapshot.nestedFormScrollers > 0) issues.push('the form contains a nested vertical scroller');
-  if (snapshot.navigatorCount !== 1) issues.push(`expected one recipe navigator, got ${snapshot.navigatorCount}`);
+  if (snapshot.visibleStepContents !== 1) issues.push(`expected one visible step surface, got ${snapshot.visibleStepContents}`);
+  if (!['sticky', 'fixed'].includes(snapshot.actionBarPosition)) issues.push('wizard action bar is not sticky or fixed');
+  if (snapshot.primaryActionCount !== 1) issues.push(`expected one primary page action, got ${snapshot.primaryActionCount}`);
 
   if (scenario.breakpoint === 'desktop') {
     if (!snapshot.directoryVisible || snapshot.drawerControlVisible) {
-      issues.push('desktop must expose the rail and hide the drawer control');
+      issues.push('desktop must expose the recipe rail without a duplicate drawer control');
     }
-    if (snapshot.ledgerPosition !== 'sticky') issues.push('desktop ledger is not sticky');
-    if (snapshot.ledgerWidth < 299 || snapshot.ledgerWidth > 321) {
-      issues.push(`desktop ledger width ${snapshot.ledgerWidth} is outside 300-320px`);
+    if (!snapshot.stepNavVisible || snapshot.stepSelectorVisible) {
+      issues.push('desktop must use the left wizard step navigation');
     }
-    if (snapshot.visiblePrimaryStages !== DOSSIER_STAGES.length) {
-      issues.push('desktop does not expose the continuous four-stage dossier');
+    if (snapshot.minimumControlHeight < 39.5) {
+      issues.push(`desktop controls are only ${snapshot.minimumControlHeight}px high`);
     }
-  }
-
-  if (scenario.breakpoint === 'tablet') {
+  } else {
     if (snapshot.directoryVisible || !snapshot.drawerControlVisible) {
-      issues.push('tablet must replace the rail with the recipe drawer');
+      issues.push('compact layouts must replace the recipe rail with one picker control');
     }
-    if (!snapshot.singleColumn) issues.push('tablet dossier is not a single column');
-    if (!['sticky', 'fixed'].includes(snapshot.actionBarPosition)) {
-      issues.push('tablet action bar is not sticky');
+    if (snapshot.stepNavVisible || !snapshot.stepSelectorVisible) {
+      issues.push('compact layouts must use the current-step selector');
     }
-  }
-
-  if (scenario.breakpoint === 'phone') {
-    if (snapshot.directoryVisible || !snapshot.drawerControlVisible) {
-      issues.push('phone must replace the rail with the recipe picker');
+    if (snapshot.actionBarPosition !== 'fixed') issues.push('compact wizard action bar is not fixed');
+    if (!snapshot.safeAreaRule) issues.push('compact action bar has no safe-area inset rule');
+    if (['phone', 'zoom'].includes(scenario.breakpoint) && snapshot.minimumControlHeight < 43.5) {
+      issues.push(`mobile controls are only ${snapshot.minimumControlHeight}px high`);
     }
-    if (!snapshot.stageProgressVisible || !/([1-4]\s*\/\s*4|stage\s+[1-4]\s+of\s+4)/i.test(snapshot.stageProgressText)) {
-      issues.push('phone does not expose the stage n/4 affordance');
+    if (['phone', 'zoom'].includes(scenario.breakpoint) && snapshot.contextHorizontalOverflow) {
+      issues.push('compact execution context requires horizontal scrolling');
     }
-    if (snapshot.visiblePrimaryStages !== 1) issues.push('phone must expose one primary stage at a time');
-    if (!['sticky', 'fixed'].includes(snapshot.actionBarPosition)) {
-      issues.push('phone bottom dock is not fixed or sticky');
-    }
-    if (snapshot.actionBarHeight < 55) issues.push(`phone bottom dock is only ${snapshot.actionBarHeight}px high`);
-    if (!snapshot.safeAreaRule) issues.push('phone bottom dock has no safe-area inset rule');
-    if (!snapshot.compactInspectorsClosed) issues.push('compact inspectors are not closed by default');
   }
   return issues;
 }
@@ -160,127 +281,11 @@ function reportIssues(reporter, label, issues) {
   reporter.check(label, issues.length === 0, issues.join('; '));
 }
 
-function currentScenario(name) {
-  const scenario = DOSSIER_ACCEPTANCE_SCENARIOS.find((entry) => entry.name === name);
-  if (!scenario) throw new Error(`Unknown dossier acceptance scenario ${name}.`);
-  return scenario;
-}
-
 async function settle(harness) {
-  await harness.evaluate(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+  await harness.evaluate('new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
 }
 
-async function navigateToRecipe(harness, recipeId, stage = DOSSIER_STAGES[0]) {
-  const url = new URL(harness.baseUrl);
-  url.searchParams.set('testExecutor', '');
-  url.searchParams.set(DOSSIER_URL.recipeParam, recipeId);
-  url.hash = `${DOSSIER_URL.stageHashPrefix}${stage}`;
-  await harness.page.send('Page.navigate', { url: url.href });
-  await waitForDossier(harness);
-  await harness.waitFor('Boolean(globalThis.__citadelTestHooks)', {
-    label: 'the loopback-only dossier test executor seam',
-  });
-  await installTestExecutor(harness);
-  await settle(harness);
-}
-
-async function waitForDossier(harness) {
-  const ids = JSON.stringify(BASE_DOSSIER_IDS);
-  await harness.waitFor(`(${ids}).every((id) => Boolean(document.getElementById(id)))`, {
-    timeoutMs: 30_000,
-    label: `the Signed Run Dossier IDs (${BASE_DOSSIER_IDS.join(', ')})`,
-  });
-}
-
-async function installTestExecutor(harness) {
-  await harness.evaluate(`(() => {
-    const hooks = globalThis.__citadelTestHooks;
-    if (!hooks) return false;
-    hooks.installExecutor({
-      describeCapability: () => ({
-        id: 'dossier-acceptance',
-        kind: 'local',
-        canExecute: true,
-        supportedStepTypes: [],
-        reason: 'loopback-only acceptance executor'
-      }),
-      supports: () => ({ supported: true, unsupportedStepTypes: [] }),
-      cancel: async () => ({ cancelled: false }),
-      execute: async (_plan, context = {}) => {
-        context.onProgress?.({
-          type: 'run-start',
-          runId: 'dossier-acceptance-0001',
-          sampleId: 'cleanup',
-          workspace: '.'
-        });
-        context.onProgress?.({
-          type: 'step-progress',
-          runId: 'dossier-acceptance-0001',
-          step: { id: 'acceptance', state: 'completed', summary: 'Local test step completed.' }
-        });
-        return {
-          state: 'completed',
-          sampleId: 'cleanup',
-          summary: 'Loopback dossier acceptance completed.',
-          detail: '',
-          steps: [],
-          assertions: [],
-          configurationUpdates: {},
-          secretUpdates: {},
-          meta: {
-            executor: 'local',
-            executionMode: 'local',
-            runId: 'dossier-acceptance-0001',
-            artifacts: [],
-            azureContacted: false,
-            liveEvidence: false
-          }
-        };
-      }
-    });
-    return true;
-  })()`);
-}
-
-async function installLoopbackRequestGuard(harness) {
-  const requests = [];
-  const blocked = [];
-  const errors = [];
-  const allowedOrigin = new URL(harness.baseUrl).origin;
-  const removeListener = harness.page.on('Fetch.requestPaused', ({ requestId, request }) => {
-    requests.push(request.url);
-    let allowed = false;
-    try {
-      const url = new URL(request.url);
-      allowed = ['data:', 'blob:', 'about:'].includes(url.protocol) || url.origin === allowedOrigin;
-    } catch {
-      allowed = false;
-    }
-    if (!allowed) blocked.push(request.url);
-    const method = allowed ? 'Fetch.continueRequest' : 'Fetch.failRequest';
-    const params = allowed ? { requestId } : { requestId, errorReason: 'BlockedByClient' };
-    harness.page.send(method, params).catch((error) => errors.push(error.message));
-  });
-  try {
-    await harness.page.send('Fetch.enable', {
-      patterns: [{ urlPattern: '*', requestStage: 'Request' }],
-    });
-  } catch (error) {
-    removeListener?.();
-    throw error;
-  }
-  return {
-    requests,
-    blocked,
-    errors,
-    async close() {
-      removeListener?.();
-      await harness.page.send('Fetch.disable').catch(() => {});
-    },
-  };
-}
-
-async function prepareArtifactDirectory() {
+async function prepareArtifacts() {
   await rm(ARTIFACT_DIRECTORY, { recursive: true, force: true });
   await mkdir(ARTIFACT_DIRECTORY, { recursive: true });
 }
@@ -297,767 +302,1184 @@ async function captureScreenshot(harness, scenario) {
   );
 }
 
-async function staticContractSnapshot(harness) {
+async function installRequestGuard(harness) {
+  const requests = [];
+  const blocked = [];
+  const allowedOrigin = new URL(harness.baseUrl).origin;
+  const removeListener = harness.page.on('Fetch.requestPaused', ({ requestId, request }) => {
+    requests.push(request.url);
+    let allowed = false;
+    try {
+      const url = new URL(request.url);
+      allowed = ['data:', 'blob:', 'about:'].includes(url.protocol) || url.origin === allowedOrigin;
+    } catch {
+      allowed = false;
+    }
+    if (allowed) void harness.page.send('Fetch.continueRequest', { requestId });
+    else {
+      blocked.push(request.url);
+      void harness.page.send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' });
+    }
+  });
+  await harness.page.send('Fetch.enable', {
+    patterns: [{ urlPattern: '*', requestStage: 'Request' }],
+  });
+  return {
+    requests,
+    blocked,
+    async close() {
+      removeListener?.();
+      await harness.page.send('Fetch.disable').catch(() => {});
+    },
+  };
+}
+
+async function waitForWizard(harness, recipeId) {
+  await harness.waitFor(
+    `document.querySelector('[data-wizard-step]') && document.querySelector('.dossier-current-id')?.textContent === ${JSON.stringify(recipeId)}`,
+    { timeoutMs: 30_000, label: `${recipeId} wizard` },
+  );
+  await harness.waitFor('Boolean(globalThis.__citadelTestHooks)', {
+    label: 'the loopback-only wizard test seam',
+  });
+}
+
+async function installTestExecutor(harness) {
+  await harness.evaluate(`(() => {
+    globalThis.__citadelTestHooks.installExecutor({
+      describeCapability: () => ({
+        id: 'wizard-acceptance',
+        kind: 'local',
+        canExecute: true,
+        supportedStepTypes: [],
+        reason: 'loopback-only browser acceptance'
+      }),
+      supports: () => ({ supported: true, unsupportedStepTypes: [] }),
+      cancel: async () => ({ cancelled: true }),
+      execute: async (_plan, context = {}) => {
+        const snapshot = globalThis.__citadelTestHooks.snapshot();
+        const runId = 'wizard-acceptance-0001';
+        context.onProgress?.({
+          type: 'run-start',
+          runId,
+          sampleId: snapshot?.sample?.id,
+          workspace: '.'
+        });
+        return {
+          state: 'completed',
+          sampleId: snapshot?.sample?.id,
+          summary: 'Loopback wizard acceptance completed.',
+          detail: '',
+          steps: [],
+          assertions: [],
+          configurationUpdates: {},
+          secretUpdates: {},
+          meta: {
+            executor: 'local',
+            executionMode: 'local',
+            runId,
+            artifacts: [],
+            azureContacted: false,
+            liveEvidence: false
+          }
+        };
+      }
+    });
+    return true;
+  })()`);
+  await settle(harness);
+}
+
+async function navigateToRecipe(harness, recipeId, stepId = 'account-target') {
+  await harness.evaluate("globalThis.__dossierNavigationMarker = 'pending'");
+  const url = new URL(harness.baseUrl);
+  url.searchParams.set('testExecutor', '');
+  url.searchParams.set('recipe', recipeId);
+  url.hash = `step=${stepId}`;
+  await harness.page.send('Page.navigate', { url: url.href });
+  await harness.waitFor(
+    "globalThis.__dossierNavigationMarker !== 'pending'",
+    { timeoutMs: 30_000, label: `${recipeId} document navigation` },
+  );
+  await waitForWizard(harness, recipeId);
+  await installTestExecutor(harness);
+}
+
+async function setValues(harness, values) {
+  await harness.evaluate(`(() => {
+    const values = ${JSON.stringify(values)};
+    for (const [path, value] of Object.entries(values)) {
+      globalThis.__citadelTestHooks.setValue(path, value);
+    }
+    return true;
+  })()`);
+  await settle(harness);
+}
+
+async function clickContinue(harness) {
+  const before = await harness.evaluate("document.querySelector('[data-wizard-step]')?.dataset.wizardStep");
+  const clicked = await harness.evaluate(`(() => {
+    const button = [...document.querySelectorAll('#wizard-action-bar button')]
+      .find((candidate) => candidate.textContent.trim() === 'Continue');
+    button?.click();
+    return Boolean(button);
+  })()`);
+  if (!clicked) return false;
+  await harness.waitFor(
+    `document.querySelector('[data-wizard-step]')?.dataset.wizardStep !== ${JSON.stringify(before)}`,
+    { label: `wizard to advance from ${before}` },
+  );
+  await settle(harness);
+  return true;
+}
+
+async function advanceToReview(harness) {
+  for (let index = 0; index < 5; index += 1) {
+    const step = await harness.evaluate("document.querySelector('[data-wizard-step]')?.dataset.wizardStep");
+    if (step === 'review-approve') return true;
+    if (!(await clickContinue(harness))) return false;
+  }
+  return false;
+}
+
+async function openFieldHelp(harness, path) {
   return harness.evaluate(`(() => {
-    const ids = ${JSON.stringify([
-      DOSSIER_IDS.context,
-      DOSSIER_IDS.inputs,
-      DOSSIER_IDS.review,
-      DOSSIER_IDS.output,
-    ])};
-    const dossier = document.getElementById(${JSON.stringify(DOSSIER_IDS.dossier)});
-    const output = document.getElementById(${JSON.stringify(DOSSIER_IDS.output)});
-    const inspector = document.getElementById(${JSON.stringify(DOSSIER_IDS.sourceInspector)});
+    const row = [...document.querySelectorAll('[data-parameter-path]')]
+      .find((candidate) => candidate.dataset.parameterPath === ${JSON.stringify(path)});
+    const help = row?.querySelector('.configure-field-help');
+    if (!help) return false;
+    help.open = true;
+    help.scrollIntoView({ block: 'center', inline: 'nearest' });
+    return true;
+  })()`);
+}
+
+async function openSource(harness) {
+  const guideOpened = await harness.evaluate(`(() => {
+    const button = [...document.querySelectorAll('button')]
+      .find((candidate) => candidate.textContent.trim() === 'Guide');
+    button?.click();
+    return Boolean(button);
+  })()`);
+  if (!guideOpened) return false;
+  await harness.waitFor("document.getElementById('provenance-drawer')?.open === true", {
+    label: 'guide drawer',
+  });
+  const sourceOpened = await harness.evaluate(`(() => {
+    const button = [...document.querySelectorAll('#provenance-drawer button')]
+      .find((candidate) => candidate.textContent.trim() === 'Inspect cited source');
+    button?.click();
+    return Boolean(button);
+  })()`);
+  if (!sourceOpened) return false;
+  await harness.waitFor("document.getElementById('source-inspector')?.open === true", {
+    label: 'protected source inspector',
+  });
+  await settle(harness);
+  return true;
+}
+
+async function openDiagnostics(harness) {
+  const opened = await harness.evaluate(`(() => {
+    const button = [...document.querySelectorAll('button')]
+      .find((candidate) => candidate.textContent.trim() === 'Checks');
+    button?.click();
+    return Boolean(button);
+  })()`);
+  if (!opened) return false;
+  await harness.waitFor("document.getElementById('diagnostics-drawer')?.open === true", {
+    label: 'diagnostics drawer',
+  });
+  await settle(harness);
+  return true;
+}
+
+async function prepareCleanupReview(harness) {
+  await setValues(harness, {
+    'hub.subscriptionId': '00000000-1111-2222-3333-444444444444',
+    'hub.resourceGroupName': 'rg-wizard-acceptance',
+    'hub.apimName': 'apim-wizard-acceptance',
+    'samples.cleanup.confirmNonProduction': true,
+  });
+  return advanceToReview(harness);
+}
+
+async function preparePublishReview(harness) {
+  await setValues(harness, {
+    'hub.subscriptionId': '00000000-1111-2222-3333-444444444444',
+    'hub.resourceGroupName': 'rg-wizard-acceptance',
+    'hub.apimName': 'apim-wizard-acceptance',
+    'hub.location': 'westeurope',
+    'foundry.accountName': 'foundry-wizard-acceptance',
+    'foundry.projectName': 'project-wizard-acceptance',
+    'foundry.agentName': 'agent-wizard-acceptance',
+  });
+  return advanceToReview(harness);
+}
+
+async function wizardSnapshot(harness) {
+  return harness.evaluate(`(() => {
+    const visible = (element) => Boolean(
+      element &&
+      !(element.tagName !== 'SUMMARY' && element.closest('details:not([open])')) &&
+      element.getClientRects().length > 0 &&
+      getComputedStyle(element).visibility !== 'hidden'
+    );
     const fields = [...document.querySelectorAll(
-      '#${DOSSIER_IDS.inputs} input, #${DOSSIER_IDS.inputs} select, #${DOSSIER_IDS.inputs} textarea'
-    )].filter((field) => field.type !== 'hidden').map((field) => {
+      '.wizard-step-content input:not([type="hidden"]), .wizard-step-content select, .wizard-step-content textarea'
+    )].map((field) => {
       const escapedId = field.id && globalThis.CSS?.escape ? CSS.escape(field.id) : field.id;
-      const explicitLabel = escapedId ? document.querySelector('label[for="' + escapedId + '"]') : null;
       return {
         id: field.id,
         name: field.getAttribute('name') ?? '',
         tag: field.tagName.toLowerCase(),
         autocomplete: field.getAttribute('autocomplete') ?? '',
         labelled: Boolean(
-          explicitLabel ||
+          (escapedId && document.querySelector('label[for="' + escapedId + '"]')) ||
           field.closest('label') ||
           field.getAttribute('aria-label') ||
           field.getAttribute('aria-labelledby')
         ),
       };
     });
-    const allTabs = [...document.querySelectorAll('[role="tab"]')];
-    const tablists = [...document.querySelectorAll('[role="tablist"]')];
-    const outputTabNames = allTabs.map((tab) =>
-      tab.dataset.outputView || tab.getAttribute('aria-controls')?.replace(/^.*?(transcript|evidence|artifacts).*$/i, '$1') ||
-      tab.textContent.trim().toLowerCase()
-    );
     return {
-      order: ids
-        .map((id) => document.getElementById(id))
-        .filter((node) => node && dossier?.contains(node))
-        .sort((left, right) =>
-          left === right ? 0 : left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
-        )
-        .map((node) => node.id),
-      topLevelTabs: allTabs.filter((tab) => !output?.contains(tab)).length,
-      outputOnlyTabs:
-        allTabs.every((tab) => output?.contains(tab)) &&
-        tablists.every((tablist) => output?.contains(tablist)),
-      outputTabNames,
-      sourceInspectorSecondary:
-        Boolean(inspector && dossier) &&
-        !ids.some((id) => inspector.contains(document.getElementById(id))) &&
-        Boolean(document.getElementById(${JSON.stringify(DOSSIER_IDS.output)})
-          ?.compareDocumentPosition(inspector) & Node.DOCUMENT_POSITION_FOLLOWING),
+      recipeId: document.querySelector('.dossier-current-id')?.textContent ?? '',
+      title: document.getElementById('wizard-step-title')?.textContent ?? '',
+      stepProgress: document.querySelector('.dossier-stage-progress > span')?.textContent.trim() ?? '',
+      stepCount: document.querySelectorAll('.wizard-step-link').length,
+      wizardCount: document.querySelectorAll('.recipe-wizard').length,
+      currentStepCount: document.querySelectorAll('[data-wizard-step]').length,
+      topLevelTabs: [...document.querySelectorAll('[role="tab"]')]
+        .filter((tab) => !document.getElementById('dossier-output')?.contains(tab)).length,
+      identityKind: document.querySelector('.execution-context-bar')?.dataset.identityKind ?? '',
+      azureAccountControls: /Sign in with Microsoft|Switch Azure account|Account \\/ subscription|Set Active/
+        .test(document.body.textContent ?? ''),
+      terminalFallback: /Continue in terminal/.test(document.body.textContent ?? ''),
+      deviceFlowContent: /device\\s*code|microsoft\\.com\\/devicelogin/i.test(document.body.textContent ?? ''),
+      futureStepDisabled: [...document.querySelectorAll('.wizard-step-link')]
+        .filter((button) => button.getAttribute('aria-current') !== 'step')
+        .some((button) => button.disabled),
       fields,
-      roleLogCount: output?.querySelectorAll('[role="log"]').length ?? 0,
-      deviceCodeContent:
-        /device\\s*code|microsoft\\.com\\/devicelogin/i.test(document.body.textContent ?? '') ||
-        Boolean(document.querySelector('[data-device-code], .device-code, #start-azure-login')),
+      actionVisible: visible(document.getElementById('wizard-action-bar')),
     };
   })()`);
 }
 
-async function sourceImmutabilitySnapshot(harness, sampleId) {
-  return harness.evaluate(`(async () => {
-    const inspector = document.getElementById(${JSON.stringify(DOSSIER_IDS.sourceInspector)});
-    let openedByAcceptance = false;
-    let opener = null;
-    if (inspector && inspector.getClientRects().length === 0) {
-      opener = document.querySelector(
-        '[aria-controls="${DOSSIER_IDS.sourceInspector}"],' +
-        '[popovertarget="${DOSSIER_IDS.sourceInspector}"],' +
-        '[commandfor="${DOSSIER_IDS.sourceInspector}"],' +
-        '[data-open-inspector="source"]'
-      );
-      opener?.click();
-      openedByAcceptance = Boolean(opener);
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    }
-    const response = await fetch('/api/source/${encodeURIComponent(sampleId)}');
-    const payload = await response.json();
-    const expectedCells = payload.cells.map((cell) => ({
-      index: String(cell.cellIndex),
-      text: cell.text,
-    }));
-    const expected = new Map(expectedCells.map((cell) => [cell.index, cell.text]));
-    const cells = [...document.querySelectorAll(${JSON.stringify(SOURCE_CELL_SELECTOR)})].map((cell) => {
-      const text = cell.querySelector('pre[data-source-code], pre code, [data-source-code]')?.textContent ?? '';
-      return {
-        index: cell.dataset.cellIndex,
-        text,
-        expected: expected.get(cell.dataset.cellIndex),
-        protected: cell.dataset.protected,
-        editable: cell.dataset.editable,
-        editableDescendants: cell.querySelectorAll(
-          'input, textarea, select, [contenteditable]:not([contenteditable="false"])'
-        ).length,
-      };
-    });
-    const result = {
-      status: response.status,
-      expectedCount: expected.size,
-      expectedCells,
-      cells,
-    };
-    if (openedByAcceptance) {
-      if (typeof inspector.close === 'function') inspector.close();
-      else if (inspector.hasAttribute('popover') && typeof inspector.hidePopover === 'function') inspector.hidePopover();
-      else if (opener) opener.click();
-      else inspector.removeAttribute('open');
-    }
-    return result;
-  })()`);
-}
-
-async function firstBlockerSnapshot(harness, sample) {
-  const blockingPaths = sample.configurationEntries
-    .filter((entry) => entry.blockingWhenBlank)
-    .map((entry) => entry.path);
-  return harness.evaluate(`(async () => {
-    const paths = ${JSON.stringify(blockingPaths)};
-    const controls = paths.map((path) => {
-      const row = [...document.querySelectorAll('[data-parameter-path]')]
-        .find((candidate) => candidate.dataset.parameterPath === path);
-      return row?.querySelector('input:not([type="hidden"]), select, textarea') ?? null;
-    }).filter(Boolean);
-    for (const control of controls) {
-      if (control.type === 'checkbox' || control.type === 'radio') control.checked = false;
-      else control.value = '';
-      control.dispatchEvent(new Event('input', { bubbles: true }));
-      control.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-    const review = [
-      ...document.querySelectorAll(
-        '[data-dossier-action="review"], [data-review-action], #review-sample-button, #parameter-review-button, button'
-      )
-    ].find((button) =>
-      button.matches('[data-dossier-action="review"], [data-review-action], #review-sample-button, #parameter-review-button') ||
-      /^review sample$/i.test(button.textContent.trim())
-    );
-    review?.click();
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const active = document.activeElement;
-    const activeRow = active?.closest?.('[data-parameter-path]');
-    const firstInvalid = [...document.querySelectorAll(
-      '#${DOSSIER_IDS.inputs} [aria-invalid="true"], #${DOSSIER_IDS.inputs} :invalid'
-    )].find((control) => control.getClientRects().length > 0);
-    return {
-      blockerCount: controls.length,
-      reviewFound: Boolean(review),
-      activePath: activeRow?.dataset.parameterPath ?? '',
-      firstInvalidPath: firstInvalid?.closest('[data-parameter-path]')?.dataset.parameterPath ?? '',
-    };
-  })()`);
-}
-
-async function dialogFocusSnapshot(harness) {
-  await harness.evaluate(`(() => {
-    const hooks = globalThis.__citadelTestHooks;
-    hooks?.setValue('hub.subscriptionId', '00000000-1111-2222-3333-444444444444');
-    hooks?.setValue('hub.resourceGroupName', 'rg-dossier-acceptance');
-    hooks?.setValue('hub.apimName', 'apim-dossier-acceptance');
-    hooks?.setValue('samples.cleanup.confirmNonProduction', true);
-    hooks?.setValue('samples.cleanup.deleteResourceGroup', true);
-    return true;
-  })()`);
-  await settle(harness);
-  await harness.evaluate(`(() => {
-    const review = [
-      ...document.querySelectorAll(
-        '[data-dossier-action="review"], [data-review-action], #review-sample-button, #parameter-review-button, button'
-      )
-    ].find((button) =>
-      button.matches('[data-dossier-action="review"], [data-review-action], #review-sample-button, #parameter-review-button') ||
-      /^review sample$/i.test(button.textContent.trim())
-    );
-    review?.click();
-    return Boolean(review);
-  })()`);
-  await settle(harness);
-  const opened = await harness.evaluate(`(() => {
-    const acknowledgement = document.querySelector(
-      '#${DOSSIER_IDS.review} input[type="checkbox"][data-acknowledgement], #${DOSSIER_IDS.review} #ack-check'
-    );
-    if (acknowledgement && !acknowledgement.checked) acknowledgement.click();
-    const run = [
-      ...document.querySelectorAll(
-        '[data-dossier-action="run"], [data-run-action], #run-sample-button, #run-button, button'
-      )
-    ].find((button) =>
-      button.matches('[data-dossier-action="run"], [data-run-action], #run-sample-button, #run-button') ||
-      /^run sample$/i.test(button.textContent.trim())
-    );
-    if (!run) return { openerFound: false, openerId: '' };
-    run.dataset.acceptanceDialogOpener = 'true';
-    run.focus();
-    run.click();
-    return { openerFound: true, openerId: run.id };
-  })()`);
-  await harness.waitFor(
-    `(() => {
-      const dialog = document.getElementById(${JSON.stringify(DOSSIER_IDS.destructiveDialog)});
-      let popoverOpen = false;
-      try { popoverOpen = dialog?.matches(':popover-open') ?? false; } catch {}
-      return Boolean(dialog && (dialog.open || popoverOpen || dialog.getAttribute('aria-hidden') === 'false'));
-    })()`,
-    { label: DOSSIER_IDS.destructiveDialog },
-  );
-  const activeInside = await harness.evaluate(`(() => {
-    const dialog = document.getElementById(${JSON.stringify(DOSSIER_IDS.destructiveDialog)});
-    return Boolean(dialog?.contains(document.activeElement));
-  })()`);
-  await harness.pressKey('Escape');
-  await harness.waitFor(
-    `(() => {
-      const dialog = document.getElementById(${JSON.stringify(DOSSIER_IDS.destructiveDialog)});
-      let popoverOpen = false;
-      try { popoverOpen = dialog?.matches(':popover-open') ?? false; } catch {}
-      return Boolean(dialog && !dialog.open && !popoverOpen && dialog.getAttribute('aria-hidden') !== 'false');
-    })()`,
-    { label: 'the destructive dialog to close with Escape' },
-  );
-  const returned = await harness.evaluate(
-    `document.activeElement?.dataset.acceptanceDialogOpener === 'true'`,
-  );
-  return { ...opened, activeInside, returned };
-}
-
-async function visibleFocusIssues(harness) {
-  return harness.evaluate(`(async () => {
-    const selector = [
-      'a[href]', 'button:not([disabled])', 'input:not([disabled])', 'select:not([disabled])',
-      'textarea:not([disabled])', 'summary', '[tabindex]:not([tabindex="-1"])'
-    ].join(',');
-    const primary = document.getElementById(${JSON.stringify(DOSSIER_IDS.dossier)});
-    const nodes = [...new Set(primary?.querySelectorAll(selector) ?? [])].filter((node) =>
-      node.tabIndex >= 0 &&
-      node.getClientRects().length > 0 &&
-      getComputedStyle(node).visibility !== 'hidden'
-    );
-    const failures = [];
-    for (const node of nodes) {
-      node.focus({ preventScroll: true });
-      node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      const rect = node.getBoundingClientRect();
-      const visual = globalThis.visualViewport;
-      const left = visual?.offsetLeft ?? 0;
-      const top = visual?.offsetTop ?? 0;
-      const right = left + (visual?.width ?? innerWidth);
-      const bottom = top + (visual?.height ?? innerHeight);
-      const x = Math.min(Math.max(rect.left + rect.width / 2, left + 1), right - 1);
-      const y = Math.min(Math.max(rect.top + rect.height / 2, top + 1), bottom - 1);
-      const hit = document.elementFromPoint(x - left, y - top);
-      const visible =
-        rect.left >= left - 1 &&
-        rect.right <= right + 1 &&
-        rect.top >= top - 1 &&
-        rect.bottom <= bottom + 1 &&
-        Boolean(hit && (hit === node || node.contains(hit) || hit.contains(node)));
-      if (!visible) failures.push(node.id || node.getAttribute('name') || node.textContent.trim().slice(0, 40));
-    }
-    return failures;
-  })()`);
-}
-
-async function viewportSnapshot(harness, scenario) {
+async function viewportSnapshot(harness) {
   return harness.evaluate(`(() => {
-    const visible = (node) => Boolean(
-      node &&
-      node.getClientRects().length > 0 &&
-      getComputedStyle(node).visibility !== 'hidden'
+    const visible = (element) => Boolean(
+      element &&
+      !(element.tagName !== 'SUMMARY' && element.closest('details:not([open])')) &&
+      element.getClientRects().length > 0 &&
+      getComputedStyle(element).visibility !== 'hidden'
     );
-    const directory = document.getElementById(${JSON.stringify(DOSSIER_IDS.recipeDirectory)});
-    const drawer = document.getElementById(${JSON.stringify(DOSSIER_IDS.recipeDrawer)});
-    const drawerControl = document.querySelector(
-      '[aria-controls="${DOSSIER_IDS.recipeDrawer}"],' +
-      '[popovertarget="${DOSSIER_IDS.recipeDrawer}"],' +
-      '[commandfor="${DOSSIER_IDS.recipeDrawer}"]'
-    );
-    const ledger = document.getElementById(${JSON.stringify(DOSSIER_IDS.ledger)});
-    const actionBar = document.querySelector(
-      '[data-dossier-bottom-dock], .dossier-bottom-dock, [data-dossier-action-bar], .dossier-action-bar'
-    );
-    const progress = document.querySelector('[data-dossier-stage-progress], .dossier-stage-progress');
-    const primaryStages = [...document.querySelectorAll('[data-dossier-stage]')];
-    const primaryRects = ${JSON.stringify([
-      DOSSIER_IDS.context,
-      DOSSIER_IDS.inputs,
-      DOSSIER_IDS.review,
-      DOSSIER_IDS.output,
-    ])}.map((id) => document.getElementById(id)?.getBoundingClientRect()).filter(Boolean);
-    const compactInspectors = ${JSON.stringify([
-      DOSSIER_IDS.sourceInspector,
-      DOSSIER_IDS.provenanceDrawer,
-      DOSSIER_IDS.diagnosticsDrawer,
-    ])}.map((id) => document.getElementById(id)).filter(Boolean);
-    const popoverOpen = (node) => {
-      try { return node.matches(':popover-open'); } catch { return false; }
-    };
+    const shell = document.getElementById('dossier-shell');
+    const masthead = document.getElementById('masthead');
+    const contextGrid = document.querySelector('.execution-context-grid');
+    const directory = document.getElementById('recipe-directory');
+    const drawerControl = document.querySelector('.dossier-directory-toggle');
+    const stepNav = document.querySelector('.wizard-step-nav');
+    const stepSelector = document.querySelector('.dossier-stage-progress select');
+    const actionBar = document.getElementById('wizard-action-bar');
+    const controls = [...document.querySelectorAll(
+      '#dossier-shell button:not([disabled]), #dossier-shell input:not([disabled]), #dossier-shell select:not([disabled]), #dossier-shell textarea:not([disabled]), #dossier-shell summary'
+    )].filter(visible);
     const nestedFormScrollers = [...document.querySelectorAll(
-      '#${DOSSIER_IDS.inputs} form, #${DOSSIER_IDS.inputs} fieldset, #${DOSSIER_IDS.inputs} [data-parameter-group]'
-    )].filter((node) => {
-      const style = getComputedStyle(node);
-      return /(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 1;
+      '.wizard-step-content form, .wizard-step-content fieldset, .wizard-step-content [data-parameter-group]'
+    )].filter((element) => {
+      const style = getComputedStyle(element);
+      return /(auto|scroll)/.test(style.overflowY) && element.scrollHeight > element.clientHeight + 1;
     }).length;
     const safeAreaRule = [...document.styleSheets].some((sheet) => {
       try {
         return [...sheet.cssRules].some((rule) =>
-          /safe-area-inset-bottom/.test(rule.cssText) &&
-          /(dossier-bottom-dock|dossier-action-bar)/.test(rule.cssText)
+          /safe-area-inset-bottom/.test(rule.cssText) && /wizard-action-bar/.test(rule.cssText)
         );
       } catch {
         return false;
       }
     });
-    const shell = document.getElementById(${JSON.stringify(DOSSIER_IDS.shell)});
-    const documentWidth = Math.max(
-      document.documentElement.scrollWidth,
-      document.body.scrollWidth,
-      shell?.scrollWidth ?? 0
-    );
-    const activeNavigators = [
-      visible(directory),
-      visible(drawer) || visible(drawerControl),
-    ].filter(Boolean).length;
+    const clippedMastheadControlLabels = [...masthead?.querySelectorAll('button, summary') ?? []]
+      .filter(visible)
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.left < -0.5 || rect.right > innerWidth + 0.5;
+      })
+      .map((element) => element.getAttribute('aria-label') || element.textContent.trim());
     return {
-      scenario: ${JSON.stringify(scenario.name)},
       viewportWidth: document.documentElement.clientWidth,
-      viewportHeight: document.documentElement.clientHeight,
-      documentWidth,
+      documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
       shellWidth: shell?.scrollWidth ?? 0,
+      mastheadScrollWidth: masthead?.scrollWidth ?? 0,
+      mastheadClientWidth: masthead?.clientWidth ?? 0,
+      clippedMastheadControls: clippedMastheadControlLabels.length,
+      clippedMastheadControlLabels,
+      contextHorizontalOverflow:
+        Boolean(contextGrid) && contextGrid.scrollWidth > contextGrid.clientWidth + 1,
       nestedFormScrollers,
-      navigatorCount: activeNavigators,
+      visibleStepContents: [...document.querySelectorAll('.wizard-step-content')].filter(visible).length,
       directoryVisible: visible(directory),
-      drawerControlVisible: visible(drawer) || visible(drawerControl),
-      ledgerPosition: ledger ? getComputedStyle(ledger).position : '',
-      ledgerWidth: ledger?.getBoundingClientRect().width ?? 0,
+      drawerControlVisible: visible(drawerControl),
+      stepNavVisible: visible(stepNav),
+      stepSelectorVisible: visible(stepSelector),
       actionBarPosition: actionBar ? getComputedStyle(actionBar).position : '',
-      actionBarHeight: actionBar?.getBoundingClientRect().height ?? 0,
+      primaryActionCount: [...document.querySelectorAll('#wizard-action-bar .btn-primary')].filter(visible).length,
       safeAreaRule,
-      stageProgressVisible: visible(progress),
-      stageProgressText: progress?.textContent.trim() ?? '',
-      visiblePrimaryStages: primaryStages.length
-        ? primaryStages.filter(visible).length
-        : primaryRects.filter((rect) => rect.width > 0 && rect.height > 0).length,
-      singleColumn:
-        primaryRects.length === 4 &&
-        primaryRects.every((rect) => Math.abs(rect.left - primaryRects[0].left) <= 1),
-      compactInspectorsClosed: compactInspectors.every((node) =>
-        !node.open &&
-        !popoverOpen(node) &&
-        node.getAttribute('aria-hidden') !== 'false' &&
-        !visible(node)
+      minimumControlHeight: controls.length
+        ? Math.min(...controls.map((element) => element.getBoundingClientRect().height))
+        : 0,
+    };
+  })()`);
+}
+
+async function helpSnapshot(harness, path) {
+  return harness.evaluate(`(() => {
+    const row = [...document.querySelectorAll('[data-parameter-path]')]
+      .find((candidate) => candidate.dataset.parameterPath === ${JSON.stringify(path)});
+    const help = row?.querySelector('.configure-field-help');
+    const body = help?.querySelector('.configure-field-help-body');
+    const style = body ? getComputedStyle(body) : null;
+    const text = body?.innerText.replace(/\\s+/g, ' ').trim() ?? '';
+    return {
+      found: Boolean(row && help && body),
+      open: help?.open === true,
+      text,
+      hasRecovery: /Run APIM discovery/.test(text),
+      hasManual: /Enter manually/.test(text),
+      hasCliDisclosure: /Show CLI command/.test(text),
+      exposesInternalPath: /samples\\.weather|hub\\.gatewayUrl|profile ownership|notebook cell/i.test(text),
+      nestedScroller: Boolean(
+        body &&
+        style &&
+        /(auto|scroll)/.test(style.overflowY) &&
+        body.scrollHeight > body.clientHeight + 1
       ),
+      lineEstimate: body ? Math.ceil(body.getBoundingClientRect().height / parseFloat(style.lineHeight || '20')) : 0,
     };
   })()`);
 }
 
-async function openPhoneRecipePickerSnapshot(harness) {
-  return harness.evaluate(`(async () => {
-    const drawer = document.getElementById(${JSON.stringify(DOSSIER_IDS.recipeDrawer)});
-    const trigger = document.querySelector(
-      '[aria-controls="${DOSSIER_IDS.recipeDrawer}"],' +
-      '[popovertarget="${DOSSIER_IDS.recipeDrawer}"],' +
-      '[commandfor="${DOSSIER_IDS.recipeDrawer}"]'
-    );
-    if (!drawer || !trigger) return { found: false };
-    trigger.focus();
-    trigger.click();
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const rect = drawer.getBoundingClientRect();
-    const viewport = globalThis.visualViewport;
-    let popoverOpen = false;
-    try { popoverOpen = drawer.matches(':popover-open'); } catch {}
-    const open = drawer.open || popoverOpen || drawer.getAttribute('aria-hidden') === 'false';
-    const result = {
-      found: true,
-      open,
-      fullWidth: Math.abs(rect.width - (viewport?.width ?? innerWidth)) <= 1,
-      fullHeight: Math.abs(rect.height - (viewport?.height ?? innerHeight)) <= 1,
-      focusInside: drawer.contains(document.activeElement),
+async function sourceSnapshot(harness) {
+  return harness.evaluate(`(() => {
+    const dialog = document.getElementById('source-inspector');
+    const frame = dialog?.querySelector('.source-inspector-frame');
+    const cell = dialog?.querySelector('[data-source-cell]');
+    const code = frame?.querySelector('pre');
+    const frameStyle = frame ? getComputedStyle(frame) : null;
+    return {
+      open: dialog?.open === true,
+      visibleCells: [...dialog?.querySelectorAll('[data-source-cell]') ?? []]
+        .filter((element) => element.getClientRects().length > 0).length,
+      protected: cell?.dataset.protected,
+      editable: cell?.dataset.editable,
+      editableDescendants: cell?.querySelectorAll('input, textarea, select, [contenteditable="true"]').length ?? 0,
+      dialogWithinViewport:
+        Boolean(dialog) &&
+        dialog.getBoundingClientRect().width <= innerWidth + 1 &&
+        dialog.getBoundingClientRect().height <= innerHeight + 1,
+      localScroll:
+        Boolean(frameStyle) &&
+        /(auto|scroll)/.test(frameStyle.overflowX) &&
+        /(auto|scroll)/.test(frameStyle.overflowY),
+      wrapControl: Boolean(dialog?.querySelector('button[aria-pressed]')),
+      codeWhiteSpace: code ? getComputedStyle(code).whiteSpace : '',
     };
-    return result;
   })()`);
 }
 
-async function compactInspectorSnapshot(harness) {
-  return harness.evaluate(`(async () => {
-    const inspector = document.getElementById(${JSON.stringify(DOSSIER_IDS.sourceInspector)});
-    const trigger = document.querySelector(
-      '[aria-controls="${DOSSIER_IDS.sourceInspector}"],' +
-      '[popovertarget="${DOSSIER_IDS.sourceInspector}"],' +
-      '[commandfor="${DOSSIER_IDS.sourceInspector}"],' +
-      '[data-open-inspector="source"]'
+async function validationFocusSnapshot(harness) {
+  const before = await harness.evaluate("document.querySelector('[data-wizard-step]')?.dataset.wizardStep");
+  await harness.evaluate(`(() => {
+    const button = [...document.querySelectorAll('#wizard-action-bar button')]
+      .find((candidate) => candidate.textContent.trim() === 'Continue');
+    button?.click();
+    return true;
+  })()`);
+  await settle(harness);
+  return harness.evaluate(`(() => ({
+    before: ${JSON.stringify(before)},
+    after: document.querySelector('[data-wizard-step]')?.dataset.wizardStep,
+    activePath: document.activeElement?.closest('[data-parameter-path]')?.dataset.parameterPath ?? '',
+    invalid: document.activeElement?.getAttribute('aria-invalid') === 'true',
+  }))()`);
+}
+
+async function approvalInvalidationSnapshot(harness) {
+  const acknowledgement = await harness.evaluate(`(() => {
+    const input = document.querySelector('#dossier-review input[type="checkbox"]');
+    if (!input) return false;
+    input.click();
+    return input.checked;
+  })()`);
+  await setValues(harness, { 'hub.resourceGroupName': 'rg-wizard-acceptance-updated' });
+  return harness.evaluate(`(() => ({
+    acknowledgementInitiallySet: ${JSON.stringify(acknowledgement)},
+    acknowledgementNowSet: document.querySelector('#dossier-review input[type="checkbox"]')?.checked ?? false,
+    step: document.querySelector('[data-wizard-step]')?.dataset.wizardStep,
+  }))()`);
+}
+
+async function acknowledgementGateSnapshot(harness) {
+  await navigateToRecipe(harness, 'publish-assets');
+  if (!(await preparePublishReview(harness))) return { reachedReview: false };
+  const before = await harness.evaluate(`(() => {
+    const run = [...document.querySelectorAll('#wizard-action-bar button')]
+      .find((candidate) => /^Run sample/.test(candidate.textContent.trim()));
+    const acknowledgement = document.querySelector('#dossier-review input[type="checkbox"]');
+    return {
+      runDisabled: run?.disabled === true,
+      acknowledgementPresent: Boolean(acknowledgement),
+    };
+  })()`);
+  await harness.evaluate(`(() => {
+    const acknowledgement = document.querySelector('#dossier-review input[type="checkbox"]');
+    if (acknowledgement && !acknowledgement.checked) acknowledgement.click();
+    return true;
+  })()`);
+  await settle(harness);
+  return {
+    reachedReview: true,
+    ...before,
+    runEnabledAfterAcknowledgement: await harness.evaluate(`(() => {
+      const run = [...document.querySelectorAll('#wizard-action-bar button')]
+        .find((candidate) => /^Run sample/.test(candidate.textContent.trim()));
+      return run?.disabled === false;
+    })()`),
+  };
+}
+
+async function contextLossInvalidationSnapshot(harness) {
+  await navigateToRecipe(harness, 'publish-assets');
+  if (!(await preparePublishReview(harness))) return { reachedReview: false };
+  const acknowledgementInitiallySet = await harness.evaluate(`(() => {
+    const acknowledgement = document.querySelector('#dossier-review input[type="checkbox"]');
+    if (acknowledgement && !acknowledgement.checked) acknowledgement.click();
+    return acknowledgement?.checked === true;
+  })()`);
+  await harness.evaluate(`(() => {
+    globalThis.__citadelTestHooks.installContext(null, 'unavailable');
+    return true;
+  })()`);
+  await settle(harness);
+  return harness.evaluate(`(() => ({
+    reachedReview: true,
+    acknowledgementInitiallySet: ${JSON.stringify(acknowledgementInitiallySet)},
+    acknowledgementNowSet: document.querySelector('#dossier-review input[type="checkbox"]')?.checked ?? false,
+    step: document.querySelector('[data-wizard-step]')?.dataset.wizardStep,
+  }))()`);
+}
+
+async function invalidValueFocusSnapshot(harness) {
+  await navigateToRecipe(harness, 'apim-discovery');
+  await setValues(harness, {
+    'hub.subscriptionId': 'bad',
+    'hub.resourceGroupName': 'rg-wizard-acceptance',
+  });
+  return validationFocusSnapshot(harness);
+}
+
+async function hostedGatewaySnapshot(harness) {
+  await navigateToRecipe(harness, 'weather-mcp-discovery');
+  await harness.evaluate(`(() => {
+    globalThis.__citadelTestHooks.installContext({
+      kind: 'hosted-relay',
+      label: 'Hosted relay',
+      state: 'ready',
+      canExecute: true,
+      summary: 'The hosted relay owns its target policy and gateway credential.',
+      authority: {
+        principalName: 'requester@example.test',
+        principalType: 'user',
+        tenantId: 'acceptance-tenant'
+      },
+      subscription: null,
+      gateway: null,
+      hostedRelay: {
+        relayIdentity: 'mi-citadel-relay',
+        keySource: 'Key Vault mapping',
+        targetPolicy: 'weather gateway policy'
+      },
+      guarantees: {}
+    });
+    return true;
+  })()`);
+  await settle(harness);
+  return harness.evaluate(`(() => ({
+    title: document.getElementById('wizard-step-title')?.textContent ?? '',
+    identityKind: document.querySelector('.execution-context-bar')?.dataset.identityKind ?? '',
+    hostedPath: Boolean(document.querySelector('.hosted-identity-path')),
+    gatewayKeyField: Boolean(
+      document.querySelector('[data-parameter-path="gatewayAccess.apiKey"]')
+    ),
+    azureAccountControls: /Sign in with Microsoft|Switch Azure account|Set Active/
+      .test(document.body.textContent ?? ''),
+  }))()`);
+}
+
+async function crossRecipeHistorySnapshot(harness) {
+  await navigateToRecipe(harness, 'publish-assets');
+  await preparePublishReview(harness);
+  const reviewHref = await harness.evaluate('location.href');
+  await harness.evaluate(`(() => {
+    window.confirm = () => true;
+    const item = document.querySelector(
+      '.recipe-directory-item[data-recipe-id="weather-mcp-discovery"]'
     );
-    const compactSurfaces = ${JSON.stringify([
-      DOSSIER_IDS.sourceInspector,
-      DOSSIER_IDS.provenanceDrawer,
-      DOSSIER_IDS.diagnosticsDrawer,
-    ])}.map((id) => document.getElementById(id)).filter(Boolean);
-    if (!inspector || !trigger) return { found: false };
-    trigger.focus();
-    trigger.click();
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    let modal = false;
-    let popoverOpen = false;
-    try { modal = inspector.matches(':modal'); } catch {}
-    try { popoverOpen = inspector.matches(':popover-open'); } catch {}
-    const rect = inspector.getBoundingClientRect();
-    const visual = globalThis.visualViewport;
+    item?.click();
+    return Boolean(item);
+  })()`);
+  await harness.waitFor(
+    "document.querySelector('.dossier-current-id')?.textContent === 'weather-mcp-discovery' && new URL(location.href).searchParams.get('recipe') === 'weather-mcp-discovery'",
+    { label: 'gateway recipe before history restoration' },
+  );
+  await harness.evaluate('history.back()');
+  await harness.waitFor(
+    "document.querySelector('.dossier-current-id')?.textContent === 'publish-assets'",
+    { label: 'Publish Assets history restoration' },
+  );
+  await settle(harness);
+  return harness.evaluate(`(() => ({
+    expectedHref: ${JSON.stringify(reviewHref)},
+    href: location.href,
+    step: document.querySelector('[data-wizard-step]')?.dataset.wizardStep,
+  }))()`);
+}
+
+async function destructiveDialogSnapshot(harness) {
+  const opened = await harness.evaluate(`(() => {
+    const button = [...document.querySelectorAll('#wizard-action-bar button')]
+      .find((candidate) => /^Run sample/.test(candidate.textContent.trim()));
+    button?.focus();
+    button?.click();
+    return Boolean(button && !button.disabled);
+  })()`);
+  if (!opened) return { opened: false };
+  await harness.waitFor("document.getElementById('destructive-run-dialog')?.open === true", {
+    label: 'destructive confirmation dialog',
+  });
+  const snapshot = await harness.evaluate(`(() => {
+    const dialog = document.getElementById('destructive-run-dialog');
+    return {
+      opened: dialog?.open === true,
+      focusInside: dialog?.contains(document.activeElement) === true,
+      text: dialog?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
+      requiredText: dialog?.querySelector('input')?.getAttribute('data-required-text') ??
+        dialog?.querySelector('input')?.getAttribute('placeholder') ?? '',
+    };
+  })()`);
+  await harness.page.send('Input.dispatchKeyEvent', {
+    type: 'rawKeyDown',
+    key: 'Escape',
+    code: 'Escape',
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+  });
+  await harness.page.send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'Escape',
+    code: 'Escape',
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+  });
+  await harness.waitFor("document.getElementById('destructive-run-dialog')?.open !== true", {
+    label: 'destructive confirmation dialog to close',
+  });
+  return {
+    ...snapshot,
+    focusReturned: await harness.evaluate(
+      "document.activeElement?.closest('#wizard-action-bar') != null",
+    ),
+  };
+}
+
+async function secretSnapshot(harness) {
+  await navigateToRecipe(harness, 'weather-mcp-discovery');
+  await setValues(harness, { 'hub.gatewayUrl': 'https://gateway.example.test' });
+  await harness.evaluate(`(() => {
+    const row = [...document.querySelectorAll('[data-parameter-path]')]
+      .find((candidate) => candidate.dataset.parameterPath === 'gatewayAccess.apiKey');
+    const control = row?.querySelector('input[type="password"]');
+    if (!control) return false;
+    control.focus();
+    control.value = ${JSON.stringify(SECRET)};
+    control.dataset.acceptanceIdentity = 'secret-control';
+    control.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`);
+  await harness.evaluate('new Promise((resolve) => setTimeout(resolve, 400))');
+  return harness.evaluate(`(() => {
+    const secret = ${JSON.stringify(SECRET)};
+    const row = [...document.querySelectorAll('[data-parameter-path]')]
+      .find((candidate) => candidate.dataset.parameterPath === 'gatewayAccess.apiKey');
+    const control = row?.querySelector('input');
+    const attributeLeak = [...document.querySelectorAll('*')].some((element) =>
+      [...element.attributes].some((attribute) => attribute.value.includes(secret))
+    );
+    return {
+      controlType: control?.type ?? '',
+      controlHasValue: control?.value === secret,
+      controlIdentityPreserved: control?.dataset.acceptanceIdentity === 'secret-control',
+      textLeak: document.body.textContent.includes(secret),
+      markupLeak: document.documentElement.outerHTML.includes(secret),
+      attributeLeak,
+      browserPersistentLeak: Object.values(globalThis['local' + 'Storage']).some((value) => value.includes(secret)),
+      browserSessionLeak: Object.values(globalThis['session' + 'Storage']).some((value) => value.includes(secret)),
+    };
+  })()`);
+}
+
+async function typingContinuitySnapshot(harness) {
+  await navigateToRecipe(harness, 'weather-mcp-discovery');
+  return harness.evaluate(`(async () => {
+    const row = [...document.querySelectorAll('[data-parameter-path]')]
+      .find((candidate) => candidate.dataset.parameterPath === 'hub.gatewayUrl');
+    const control = row?.querySelector('input');
+    if (!control) return { found: false };
+    control.dataset.acceptanceIdentity = 'gateway-url-control';
+    control.focus();
+    control.value = 'https://gateway.example.test/very/long/operator/path';
+    control.setSelectionRange(29, 29);
+    control.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 400));
     return {
       found: true,
-      open: inspector.open || popoverOpen || inspector.getAttribute('aria-hidden') === 'false',
-      topLayer: modal || popoverOpen,
-      fullWidth: Math.abs(rect.width - (visual?.width ?? innerWidth)) <= 1,
-      focusInside: inspector.contains(document.activeElement),
-      allCompactSurfacesUseTopLayerSemantics: compactSurfaces.every((surface) =>
-        surface.tagName === 'DIALOG' || surface.hasAttribute('popover')
-      ),
+      value: control.value,
+      active: document.activeElement === control,
+      selectionStart: control.selectionStart,
+      identityPreserved: control.dataset.acceptanceIdentity === 'gateway-url-control',
     };
   })()`);
 }
 
-async function runResponsiveScenarios(harness, reporter) {
-  for (const scenario of DOSSIER_ACCEPTANCE_SCENARIOS.slice(0, 4)) {
-    await harness.page.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 });
-    await harness.page.send('Emulation.setEmulatedMedia', { media: '', features: [] });
-    await harness.setViewport(scenario);
-    await settle(harness);
-    const snapshot = await viewportSnapshot(harness, scenario);
-    reportIssues(
-      reporter,
-      `${scenario.name}: responsive contract`,
-      viewportContractIssues(snapshot, scenario),
-    );
-    if (scenario.name === 'phone') {
-      const picker = await openPhoneRecipePickerSnapshot(harness);
-      reporter.check(
-        'phone recipe picker opens full-height with focus inside',
-        picker.found && picker.open && picker.fullWidth && picker.fullHeight && picker.focusInside,
-        JSON.stringify(picker),
-      );
-      await harness.pressKey('Escape');
-      await settle(harness);
-      const inspector = await compactInspectorSnapshot(harness);
-      reporter.check(
-        'compact inspectors use top-layer semantics and protected source opens full-width',
-        inspector.found &&
-          inspector.open &&
-          inspector.topLayer &&
-          inspector.fullWidth &&
-          inspector.focusInside &&
-          inspector.allCompactSurfacesUseTopLayerSemantics,
-        JSON.stringify(inspector),
-      );
-      await harness.pressKey('Escape');
-      await settle(harness);
-    }
-    if (scenario.name === 'phone-small') {
-      const focusIssues = await visibleFocusIssues(harness);
-      reporter.check(
-        '320x480 keeps every primary focus target visible and uncovered',
-        focusIssues.length === 0,
-        focusIssues.join(', '),
-      );
-    }
-    await captureScreenshot(harness, scenario);
-  }
-}
-
-async function runZoomScenario(harness, reporter) {
-  const scenario = currentScenario('zoom-200-percent');
-  await harness.setViewport(scenario);
-  let supported = true;
-  try {
-    await harness.page.send('Emulation.setPageScaleFactor', { pageScaleFactor: 2 });
-  } catch {
-    supported = false;
-  }
-  await settle(harness);
-  const zoom = await harness.evaluate(`(() => ({
-    scale: globalThis.visualViewport?.scale ?? 1,
-    documentWidth: document.documentElement.scrollWidth,
-    viewportWidth: document.documentElement.clientWidth,
-    shellWidth: document.getElementById(${JSON.stringify(DOSSIER_IDS.shell)})?.scrollWidth ?? 0,
-  }))()`);
-  reporter.check(
-    'Chromium applies a true 200% page scale',
-    supported && zoom.scale >= 1.9,
-    JSON.stringify(zoom),
-  );
-  reporter.check(
-    '200% zoom has no layout-level horizontal clipping',
-    zoom.documentWidth <= zoom.viewportWidth + 1 && zoom.shellWidth <= zoom.viewportWidth + 1,
-    JSON.stringify(zoom),
-  );
-  const focusIssues = await visibleFocusIssues(harness);
-  reporter.check(
-    '200% zoom keeps every primary focus target visible and uncovered',
-    focusIssues.length === 0,
-    focusIssues.join(', '),
-  );
-  await captureScreenshot(harness, scenario);
-  await harness.page.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 });
-  await harness.setViewport({ width: 640, height: 450, mobile: false });
-  await settle(harness);
-  const reflow = await harness.evaluate(`(() => ({
-    documentWidth: document.documentElement.scrollWidth,
-    viewportWidth: document.documentElement.clientWidth,
-    shellWidth: document.getElementById(${JSON.stringify(DOSSIER_IDS.shell)})?.scrollWidth ?? 0,
-    compactStageProgress: Boolean(
-      document.querySelector('[data-dossier-stage-progress], .dossier-stage-progress')?.getClientRects().length
-    ),
-  }))()`);
-  reporter.check(
-    'the 200%-equivalent layout viewport reflows without horizontal clipping',
-    reflow.documentWidth <= reflow.viewportWidth + 1 &&
-      reflow.shellWidth <= reflow.viewportWidth + 1 &&
-      reflow.compactStageProgress,
-    JSON.stringify(reflow),
-  );
-}
-
-async function runReducedMotionScenario(harness, reporter) {
-  const scenario = currentScenario('reduced-motion');
-  await harness.setViewport(scenario);
-  await harness.page.send('Emulation.setEmulatedMedia', {
-    media: '',
-    features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
+async function gatewayKeyNavigationSnapshot(harness) {
+  await navigateToRecipe(harness, 'weather-mcp-discovery');
+  await setValues(harness, {
+    'hub.gatewayUrl': 'https://gateway.example.test',
+    'gatewayAccess.apiKey': SECRET,
   });
-  await settle(harness);
-  const motion = await harness.evaluate(`(() => {
-    const seconds = (value) => value.split(',').map((entry) => {
-      const trimmed = entry.trim();
-      return trimmed.endsWith('ms') ? Number.parseFloat(trimmed) / 1000 : Number.parseFloat(trimmed) || 0;
-    });
-    const offenders = [];
-    for (const node of document.querySelectorAll('#${DOSSIER_IDS.shell} *')) {
-      const style = getComputedStyle(node);
-      const maximum = Math.max(...seconds(style.animationDuration), ...seconds(style.transitionDuration));
-      if (maximum > 0.011) offenders.push(node.id || node.className || node.tagName);
-    }
-    return { matches: matchMedia('(prefers-reduced-motion: reduce)').matches, offenders };
+  if (!(await advanceToReview(harness))) return { reachedReview: false };
+  const clicked = await harness.evaluate(`(() => {
+    const button = [...document.querySelectorAll('button')]
+      .find((candidate) => candidate.textContent.trim() === 'Manage gateway key');
+    button?.click();
+    return Boolean(button);
   })()`);
-  reporter.check(
-    'reduced motion removes material dossier animation',
-    motion.matches && motion.offenders.length === 0,
-    JSON.stringify(motion.offenders),
+  if (!clicked) return { reachedReview: true, clicked: false };
+  await harness.waitFor(
+    "document.querySelector('[data-wizard-step]')?.dataset.wizardStep === 'account-target'",
+    { label: 'Gateway connection after Manage gateway key' },
   );
-  await captureScreenshot(harness, scenario);
-  await harness.page.send('Emulation.setEmulatedMedia', { media: '', features: [] });
+  await settle(harness);
+  return harness.evaluate(`(() => ({
+    reachedReview: true,
+    clicked: true,
+    step: document.querySelector('[data-wizard-step]')?.dataset.wizardStep,
+    activePath: document.activeElement?.closest('[data-parameter-path]')?.dataset.parameterPath ?? '',
+    activeType: document.activeElement?.getAttribute('type') ?? '',
+  }))()`);
 }
 
-async function runForcedColorsScenario(harness, reporter) {
-  const scenario = currentScenario('forced-colors');
+async function destructiveInvalidationSnapshot(harness) {
+  await navigateToRecipe(harness, 'cleanup');
+  if (!(await prepareCleanupReview(harness))) return { reachedReview: false };
+  const opened = await harness.evaluate(`(() => {
+    const button = [...document.querySelectorAll('#wizard-action-bar button')]
+      .find((candidate) => /^Run sample/.test(candidate.textContent.trim()));
+    button?.click();
+    return document.getElementById('destructive-run-dialog')?.open === true;
+  })()`);
+  if (!opened) return { reachedReview: true, opened: false };
+  await harness.evaluate(`(() => {
+    globalThis.__citadelTestHooks.setValue(
+      'hub.resourceGroupName',
+      'rg-wizard-acceptance-changed-after-dialog'
+    );
+    return true;
+  })()`);
+  await settle(harness);
+  return harness.evaluate(`(() => ({
+    reachedReview: true,
+    opened: true,
+    dialogStillPresent: Boolean(document.getElementById('destructive-run-dialog')),
+    step: document.querySelector('[data-wizard-step]')?.dataset.wizardStep,
+    acknowledgement: document.querySelector('#dossier-review input[type="checkbox"]')?.checked ?? false,
+  }))()`);
+}
+
+async function activeRunIsolationSnapshot(harness) {
+  await navigateToRecipe(harness, 'publish-assets');
+  await preparePublishReview(harness);
+  await harness.evaluate(`(() => {
+    const acknowledgement = document.querySelector('#dossier-review input[type="checkbox"]');
+    if (acknowledgement && !acknowledgement.checked) acknowledgement.click();
+    return true;
+  })()`);
+  await harness.evaluate(`(() => {
+    let finish;
+    let cancelled = 0;
+    globalThis.__citadelAcceptanceRun = {
+      finish(result) {
+        finish?.(result);
+      },
+      cancelled: () => cancelled,
+    };
+    globalThis.__citadelTestHooks.installExecutor({
+      describeCapability: () => ({
+        id: 'active-run-isolation',
+        kind: 'local',
+        canExecute: true,
+        supportedStepTypes: [],
+        reason: 'loopback-only active run isolation'
+      }),
+      supports: () => ({ supported: true, unsupportedStepTypes: [] }),
+      cancel: async () => {
+        cancelled += 1;
+        finish?.({
+          state: 'cancelled',
+          sampleId: 'publish-assets',
+          summary: 'Loopback run cancelled.',
+          detail: '',
+          steps: [],
+          assertions: [],
+          configurationUpdates: {},
+          secretUpdates: {},
+          meta: {
+            executor: 'local',
+            executionMode: 'local',
+            runId: 'active-run-0001',
+            artifacts: [],
+            azureContacted: false,
+            liveEvidence: false
+          }
+        });
+        return { cancelled: true };
+      },
+      execute: async (_plan, context = {}) => {
+        context.onProgress?.({
+          type: 'run-start',
+          runId: 'active-run-0001',
+          sampleId: 'publish-assets',
+          workspace: '.'
+        });
+        context.onProgress?.({
+          type: 'step',
+          sampleId: 'weather-mcp-discovery',
+          runId: 'different-run',
+          step: { id: 'foreign-step', state: 'completed', summary: 'Must not render' }
+        });
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      }
+    });
+    const button = [...document.querySelectorAll('#wizard-action-bar button')]
+      .find((candidate) => /^Run sample/.test(candidate.textContent.trim()));
+    button?.click();
+    return Boolean(button && !button.disabled);
+  })()`);
+  await harness.waitFor(
+    "document.querySelector('[data-wizard-step]')?.dataset.wizardStep === 'run-result'",
+    { label: 'active Run & result step' },
+  );
+  await settle(harness);
+  const beforeHistory = await harness.evaluate(`(() => ({
+    href: location.href,
+    length: history.length,
+    step: document.querySelector('[data-wizard-step]')?.dataset.wizardStep,
+    actionText: document.getElementById('wizard-action-bar')?.textContent.replace(/\\s+/g, ' ').trim() ?? '',
+  }))()`);
+  await harness.evaluate(`(() => {
+    document.querySelector('.recipe-directory-item[data-recipe-id="weather-mcp-discovery"]')?.click();
+    history.back();
+    return true;
+  })()`);
+  await harness.evaluate('new Promise((resolve) => setTimeout(resolve, 150))');
+  const during = await harness.evaluate(`(() => ({
+    recipeId: document.querySelector('.dossier-current-id')?.textContent ?? '',
+    step: document.querySelector('[data-wizard-step]')?.dataset.wizardStep,
+    recipeDisabled: document.querySelector(
+      '.recipe-directory-item[data-recipe-id="weather-mcp-discovery"]'
+    )?.disabled === true,
+    foreignProgressVisible: document.body.textContent.includes('Must not render'),
+  }))()`);
+  const cancelClicked = await harness.evaluate(`(() => {
+    const button = [...document.querySelectorAll('#wizard-action-bar button')]
+      .find((candidate) => candidate.textContent.trim() === 'Cancel run');
+    button?.click();
+    return Boolean(button);
+  })()`);
+  await harness.evaluate('new Promise((resolve) => setTimeout(resolve, 500))');
+  return {
+    beforeHistory,
+    ...during,
+    cancelClicked,
+    cancelCalls: await harness.evaluate('globalThis.__citadelAcceptanceRun.cancelled()'),
+    actionText: await harness.evaluate(
+      "document.getElementById('wizard-action-bar')?.textContent.replace(/\\s+/g, ' ').trim() ?? ''",
+    ),
+  };
+}
+
+async function runScenario(harness, reporter, scenario) {
+  await harness.page.send('Emulation.setPageScaleFactor', { pageScaleFactor: 1 }).catch(() => {});
+  await harness.page.send('Emulation.setEmulatedMedia', { media: '', features: [] });
   await harness.setViewport(scenario);
-  try {
+  await navigateToRecipe(harness, scenario.recipeId);
+
+  if (scenario.review) {
+    reporter.check(`${scenario.name}: reached Review & approve`, await prepareCleanupReview(harness));
+  }
+  if (scenario.openHelpPath) {
+    reporter.check(`${scenario.name}: opened concise field help`, await openFieldHelp(harness, scenario.openHelpPath));
+  }
+  if (scenario.openSource) {
+    reporter.check(`${scenario.name}: opened protected source`, await openSource(harness));
+  }
+  if (scenario.openDiagnostics) {
+    reporter.check(`${scenario.name}: opened offline diagnostics`, await openDiagnostics(harness));
+  }
+  if (scenario.reducedMotion) {
+    await harness.page.send('Emulation.setEmulatedMedia', {
+      media: '',
+      features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
+    });
+  }
+  if (scenario.forcedColors) {
     await harness.page.send('Emulation.setEmulatedMedia', {
       media: '',
       features: [{ name: 'forced-colors', value: 'active' }],
-    });
-  } catch {
-    process.stdout.write('  skip forced-colors: Chromium does not expose forced-colors emulation\n');
-    return;
+    }).catch(() => {});
   }
   await settle(harness);
-  const contrast = await harness.evaluate(`(() => {
-    if (!matchMedia('(forced-colors: active)').matches) return { supported: false };
-    const target = document.querySelector('#${DOSSIER_IDS.dossier} button, #${DOSSIER_IDS.dossier} input');
-    target?.focus();
-    const style = target ? getComputedStyle(target) : null;
-    const shellStyle = getComputedStyle(document.getElementById(${JSON.stringify(DOSSIER_IDS.shell)}));
-    return {
-      supported: true,
-      focusVisible: Boolean(style && style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) >= 2),
-      canvasBackground: shellStyle.backgroundColor,
-      targetFound: Boolean(target),
-    };
-  })()`);
-  if (!contrast.supported) {
-    process.stdout.write('  skip forced-colors: this Chromium build did not activate the media feature\n');
-  } else {
-    reporter.check(
-      'forced colors retains a visible focus boundary',
-      contrast.targetFound && contrast.focusVisible,
-      JSON.stringify(contrast),
-    );
-    await captureScreenshot(harness, scenario);
-  }
-  await harness.page.send('Emulation.setEmulatedMedia', { media: '', features: [] });
-}
 
-async function secretAbsenceSnapshot(harness, secretPath) {
-  return harness.evaluate(`(() => {
-    const secret = ${JSON.stringify(SECRET)};
-    const secretPath = ${JSON.stringify(secretPath)};
-    const attributes = [];
-    for (const element of document.querySelectorAll('*')) {
-      for (const attribute of element.attributes) {
-        if (attribute.value.includes(secret)) attributes.push(element.tagName + '[' + attribute.name + ']');
-      }
+  if (!scenario.openSource && !scenario.openDiagnostics) {
+    const wizard = await wizardSnapshot(harness);
+    reportIssues(reporter, `${scenario.name}: dynamic wizard contract`, wizardStepIssues(wizard));
+    reportIssues(
+      reporter,
+      `${scenario.name}: fields expose label, name, and autocomplete`,
+      fieldContractIssues(wizard.fields),
+    );
+    reporter.check(`${scenario.name}: future steps are launch-gated`, wizard.futureStepDisabled);
+    reporter.check(`${scenario.name}: one wizard action surface is visible`, wizard.actionVisible);
+    reporter.check(`${scenario.name}: no device-flow content is rendered`, !wizard.deviceFlowContent);
+    if (scenario.recipeId === 'weather-mcp-discovery') {
+      reporter.equal(`${scenario.name}: gateway identity is explicit`, wizard.identityKind, 'gateway-key');
+      reporter.check(`${scenario.name}: gateway recipe has no Azure account controls`, !wizard.azureAccountControls);
+      reporter.includes(`${scenario.name}: gateway step title is correct`, wizard.title, 'Gateway connection');
     }
-    const secretRow = [...document.querySelectorAll('[data-parameter-path]')]
-      .find((row) => row.dataset.parameterPath === secretPath);
-    const secretControl = secretRow?.querySelector('input, textarea');
-    return {
-      controlCarriesSecret: secretControl?.value === secret,
-      controlType: secretControl?.type ?? '',
-      text: document.body.textContent.includes(secret),
-      markup: document.documentElement.outerHTML.includes(secret),
-      attributes,
-      localStorage: Object.values(localStorage).some((value) => value.includes(secret)),
-      sessionStorage: Object.values(sessionStorage).some((value) => value.includes(secret)),
-    };
-  })()`);
+    if (scenario.recipeId === 'apim-discovery') {
+      reporter.includes(`${scenario.name}: Azure step title is correct`, wizard.title, 'Azure account & target');
+      reporter.check(
+        `${scenario.name}: unsupported browser login fails closed to terminal handoff`,
+        wizard.terminalFallback && !wizard.azureAccountControls,
+      );
+    }
+  }
+
+  if (!scenario.openSource && !scenario.openDiagnostics) {
+    reportIssues(
+      reporter,
+      `${scenario.name}: responsive wizard contract`,
+      viewportContractIssues(await viewportSnapshot(harness), scenario),
+    );
+  }
+
+  if (scenario.openHelpPath) {
+    const help = await helpSnapshot(harness, scenario.openHelpPath);
+    reporter.check(
+      `${scenario.name}: recovery help stays concise and operator-facing`,
+      help.found &&
+        help.open &&
+        help.hasRecovery &&
+        help.hasManual &&
+        !help.exposesInternalPath &&
+        !help.nestedScroller &&
+        help.lineEstimate <= 8,
+      JSON.stringify(help),
+    );
+  }
+
+  if (scenario.openSource) {
+    const source = await sourceSnapshot(harness);
+    reporter.check(
+      `${scenario.name}: source is one immutable bounded cell with local scrolling`,
+      source.open &&
+        source.visibleCells === 1 &&
+        source.protected === 'true' &&
+        source.editable === 'false' &&
+        source.editableDescendants === 0 &&
+        source.dialogWithinViewport &&
+        source.localScroll,
+      JSON.stringify(source),
+    );
+  }
+
+  if (scenario.deviceScaleFactor) {
+    const zoom = await harness.evaluate(`(() => ({
+      devicePixelRatio,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+    }))()`);
+    reporter.check(
+      `${scenario.name}: 200% effective reflow uses a halved CSS viewport without clipping`,
+      zoom.devicePixelRatio >= 1.9 &&
+        zoom.viewportWidth <= 640 &&
+        zoom.documentWidth <= zoom.viewportWidth + 1,
+      JSON.stringify(zoom),
+    );
+  }
+
+  if (scenario.reducedMotion) {
+    const motion = await harness.evaluate(`(() => {
+      const offenders = [];
+      for (const element of document.querySelectorAll('#dossier-shell *')) {
+        const style = getComputedStyle(element);
+        const values = [style.animationDuration, style.transitionDuration]
+          .flatMap((value) => value.split(','))
+          .map((value) => value.trim().endsWith('ms')
+            ? Number.parseFloat(value) / 1000
+            : Number.parseFloat(value) || 0);
+        if (Math.max(...values) > 0.011) offenders.push(element.id || element.className || element.tagName);
+      }
+      return {
+        matches: matchMedia('(prefers-reduced-motion: reduce)').matches,
+        offenders,
+      };
+    })()`);
+    reporter.check(
+      `${scenario.name}: reduced motion removes material animation`,
+      motion.matches && motion.offenders.length === 0,
+      motion.offenders.join(', '),
+    );
+  }
+
+  if (scenario.forcedColors) {
+    const contrast = await harness.evaluate(`(() => {
+      if (!matchMedia('(forced-colors: active)').matches) return { supported: false };
+      const target = document.querySelector('#dossier-shell button:not([disabled])');
+      target?.focus();
+      const style = target ? getComputedStyle(target) : null;
+      return {
+        supported: true,
+        focusVisible: Boolean(style && style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) >= 2),
+      };
+    })()`);
+    if (contrast.supported) {
+      reporter.check(`${scenario.name}: focus remains visible`, contrast.focusVisible);
+    }
+  }
+
+  await captureScreenshot(harness, scenario);
 }
 
 async function main() {
-  const reporter = createCheckReporter({ name: 'dossier browser acceptance' });
-  const defaultSample =
-    CATALOGUE.samples.find((sample) => sample.configurationEntries.some((entry) => entry.blockingWhenBlank)) ??
-    CATALOGUE.samples[0];
-  const destructiveSample = CATALOGUE.samples.find((sample) => sample.risk.level === 'destructive');
-  const secretSample = CATALOGUE.samples.find((sample) =>
-    sample.configurationEntries.some((entry) => entry.secret === true || entry.requirement === 'secret'),
-  );
-  if (!defaultSample || !destructiveSample || !secretSample) {
-    throw new Error('The dossier acceptance recipes are unavailable.');
-  }
-
-  await prepareArtifactDirectory();
+  const reporter = createCheckReporter({ name: 'wizard browser acceptance' });
+  await prepareArtifacts();
   const harness = await launchBrowserHarness({
     browserPath: argumentValue('--chrome'),
-    createServer: ({ port }) =>
-      createPlaygroundServer({ port, mode: 'preview', publicOrigin: null }),
-    path: 'about:blank',
+    createServer: ({ port, testBootstrapCapability }) =>
+      createPlaygroundServer({
+        port,
+        mode: 'preview',
+        publicOrigin: null,
+        testBootstrapCapability,
+      }),
+    path: '/?testExecutor',
   });
-  let guard = null;
+  let guard;
   try {
-    guard = await installLoopbackRequestGuard(harness);
-    await navigateToRecipe(harness, defaultSample.id);
+    await waitForWizard(harness, 'azure-context-check');
+    guard = await installRequestGuard(harness);
+
+    await navigateToRecipe(harness, 'publish-assets');
+    const validation = await validationFocusSnapshot(harness);
     reporter.check(
-      'the acceptance page is loopback-only with the explicit testExecutor flag',
-      await harness.evaluate(
-        `location.hostname === '127.0.0.1' && new URLSearchParams(location.search).has('testExecutor')`,
-      ),
+      'Continue validates the current step and focuses its first invalid field',
+      validation.before === validation.after && validation.invalid && validation.activePath.length > 0,
+      JSON.stringify(validation),
     );
 
-    const staticSnapshot = await staticContractSnapshot(harness);
-    reportIssues(reporter, 'primary semantic order is context -> inputs -> review -> output', semanticOrderIssues(staticSnapshot.order));
-    reporter.equal('there are no top-level workflow tabs', staticSnapshot.topLevelTabs, 0);
-    reporter.check('tabs are confined to output views', staticSnapshot.outputOnlyTabs, JSON.stringify(staticSnapshot.outputTabNames));
-    reporter.check(
-      'output tabs use only transcript, evidence, and artifacts',
-      JSON.stringify(
-        staticSnapshot.outputTabNames
-          .map((name) => DOSSIER_OUTPUT_VIEWS.find((view) => String(name).toLowerCase().includes(view)))
-          .sort(),
-      ) === JSON.stringify([...DOSSIER_OUTPUT_VIEWS].sort()),
-      JSON.stringify(staticSnapshot.outputTabNames),
-    );
-    reporter.check('the source inspector follows the primary document as a secondary surface', staticSnapshot.sourceInspectorSecondary);
-    reportIssues(reporter, 'input fields have labels, names, and autocomplete policies', fieldContractIssues(staticSnapshot.fields));
-    reporter.check('output exposes an assistive-technology log', staticSnapshot.roleLogCount >= 1);
-    reporter.check('the dossier exposes no device-code sign-in content', staticSnapshot.deviceCodeContent === false);
+    await navigateToRecipe(harness, 'weather-mcp-discovery');
+    const gatewayWizard = await wizardSnapshot(harness);
+    reporter.equal('gateway recipes dynamically skip the Required inputs step', gatewayWizard.stepCount, 4);
 
-    const source = await sourceImmutabilitySnapshot(harness, defaultSample.id);
-    reporter.equal('protected source endpoint remains local and available', source.status, 200);
+    await navigateToRecipe(harness, 'publish-assets');
+    reporter.check('Publish Assets can reach its approval step', await preparePublishReview(harness));
+    const invalidation = await approvalInvalidationSnapshot(harness);
     reporter.check(
-      'protected source is exact and immutable in the inspector',
-      JSON.stringify(source.cells.map((cell) => ({ index: cell.index, text: cell.text }))) ===
-        JSON.stringify(source.expectedCells) &&
-        source.cells.every((cell) =>
-          cell.text === cell.expected &&
-          cell.protected === 'true' &&
-          cell.editable === 'false' &&
-          cell.editableDescendants === 0
-        ),
-      JSON.stringify(source.cells),
+      'input changes invalidate approval while preserving the review decision surface',
+      invalidation.acknowledgementInitiallySet &&
+        !invalidation.acknowledgementNowSet &&
+        invalidation.step === 'review-approve',
+      JSON.stringify(invalidation),
     );
 
-    const blocker = await firstBlockerSnapshot(harness, defaultSample);
+    const acknowledgementGate = await acknowledgementGateSnapshot(harness);
     reporter.check(
-      'Review sample focuses the first blocking field',
-      blocker.blockerCount > 0 &&
-        blocker.reviewFound &&
-        blocker.activePath === blocker.firstInvalidPath &&
-        blocker.activePath.length > 0,
-      JSON.stringify(blocker),
+      'state-changing Run remains disabled until its one-run acknowledgement is set',
+      acknowledgementGate.reachedReview &&
+        acknowledgementGate.acknowledgementPresent &&
+        acknowledgementGate.runDisabled &&
+        acknowledgementGate.runEnabledAfterAcknowledgement,
+      JSON.stringify(acknowledgementGate),
     );
 
-    await navigateToRecipe(harness, destructiveSample.id);
-    const dialog = await dialogFocusSnapshot(harness);
+    const contextLoss = await contextLossInvalidationSnapshot(harness);
     reporter.check(
-      'the destructive dialog owns focus, closes with Escape, and returns focus',
-      dialog.openerFound && dialog.activeInside && dialog.returned,
-      JSON.stringify(dialog),
+      'loss of the verified execution context invalidates approval',
+      contextLoss.reachedReview &&
+        contextLoss.acknowledgementInitiallySet &&
+        !contextLoss.acknowledgementNowSet &&
+        contextLoss.step === 'review-approve',
+      JSON.stringify(contextLoss),
     );
 
-    await navigateToRecipe(harness, secretSample.id);
-    const secretPath = secretSample.configurationEntries.find(
-      (entry) => entry.secret === true || entry.requirement === 'secret',
-    ).path;
-    await harness.evaluate(`(() => {
-      const row = [...document.querySelectorAll('[data-parameter-path]')]
-        .find((candidate) => candidate.dataset.parameterPath === ${JSON.stringify(secretPath)});
-      const control = row?.querySelector('input[type="password"], textarea');
-      if (!control) return false;
-      control.focus();
-      control.value = ${JSON.stringify(SECRET)};
-      control.dispatchEvent(new Event('input', { bubbles: true }));
-      return true;
-    })()`);
-    await settle(harness);
-    const secret = await secretAbsenceSnapshot(harness, secretPath);
+    const invalidValue = await invalidValueFocusSnapshot(harness);
     reporter.check(
-      'secret values are absent from text, markup, attributes, and browser storage',
-      secret.controlCarriesSecret &&
-        secret.controlType === 'password' &&
-        !secret.text &&
-        !secret.markup &&
-        secret.attributes.length === 0 &&
-        !secret.localStorage &&
-        !secret.sessionStorage,
+      'Continue blocks populated but malformed values and focuses the invalid field',
+      invalidValue.before === invalidValue.after &&
+        invalidValue.invalid &&
+        invalidValue.activePath === 'hub.subscriptionId',
+      JSON.stringify(invalidValue),
+    );
+
+    const hostedGateway = await hostedGatewaySnapshot(harness);
+    reporter.check(
+      'hosted gateway recipes use the relay identity chain and no browser gateway key',
+      hostedGateway.title.includes('Hosted execution context') &&
+        hostedGateway.identityKind === 'hosted-relay' &&
+        hostedGateway.hostedPath &&
+        !hostedGateway.gatewayKeyField &&
+        !hostedGateway.azureAccountControls,
+      JSON.stringify(hostedGateway),
+    );
+
+    const history = await crossRecipeHistorySnapshot(harness);
+    reporter.check(
+      'browser history restores the completed step for a previously visited recipe',
+      history.step === 'review-approve' && history.href === history.expectedHref,
+      JSON.stringify(history),
+    );
+
+    await navigateToRecipe(harness, 'cleanup');
+    reporter.check('Cleanup can reach its risk decision step', await prepareCleanupReview(harness));
+    const destructive = await destructiveDialogSnapshot(harness);
+    reporter.check(
+      'destructive confirmation owns focus, repeats context, closes with Escape, and returns focus',
+      destructive.opened &&
+        destructive.focusInside &&
+        /apim-wizard-acceptance|DELETE/i.test(destructive.text) &&
+        destructive.focusReturned,
+      JSON.stringify(destructive),
+    );
+
+    const secret = await secretSnapshot(harness);
+    reporter.check(
+      'memory-only credentials never appear in text, markup, attributes, or browser storage',
+      secret.controlType === 'password' &&
+        secret.controlHasValue &&
+        secret.controlIdentityPreserved &&
+        !secret.textLeak &&
+        !secret.markupLeak &&
+        !secret.attributeLeak &&
+        !secret.browserPersistentLeak &&
+        !secret.browserSessionLeak,
       JSON.stringify(secret),
     );
 
-    await navigateToRecipe(harness, defaultSample.id);
-    await runResponsiveScenarios(harness, reporter);
-    await runZoomScenario(harness, reporter);
-    await runReducedMotionScenario(harness, reporter);
-    await runForcedColorsScenario(harness, reporter);
+    const typing = await typingContinuitySnapshot(harness);
+    reporter.check(
+      'typing preserves the active control, caret, and value without whole-page re-render',
+      typing.found &&
+        typing.active &&
+        typing.identityPreserved &&
+        typing.selectionStart === 29 &&
+        typing.value === 'https://gateway.example.test/very/long/operator/path',
+      JSON.stringify(typing),
+    );
 
-    await settle(harness);
+    const gatewayKeyNavigation = await gatewayKeyNavigationSnapshot(harness);
+    reporter.check(
+      'Manage gateway key returns to Gateway connection and focuses the masked control',
+      gatewayKeyNavigation.reachedReview &&
+        gatewayKeyNavigation.clicked &&
+        gatewayKeyNavigation.step === 'account-target' &&
+        gatewayKeyNavigation.activePath === 'gatewayAccess.apiKey' &&
+        gatewayKeyNavigation.activeType === 'password',
+      JSON.stringify(gatewayKeyNavigation),
+    );
+
+    await navigateToRecipe(harness, 'publish-assets', 'review-approve');
+    reporter.equal(
+      'a valid wizard step is restored from the URL',
+      await harness.evaluate("document.querySelector('[data-wizard-step]')?.dataset.wizardStep"),
+      'review-approve',
+    );
+
+    const destructiveInvalidation = await destructiveInvalidationSnapshot(harness);
+    reporter.check(
+      'approval-affecting changes close and discard an open destructive confirmation',
+      destructiveInvalidation.reachedReview &&
+        destructiveInvalidation.opened &&
+        !destructiveInvalidation.dialogStillPresent &&
+        destructiveInvalidation.step === 'review-approve' &&
+        !destructiveInvalidation.acknowledgement,
+      JSON.stringify(destructiveInvalidation),
+    );
+
+    const activeRun = await activeRunIsolationSnapshot(harness);
+    reporter.check(
+      'an active run locks recipe/history navigation, ignores foreign progress, and cancels once',
+      activeRun.recipeId === 'publish-assets' &&
+        activeRun.step === 'run-result' &&
+        activeRun.recipeDisabled &&
+        !activeRun.foreignProgressVisible &&
+        activeRun.cancelClicked &&
+        activeRun.cancelCalls === 1 &&
+        activeRun.actionText !== 'Cancel run',
+      JSON.stringify(activeRun),
+    );
+
+    if (!process.argv.includes('--regressions-only')) {
+      const requestedScenario = argumentValue('--scenario');
+      const scenarios = requestedScenario
+        ? DOSSIER_ACCEPTANCE_SCENARIOS.filter((scenario) => scenario.name === requestedScenario)
+        : DOSSIER_ACCEPTANCE_SCENARIOS;
+      for (const scenario of scenarios) {
+        await runScenario(harness, reporter, scenario);
+      }
+    }
+
     reportIssues(
       reporter,
       'the browser attempted no Azure or live request',
       [
         ...nonLoopbackRequestIssues(guard.requests, harness.baseUrl),
         ...guard.blocked.map((url) => `blocked external request: ${url}`),
-        ...guard.errors.map((error) => `request guard error: ${error}`),
       ],
     );
-    reporter.check('no uncaught browser errors were recorded', harness.pageErrors.length === 0, harness.pageErrors.join('; '));
+    const unexpectedPageErrors = harness.pageErrors.filter(
+      (error) => !String(error).startsWith("Blocked attempt to show a 'beforeunload' confirmation panel"),
+    );
+    reporter.check(
+      'the page reported no uncaught browser errors',
+      unexpectedPageErrors.length === 0,
+      unexpectedPageErrors.join('; '),
+    );
   } finally {
     await guard?.close();
     await harness.close();
   }
 
-  const result = reporter.finish();
-  process.exitCode = result.ok ? 0 : 1;
+  const outcome = reporter.finish();
+  if (!outcome.ok) process.exitCode = 1;
 }
 
-function isDirectExecution() {
-  if (!process.argv[1]) return false;
-  return pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
-}
-
-if (isDirectExecution()) {
+const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : '';
+if (import.meta.url === invokedPath) {
   main().catch((error) => {
-    process.stdout.write(`dossier browser acceptance: failed to run - ${error.message}\n`);
-    process.exitCode = /No Chromium browser found/.test(error.message) ? 2 : 1;
+    console.error(error);
+    process.exitCode = 1;
   });
 }

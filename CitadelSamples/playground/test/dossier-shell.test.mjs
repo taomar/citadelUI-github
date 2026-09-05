@@ -195,6 +195,26 @@ test('unsaved ordinary inputs block push and restore a rejected browser traversa
   assert.equal(prompts, 2);
 });
 
+test('unsaved inputs do not block stage changes within the same recipe', () => {
+  const browser = fakeWindow('https://example.test/playground?recipe=prepare#stage=configure');
+  let prompts = 0;
+  const controller = createDossierUrlController({
+    windowRef: browser,
+    validRecipeIds: ['prepare'],
+    defaultRecipeId: 'prepare',
+    hasUnsavedInputs: () => true,
+    confirmNavigation: () => {
+      prompts += 1;
+      return false;
+    },
+  });
+  controller.initialize();
+
+  assert.equal(controller.push({ recipeId: 'prepare', stage: 'review' }), true);
+  assert.equal(prompts, 0);
+  assert.equal(controller.getState().stage, 'review');
+});
+
 test('beforeunload warns only through the injected ordinary-input predicate', () => {
   const browser = fakeWindow('https://example.test/playground?recipe=prepare#stage=configure');
   let dirty = true;
@@ -234,6 +254,9 @@ test('the renderer source enforces the dossier shell constraints', async () => {
 
   assert.match(shell, /DOSSIER_IDS\.masthead/);
   assert.match(shell, /DOSSIER_IDS\.globalIdentity/);
+  assert.match(shell, /dossier-mobile-actions/);
+  assert.match(shell, /Open guide and diagnostics/);
+  assert.match(shell, /data-compact-label/);
   assert.match(shell, /Ready to Attempt/);
   assert.match(shell, /Entra caller/);
   assert.match(shell, /Playground identity/);

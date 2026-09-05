@@ -285,22 +285,85 @@ function inputPlaceholder(value) {
   return result.endsWith('…') ? result : `${result.replace(/\.*$/, '')}…`;
 }
 
-function fieldDescription(field) {
-  const messages = [];
-  if (field.ownerLabel) messages.push(`Shared context: ${field.ownerLabel}.`);
-  if (field.condition) {
-    messages.push(
-      `Required when ${String(field.condition).toLowerCase()} ${
-        field.conditionActive ? 'That condition holds now.' : 'That condition does not hold now.'
-      }`,
-    );
-  }
-  if (field.fallback) messages.push(`If left blank: ${field.fallback}`);
-  if (field.producedBy) messages.push(field.producedBy);
-  if (field.help) messages.push(field.help);
-  if (field.howToObtain) messages.push(field.howToObtain);
-  if (field.secretNote) messages.push(field.secretNote);
-  return messages;
+function operatorMessage(value) {
+  return String(value ?? '')
+    .replace(/\b(?:[a-z][a-z0-9-]*\.)+[a-z][a-z0-9-]*\b/gi, 'a related setting')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function cliCommand(field) {
+  const match = text(field.howToObtain).match(/`([^`]*(?:az|python|curl)\s+[^`]*)`/i);
+  return match?.[1] ?? '';
+}
+
+function producerLabel(field) {
+  return text(field.producedBy)
+    .replace(/^Produced by\s+/i, '')
+    .replace(/\s*\(cell\s+\d+\)\.?$/i, '')
+    .trim();
+}
+
+function producerActionLabel(producer) {
+  if (/api management discovery/i.test(producer)) return 'Run APIM discovery';
+  if (/discovery/i.test(producer)) return `Run ${producer}`;
+  return `Open ${producer}`;
+}
+
+function renderAcquisitionHelp(field, callbacks) {
+  const producer = producerLabel(field);
+  const command = cliCommand(field);
+  const technical = [
+    field.path ? ['Internal field', field.path] : null,
+    field.ownerLabel ? ['Configuration owner', field.ownerLabel] : null,
+    field.notebookRef ? ['Protected source reference', field.notebookRef] : null,
+  ].filter(Boolean);
+  return el('details', { class: 'configure-field-help', 'data-disclosure-key': `${field.controlId}-help` }, [
+    el('summary', { text: 'Get this value' }),
+    el('div', { class: 'configure-field-help-body' }, [
+      producer
+        ? el('button', {
+            type: 'button',
+            class: 'btn configure-recovery-action',
+            text: producerActionLabel(producer),
+            onclick: () => callbacks.onOpenProducer?.(field),
+          })
+        : null,
+      el('button', {
+        type: 'button',
+        class: 'btn configure-manual-action',
+        text: 'Enter manually',
+        onclick: (event) => {
+          event.currentTarget.closest('details')?.removeAttribute('open');
+          event.currentTarget.ownerDocument?.getElementById(field.controlId)?.focus();
+        },
+      }),
+      command
+        ? el('details', { class: 'configure-cli-disclosure' }, [
+            el('summary', { text: 'Show CLI command' }),
+            el('div', { class: 'configure-cli-command' }, [
+              el('code', { text: command, translate: 'no' }),
+              el('button', {
+                type: 'button',
+                class: 'btn btn-sm',
+                text: 'Copy',
+                onclick: () => callbacks.onCopy?.(command),
+              }),
+            ]),
+          ])
+        : null,
+      technical.length || field.help || field.fallback || field.secretNote || list(field.links).length
+        ? el('details', { class: 'configure-technical-details' }, [
+            el('summary', { text: 'Technical details' }),
+            field.help ? el('p', { class: 'configure-help-copy', text: field.help }) : null,
+            field.fallback ? el('p', { class: 'configure-help-copy', text: `If left blank: ${field.fallback}` }) : null,
+            field.secretNote ? el('p', { class: 'configure-help-copy', text: field.secretNote }) : null,
+            technical.length ? definitionList(technical.map(([label, value]) => [label, value, { mono: true }])) : null,
+            linkList(field.links),
+          ])
+        : null,
+    ]),
+  ]);
 }
 
 function renderFieldControl(field, callbacks, describedBy) {
@@ -329,7 +392,7 @@ function renderFieldControl(field, callbacks, describedBy) {
       class: `${common.class} configure-field-checkbox`,
       type: 'checkbox',
       checked: field.value === true,
-      onchange: (event) => callbacks.onChange?.(field.path, event.target.checked),
+      onchange: (event) => callbacks.onChange?.(field.path, event.target.checked, { commit: true }),
     });
   }
   if (field.inputType === 'select') {
@@ -337,7 +400,7 @@ function renderFieldControl(field, callbacks, describedBy) {
       'select',
       {
         ...common,
-        onchange: (event) => callbacks.onChange?.(field.path, event.target.value),
+        onchange: (event) => callbacks.onChange?.(field.path, event.target.value, { commit: true }),
       },
       list(field.options).map((option) =>
         el('option', {
@@ -354,7 +417,7 @@ function renderFieldControl(field, callbacks, describedBy) {
       rows: field.type === 'multiline' ? 4 : 3,
       value: field.type === 'string-list' && Array.isArray(field.value) ? field.value.join('\n') : (field.value ?? ''),
       placeholder: field.type === 'string-list' ? 'One value per line…' : inputPlaceholder(field.placeholder),
-      oninput: (event) => callbacks.onChange?.(field.path, event.target.value),
+      oninput: (event) => callbacks.onChange?.(field.path, event.target.value, { commit: false }),
     });
   }
 
@@ -371,7 +434,7 @@ function renderFieldControl(field, callbacks, describedBy) {
           : 'Paste the credential…'
         : inputPlaceholder(field.placeholder),
     value: field.inputType === 'password' ? undefined : (field.value ?? ''),
-    oninput: (event) => callbacks.onChange?.(field.path, event.target.value),
+    oninput: (event) => callbacks.onChange?.(field.path, event.target.value, { commit: false }),
   });
 }
 
@@ -381,9 +444,9 @@ function renderField(field, callbacks) {
   const neededId = `${field.controlId}-needed`;
   const warningId = `${field.controlId}-warning`;
   const describedBy = [reasonId];
-  const error = list(field.errors).join(' ');
-  const needed = list(field.needed).join(' ');
-  const warning = list(field.warnings).join(' ');
+  const error = list(field.errors).map(operatorMessage).join(' ');
+  const needed = list(field.needed).map(operatorMessage).join(' ');
+  const warning = list(field.warnings).map(operatorMessage).join(' ');
   if (error) describedBy.push(errorId);
   if (needed) describedBy.push(neededId);
   if (warning) describedBy.push(warningId);
@@ -401,11 +464,17 @@ function renderField(field, callbacks) {
       el('div', { class: 'configure-field-head' }, [
         el('div', { class: 'configure-field-identity' }, [
           el('label', { class: 'configure-field-label', for: field.controlId, text: field.label }),
-          identifier(field.path),
+          field.producedBy
+            ? el('span', { class: 'configure-field-origin', text: producerLabel(field) })
+            : null,
         ]),
         chip(field.status.label, field.status.tone, { mono: false }),
       ]),
-      el('p', { class: 'configure-field-reason', id: reasonId, text: field.requirementReason }),
+      el('p', {
+        class: 'configure-field-reason',
+        id: reasonId,
+        text: `Needed because ${String(field.requirementReason || 'this recipe requires the value').replace(/\.$/, '')}.`,
+      }),
       field.inputType === 'checkbox'
         ? el('label', { class: 'configure-checkbox' }, [
             control,
@@ -416,14 +485,7 @@ function renderField(field, callbacks) {
       !error && needed ? el('p', { class: 'configure-field-needed', id: neededId, text: needed }) : null,
       warning ? el('p', { class: 'configure-field-warning', id: warningId, text: warning }) : null,
       el('p', { class: 'configure-field-pattern', text: fieldPattern(field) }),
-      el('details', { class: 'configure-field-help', 'data-disclosure-key': `${field.controlId}-help` }, [
-        el('summary', { text: 'Get this value' }),
-        el('div', { class: 'configure-field-help-body' }, [
-          ...fieldDescription(field).map((message) => el('p', { class: 'configure-help-copy', text: message })),
-          field.notebookRef ? el('p', {}, [identifier(field.notebookRef)]) : null,
-          linkList(field.links),
-        ]),
-      ]),
+      renderAcquisitionHelp(field, callbacks),
     ],
   );
 }
@@ -546,35 +608,34 @@ function renderEvidenceSummary(source, sourceValidation, callbacks) {
  * Render the primary configure document.
  *
  * Callbacks: onChange(path, value), onBlur(path), onCopy(text),
- * onDownload(name, text, mediaType), onReview(), onOpenSource(source), and
+ * onDownload(name, text, mediaType), onOpenSource(source), and
  * onFocusFirstBlocker(path, control).
  */
 export function renderConfigure(
   container,
-  { guide = {}, configure = {}, source = {}, sourceValidation = {} } = {},
+  { guide = {}, configure = {}, source = {}, sourceValidation = {}, mode = 'all' } = {},
   callbacks = {},
 ) {
   const focusSnapshot = captureFocus(container);
   const contract = buildConfigureRenderContract(configure);
   const titleId = 'configure-document-title';
 
-  const focusFirstBlocker = () => {
-    if (!contract.firstBlockingPath) return;
-    const target = container.ownerDocument?.getElementById(configureFieldControlId(contract.firstBlockingPath));
-    if (!target || !container.contains(target)) return;
-    target.focus();
-    target.scrollIntoView?.({ block: 'center', inline: 'nearest' });
-    callbacks.onFocusFirstBlocker?.(contract.firstBlockingPath, target);
-  };
+  const showContext = mode === 'all';
+  const showInputs =
+    mode === 'all'
+    || mode === 'account-target'
+    || mode === 'required-inputs'
+    || mode === 'credentials-options';
+  const showEvidence = mode === 'all';
 
   replace(container, [
-    el('article', { class: 'dossier-configure', 'aria-labelledby': titleId }, [
+    el('article', { class: `dossier-configure dossier-configure-${mode}`, 'aria-labelledby': titleId }, [
       el('header', { class: 'configure-header' }, [
         heading(1, titleId, text(guide.title, 'Configure this run'), 'configure-title'),
         guide.summary ? el('p', { class: 'configure-summary', text: guide.summary }) : null,
       ]),
-      renderContext(guide),
-      el('section', { id: DOSSIER_IDS.inputs, class: 'configure-inputs', 'aria-labelledby': 'configure-inputs-title' }, [
+      showContext ? renderContext(guide) : null,
+      showInputs ? el('section', { id: DOSSIER_IDS.inputs, class: 'configure-inputs', 'aria-labelledby': 'configure-inputs-title' }, [
         el('div', { class: 'configure-inputs-head' }, [
           el('div', {}, [
             heading(2, 'configure-inputs-title', 'Inputs', 'configure-section-title'),
@@ -583,36 +644,21 @@ export function renderConfigure(
               : null,
           ]),
           contract.firstBlockingPath
-            ? el('button', {
-                type: 'button',
-                class: 'btn btn-primary configure-action configure-missing-action',
-                'aria-controls': configureFieldControlId(contract.firstBlockingPath),
-                text: `${contract.blockingCount} needed — go to first`,
-                onclick: focusFirstBlocker,
-              })
+            ? chip(`${contract.blockingCount} needed`, 'danger', { mono: true })
             : chip('Ready to review', contract.ready ? 'success' : 'danger'),
         ]),
         ...contract.sections.map((group) => renderGroup(group, callbacks)),
-        renderExports(configure, callbacks),
-        el('div', { class: 'configure-review' }, [
-          el('p', {
-            class: 'configure-help-copy',
-            text: contract.ready
-              ? 'Review the generated operation and approve any effect before running.'
-              : 'Complete or correct the blocking fields before reviewing the generated operation.',
-          }),
-          el('button', {
-            type: 'button',
-            id: 'configure-review-button',
-            class: 'btn btn-primary configure-action',
-            'data-dossier-action': 'review',
-            disabled: !contract.ready,
-            text: 'Review exact plan',
-            onclick: () => callbacks.onReview?.(),
-          }),
-        ]),
-      ]),
-      renderEvidenceSummary(source, sourceValidation, callbacks),
+        mode === 'all' || mode === 'credentials-options'
+          ? renderExports(configure, callbacks)
+          : null,
+        el('p', {
+          class: 'configure-help-copy configure-review-note',
+          text: contract.ready
+            ? 'Continue to review the exact generated operation.'
+            : 'Complete or correct the blocking fields before reviewing the generated operation.',
+        }),
+      ]) : null,
+      showEvidence ? renderEvidenceSummary(source, sourceValidation, callbacks) : null,
     ]),
   ]);
   restoreFocus(container, focusSnapshot);
@@ -667,6 +713,7 @@ function sourceNavigation(container, source, sourceValidation, contract, callbac
 
 function renderSelectedSourceCell(cell, wrapSource) {
   if (!cell) return null;
+  const effectiveWrap = cell.cellType === 'markdown' || wrapSource;
   const lineCount = Number.isSafeInteger(cell.lineCount)
     ? cell.lineCount
     : cell.text === ''
@@ -693,7 +740,7 @@ function renderSelectedSourceCell(cell, wrapSource) {
         ['Cell SHA-256', cell.sha256, { mono: true }],
         ['Exact bytes', cell.bytes, { mono: true }],
       ], 'source-selected-cell-facts'),
-      el('div', { class: 'source-inspector-frame', 'data-wrap': wrapSource ? 'true' : 'false' }, [
+      el('div', { class: 'source-inspector-frame', 'data-wrap': effectiveWrap ? 'true' : 'false' }, [
         el(
           'ol',
           { class: 'source-inspector-lines', 'aria-hidden': 'true' },
@@ -872,6 +919,7 @@ export function renderSourceInspector(
     );
   } else {
     const cell = contract.cells[0];
+    const codeCell = cell?.cellType !== 'markdown';
     nodes.push(
       el('div', { class: 'source-inspector-toolbar' }, [
         el('div', { class: 'source-inspector-badges' }, [
@@ -879,13 +927,15 @@ export function renderSourceInspector(
           chip('Read only', 'neutral'),
           chip(`${contract.selectedPosition + 1}/${contract.cellCount}`, 'cloud', { mono: true }),
         ]),
-        el('button', {
-          type: 'button',
-          class: 'btn btn-sm source-cell-nav-button',
-          'aria-pressed': wrapSource ? 'true' : 'false',
-          text: wrapSource ? 'Use horizontal scrolling' : 'Wrap long lines',
-          onclick: toggleWrap,
-        }),
+        codeCell
+          ? el('button', {
+              type: 'button',
+              class: 'btn btn-sm source-cell-nav-button',
+              'aria-pressed': wrapSource ? 'true' : 'false',
+              text: wrapSource ? 'Use horizontal scrolling' : 'Wrap long lines',
+              onclick: toggleWrap,
+            })
+          : null,
       ]),
       sourceNavigation(dialogOrContainer, source, sourceValidation, contract, callbacks),
       el('details', { class: 'source-integrity', 'data-disclosure-key': 'source-integrity' }, [

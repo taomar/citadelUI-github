@@ -76,6 +76,7 @@ function renderSample(sample, onSelect) {
         'data-readiness': readiness.state,
         'data-dependencies': dependencies.state,
         'data-recommended-next': recommendedNext ? 'true' : 'false',
+        disabled: sample.disabled === true,
         onclick: () => onSelect?.(sample.id),
       },
       [

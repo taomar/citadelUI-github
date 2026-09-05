@@ -155,6 +155,7 @@ export function createDossierUrlController({
 
   function navigationAllowed(nextState, source) {
     if (!currentState || sameState(currentState, nextState)) return true;
+    if (currentState.recipeId === nextState.recipeId) return true;
     if (!hasUnsavedInputs(Object.freeze({ from: currentState, to: nextState, source }))) return true;
     return askToLeave(UNSAVED_MESSAGE, Object.freeze({
       from: currentState,
