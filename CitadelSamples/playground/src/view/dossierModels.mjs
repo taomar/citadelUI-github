@@ -208,6 +208,28 @@ function collectTargetFacts(configure) {
     );
 }
 
+function destructiveConfirmationText(risk, targetFacts) {
+  if (risk?.level !== 'destructive') return '';
+  const apim = targetFacts.find((entry) => /apimName$/i.test(entry.path));
+  return apim?.value ? `DELETE ${apim.value}` : '';
+}
+
+function reviewFingerprint({ sampleId, identity, targetFacts, request }) {
+  return JSON.stringify({
+    sampleId,
+    identity: {
+      state: identity.state,
+      human: identity.human,
+      runsAs: identity.runsAs,
+      target: identity.target,
+      tenantId: identity.tenantId,
+      subscription: identity.subscription,
+    },
+    targetFacts,
+    operation: request.available ? request.fullText : null,
+  });
+}
+
 export function buildLedgerAction({
   blockingCount = 0,
   canAttempt = false,
@@ -247,6 +269,27 @@ export function buildDossierModel({
     workbench.source.cells[0] ??
     null;
   const targetFacts = collectTargetFacts(workbench.configure);
+  const reviewDecision = Object.freeze({
+    identity,
+    targetFacts,
+    authorization: identity.authorization,
+    risk: workbench.sample.risk,
+    request: workbench.request,
+    effect: workbench.sample.risk.effect,
+    blastRadius: workbench.sample.risk.blastRadius,
+    reversibility: workbench.sample.risk.reversibility,
+    deviations: workbench.request.deviations ?? [],
+    placeholders: workbench.request.secretRefs ?? [],
+    confirmationText: destructiveConfirmationText(workbench.sample.risk, targetFacts),
+    fingerprint: '',
+    canAttempt,
+  });
+  const fingerprint = reviewFingerprint({
+    sampleId: workbench.sample.id,
+    identity,
+    targetFacts,
+    request: workbench.request,
+  });
   const action = buildLedgerAction({
     blockingCount: workbench.configure.blockingCount,
     canAttempt,
@@ -266,14 +309,7 @@ export function buildDossierModel({
       selectedCellIndex: selectedCell?.cellIndex ?? null,
       selectedCell,
     }),
-    reviewDecision: Object.freeze({
-      identity,
-      targetFacts,
-      authorization: identity.authorization,
-      risk: workbench.sample.risk,
-      request: workbench.request,
-      canAttempt,
-    }),
+    reviewDecision: Object.freeze({ ...reviewDecision, fingerprint }),
     ledger: Object.freeze({
       identity,
       targetFacts,

@@ -4,12 +4,15 @@ import { test } from 'node:test';
 
 import {
   ACCOUNT_CONTROL_STATES,
+  buildDossierModel,
   buildDossierIdentityModel,
   buildLedgerAction,
   normalizeAccountControlState,
 } from '../src/view/dossierModels.mjs';
-import { CATALOGUE, fieldByPath } from '../src/catalogue/index.mjs';
+import { CATALOGUE, fieldByPath, getSample } from '../src/catalogue/index.mjs';
 import { createPlaygroundState } from '../src/core/state.mjs';
+import { createUnavailableExecutor } from '../src/core/executor.mjs';
+import { FAKE_API_KEY, makeFixtureReader } from './helpers/fixtures.mjs';
 
 test('the account control supports the complete launch-gated state vocabulary', () => {
   assert.deepEqual(ACCOUNT_CONTROL_STATES, [
@@ -131,4 +134,27 @@ test('playground state tracks dossier stage and unsaved input loss', () => {
   assert.equal(state.hasUnsavedChanges, false);
   state.selectSample('apim-discovery');
   assert.equal(state.activeStage, 'configure');
+});
+
+test('destructive review repeats the exact APIM target and fingerprints public context', () => {
+  const read = makeFixtureReader({
+    'hub.subscriptionId': '00000000-1111-2222-3333-444444444444',
+    'hub.resourceGroupName': 'rg-sandbox',
+    'hub.apimName': 'apim-sandbox',
+    'samples.cleanup.confirmNonProduction': true,
+  });
+  const model = buildDossierModel({
+    sample: getSample('cleanup'),
+    read,
+    hasSecret: () => false,
+    isTouched: () => true,
+    acknowledged: true,
+    capability: createUnavailableExecutor().describeCapability(),
+    runtimeProbe: { mode: 'preview' },
+    sourceState: { status: 'loading' },
+    contextState: { status: 'unavailable', message: 'No identity.' },
+  });
+  assert.equal(model.reviewDecision.confirmationText, 'DELETE apim-sandbox');
+  assert.match(model.reviewDecision.fingerprint, /apim-sandbox/);
+  assert.ok(!model.reviewDecision.fingerprint.includes(FAKE_API_KEY));
 });
