@@ -397,6 +397,25 @@ async function readBody(request, limitBytes = 256 * 1024) {
   return Buffer.concat(chunks).toString('utf-8');
 }
 
+function monitorClientDisconnect(request, response) {
+  const controller = new AbortController();
+  const abort = () => {
+    if (!response.writableEnded) controller.abort();
+  };
+  request.once('aborted', abort);
+  response.once('close', abort);
+  request.socket?.once('close', abort);
+  if (request.aborted || response.destroyed || request.socket?.destroyed) controller.abort();
+  return {
+    signal: controller.signal,
+    dispose() {
+      request.off('aborted', abort);
+      response.off('close', abort);
+      request.socket?.off('close', abort);
+    },
+  };
+}
+
 /**
  * Same-origin guard for every state-changing call.
  *
@@ -667,15 +686,17 @@ async function handleRun(request, response, { mode, manager, port, host }) {
     sendJson(response, guard.status, { state: 'blocked', summary: guard.message });
     return;
   }
-  let payload;
+  const disconnect = monitorClientDisconnect(request, response);
   try {
-    payload = JSON.parse(await readBody(request));
-  } catch (error) {
-    const status = error instanceof RequestRefused ? error.status : 400;
-    sendJson(response, status, { state: 'failed', summary: error?.message ?? 'Malformed request body.' });
-    return;
-  }
-  try {
+    let payload;
+    try {
+      payload = JSON.parse(await readBody(request));
+    } catch (error) {
+      if (disconnect.signal.aborted && response.destroyed) return;
+      const status = error instanceof RequestRefused ? error.status : 400;
+      sendJson(response, status, { state: 'failed', summary: error?.message ?? 'Malformed request body.' });
+      return;
+    }
     let started = false;
     const wantsStream = String(request.headers.accept ?? '').includes('application/x-ndjson');
     const writeEvent = (event) => {
@@ -694,6 +715,7 @@ async function handleRun(request, response, { mode, manager, port, host }) {
         if (wantsStream) writeEvent({ type: 'run-start', runId, sampleId, workspace, executionContext });
       },
       onProgress: wantsStream ? writeEvent : undefined,
+      signal: disconnect.signal,
     });
     if (started && wantsStream) {
       writeEvent({ type: 'result', result });
@@ -701,6 +723,7 @@ async function handleRun(request, response, { mode, manager, port, host }) {
     } else if (started) response.end(JSON.stringify(result));
     else sendJson(response, 200, result);
   } catch (error) {
+    if (disconnect.signal.aborted && response.destroyed) return;
     if (response.headersSent) {
       const failed = {
         state: 'failed',
@@ -720,6 +743,8 @@ async function handleRun(request, response, { mode, manager, port, host }) {
     }
     // Deliberately terse: a stack trace could carry a path or a value.
     sendJson(response, 500, { state: 'failed', summary: 'The run could not be started.' });
+  } finally {
+    disconnect.dispose();
   }
 }
 

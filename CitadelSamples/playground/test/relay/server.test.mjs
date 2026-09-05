@@ -14,6 +14,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { connect as netConnect } from 'node:net';
 
 import { buildSamplePlan, CATALOGUE, getSample, requirementsFor } from '../../src/catalogue/index.mjs';
 import { EXECUTION_PROTOCOL_VERSION } from '../../src/core/types.mjs';
@@ -60,6 +61,7 @@ const TENANT_A = 'tenant-a';
 const CALLER_A = 'caller-a';
 const TENANT_B = 'tenant-b';
 const CALLER_B = 'caller-b';
+const RELAY_TOKEN = 'relay-service-token';
 
 function fixtureInputsFor(sample) {
   const read = makeFixtureReader();
@@ -1015,6 +1017,81 @@ test('a valid shared-secret credential is accepted end to end over a real socket
       assert.equal(response.status, 200);
       const body = await response.json();
       assert.equal(body.state, 'completed');
+    },
+  );
+});
+
+test('a normally completed relay request does not treat request-body completion as cancellation', async () => {
+  const bundle = makeBundle();
+  const executor = bundle.httpExecutor;
+  let observedSignal;
+  bundle.httpExecutor = {
+    requestPolicy: bundle.requestPolicy,
+    execute(plan, options) {
+      observedSignal = options.signal;
+      return executor.execute(plan, options);
+    },
+  };
+  await withServer(
+    serverDeps({
+      tenantPolicy: createStaticTenantPolicy({ [TENANT_A]: bundle }),
+      authenticator: createSharedSecretAuthenticator({ token: RELAY_TOKEN, tenant: TENANT_A, principal: CALLER_A }),
+    }),
+    async (base) => {
+      const response = await fetch(`${base}/execute`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${RELAY_TOKEN}` },
+        body: JSON.stringify(weatherPayload()),
+      });
+      assert.equal(response.status, 200);
+      await response.json();
+      assert.equal(observedSignal.aborted, false);
+    },
+  );
+});
+
+test('destroying the real relay socket aborts an execution already in flight', async () => {
+  const bundle = makeBundle();
+  let markExecutionStarted;
+  let markExecutionCancelled;
+  const executionStarted = new Promise((resolve) => {
+    markExecutionStarted = resolve;
+  });
+  const executionCancelled = new Promise((resolve) => {
+    markExecutionCancelled = resolve;
+  });
+  let observedSignal;
+  bundle.httpExecutor = {
+    requestPolicy: bundle.requestPolicy,
+    execute(_plan, { signal }) {
+      observedSignal = signal;
+      markExecutionStarted();
+      signal.addEventListener('abort', markExecutionCancelled, { once: true });
+      return hangUntilAborted(signal);
+    },
+  };
+  await withServer(
+    serverDeps({
+      tenantPolicy: createStaticTenantPolicy({ [TENANT_A]: bundle }),
+      authenticator: createSharedSecretAuthenticator({ token: RELAY_TOKEN, tenant: TENANT_A, principal: CALLER_A }),
+    }),
+    async (_base, server) => {
+      const body = JSON.stringify(weatherPayload());
+      const { port } = server.address();
+      const client = netConnect({ host: '127.0.0.1', port });
+      await new Promise((resolve, reject) => {
+        client.once('connect', resolve);
+        client.once('error', reject);
+      });
+      client.write(
+        `POST /execute HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nContent-Type: application/json\r\nAuthorization: Bearer ${RELAY_TOKEN}\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
+      );
+
+      await executionStarted;
+      client.destroy();
+      await executionCancelled;
+
+      assert.equal(observedSignal.aborted, true);
     },
   );
 });

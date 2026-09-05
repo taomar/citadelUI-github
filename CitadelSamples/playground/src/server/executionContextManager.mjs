@@ -121,14 +121,14 @@ export function createExecutionContextManager({
     return responseFor(request.sampleId, await contextFor(request, { useRelay: true, signal }));
   }
 
-  async function forRun({ sampleId, configuredSubscriptionId = null, gateway = null }) {
+  async function forRun({ sampleId, configuredSubscriptionId = null, gateway = null }, { signal } = {}) {
     const context = await contextFor(
       {
         sampleId,
         configuredSubscriptionId: normaliseOptional(configuredSubscriptionId),
         gateway,
       },
-      { useRelay: false, signal: undefined },
+      { useRelay: false, signal },
     );
     if (!context.canExecute) {
       throw new RequestRefused(context.summary, { status: 409, code: context.code ?? 'execution-context-unavailable' });
@@ -164,7 +164,7 @@ export function createExecutionContextManager({
         allowedExecutables: ['az'],
       });
     } catch {
-      return Object.freeze({ signedIn: false, code: 'azure-cli-unavailable' });
+      return Object.freeze({ signedIn: false, code: signal?.aborted ? 'azure-cli-cancelled' : 'azure-cli-unavailable' });
     }
     if (result.timedOut) return Object.freeze({ signedIn: false, code: 'azure-cli-timeout' });
     if (result.aborted || signal?.aborted) return Object.freeze({ signedIn: false, code: 'azure-cli-cancelled' });

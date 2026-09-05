@@ -48,7 +48,8 @@ export function createRunManager({
       transports,
     });
 
-  async function start(payload, { onStart, onProgress } = {}) {
+  async function start(payload, { onStart, onProgress, signal } = {}) {
+    throwIfStartAborted(signal);
     const inFlight = active.size + reservations;
     if (inFlight >= maxConcurrentRuns) {
       throw new RequestRefused(
@@ -67,25 +68,31 @@ export function createRunManager({
     let executor;
     let contract;
     let activeRun;
+    let abortExecution;
     try {
       request = validateRunRequest(payload, catalogue);
       ({ plan, resolvedInputs } = rebuildPlan(request, catalogue, { buildSamplePlan, requirementsFor }));
-      executionContext = await identity.forRun({
-        sampleId: request.sample.id,
-        configuredSubscriptionId: configuredSubscriptionForSample(request.sample.id, resolvedInputs),
-        gateway:
-          sampleUsesGatewayKey(request.sample) && resolvedInputs['gatewayAccess.subscriptionKeyHeader']
-            ? {
-                keyPresent: typeof request.secrets['gatewayAccess.apiKey'] === 'string',
-                headerName: resolvedInputs['gatewayAccess.subscriptionKeyHeader'],
-              }
-            : null,
-      });
+      executionContext = await identity.forRun(
+        {
+          sampleId: request.sample.id,
+          configuredSubscriptionId: configuredSubscriptionForSample(request.sample.id, resolvedInputs),
+          gateway:
+            sampleUsesGatewayKey(request.sample) && resolvedInputs['gatewayAccess.subscriptionKeyHeader']
+              ? {
+                  keyPresent: typeof request.secrets['gatewayAccess.apiKey'] === 'string',
+                  headerName: resolvedInputs['gatewayAccess.subscriptionKeyHeader'],
+                }
+              : null,
+        },
+        { signal },
+      );
+      throwIfStartAborted(signal);
 
       sequence += 1;
       runId = makeRunId(request.sample.id, sequence);
       workspace = createRunWorkspace({ playgroundRoot, runId, ...(fs ? { fs } : {}) });
       await workspace.ensureRoot();
+      throwIfStartAborted(signal);
 
       controller = new AbortController();
       executor = createLocalExecutor({
@@ -102,6 +109,8 @@ export function createRunManager({
 
       activeRun = { runId, sampleId: request.sample.id, controller, startedAt: Date.now(), promise: null };
       active.set(runId, activeRun);
+      abortExecution = () => controller.abort();
+      signal?.addEventListener('abort', abortExecution, { once: true });
     } finally {
       reservations -= 1;
     }
@@ -114,6 +123,7 @@ export function createRunManager({
       });
     } catch (error) {
       active.delete(runId);
+      signal?.removeEventListener('abort', abortExecution);
       controller.abort();
       throw error;
     }
@@ -140,6 +150,7 @@ export function createRunManager({
       }))
       .finally(() => {
         active.delete(runId);
+        signal?.removeEventListener('abort', abortExecution);
       });
     activeRun.promise = promise;
     const result = await promise;
@@ -148,6 +159,14 @@ export function createRunManager({
 
   function sampleUsesGatewayKey(sample) {
     return sample.configurationEntries.some((entry) => entry.path === 'gatewayAccess.apiKey');
+  }
+
+  function throwIfStartAborted(signal) {
+    if (!signal?.aborted) return;
+    throw new RequestRefused('The run request was cancelled before execution started.', {
+      status: 409,
+      code: 'run-cancelled',
+    });
   }
 
   function cancel(runId) {

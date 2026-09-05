@@ -337,6 +337,45 @@ test('the local client learns the run id before completion so it can cancel the 
   assert.equal(client.activeRunId, null);
 });
 
+test('the local client aborts a pending run request before response headers expose a run id', async () => {
+  let requestSignal;
+  let markFetchStarted;
+  const fetchStarted = new Promise((resolve) => {
+    markFetchStarted = resolve;
+  });
+  const fetchImpl = async (_url, init) => {
+    requestSignal = init.signal;
+    markFetchStarted();
+    return new Promise((_resolve, reject) => {
+      init.signal.addEventListener(
+        'abort',
+        () => {
+          const error = new Error('The operation was aborted.');
+          error.name = 'AbortError';
+          reject(error);
+        },
+        { once: true },
+      );
+    });
+  };
+  const client = createLocalExecutorClient({
+    allowedSampleIds: ALL_IDS,
+    supportedStepTypes: ['azure-cli', 'assertion'],
+    fetchImpl,
+  });
+  const plan = planFor('azure-context-check');
+  const running = client.execute(plan, { sampleId: plan.sampleId, inputs: {}, secrets: {} });
+
+  await fetchStarted;
+  assert.equal(client.activeRunId, null);
+  assert.deepEqual(await client.cancel(), { cancelled: true, pending: true });
+  assert.equal(requestSignal.aborted, true);
+
+  const result = await running;
+  assert.equal(result.state, 'cancelled');
+  assert.equal(client.activeRunId, null);
+});
+
 test('the local client consumes streamed progress before returning the final result', async () => {
   const encoder = new TextEncoder();
   const events = [

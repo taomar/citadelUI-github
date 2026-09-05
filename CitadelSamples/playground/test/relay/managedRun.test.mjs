@@ -272,6 +272,7 @@ test('cancelling before an asynchronous pending-to-running write releases the un
     findIdempotency: (...args) => base.findIdempotency(...args),
     claim: (...args) => base.claim(...args),
     claimDispatch: (...args) => base.claimDispatch(...args),
+    claimLaunch: (...args) => base.claimLaunch(...args),
     get: (...args) => base.get(...args),
     update: (...args) => {
       updates += 1;
@@ -292,14 +293,381 @@ test('cancelling before an asynchronous pending-to-running write releases the un
   assert.equal(second.outcome, 'created');
 });
 
-test('a fresh hosted worker reloads durable non-secret work by run ID and completes its safe state projection', async () => {
-  const store = createInMemoryManagedRunStore();
-  let launchedRunId;
+test('a stale running-transition response cannot launch a cancelled job after recovery releases its reservation', async () => {
+  let now = 1_000;
+  const base = createInMemoryManagedRunStore({ now: () => now });
+  const runningWritten = deferred();
+  const returnRunningSnapshot = deferred();
+  let gateRunningWrite = true;
+  const store = {
+    findIdempotency: (...args) => base.findIdempotency(...args),
+    claim: (...args) => base.claim(...args),
+    claimDispatch: (...args) => base.claimDispatch(...args),
+    claimLaunch: (...args) => base.claimLaunch(...args),
+    get: (...args) => base.get(...args),
+    async update(runId, mutate) {
+      if (gateRunningWrite) {
+        const current = await base.get(runId);
+        const next = mutate(current);
+        if (current.state === 'pending' && next.state === 'running') {
+          gateRunningWrite = false;
+          const committed = await base.update(runId, () => next);
+          runningWritten.resolve();
+          await returnRunningSnapshot.promise;
+          return committed;
+        }
+      }
+      return base.update(runId, mutate);
+    },
+    listRecoverable: (...args) => base.listRecoverable(...args),
+  };
+  let originalLaunches = 0;
+  const dispatcherA = createSharedOrchestrator({
+    store,
+    now: () => now,
+    sequenceOffset: 0,
+    limits: { maxConcurrentRuns: 1, maxConcurrentRunsPerPrincipal: 1 },
+    jobLauncher: {
+      launch: () => {
+        originalLaunches += 1;
+        return new Promise(() => {});
+      },
+    },
+  });
+  const created = await createRun(dispatcherA.orchestrator, { idempotencyKey: 'stale-running-response' });
+  await runningWritten.promise;
+
+  const dispatcherB = createSharedOrchestrator({
+    store,
+    now: () => now,
+    sequenceOffset: 100,
+    limits: { maxConcurrentRuns: 1, maxConcurrentRunsPerPrincipal: 1 },
+    jobLauncher: {
+      launch: () => new Promise(() => {}),
+      isActive: async () => false,
+    },
+  });
+  const cancelled = await dispatcherB.orchestrator.cancel({ owner: OWNER, tenant: TENANT, runId: created.run.runId });
+  assert.equal(cancelled.state, 'cancelled');
+
+  now += 61_000;
+  await dispatcherB.orchestrator.recover();
+  assert.equal((await base.get(created.run.runId)).capacityReserved, false);
+
+  returnRunningSnapshot.resolve();
+  await new Promise((done) => setImmediate(done));
+  assert.equal(originalLaunches, 0, 'the cancelled original dispatcher must not launch from its stale running snapshot');
+  assert.equal((await dispatcherB.orchestrator.status({ owner: OWNER, tenant: TENANT, runId: created.run.runId })).state, 'cancelled');
+});
+
+test('cross-orchestrator cancellation after the atomic launch fence cancels the exact committed platform job', async () => {
+  let now = 1_000;
+  const base = createInMemoryManagedRunStore({ now: () => now });
+  const launchCommitted = deferred();
+  const returnLaunchClaim = deferred();
+  let gateLaunchClaim = true;
+  const store = {
+    findIdempotency: (...args) => base.findIdempotency(...args),
+    claim: (...args) => base.claim(...args),
+    claimDispatch: (...args) => base.claimDispatch(...args),
+    async claimLaunch(...args) {
+      const claimed = await base.claimLaunch(...args);
+      if (gateLaunchClaim && claimed.outcome === 'claimed') {
+        gateLaunchClaim = false;
+        launchCommitted.resolve();
+        await returnLaunchClaim.promise;
+      }
+      return claimed;
+    },
+    get: (...args) => base.get(...args),
+    update: (...args) => base.update(...args),
+    listRecoverable: (...args) => base.listRecoverable(...args),
+  };
+  let launches = 0;
+  let platformCancels = 0;
+  const dispatcherA = createSharedOrchestrator({
+    store,
+    now: () => now,
+    sequenceOffset: 0,
+    limits: { maxConcurrentRuns: 1, maxConcurrentRunsPerPrincipal: 1 },
+    jobLauncher: {
+      launch: () => {
+        launches += 1;
+        return {
+          result: new Promise(() => {}),
+          cancel: () => {
+            platformCancels += 1;
+          },
+        };
+      },
+    },
+  });
+  const dispatcherB = createSharedOrchestrator({
+    store,
+    now: () => now,
+    sequenceOffset: 100,
+    limits: { maxConcurrentRuns: 1, maxConcurrentRunsPerPrincipal: 1 },
+    jobLauncher: { launch: () => new Promise(() => {}), isActive: async () => false },
+  });
+  const created = await createRun(dispatcherA.orchestrator, { idempotencyKey: 'cross-dispatcher-launch-fence' });
+  await launchCommitted.promise;
+
+  const cancelled = await dispatcherB.orchestrator.cancel({ owner: OWNER, tenant: TENANT, runId: created.run.runId });
+  assert.equal(cancelled.state, 'cancelled');
+  assert.equal((await base.get(created.run.runId)).capacityReserved, true);
+  await dispatcherB.orchestrator.recover();
+  assert.equal((await base.get(created.run.runId)).capacityReserved, true, 'the live launch-commit lease prevents premature recovery release');
+  assert.equal(dispatcherB.timers.length, 1, 'the restarted orchestrator schedules recovery for the launch-commit lease expiry');
+
+  returnLaunchClaim.resolve();
+  await new Promise((done) => setImmediate(done));
+  assert.equal(launches, 1, 'the launch fence committed before cancellation, so the exact platform job is started once');
+  assert.equal(platformCancels, 1, 'the owning dispatcher observes durable cancellation and cancels that exact committed job');
+  assert.equal((await base.get(created.run.runId)).capacityReserved, true, 'capacity remains reserved until the platform job proves it stopped');
+
+  now += 61_000;
+  dispatcherB.timers[0].callback();
+  await new Promise((done) => setImmediate(done));
+  assert.equal((await base.get(created.run.runId)).capacityReserved, false, 'the scheduled retry releases capacity after inactivity is proven');
+});
+
+test('an expired launch fence prevents a paused dispatcher from starting after restart recovery releases capacity', async () => {
+  let now = 1_000;
+  const base = createInMemoryManagedRunStore({ now: () => now });
+  const launchCommitted = deferred();
+  const resumeDispatcher = deferred();
+  const store = {
+    findIdempotency: (...args) => base.findIdempotency(...args),
+    claim: (...args) => base.claim(...args),
+    claimDispatch: (...args) => base.claimDispatch(...args),
+    async claimLaunch(...args) {
+      const claimed = await base.claimLaunch(...args);
+      if (claimed.outcome === 'claimed') {
+        launchCommitted.resolve();
+        await resumeDispatcher.promise;
+      }
+      return claimed;
+    },
+    get: (...args) => base.get(...args),
+    update: (...args) => base.update(...args),
+    listRecoverable: (...args) => base.listRecoverable(...args),
+  };
+  let launches = 0;
+  const dispatcherA = createSharedOrchestrator({
+    store,
+    now: () => now,
+    sequenceOffset: 0,
+    limits: { maxConcurrentRuns: 1, maxConcurrentRunsPerPrincipal: 1 },
+    jobLauncher: {
+      launch: () => {
+        launches += 1;
+        return new Promise(() => {});
+      },
+    },
+  });
+  const dispatcherB = createSharedOrchestrator({
+    store,
+    now: () => now,
+    sequenceOffset: 100,
+    limits: { maxConcurrentRuns: 1, maxConcurrentRunsPerPrincipal: 1 },
+    jobLauncher: { launch: () => new Promise(() => {}), isActive: async () => false },
+  });
+  const created = await createRun(dispatcherA.orchestrator, { idempotencyKey: 'expired-launch-fence' });
+  await launchCommitted.promise;
+  await dispatcherB.orchestrator.cancel({ owner: OWNER, tenant: TENANT, runId: created.run.runId });
+  await dispatcherB.orchestrator.recover();
+  assert.equal(dispatcherB.timers.length, 1);
+
+  now += 61_000;
+  dispatcherB.timers[0].callback();
+  await new Promise((done) => setImmediate(done));
+  assert.equal((await base.get(created.run.runId)).capacityReserved, false);
+
+  resumeDispatcher.resolve();
+  await new Promise((done) => setImmediate(done));
+  assert.equal(launches, 0, 'a dispatcher resuming after its durable launch lease expired is fenced out');
+});
+
+test('a worker cannot claim a run before the dispatcher atomically commits its platform launch', async () => {
+  const base = createInMemoryManagedRunStore();
+  const launchClaimReached = deferred();
+  const allowLaunchClaim = deferred();
+  const store = {
+    findIdempotency: (...args) => base.findIdempotency(...args),
+    claim: (...args) => base.claim(...args),
+    claimDispatch: (...args) => base.claimDispatch(...args),
+    async claimLaunch(...args) {
+      launchClaimReached.resolve();
+      await allowLaunchClaim.promise;
+      return base.claimLaunch(...args);
+    },
+    claimWorker: (...args) => base.claimWorker(...args),
+    renewWorkerLease: (...args) => base.renewWorkerLease(...args),
+    get: (...args) => base.get(...args),
+    update: (...args) => base.update(...args),
+    listRecoverable: (...args) => base.listRecoverable(...args),
+  };
+  let launches = 0;
+  let workerExecutions = 0;
   const { orchestrator } = createHarness({
     store,
     jobLauncher: {
-      launch: ({ run }) => {
+      launch: () => {
+        launches += 1;
+        return new Promise(() => {});
+      },
+    },
+  });
+  const created = await createRun(orchestrator, { idempotencyKey: 'worker-before-launch-fence' });
+  await launchClaimReached.promise;
+
+  const worker = createManagedRunWorker({
+    store,
+    workerId: 'worker-before-launch',
+    executeWork: async () => {
+      workerExecutions += 1;
+      return { state: 'completed', steps: [] };
+    },
+  });
+  const early = await worker.execute(created.run.runId, { launchToken: 'a'.repeat(48) });
+  assert.equal(early.state, 'running');
+  assert.equal(workerExecutions, 0);
+
+  allowLaunchClaim.resolve();
+  await new Promise((done) => setImmediate(done));
+  assert.equal(launches, 1);
+});
+
+test('a delayed worker from an older dispatch generation cannot claim a recovered launch', async () => {
+  let now = 1_000;
+  const base = createInMemoryManagedRunStore({ now: () => now });
+  const replacementCommitted = deferred();
+  const allowReplacementLaunch = deferred();
+  let launchClaims = 0;
+  const store = {
+    findIdempotency: (...args) => base.findIdempotency(...args),
+    claim: (...args) => base.claim(...args),
+    claimDispatch: (...args) => base.claimDispatch(...args),
+    async claimLaunch(...args) {
+      launchClaims += 1;
+      const claimed = await base.claimLaunch(...args);
+      if (launchClaims === 2 && claimed.outcome === 'claimed') {
+        replacementCommitted.resolve();
+        await allowReplacementLaunch.promise;
+      }
+      return claimed;
+    },
+    claimWorker: (...args) => base.claimWorker(...args),
+    renewWorkerLease: (...args) => base.renewWorkerLease(...args),
+    get: (...args) => base.get(...args),
+    update: (...args) => base.update(...args),
+    listRecoverable: (...args) => base.listRecoverable(...args),
+  };
+  let originalToken;
+  const dispatcherA = createSharedOrchestrator({
+    store,
+    now: () => now,
+    sequenceOffset: 0,
+    jobLauncher: {
+      launch: ({ fence }) => {
+        originalToken = fence.token;
+        return new Promise(() => {});
+      },
+    },
+  });
+  let replacementLaunches = 0;
+  const dispatcherB = createSharedOrchestrator({
+    store,
+    now: () => now,
+    sequenceOffset: 100,
+    jobLauncher: {
+      launch: () => {
+        replacementLaunches += 1;
+        return new Promise(() => {});
+      },
+      isActive: async () => false,
+    },
+  });
+  const created = await createRun(dispatcherA.orchestrator, { idempotencyKey: 'delayed-old-worker' });
+  await new Promise((done) => setImmediate(done));
+  assert.match(originalToken, /^[a-f0-9]{48}$/);
+
+  now += 61_000;
+  await dispatcherB.orchestrator.recover();
+  await replacementCommitted.promise;
+
+  let workerExecutions = 0;
+  const worker = createManagedRunWorker({
+    store,
+    workerId: 'delayed-old-worker',
+    executeWork: async () => {
+      workerExecutions += 1;
+      return { state: 'completed', steps: [] };
+    },
+  });
+  const stale = await worker.execute(created.run.runId, { launchToken: originalToken });
+  assert.equal(stale.state, 'running');
+  assert.equal(workerExecutions, 0);
+
+  allowReplacementLaunch.resolve();
+  await new Promise((done) => setImmediate(done));
+  assert.equal(replacementLaunches, 1);
+});
+
+test('a failed post-launch durable check cancels the exact job and retains cleanup until that job settles', async () => {
+  const base = createInMemoryManagedRunStore();
+  let failPostLaunchGet = true;
+  const store = {
+    findIdempotency: (...args) => base.findIdempotency(...args),
+    claim: (...args) => base.claim(...args),
+    claimDispatch: (...args) => base.claimDispatch(...args),
+    claimLaunch: (...args) => base.claimLaunch(...args),
+    async get(...args) {
+      if (failPostLaunchGet) {
+        failPostLaunchGet = false;
+        throw new Error('durable status read failed');
+      }
+      return base.get(...args);
+    },
+    update: (...args) => base.update(...args),
+    listRecoverable: (...args) => base.listRecoverable(...args),
+  };
+  const completion = deferred();
+  let platformCancels = 0;
+  const { orchestrator, timers } = createHarness({
+    store,
+    jobLauncher: {
+      launch: () => ({
+        result: completion.promise,
+        cancel: () => {
+          platformCancels += 1;
+        },
+      }),
+    },
+  });
+  const created = await createRun(orchestrator, { idempotencyKey: 'post-launch-read-failure' });
+  await new Promise((done) => setImmediate(done));
+
+  assert.equal(platformCancels, 1);
+  assert.equal(timers[0].cleared, undefined, 'the timeout/controller lifecycle remains retained while the platform job is unsettled');
+  assert.equal((await base.get(created.run.runId)).capacityReserved, true);
+
+  completion.resolve({ state: 'cancelled', steps: [] });
+  await new Promise((done) => setImmediate(done));
+  assert.equal(timers[0].cleared, true);
+  assert.equal((await base.get(created.run.runId)).capacityReserved, false);
+});
+
+test('a fresh hosted worker reloads durable non-secret work by run ID and completes its safe state projection', async () => {
+  const store = createInMemoryManagedRunStore();
+  let launchedRunId;
+  let launchedToken;
+  const { orchestrator } = createHarness({
+    store,
+    jobLauncher: {
+      launch: ({ run, fence }) => {
         launchedRunId = run.runId;
+        launchedToken = fence.token;
         return new Promise(() => {});
       },
     },
@@ -315,7 +683,7 @@ test('a fresh hosted worker reloads durable non-secret work by run ID and comple
       return { state: 'completed', summary: 'raw upstream output', steps: [{ id: 'initialize', kind: 'http', state: 'completed', evidence: { raw: 'not persisted' } }] };
     },
   });
-  const completed = await worker.execute(launchedRunId);
+  const completed = await worker.execute(launchedRunId, { launchToken: launchedToken });
   assert.equal(completed.state, 'completed');
   assert.deepEqual(completed.steps, [{ id: 'initialize', kind: 'http', state: 'completed' }]);
   assert.doesNotMatch(JSON.stringify(completed), /raw upstream|not persisted/i);
@@ -325,12 +693,14 @@ test('a fresh hosted worker reloads durable non-secret work by run ID and comple
 test('a hosted worker does not execute a durable run cancelled while it was still queued', async () => {
   const store = createInMemoryManagedRunStore();
   let launchedRunId;
+  let launchedToken;
   const { orchestrator } = createHarness({
     store,
     limits: { maxConcurrentRuns: 1 },
     jobLauncher: {
-      launch: ({ run }) => {
+      launch: ({ run, fence }) => {
         launchedRunId = run.runId;
+        launchedToken = fence.token;
         return new Promise(() => {});
       },
     },
@@ -346,21 +716,24 @@ test('a hosted worker does not execute a durable run cancelled while it was stil
       return { state: 'completed', steps: [] };
     },
   });
-  const result = await worker.execute(launchedRunId);
+  const result = await worker.execute(launchedRunId, { launchToken: launchedToken });
   assert.equal(result.state, 'cancelled');
   assert.equal(executed, false);
+  assert.equal((await store.get(launchedRunId)).capacityReserved, true, 'a terminal worker delivery cannot bypass platform inactivity recovery');
   const replacement = await createRun(orchestrator, { idempotencyKey: 'key-2' });
-  assert.equal(replacement.outcome, 'created');
+  assert.deepEqual(replacement, { outcome: 'limit', scope: 'global' });
 });
 
 test('an atomic worker lease allows only one worker to execute a queued run', async () => {
   const store = createInMemoryManagedRunStore();
   let launchedRunId;
+  let launchedToken;
   const { orchestrator } = createHarness({
     store,
     jobLauncher: {
-      launch: ({ run }) => {
+      launch: ({ run, fence }) => {
         launchedRunId = run.runId;
+        launchedToken = fence.token;
         return new Promise(() => {});
       },
     },
@@ -377,8 +750,8 @@ test('an atomic worker lease allows only one worker to execute a queued run', as
       return execution.promise;
     },
   });
-  const first = worker.execute(launchedRunId);
-  const second = worker.execute(launchedRunId);
+  const first = worker.execute(launchedRunId, { launchToken: launchedToken });
+  const second = worker.execute(launchedRunId, { launchToken: launchedToken });
   await new Promise((done) => setImmediate(done));
   assert.equal(calls, 1);
   execution.resolve({ state: 'completed', steps: [] });
@@ -675,12 +1048,13 @@ test('a worker that claims a run in the gap between listRecoverable\'s snapshot 
     findIdempotency: (...args) => base.findIdempotency(...args),
     claim: (...args) => base.claim(...args),
     claimDispatch: (...args) => base.claimDispatch(...args),
+    claimLaunch: (...args) => base.claimLaunch(...args),
     get: (...args) => base.get(...args),
     update: (...args) => base.update(...args),
     async listRecoverable() {
       const recoverable = await base.listRecoverable();
       for (const record of recoverable) {
-        await base.claimWorker(record.runId, 'external-worker-1');
+        await base.claimWorker(record.runId, 'external-worker-1', record.launchToken);
       }
       return recoverable;
     },
@@ -755,6 +1129,7 @@ test('a stale recovery whose claimDispatch finds the run already cancelled must 
       if (claimDispatchCalls === 2) await gate.promise;
       return base.claimDispatch(...args);
     },
+    claimLaunch: (...args) => base.claimLaunch(...args),
     get: (...args) => base.get(...args),
     update: (...args) => base.update(...args),
     listRecoverable: (...args) => base.listRecoverable(...args),
@@ -826,6 +1201,129 @@ test('a stale recovery whose claimDispatch finds the run already cancelled must 
   // no jobLauncher.isActive check was available to prove otherwise.
   const replacement = await createRun(dispatcherA.orchestrator, { idempotencyKey: 'stale-recovery-replacement-still-blocked' });
   assert.deepEqual(replacement, { outcome: 'limit', scope: 'global' });
+});
+
+test('restart recovery releases a cancelled terminal reservation only when another orchestrator proves the hosted job inactive', async () => {
+  const scenarios = [
+    { name: 'inactive', isActive: async () => false, released: true, errors: 0 },
+    { name: 'active', isActive: async () => true, released: false, errors: 0 },
+    {
+      name: 'status-error',
+      isActive: async () => {
+        throw new Error('platform status unavailable');
+      },
+      released: false,
+      errors: 1,
+    },
+    { name: 'no-status-check', isActive: null, released: false, errors: 0 },
+  ];
+
+  for (const scenario of scenarios) {
+    let now = 1_000;
+    const store = createInMemoryManagedRunStore({ now: () => now });
+    const dispatcherA = createSharedOrchestrator({
+      store,
+      now: () => now,
+      sequenceOffset: 0,
+      limits: { maxConcurrentRuns: 1, maxConcurrentRunsPerPrincipal: 1 },
+      jobLauncher: { launch: () => new Promise(() => {}) },
+    });
+    const created = await createRun(dispatcherA.orchestrator, { idempotencyKey: `restart-${scenario.name}` });
+    await new Promise((done) => setImmediate(done));
+    assert.equal(created.outcome, 'created', scenario.name);
+
+    const cancelled = await dispatcherA.orchestrator.cancel({ owner: OWNER, tenant: TENANT, runId: created.run.runId });
+    assert.equal(cancelled.state, 'cancelled', scenario.name);
+    await new Promise((done) => setImmediate(done));
+    const stranded = await store.get(created.run.runId);
+    assert.equal(stranded.capacityReserved, true, scenario.name);
+
+    now += 61_000;
+    let launches = 0;
+    const errors = [];
+    const dispatcherB = createSharedOrchestrator({
+      store,
+      now: () => now,
+      sequenceOffset: 100,
+      limits: { maxConcurrentRuns: 1, maxConcurrentRunsPerPrincipal: 1 },
+      jobLauncher: {
+        launch: () => {
+          launches += 1;
+          return new Promise(() => {});
+        },
+        ...(scenario.isActive ? { isActive: scenario.isActive } : {}),
+      },
+      onError: (info) => errors.push(info),
+    });
+
+    const relaunched = await dispatcherB.orchestrator.recover();
+    assert.equal(relaunched, 0, scenario.name);
+    assert.equal(launches, 0, `${scenario.name}: terminal work must never be relaunched`);
+    assert.equal(errors.length, scenario.errors, scenario.name);
+
+    const recovered = await store.get(created.run.runId);
+    assert.equal(recovered.capacityReserved, !scenario.released, scenario.name);
+    const replacement = await createRun(dispatcherB.orchestrator, {
+      idempotencyKey: `restart-${scenario.name}-replacement`,
+    });
+    assert.equal(replacement.outcome, scenario.released ? 'created' : 'limit', scenario.name);
+  }
+});
+
+test('a recovered-capacity write failure is isolated to its record and does not strand later terminal reservations', async () => {
+  let now = 1_000;
+  const base = createInMemoryManagedRunStore({ now: () => now });
+  let failReleaseFor = null;
+  const store = {
+    findIdempotency: (...args) => base.findIdempotency(...args),
+    claim: (...args) => base.claim(...args),
+    claimDispatch: (...args) => base.claimDispatch(...args),
+    claimLaunch: (...args) => base.claimLaunch(...args),
+    get: (...args) => base.get(...args),
+    async update(runId, mutate) {
+      if (runId === failReleaseFor) {
+        const current = await base.get(runId);
+        const next = mutate(current);
+        if (current.capacityReserved !== false && next.capacityReserved === false) {
+          failReleaseFor = null;
+          throw new Error('durable store write failed');
+        }
+      }
+      return base.update(runId, mutate);
+    },
+    listRecoverable: (...args) => base.listRecoverable(...args),
+  };
+  const dispatcherA = createSharedOrchestrator({
+    store,
+    now: () => now,
+    sequenceOffset: 0,
+    limits: { maxConcurrentRuns: 2, maxConcurrentRunsPerPrincipal: 2 },
+    jobLauncher: { launch: () => new Promise(() => {}) },
+  });
+  const first = await createRun(dispatcherA.orchestrator, { idempotencyKey: 'release-failure-first' });
+  const second = await createRun(dispatcherA.orchestrator, { idempotencyKey: 'release-failure-second' });
+  await new Promise((done) => setImmediate(done));
+  await dispatcherA.orchestrator.cancel({ owner: OWNER, tenant: TENANT, runId: first.run.runId });
+  await dispatcherA.orchestrator.cancel({ owner: OWNER, tenant: TENANT, runId: second.run.runId });
+  await new Promise((done) => setImmediate(done));
+  now += 61_000;
+  failReleaseFor = first.run.runId;
+
+  const errors = [];
+  const dispatcherB = createSharedOrchestrator({
+    store,
+    now: () => now,
+    sequenceOffset: 100,
+    limits: { maxConcurrentRuns: 2, maxConcurrentRunsPerPrincipal: 2 },
+    jobLauncher: { launch: () => new Promise(() => {}), isActive: async () => false },
+    onError: (info) => errors.push(info),
+  });
+  await assert.doesNotReject(() => dispatcherB.orchestrator.recover());
+
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].runId, first.run.runId);
+  assert.equal((await base.get(first.run.runId)).capacityReserved, true);
+  assert.equal((await base.get(second.run.runId)).capacityReserved, false);
 });
 
 test('two orchestrators sharing a store admit the identical concurrent request exactly once: one created, one existing, same run, and the job launches exactly once', async () => {

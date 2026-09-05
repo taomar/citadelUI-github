@@ -32,8 +32,10 @@ import { ACCELERATOR_ROOT, EXECUTION_PROTOCOL_VERSION } from '../src/core/types.
 import { describeSampleCapability, probeFromCapabilityPayload, summariseCapability } from '../src/core/capability.mjs';
 import { canonicalInputDigest } from '../src/relay/acknowledgement.mjs';
 import { resolveSpawnInvocation, spawnProcess } from '../src/server/transports.mjs';
+import { createRunManager } from '../src/server/runManager.mjs';
 import { createDenyAllAuthenticator, createSharedSecretAuthenticator } from '../src/relay/principalAuth.mjs';
-import { fakeSpawn } from './helpers/transports.mjs';
+import { FIXTURE_VALUES } from './helpers/fixtures.mjs';
+import { fakeFileSystem, fakeSpawn } from './helpers/transports.mjs';
 
 const PLAYGROUND_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const BUNDLE_ROOT = resolve(PLAYGROUND_ROOT, ACCELERATOR_ROOT);
@@ -143,6 +145,80 @@ test('operator mode streams run lifecycle events as bounded NDJSON', async () =>
       .map((line) => JSON.parse(line));
     assert.deepEqual(events.map((event) => event.type), ['run-start', 'step-start', 'step', 'result']);
     assert.equal(events.at(-1).result.state, 'completed');
+  });
+});
+
+test('disconnecting during delayed execution-context admission aborts the probe and prevents the run from starting', { timeout: 5_000 }, async () => {
+  let markAdmissionStarted;
+  let markAdmissionCancelled;
+  const admissionStarted = new Promise((resolve) => {
+    markAdmissionStarted = resolve;
+  });
+  const admissionCancelled = new Promise((resolve) => {
+    markAdmissionCancelled = resolve;
+  });
+  let observedSignal;
+  const executionContextManager = {
+    async forRun({ sampleId }, { signal } = {}) {
+      observedSignal = signal;
+      markAdmissionStarted();
+      if (!signal?.aborted) {
+        await new Promise((resolve) => signal?.addEventListener('abort', resolve, { once: true }));
+      }
+      markAdmissionCancelled();
+      return { kind: 'test', state: 'ready', canExecute: true, sampleId };
+    },
+  };
+  const filesystem = fakeFileSystem();
+  let executionCalls = 0;
+  const manager = createRunManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    executionContextManager,
+    fs: filesystem.fs,
+    transports: {
+      spawn: async () => {
+        executionCalls += 1;
+        return { code: 0, stdout: '{}', stderr: '', timedOut: false, aborted: false };
+      },
+      fetch: async () => {
+        executionCalls += 1;
+        return { status: 200, headers: {}, text: async () => '{}' };
+      },
+      writeFile: filesystem.writeFile,
+      access: filesystem.access,
+    },
+  });
+
+  await withServer({ mode: 'execute', runManager: manager }, async ({ port, server }) => {
+    const body = JSON.stringify({
+      protocolVersion: EXECUTION_PROTOCOL_VERSION,
+      sampleId: 'azure-context-check',
+      inputs: { 'hub.subscriptionId': FIXTURE_VALUES['hub.subscriptionId'] },
+    });
+    const controller = new AbortController();
+    try {
+      const pending = fetch(`http://127.0.0.1:${port}/api/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        signal: controller.signal,
+      }).then(
+        async (response) => ({ kind: 'response', status: response.status, body: await response.text() }),
+        (error) => ({ kind: 'error', error }),
+      );
+      const first = await Promise.race([admissionStarted.then(() => ({ kind: 'admission' })), pending]);
+      assert.deepEqual(first, { kind: 'admission' });
+      controller.abort();
+      await admissionCancelled;
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal(observedSignal.aborted, true);
+      assert.equal(executionCalls, 0);
+      assert.equal(manager.activeCount, 0);
+      assert.equal(filesystem.dirs.size, 0, 'no run workspace is created after admission is cancelled');
+    } finally {
+      server.closeAllConnections?.();
+    }
   });
 });
 

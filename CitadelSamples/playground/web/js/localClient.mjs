@@ -27,7 +27,7 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
     supportedStepTypes: Object.freeze([...supportedStepTypes]),
     reason: 'The local executor is attached. Samples run on this machine, bound to loopback.',
   });
-  let activeRunId = null;
+  let activeRequest = null;
 
   const doFetch = () => fetchImpl ?? (typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null);
 
@@ -49,17 +49,22 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
     },
 
     get activeRunId() {
-      return activeRunId;
+      return activeRequest?.runId ?? null;
     },
 
     async cancel() {
       const fetchImplementation = doFetch();
-      if (!fetchImplementation || !activeRunId) return { cancelled: false };
+      const request = activeRequest;
+      if (!fetchImplementation || !request) return { cancelled: false };
+      if (!request.runId) {
+        request.controller.abort();
+        return { cancelled: true, pending: true };
+      }
       try {
         const response = await fetchImplementation('/api/run/cancel', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          body: JSON.stringify({ runId: activeRunId }),
+          body: JSON.stringify({ runId: request.runId }),
         });
         return await response.json();
       } catch {
@@ -78,14 +83,21 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
         });
       }
       const body = this.buildRequestBody({ sampleId: sampleId ?? plan.sampleId, inputs, secrets, acknowledgement });
+      const request = { controller: new AbortController(), runId: null };
+      activeRequest = request;
       let response;
       try {
         response = await fetchImplementation('/api/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson, application/json' },
           body: JSON.stringify(body),
+          signal: request.controller.signal,
         });
       } catch (error) {
+        if (activeRequest === request) activeRequest = null;
+        if (request.controller.signal.aborted || error?.name === 'AbortError') {
+          return cancelledExecutionResult(plan.sampleId);
+        }
         return executionResult({
           state: 'failed',
           sampleId: plan.sampleId,
@@ -95,7 +107,7 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
         });
       }
       try {
-        activeRunId = responseHeader(response, 'X-Citadel-Run-Id');
+        request.runId = responseHeader(response, 'X-Citadel-Run-Id');
         let payload = null;
         try {
           payload = responseHeader(response, 'Content-Type')?.includes('application/x-ndjson')
@@ -104,6 +116,7 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
         } catch {
           payload = null;
         }
+        if (request.controller.signal.aborted) return cancelledExecutionResult(plan.sampleId);
         if (!payload) {
           return executionResult({
             state: 'inconclusive',
@@ -131,7 +144,7 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
           meta: {
             ...(payload.meta ?? {}),
             executor: 'local',
-            runId: payload.runId ?? activeRunId,
+            runId: payload.runId ?? request.runId,
             workspace: payload.workspace ?? payload.meta?.workspace ?? '',
           },
         });
@@ -144,9 +157,18 @@ export function createLocalExecutorClient({ allowedSampleIds, fetchImpl, support
           secretUpdates: payload.secretUpdates ?? {},
         });
       } finally {
-        activeRunId = null;
+        if (activeRequest === request) activeRequest = null;
       }
     },
+  });
+}
+
+function cancelledExecutionResult(sampleId) {
+  return executionResult({
+    state: 'cancelled',
+    sampleId,
+    summary: 'Run cancelled before the executor started.',
+    meta: { executor: 'local' },
   });
 }
 

@@ -99,9 +99,10 @@ function publicRecord(record) {
 
 /**
  * Privileged worker helper for a hosted-job adapter. The adapter enqueues only
- * `runId`; a fresh worker reloads the durable non-secret descriptor and writes
- * its safe partial/final projection back through the same store. This is what
- * lets a platform job outlive an individual relay process.
+ * `{ runId, launchToken }`; a fresh worker reloads the durable non-secret
+ * descriptor and writes its safe partial/final projection back through the
+ * same store. The token binds that worker to one exact dispatch generation so
+ * a delayed worker from an older launch cannot execute a recovered run.
  */
 export function createManagedRunWorker({
   store,
@@ -135,12 +136,12 @@ export function createManagedRunWorker({
   }
 
   return Object.freeze({
-    async execute(runId, { signal } = {}) {
+    async execute(runId, { signal, launchToken } = {}) {
       // The durable store makes this compare-and-set atomic with cancellation:
       // either cancellation wins and no worker can cross an execution
       // boundary, or one worker claims the running job and the launcher must
       // propagate subsequent cancellation to that platform job.
-      const claim = await store.claimWorker(runId, workerId);
+      const claim = await store.claimWorker(runId, workerId, launchToken);
       if (claim.outcome === 'missing') throw new TypeError('Managed run work was not found.');
       if (claim.outcome !== 'claimed') return publicRecord(claim.record);
       const current = claim.record;
@@ -218,10 +219,10 @@ export function createManagedRunWorker({
 /**
  * In-memory store for one relay process. Hosted deployments supply a durable
  * store with the same atomic `findIdempotency`, `claim`, `claimDispatch`,
- * `claimWorker`, `renewWorkerLease`, `listRecoverable`, `get`, and `update`
- * operations — each one a single transaction against the backing store, not
- * a sequence of separate reads and writes an unrelated caller could observe
- * or interleave with.
+ * `claimLaunch`, `claimWorker`, `renewWorkerLease`, `listRecoverable`, `get`,
+ * and `update` operations — each one a single transaction against the backing
+ * store, not a sequence of separate reads and writes an unrelated caller
+ * could observe or interleave with.
  *
  * `claim` is the one atomic ADMISSION operation: given a fully-formed run
  * record and this request's single-use `nonce`, it combines the idempotency
@@ -383,17 +384,49 @@ export function createInMemoryManagedRunStore({
       if (current.dispatcherId && current.dispatcherId !== dispatcherId && current.dispatchLeaseExpiresAt > now()) {
         return { outcome: 'dispatcher-active', record: copy(current) };
       }
-      const claimed = { ...current, dispatcherId, dispatchLeaseExpiresAt: now() + leaseMs };
+      const claimed = {
+        ...current,
+        dispatcherId,
+        dispatchLeaseExpiresAt: now() + leaseMs,
+        dispatchGeneration: Number.isSafeInteger(current.dispatchGeneration) ? current.dispatchGeneration + 1 : 1,
+        launchCommittedAt: null,
+        launchToken: null,
+      };
       runs.set(runId, copy(claimed));
       return { outcome: 'claimed', record: copy(claimed) };
     },
-    async claimWorker(runId, workerId) {
+    /**
+     * The final atomic launch fence. Cancellation and this claim are ordered by
+     * the durable store: if cancellation wins first, no dispatcher receives
+     * launch permission; if this claim wins first, cancellation knows a
+     * platform launch is already committed and capacity remains reserved until
+     * that exact job is proven inactive.
+     */
+    async claimLaunch(runId, dispatcherId, launchToken) {
+      const current = runs.get(runId);
+      if (!current) return { outcome: 'missing' };
+      if (!ACTIVE_STATES.has(current.state)) return { outcome: 'not-runnable', record: copy(current) };
+      if (current.workerLease) return { outcome: 'worker-active', record: copy(current) };
+      if (current.dispatcherId !== dispatcherId || !current.dispatchLeaseExpiresAt || current.dispatchLeaseExpiresAt <= now()) {
+        return { outcome: 'dispatcher-lost', record: copy(current) };
+      }
+      if (typeof launchToken !== 'string' || !/^[a-f0-9]{48}$/.test(launchToken)) {
+        throw new TypeError('Managed run launch claims require an unguessable fencing token.');
+      }
+      if (current.launchToken) return { outcome: 'already-claimed', record: copy(current) };
+      const claimed = { ...current, launchCommittedAt: now(), launchToken };
+      runs.set(runId, copy(claimed));
+      return { outcome: 'claimed', record: copy(claimed) };
+    },
+    async claimWorker(runId, workerId, launchToken) {
       const current = runs.get(runId);
       if (!current) return { outcome: 'missing' };
       if (!ACTIVE_STATES.has(current.state)) {
-        const released = { ...current, capacityReserved: false };
-        runs.set(runId, copy(released));
-        return { outcome: 'not-runnable', record: copy(released) };
+        return { outcome: 'not-runnable', record: copy(current) };
+      }
+      if (!current.launchCommittedAt) return { outcome: 'not-dispatched', record: copy(current) };
+      if (typeof launchToken !== 'string' || launchToken !== current.launchToken) {
+        return { outcome: 'launch-token-mismatch', record: copy(current) };
       }
       if (current.workerLease) {
         if (current.workerLeaseExpiresAt > now()) return { outcome: 'already-claimed', record: copy(current) };
@@ -427,8 +460,13 @@ export function createInMemoryManagedRunStore({
       reapExpiredWorkerLeases();
       const recovered = [];
       for (const [runId, current] of runs) {
-        if (!ACTIVE_STATES.has(current.state)) continue;
-        if (!current.workerLease && (!current.dispatchLeaseExpiresAt || current.dispatchLeaseExpiresAt <= now())) recovered.push(copy(current));
+        if (TERMINAL_STATES.has(current.state) && current.capacityReserved !== false) {
+          recovered.push(copy(current));
+          continue;
+        }
+        if (ACTIVE_STATES.has(current.state) && !current.workerLease && (!current.dispatchLeaseExpiresAt || current.dispatchLeaseExpiresAt <= now())) {
+          recovered.push(copy(current));
+        }
       }
       return recovered;
     },
@@ -446,26 +484,34 @@ export function createInMemoryManagedRunStore({
 /**
  * Orchestrates a one-shot job without retaining its request or credentials.
  *
- * `jobLauncher.launch({ run, work, signal, reportPartial })` receives a
- * validated, non-secret work descriptor that a hosted worker can reload after
- * a relay restart. It may return a Promise result or `{ result: Promise,
- * cancel?: () => void }`. Cancellation always aborts `signal`; an adapter may
- * additionally cancel its platform job.
+ * `jobLauncher.launch({ run, work, signal, reportPartial, fence })` receives a
+ * validated, non-secret work descriptor and an unguessable launch-generation
+ * fence. A hosted adapter MUST use `{ run.runId, fence.token }` as its
+ * atomic/idempotent platform-create identity, refuse an expired
+ * `fence.expiresAt`, and enqueue that same token with the run ID for
+ * `createManagedRunWorker.execute`. That makes a stale dispatcher or worker
+ * harmless even if it resumes after a newer generation has recovered the run.
+ * The launcher may return a Promise result or `{ result: Promise, cancel?: ()
+ * => void }`. Cancellation always aborts `signal`; an adapter may additionally
+ * cancel its platform job.
  *
  * `jobLauncher.isActive({ run, work })` is optional. `recover()` calls it,
  * when present, for a run whose dispatch lease has lapsed with no worker
  * claim, so an adapter that can independently confirm its platform job is
  * still running can refuse a redundant redispatch instead of only trusting
- * lease expiry. It must FAIL CLOSED: if it throws or rejects, `recover()`
- * treats that run as unverifiable this pass — it reports the error through
- * `onError`, leaves the run's state and capacity reservation untouched, and
- * does NOT redispatch it. An inconclusive check must never be treated as
- * license to launch a possible second, duplicate job for still-active
- * external work; the next `recover()` pass gets another chance to verify it.
- * `launch()` also consults it — never to redispatch, only to decide whether
- * a STALE recovery attempt (one whose `claimDispatch` found the run already
- * terminal) may safely release its capacity reservation; see the
- * `not-runnable` handling in `launch()` below.
+ * lease expiry. Recovery also calls it for a terminal record that still owns
+ * capacity after a restart; only an explicit `false` proves that reservation
+ * safe to release. It must FAIL CLOSED: if it is absent for that terminal
+ * record, throws, rejects, or returns anything other than a boolean,
+ * `recover()` treats the platform state as unverifiable this pass — it reports
+ * thrown errors through `onError`, leaves the run's state and capacity
+ * reservation untouched, and does NOT redispatch it. An inconclusive check
+ * must never be treated as license to launch a possible second, duplicate job
+ * or under-count still-active external work; the next `recover()` pass gets
+ * another chance to verify it. `launch()` also consults it — never to
+ * redispatch, only to decide whether a STALE recovery attempt (one whose
+ * `claimDispatch` found the run already terminal) may safely release its
+ * capacity reservation; see the `not-runnable` handling in `launch()` below.
  *
  * `recover()` never redispatches a run this SAME orchestrator still has a
  * live local controller/job for, regardless of what the store's lease state
@@ -513,10 +559,11 @@ export function createManagedRunOrchestrator({
     typeof store.findIdempotency !== 'function' ||
     typeof store.claim !== 'function' ||
     typeof store.claimDispatch !== 'function' ||
+    typeof store.claimLaunch !== 'function' ||
     typeof store.get !== 'function' ||
     typeof store.update !== 'function'
   ) {
-    throw new TypeError('Managed run orchestration requires a store with findIdempotency, claim, claimDispatch, get, and update methods.');
+    throw new TypeError('Managed run orchestration requires a store with findIdempotency, claim, claimDispatch, claimLaunch, get, and update methods.');
   }
   if (!jobLauncher || typeof jobLauncher.launch !== 'function') {
     throw new TypeError('Managed run orchestration requires a jobLauncher.launch method.');
@@ -543,6 +590,8 @@ export function createManagedRunOrchestrator({
   });
   const controllers = new Map();
   const jobs = new Map();
+  const cancelledJobs = new Set();
+  const recoveryRetryTimers = new Map();
   const dispatcherId = `dispatcher_${randomBytes(16).toString('base64url')}`;
 
   function makeRunId() {
@@ -555,9 +604,14 @@ export function createManagedRunOrchestrator({
 
   function abortJob(runId) {
     controllers.get(runId)?.abort();
+    if (cancelledJobs.has(runId)) return;
+    const cancel = jobs.get(runId);
+    if (!cancel) return;
+    cancelledJobs.add(runId);
     try {
-      jobs.get(runId)?.();
+      cancel();
     } catch {
+      cancelledJobs.delete(runId);
       onError({ runId, operation: 'cancel its hosted job' });
     }
   }
@@ -581,6 +635,14 @@ export function createManagedRunOrchestrator({
     return store.update(runId, (current) => (current.capacityReserved === false ? current : { ...current, capacityReserved: false }));
   }
 
+  async function releaseRecoveredCapacity(runId) {
+    try {
+      await releaseCapacity(runId);
+    } catch {
+      onError({ runId, operation: 'release its recovered capacity reservation' });
+    }
+  }
+
   async function launch(record) {
     // This orchestrator already has a live controller/job tracked locally
     // for this exact run — whether it is the SAME `launch()` call that
@@ -601,11 +663,23 @@ export function createManagedRunOrchestrator({
     let dispatchHeartbeat;
     let timedOut = false;
     let executionLaunched = false;
+    let executionSettled = false;
+    let cleanupWhenSettled = false;
+    let cleaned = false;
     const stopDispatchHeartbeat = () => {
       if (dispatchHeartbeat) {
         clearIntervalFn(dispatchHeartbeat);
         dispatchHeartbeat = null;
       }
+    };
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      if (timer) clearTimeoutFn(timer);
+      stopDispatchHeartbeat();
+      controllers.delete(record.runId);
+      jobs.delete(record.runId);
+      cancelledJobs.delete(record.runId);
     };
     try {
       // `claimDispatch` atomically requires the run to still be active, no
@@ -658,7 +732,7 @@ export function createManagedRunOrchestrator({
             onError({ runId: record.runId, operation: 'verify whether its hosted job is still active before releasing stale capacity' });
             return;
           }
-          if (!stillActive) await releaseCapacity(record.runId);
+          if (stillActive === false) await releaseRecoveredCapacity(record.runId);
         }
         return;
       }
@@ -688,6 +762,7 @@ export function createManagedRunOrchestrator({
           .then((latest) => {
             if (!latest || !ACTIVE_STATES.has(latest.state) || latest.workerLease) {
               stopDispatchHeartbeat();
+              if (latest?.state === 'cancelled') abortJob(record.runId);
               return;
             }
             if (latest.dispatcherId !== dispatcherId) {
@@ -710,6 +785,27 @@ export function createManagedRunOrchestrator({
         return;
       }
 
+      // The running write is not launch permission: its response can be stale
+      // by the time it reaches this process. `claimLaunch` atomically orders
+      // the final launch commitment against cancellation in the durable store.
+      const launchToken = randomBytes(24).toString('hex');
+      const launchClaim = await store.claimLaunch(record.runId, dispatcherId, launchToken);
+      const launchLeaseExpired =
+        launchClaim.outcome === 'claimed' &&
+        (!Number.isFinite(launchClaim.record.dispatchLeaseExpiresAt) || launchClaim.record.dispatchLeaseExpiresAt <= now());
+      if (launchClaim.outcome !== 'claimed' || controller.signal.aborted || launchLeaseExpired) {
+        stopDispatchHeartbeat();
+        if (
+          launchClaim.record &&
+          TERMINAL_STATES.has(launchClaim.record.state) &&
+          launchClaim.record.capacityReserved !== false &&
+          launchClaim.record.dispatcherId === dispatcherId
+        ) {
+          await releaseCapacity(record.runId);
+        }
+        return;
+      }
+
       timer = setTimeoutFn(() => {
         timedOut = true;
         abortJob(record.runId);
@@ -719,6 +815,11 @@ export function createManagedRunOrchestrator({
         work: copy(record.work),
         signal: controller.signal,
         reportPartial: (steps) => reportPartial(record.runId, steps),
+        fence: Object.freeze({
+          token: launchToken,
+          generation: launchClaim.record.dispatchGeneration,
+          expiresAt: launchClaim.record.dispatchLeaseExpiresAt,
+        }),
       });
       const isJobHandle = launched && typeof launched === 'object' && 'result' in launched;
       if (isJobHandle && typeof launched.cancel === 'function') jobs.set(record.runId, launched.cancel);
@@ -729,12 +830,17 @@ export function createManagedRunOrchestrator({
       // uncooperative platform job stopped. Keep its capacity reservation
       // until its promise actually settles so repeated timeouts cannot evade
       // either concurrency limit.
-      Promise.resolve(execution).then(
-        () => void releaseCapacity(record.runId).catch(() => onError({ runId: record.runId, operation: 'release its capacity reservation' })),
-        () => void releaseCapacity(record.runId).catch(() => onError({ runId: record.runId, operation: 'release its capacity reservation' })),
-      );
+      const executionPromise = Promise.resolve(execution);
+      const onExecutionSettled = () => {
+        executionSettled = true;
+        void releaseCapacity(record.runId).catch(() => onError({ runId: record.runId, operation: 'release its capacity reservation' }));
+        if (cleanupWhenSettled) cleanup();
+      };
+      executionPromise.then(onExecutionSettled, onExecutionSettled);
+      const afterLaunch = await store.get(record.runId);
+      if (!afterLaunch || afterLaunch.state === 'cancelled' || afterLaunch.dispatcherId !== dispatcherId) abortJob(record.runId);
       const result = await raceAbortSignal(
-        execution,
+        executionPromise,
         controller.signal,
         'The managed run exceeded its time budget or was cancelled.',
       );
@@ -745,6 +851,11 @@ export function createManagedRunOrchestrator({
       // only when no launched job remains. A store that cannot record this is
       // an infrastructure failure and its own durable implementation must
       // surface it to its operator.
+      if (executionLaunched) {
+        abortJob(record.runId);
+        stopDispatchHeartbeat();
+        cleanupWhenSettled = !executionSettled;
+      }
       await finish(record.runId, null, { aborted: controller.signal.aborted, timedOut }).catch(() =>
         onError({ runId: record.runId, operation: 'record its terminal state' }),
       );
@@ -752,11 +863,103 @@ export function createManagedRunOrchestrator({
         await releaseCapacity(record.runId).catch(() => onError({ runId: record.runId, operation: 'release its capacity reservation' }));
       }
     } finally {
-      if (timer) clearTimeoutFn(timer);
-      stopDispatchHeartbeat();
-      controllers.delete(record.runId);
-      jobs.delete(record.runId);
+      if (!cleanupWhenSettled) cleanup();
     }
+  }
+
+  function deferTerminalRecovery(record) {
+    if (
+      !record.launchCommittedAt ||
+      !Number.isFinite(record.dispatchLeaseExpiresAt) ||
+      record.dispatchLeaseExpiresAt <= now()
+    ) {
+      return false;
+    }
+    if (recoveryRetryTimers.has(record.runId)) return true;
+    const retry = setTimeoutFn(() => {
+      recoveryRetryTimers.delete(record.runId);
+      void recoverRuns().catch(() => onError({ runId: record.runId, operation: 'retry its terminal capacity recovery' }));
+    }, Math.max(1, record.dispatchLeaseExpiresAt - now()));
+    recoveryRetryTimers.set(record.runId, retry);
+    return true;
+  }
+
+  async function recoverRuns() {
+    if (typeof store.listRecoverable !== 'function') {
+      throw new TypeError('Managed run recovery requires a store with listRecoverable.');
+    }
+    const recoverable = await store.listRecoverable();
+    let relaunched = 0;
+    for (const record of recoverable) {
+      // This orchestrator itself may still hold a live controller/job for
+      // this run even though its dispatch lease lapsed in the store (for
+      // example, its own renewing heartbeat missed enough ticks under a
+      // starved event loop, or the run's own launch() call has not yet
+      // reached its `finally` cleanup). Recovering a run this SAME
+      // process is already tracking would always be wrong; skip it before
+      // ever consulting jobLauncher.isActive or attempting a dispatch
+      // claim, and before incrementing `relaunched`, so this case is
+      // correctly reported as zero redispatch attempts rather than an
+      // attempted-but-no-op redispatch.
+      if (controllers.has(record.runId)) continue;
+      if (TERMINAL_STATES.has(record.state)) {
+        if (record.capacityReserved === false) continue;
+        if (!record.startedAt) {
+          await releaseRecoveredCapacity(record.runId);
+          continue;
+        }
+        // Once the atomic launch fence commits, its owning dispatcher may
+        // still be between durable permission and the synchronous platform
+        // launch call. Preserve capacity until that renewable ownership lease
+        // expires, then retry recovery in this same restarted process.
+        if (deferTerminalRecovery(record)) continue;
+        const retry = recoveryRetryTimers.get(record.runId);
+        if (retry) {
+          clearTimeoutFn(retry);
+          recoveryRetryTimers.delete(record.runId);
+        }
+        if (typeof jobLauncher.isActive !== 'function') continue;
+        let stillActive;
+        try {
+          stillActive = await jobLauncher.isActive({ run: publicRecord(record), work: copy(record.work) });
+        } catch {
+          onError({ runId: record.runId, operation: 'verify whether its terminal hosted job is still active' });
+          continue;
+        }
+        if (stillActive === false) await releaseRecoveredCapacity(record.runId);
+        continue;
+      }
+      // A lapsed dispatch lease usually means its owning process is
+      // genuinely gone — the ordinary, safe-to-redispatch case the
+      // heartbeat above cannot cover (a crash stops the heartbeat too).
+      // For a hosted-job adapter, though, the platform job that dispatcher
+      // started can legitimately keep running out from under it. When the
+      // launcher can independently confirm the platform job is still
+      // active, this defers to that rather than risk starting a second,
+      // duplicate job for still-active external work; a launcher that
+      // offers no such check keeps today's lease-expiry-only behavior.
+      if (typeof jobLauncher.isActive === 'function') {
+        let stillActive;
+        try {
+          stillActive = await jobLauncher.isActive({ run: publicRecord(record), work: copy(record.work) });
+        } catch {
+          // Fail CLOSED: an adapter that cannot confirm whether the
+          // platform job is still active must never be treated as having
+          // confirmed it is NOT. Redispatching on that unverifiable
+          // "no" would risk launching a duplicate job on top of
+          // still-active external work — exactly the failure this check
+          // exists to prevent. Leave this run's state and capacity
+          // reservation untouched; the next `recover()` pass gets another
+          // chance to verify it.
+          onError({ runId: record.runId, operation: 'verify whether its hosted job is still active' });
+          continue;
+        }
+        if (stillActive !== false) continue;
+      }
+      relaunched += 1;
+      void launch(record);
+    }
+    return relaunched;
   }
 
   return Object.freeze({
@@ -836,55 +1039,6 @@ export function createManagedRunOrchestrator({
       }
       return publicRecord(cancelled);
     },
-    async recover() {
-      if (typeof store.listRecoverable !== 'function') {
-        throw new TypeError('Managed run recovery requires a store with listRecoverable.');
-      }
-      const recoverable = await store.listRecoverable();
-      let relaunched = 0;
-      for (const record of recoverable) {
-        // This orchestrator itself may still hold a live controller/job for
-        // this run even though its dispatch lease lapsed in the store (for
-        // example, its own renewing heartbeat missed enough ticks under a
-        // starved event loop, or the run's own launch() call has not yet
-        // reached its `finally` cleanup). Recovering a run this SAME
-        // process is already tracking would always be wrong; skip it before
-        // ever consulting jobLauncher.isActive or attempting a dispatch
-        // claim, and before incrementing `relaunched`, so this case is
-        // correctly reported as zero redispatch attempts rather than an
-        // attempted-but-no-op redispatch.
-        if (controllers.has(record.runId)) continue;
-        // A lapsed dispatch lease usually means its owning process is
-        // genuinely gone — the ordinary, safe-to-redispatch case the
-        // heartbeat above cannot cover (a crash stops the heartbeat too).
-        // For a hosted-job adapter, though, the platform job that dispatcher
-        // started can legitimately keep running out from under it. When the
-        // launcher can independently confirm the platform job is still
-        // active, this defers to that rather than risk starting a second,
-        // duplicate job for still-active external work; a launcher that
-        // offers no such check keeps today's lease-expiry-only behavior.
-        if (typeof jobLauncher.isActive === 'function') {
-          let stillActive;
-          try {
-            stillActive = await jobLauncher.isActive({ run: publicRecord(record), work: copy(record.work) });
-          } catch {
-            // Fail CLOSED: an adapter that cannot confirm whether the
-            // platform job is still active must never be treated as having
-            // confirmed it is NOT. Redispatching on that unverifiable
-            // "no" would risk launching a duplicate job on top of
-            // still-active external work — exactly the failure this check
-            // exists to prevent. Leave this run's state and capacity
-            // reservation untouched; the next `recover()` pass gets another
-            // chance to verify it.
-            onError({ runId: record.runId, operation: 'verify whether its hosted job is still active' });
-            continue;
-          }
-          if (stillActive) continue;
-        }
-        relaunched += 1;
-        void launch(record);
-      }
-      return relaunched;
-    },
+    recover: recoverRuns,
   });
 }

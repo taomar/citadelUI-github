@@ -186,6 +186,25 @@ async function readBody(request, limitBytes) {
   return Buffer.concat(chunks).toString('utf-8');
 }
 
+function monitorClientDisconnect(request, response) {
+  const controller = new AbortController();
+  const abort = () => {
+    if (!response.writableEnded) controller.abort();
+  };
+  request.once('aborted', abort);
+  response.once('close', abort);
+  request.socket?.once('close', abort);
+  if (request.aborted || response.destroyed || request.socket?.destroyed) controller.abort();
+  return {
+    signal: controller.signal,
+    dispose() {
+      request.off('aborted', abort);
+      response.off('close', abort);
+      request.socket?.off('close', abort);
+    },
+  };
+}
+
 /**
  * The pure request handler, independent of `node:http`, so tests can drive it
  * directly with a plain object instead of a socket.
@@ -205,9 +224,9 @@ async function readBody(request, limitBytes) {
  * @param {number} [deps.runTimeoutMs]
  * @param {() => number} [deps.now]     injectable for tests (acknowledgement expiry)
  * @param {AbortSignal} [deps.externalSignal]  optional caller-disconnect signal
- *        (see `createRelayServer`, which wires this to the underlying
- *        `node:http` request's own `close` event) — firing it ends the run
- *        exactly like the deadline below firing.
+ *        (see `createRelayServer`, which combines request abort, response
+ *        close, and socket close for the full request lifecycle) — firing it
+ *        ends the run exactly like the deadline below firing.
  *
  * The one run-level deadline (`runTimeoutMs`) starts here, BEFORE tenant
  * policy resolution or any secret is resolved — not only around the http
@@ -889,49 +908,44 @@ export function createRelayServer({
         return;
       }
 
-      const auth = await authenticatePrincipal(request, { isLoopbackHost, host, authenticator });
-      if (!auth.ok) {
-        response.writeHead(401, securityHeaders());
-        response.end(JSON.stringify({ state: 'blocked', summary: 'Not run — the caller could not be authenticated.', code: 'unauthenticated' }));
-        return;
-      }
-
-      let payload;
+      const client = monitorClientDisconnect(request, response);
       try {
-        payload = JSON.parse(await readBody(request, bodyLimitBytes));
-      } catch (error) {
-        const status = error instanceof RequestRefused ? error.status : 400;
-        response.writeHead(status, securityHeaders());
-        response.end(JSON.stringify({ state: 'blocked', summary: error?.message ?? 'Malformed request body.' }));
-        return;
-      }
+        const auth = await authenticatePrincipal(request, { isLoopbackHost, host, authenticator });
+        if (!auth.ok) {
+          if (client.signal.aborted && response.destroyed) return;
+          response.writeHead(401, securityHeaders());
+          response.end(JSON.stringify({ state: 'blocked', summary: 'Not run — the caller could not be authenticated.', code: 'unauthenticated' }));
+          return;
+        }
 
-      // A caller that disconnects mid-run should end the run the same way
-      // the deadline does, not leave it running to completion against a
-      // socket nobody is reading the response from. `handleExecuteRequest`
-      // itself, not this listener, decides what "ended" produces.
-      const clientAbort = new AbortController();
-      const onClose = () => {
-        if (!response.writableEnded) clientAbort.abort();
-      };
-      request.on('close', onClose);
-      let status;
-      let body;
-      try {
-        ({ status, body } = await handleExecuteRequest(payload, {
+        let payload;
+        try {
+          payload = JSON.parse(await readBody(request, bodyLimitBytes));
+        } catch (error) {
+          if (client.signal.aborted && response.destroyed) return;
+          const status = error instanceof RequestRefused ? error.status : 400;
+          response.writeHead(status, securityHeaders());
+          response.end(JSON.stringify({ state: 'blocked', summary: error?.message ?? 'Malformed request body.' }));
+          return;
+        }
+
+        // A caller that disconnects at any point in the request lifecycle
+        // ends the run through the same signal as the fixed deadline.
+        const { status, body } = await handleExecuteRequest(payload, {
           catalogue,
           tenantPolicy,
           auth: { principal: auth.principal, tenant: auth.tenant, roles: auth.roles ?? [] },
           nonceStore: nonces,
           runTimeoutMs,
           now,
-          externalSignal: clientAbort.signal,
-        }));
+          externalSignal: client.signal,
+        });
+        if (client.signal.aborted && response.destroyed) return;
+        response.writeHead(status, securityHeaders());
+        response.end(JSON.stringify(body));
       } finally {
-        request.off('close', onClose);
+        client.dispose();
       }
-      response.writeHead(status, securityHeaders());
-      response.end(JSON.stringify(body));
     } catch (error) {
       // The final backstop. `handleExecuteRequest` already catches the
       // specific managed-identity/Key-Vault-shaped boundary calls it makes
