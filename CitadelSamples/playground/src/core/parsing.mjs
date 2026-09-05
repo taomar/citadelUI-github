@@ -24,22 +24,89 @@ export function readHeader(headers, name) {
   return undefined;
 }
 
+export const MAX_SSE_EVENTS = 128;
+
+function selectJsonRpcResponse(payloads, jsonRpcId) {
+  const candidates = [];
+  for (const payload of payloads) {
+    if (Array.isArray(payload)) candidates.push(...payload);
+    else candidates.push(payload);
+  }
+  for (const message of candidates) {
+    if (
+      !message ||
+      typeof message !== 'object' ||
+      Array.isArray(message) ||
+      message.jsonrpc !== '2.0' ||
+      !Object.prototype.hasOwnProperty.call(message, 'id') ||
+      message.id !== jsonRpcId
+    ) {
+      continue;
+    }
+    const hasMethod = Object.prototype.hasOwnProperty.call(message, 'method');
+    const hasResult = Object.prototype.hasOwnProperty.call(message, 'result');
+    const hasError = Object.prototype.hasOwnProperty.call(message, 'error');
+    if (hasMethod && !hasResult && !hasError) continue;
+    if (hasMethod || hasResult === hasError) return { data: null, malformed: true };
+    if (hasError && (!message.error || typeof message.error !== 'object' || Array.isArray(message.error))) {
+      return { data: null, malformed: true };
+    }
+    return { data: message, malformed: false };
+  }
+  return { data: null, malformed: false };
+}
+
+/** Return the id carried by an outbound JSON-RPC request, if the body is one. */
+export function jsonRpcRequestId(body) {
+  let parsed = body;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return undefined;
+    }
+  }
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed) ||
+    parsed.jsonrpc !== '2.0' ||
+    !Object.prototype.hasOwnProperty.call(parsed, 'id')
+  ) {
+    return undefined;
+  }
+  return parsed.id;
+}
+
 /**
- * Parse an SSE body, returning the first `data:` line that is valid JSON.
- * Mirrors the notebook's `mcp_call` loop, including its "first wins" rule, and
- * additionally supports multi-line `data:` folding from the SSE spec.
+ * Parse bounded SSE `data:` events with spec-compatible multi-line folding.
+ *
+ * When `jsonRpcId` is supplied, notifications and responses for unrelated ids
+ * are ignored and only the matching JSON-RPC response is returned. A malformed
+ * or over-limit stream is rejected as a whole.
  */
-export function parseSseBody(text) {
+export function parseSseBody(text, options = {}) {
+  const expectsJsonRpc = Object.prototype.hasOwnProperty.call(options, 'jsonRpcId');
+  const maxEvents = Number.isInteger(options.maxEvents) && options.maxEvents > 0 ? options.maxEvents : MAX_SSE_EVENTS;
   const events = [];
   let buffer = [];
+  let eventCount = 0;
+  let malformed = false;
+  let limitExceeded = false;
   const flush = () => {
     if (buffer.length === 0) return;
     const payload = buffer.join('\n');
     buffer = [];
+    if (limitExceeded) return;
+    eventCount += 1;
+    if (eventCount > maxEvents) {
+      limitExceeded = true;
+      return;
+    }
     try {
       events.push(JSON.parse(payload));
     } catch {
-      /* a non-JSON data frame is ignored, exactly as the notebook does */
+      malformed = true;
     }
   };
   for (const rawLine of String(text ?? '').split(/\r?\n/)) {
@@ -54,7 +121,17 @@ export function parseSseBody(text) {
     }
   }
   flush();
-  return { events, data: events.length > 0 ? events[0] : null };
+  const selection = expectsJsonRpc
+    ? selectJsonRpcResponse(events, options.jsonRpcId)
+    : { data: events[0] ?? null, malformed: false };
+  malformed ||= selection.malformed;
+  return {
+    events,
+    data: malformed || limitExceeded ? null : selection.data,
+    malformed,
+    limitExceeded,
+    eventCount,
+  };
 }
 
 /**
@@ -62,20 +139,62 @@ export function parseSseBody(text) {
  *
  * @param {{status?: number, headers?: object, text?: string}} response
  */
-export function parseHttpResponse(response = {}) {
+export function parseHttpResponse(response = {}, options = {}) {
   const text = typeof response.text === 'string' ? response.text : '';
   const contentType = String(readHeader(response.headers, 'content-type') ?? '');
+  const expectsJsonRpc = Object.prototype.hasOwnProperty.call(options, 'jsonRpcId');
   if (contentType.includes('text/event-stream')) {
-    const { events, data } = parseSseBody(text);
-    return { format: 'sse', data, events, text, contentType };
+    const parsed = parseSseBody(text, options);
+    return {
+      format: 'sse',
+      data: parsed.data,
+      events: parsed.events,
+      text,
+      contentType,
+      jsonRpc: expectsJsonRpc
+        ? {
+            matched: parsed.data !== null,
+            malformed: parsed.malformed,
+            limitExceeded: parsed.limitExceeded,
+          }
+        : null,
+    };
   }
   if (text.trim() === '') {
-    return { format: 'empty', data: null, events: [], text, contentType };
+    return {
+      format: 'empty',
+      data: null,
+      events: [],
+      text,
+      contentType,
+      jsonRpc: expectsJsonRpc ? { matched: false, malformed: false, limitExceeded: false } : null,
+    };
   }
   try {
-    return { format: 'json', data: JSON.parse(text), events: [], text, contentType };
+    const payload = JSON.parse(text);
+    const selection = expectsJsonRpc
+      ? selectJsonRpcResponse([payload], options.jsonRpcId)
+      : { data: payload, malformed: false };
+    const data = selection.malformed ? null : selection.data;
+    return {
+      format: 'json',
+      data,
+      events: [],
+      text,
+      contentType,
+      jsonRpc: expectsJsonRpc
+        ? { matched: data !== null, malformed: selection.malformed, limitExceeded: false }
+        : null,
+    };
   } catch {
-    return { format: 'text', data: null, events: [], text, contentType };
+    return {
+      format: 'text',
+      data: null,
+      events: [],
+      text,
+      contentType,
+      jsonRpc: expectsJsonRpc ? { matched: false, malformed: true, limitExceeded: false } : null,
+    };
   }
 }
 
@@ -87,18 +206,39 @@ export function parseHttpResponse(response = {}) {
  */
 export function interpretJsonRpc({ status, body } = {}) {
   const httpOk = typeof status === 'number' && status >= 200 && status < 300;
-  if (!body || typeof body !== 'object') {
+  const responseEnvelope =
+    body &&
+    typeof body === 'object' &&
+    !Array.isArray(body) &&
+    body.jsonrpc === '2.0' &&
+    Object.prototype.hasOwnProperty.call(body, 'id');
+  if (!responseEnvelope) {
     return {
       outcome: httpOk ? 'inconclusive' : 'failure',
       httpOk,
       reason: httpOk
-        ? 'HTTP succeeded but the body was not a JSON-RPC object; treat as inconclusive rather than a pass.'
+        ? 'HTTP succeeded but the body was not a valid JSON-RPC response; treat as inconclusive rather than a pass.'
         : `HTTP ${status ?? 'error'} with no JSON-RPC body.`,
       error: null,
       result: null,
     };
   }
-  if (Object.prototype.hasOwnProperty.call(body, 'error') && body.error) {
+  const hasMethod = Object.prototype.hasOwnProperty.call(body, 'method');
+  const hasResult = Object.prototype.hasOwnProperty.call(body, 'result');
+  const hasError = Object.prototype.hasOwnProperty.call(body, 'error');
+  const validError = hasError && body.error && typeof body.error === 'object' && !Array.isArray(body.error);
+  if (hasMethod || hasResult === hasError || (hasError && !validError)) {
+    return {
+      outcome: httpOk ? 'inconclusive' : 'failure',
+      httpOk,
+      reason: httpOk
+        ? 'HTTP succeeded but the JSON-RPC response envelope was malformed.'
+        : `HTTP ${status ?? 'error'} carried a malformed JSON-RPC response.`,
+      error: null,
+      result: null,
+    };
+  }
+  if (hasError) {
     const code = body.error?.code;
     const message = body.error?.message ?? 'JSON-RPC error';
     return {
@@ -118,15 +258,6 @@ export function interpretJsonRpc({ status, body } = {}) {
       reason: `HTTP ${status}.`,
       error: null,
       result: body.result ?? null,
-    };
-  }
-  if (!Object.prototype.hasOwnProperty.call(body, 'result')) {
-    return {
-      outcome: 'inconclusive',
-      httpOk,
-      reason: 'HTTP 2xx JSON-RPC response contained neither `result` nor `error`.',
-      error: null,
-      result: null,
     };
   }
   return { outcome: 'success', httpOk, reason: 'JSON-RPC result returned.', error: null, result: body.result };

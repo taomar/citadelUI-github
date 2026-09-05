@@ -20,7 +20,7 @@
 import { executableIdentity, isAllowedExecutable } from '../core/types.mjs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { isSecretRef } from '../core/secrets.mjs';
-import { parseHttpResponse, readHeader } from '../core/parsing.mjs';
+import { interpretJsonRpc, jsonRpcRequestId, parseHttpResponse, readHeader } from '../core/parsing.mjs';
 import { evaluateAssertion } from './assertions.mjs';
 import { clip, createRedactor } from './redaction.mjs';
 import { PARSERS, resolveAzOperation, resolvePythonWrapper, validateResolvedAzArguments } from './registry.mjs';
@@ -66,6 +66,19 @@ export function assertExecutableUrl(url) {
 
 const BINDING = /\{\{steps\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_.-]+)\}\}/g;
 
+function requiredOutput(outputs, stepId, output) {
+  const key = `${stepId}.${output}`;
+  const bound = outputs.get(key);
+  if (bound === undefined) throw new Error(`Required output "${key}" was not produced.`);
+  return bound;
+}
+
+function capturesMcpSession(request) {
+  return Object.values(request.capture ?? {}).some(
+    (source) => String(source).toLowerCase() === "response.headers['mcp-session-id']",
+  );
+}
+
 /** Resolve `{{steps.x.y}}` tokens and `SecretRef`s into live values. */
 function resolveValue(value, outputs, secrets) {
   if (isSecretRef(value)) {
@@ -78,12 +91,10 @@ function resolveValue(value, outputs, secrets) {
   if (typeof value === 'string') {
     const whole = value.match(/^\{\{steps\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_.-]+)\}\}$/);
     if (whole) {
-      const bound = outputs.get(`${whole[1]}.${whole[2]}`);
-      return bound === undefined ? '' : bound;
+      return requiredOutput(outputs, whole[1], whole[2]);
     }
     return value.replace(BINDING, (_match, stepId, output) => {
-      const bound = outputs.get(`${stepId}.${output}`);
-      return bound === undefined ? '' : String(bound);
+      return String(requiredOutput(outputs, stepId, output));
     });
   }
   if (Array.isArray(value)) return value.map((item) => resolveValue(item, outputs, secrets));
@@ -333,12 +344,13 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
     const request = step.request ?? {};
     const url = assertExecutableUrl(resolveValue(request.url, outputs, secrets));
     const headers = resolveValue(request.headers ?? {}, outputs, secrets);
-    const body =
+    const resolvedBody =
       request.body === undefined || request.body === null
         ? undefined
-        : typeof request.body === 'string'
-          ? resolveValue(request.body, outputs, secrets)
-          : JSON.stringify(resolveValue(request.body, outputs, secrets));
+        : resolveValue(request.body, outputs, secrets);
+    const body = resolvedBody === undefined ? undefined : typeof resolvedBody === 'string' ? resolvedBody : JSON.stringify(resolvedBody);
+    const outboundJsonRpcId = jsonRpcRequestId(resolvedBody);
+    const expectsJsonRpc = outboundJsonRpcId !== undefined;
     const timeoutMs = remainingTimeout(deadlineAt, (request.timeoutSeconds ?? 60) * 1000);
 
     if (request.repeat) {
@@ -356,8 +368,17 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
         evidence: { url: url.toString(), method: request.method ?? 'GET' },
       };
     }
-    const parsed = parseHttpResponse({ status: response.status, headers: response.headers, text: response.text });
-    const jsonRpcBody = parsed.format === 'sse' ? parsed.data : parsed.format === 'json' ? parsed.data : null;
+    const parsed = parseHttpResponse(
+      { status: response.status, headers: response.headers, text: response.text },
+      expectsJsonRpc ? { jsonRpcId: outboundJsonRpcId } : {},
+    );
+    const jsonRpcBody = expectsJsonRpc
+      ? parsed.data
+      : parsed.format === 'sse'
+        ? parsed.data
+        : parsed.format === 'json'
+          ? parsed.data
+          : null;
 
     for (const [name, source] of Object.entries(request.capture ?? {})) {
       outputs.set(`${step.id}.${name}`, captureFrom(source, { response, parsed, jsonRpcBody }));
@@ -367,13 +388,34 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
       if (!outputs.has(key)) outputs.set(key, undefined);
     }
     const ok = response.status >= 200 && response.status < 300;
+    const matchedJsonRpc = !expectsJsonRpc || parsed.jsonRpc?.matched === true;
+    const initializationVerdict =
+      capturesMcpSession(request) && matchedJsonRpc
+        ? interpretJsonRpc({ status: response.status, body: jsonRpcBody })
+        : null;
+    const initializationSucceeded = !initializationVerdict || initializationVerdict.outcome === 'success';
+    const state = !ok
+      ? 'failed'
+      : !matchedJsonRpc
+        ? 'inconclusive'
+        : initializationSucceeded
+          ? 'completed'
+          : initializationVerdict.outcome === 'failure'
+            ? 'failed'
+            : 'inconclusive';
     return {
       id: step.id,
       kind: 'http',
       title: step.title,
-      // The assertion step, not this one, decides whether a 2xx means success.
-      state: ok ? 'completed' : 'failed',
-      detail: `HTTP ${response.status} · ${parsed.format}`,
+      // Assertions classify ordinary JSON-RPC calls; session initialization
+      // must succeed here because later requests depend on it.
+      state,
+      detail:
+        ok && !matchedJsonRpc
+          ? `HTTP ${response.status} · ${parsed.format} · no valid JSON-RPC response matched the request id`
+          : ok && !initializationSucceeded
+            ? `HTTP ${response.status} · ${parsed.format} · MCP initialization did not succeed`
+            : `HTTP ${response.status} · ${parsed.format}`,
       jsonRpcBody,
       evidence: redactor.value({
         url: url.toString(),
@@ -712,7 +754,10 @@ function captureFrom(source, { response, parsed, jsonRpcBody }) {
   if (spec === 'response.jsonrpc.result') return jsonRpcBody?.result ?? undefined;
   if (spec === 'response.jsonrpc.error') return jsonRpcBody?.error ?? undefined;
   const header = spec.match(/^response\.headers\['(.+)'\]$/);
-  if (header) return readHeader(response.headers, header[1]) ?? '';
+  if (header) {
+    const value = readHeader(response.headers, header[1]);
+    return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+  }
   return undefined;
 }
 

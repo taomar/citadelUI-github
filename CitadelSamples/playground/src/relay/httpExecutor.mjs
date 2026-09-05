@@ -17,7 +17,7 @@
  */
 
 import { isSecretRef } from '../core/secrets.mjs';
-import { parseHttpResponse, readHeader } from '../core/parsing.mjs';
+import { interpretJsonRpc, jsonRpcRequestId, parseHttpResponse, readHeader } from '../core/parsing.mjs';
 import { evaluateAssertion } from '../server/assertions.mjs';
 import { clip, createRedactor } from '../server/redaction.mjs';
 import { RELAY_SUPPORTED_STEP_TYPES } from './requestSchema.mjs';
@@ -34,6 +34,19 @@ export const DEFAULT_RELAY_LIMITS = Object.freeze({
 
 const BINDING = /\{\{steps\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_.-]+)\}\}/g;
 
+function requiredOutput(outputs, stepId, output) {
+  const key = `${stepId}.${output}`;
+  const bound = outputs.get(key);
+  if (bound === undefined) throw new Error(`Required output "${key}" was not produced.`);
+  return bound;
+}
+
+function capturesMcpSession(request) {
+  return Object.values(request.capture ?? {}).some(
+    (source) => String(source).toLowerCase() === "response.headers['mcp-session-id']",
+  );
+}
+
 /** Resolve `{{steps.x.y}}` tokens and `SecretRef`s into live values. */
 function resolveValue(value, outputs, secrets) {
   if (isSecretRef(value)) {
@@ -46,12 +59,10 @@ function resolveValue(value, outputs, secrets) {
   if (typeof value === 'string') {
     const whole = value.match(/^\{\{steps\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_.-]+)\}\}$/);
     if (whole) {
-      const bound = outputs.get(`${whole[1]}.${whole[2]}`);
-      return bound === undefined ? '' : bound;
+      return requiredOutput(outputs, whole[1], whole[2]);
     }
     return value.replace(BINDING, (_match, stepId, output) => {
-      const bound = outputs.get(`${stepId}.${output}`);
-      return bound === undefined ? '' : String(bound);
+      return String(requiredOutput(outputs, stepId, output));
     });
   }
   if (Array.isArray(value)) return value.map((item) => resolveValue(item, outputs, secrets));
@@ -71,7 +82,10 @@ function captureFrom(source, { response, parsed, jsonRpcBody }) {
   if (spec === 'response.jsonrpc.result') return jsonRpcBody?.result ?? undefined;
   if (spec === 'response.jsonrpc.error') return jsonRpcBody?.error ?? undefined;
   const header = spec.match(/^response\.headers\['(.+)'\]$/);
-  if (header) return readHeader(response.headers, header[1]) ?? '';
+  if (header) {
+    const value = readHeader(response.headers, header[1]);
+    return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+  }
   return undefined;
 }
 
@@ -254,12 +268,13 @@ export function createRelayHttpExecutor({ fetchImpl, allowlist, requestPolicy, l
       .map(([name]) => name);
     enforceRequestPolicy(sampleId, step.id, url, secretHeaderNames);
     const headers = resolveValue(request.headers ?? {}, outputs, secrets);
-    const body =
+    const resolvedBody =
       request.body === undefined || request.body === null
         ? undefined
-        : typeof request.body === 'string'
-          ? resolveValue(request.body, outputs, secrets)
-          : JSON.stringify(resolveValue(request.body, outputs, secrets));
+        : resolveValue(request.body, outputs, secrets);
+    const body = resolvedBody === undefined ? undefined : typeof resolvedBody === 'string' ? resolvedBody : JSON.stringify(resolvedBody);
+    const outboundJsonRpcId = jsonRpcRequestId(resolvedBody);
+    const expectsJsonRpc = outboundJsonRpcId !== undefined;
     const timeoutMs = Math.min((request.timeoutSeconds ?? 30) * 1000, bounds.stepTimeoutMs);
 
     if (request.repeat) {
@@ -277,8 +292,17 @@ export function createRelayHttpExecutor({ fetchImpl, allowlist, requestPolicy, l
         evidence: publicHttpEvidence(request),
       };
     }
-    const parsed = parseHttpResponse({ status: response.status, headers: response.headers, text: response.text });
-    const jsonRpcBody = parsed.format === 'sse' ? parsed.data : parsed.format === 'json' ? parsed.data : null;
+    const parsed = parseHttpResponse(
+      { status: response.status, headers: response.headers, text: response.text },
+      expectsJsonRpc ? { jsonRpcId: outboundJsonRpcId } : {},
+    );
+    const jsonRpcBody = expectsJsonRpc
+      ? parsed.data
+      : parsed.format === 'sse'
+        ? parsed.data
+        : parsed.format === 'json'
+          ? parsed.data
+          : null;
 
     for (const [name, source] of Object.entries(request.capture ?? {})) {
       outputs.set(`${step.id}.${name}`, captureFrom(source, { response, parsed, jsonRpcBody }));
@@ -288,11 +312,26 @@ export function createRelayHttpExecutor({ fetchImpl, allowlist, requestPolicy, l
       if (!outputs.has(key)) outputs.set(key, undefined);
     }
     const ok = response.status >= 200 && response.status < 300;
+    const matchedJsonRpc = !expectsJsonRpc || parsed.jsonRpc?.matched === true;
+    const initializationVerdict =
+      capturesMcpSession(request) && matchedJsonRpc
+        ? interpretJsonRpc({ status: response.status, body: jsonRpcBody })
+        : null;
+    const initializationSucceeded = !initializationVerdict || initializationVerdict.outcome === 'success';
+    const state = !ok
+      ? 'failed'
+      : !matchedJsonRpc
+        ? 'inconclusive'
+        : initializationSucceeded
+          ? 'completed'
+          : initializationVerdict.outcome === 'failure'
+            ? 'failed'
+            : 'inconclusive';
     return {
       id: step.id,
       kind: 'http',
       title: step.title,
-      state: ok ? 'completed' : 'failed',
+      state,
       // Fixed, non-parameterised text — never the raw status code or the
       // transport-chosen format classification, both entirely the backend's
       // own choice and, like `evidence` below, each an independent channel
@@ -300,7 +339,13 @@ export function createRelayHttpExecutor({ fetchImpl, allowlist, requestPolicy, l
       // whether it ever places a raw/transformed secret STRING anywhere.
       // `state` above already carries the one classification this step
       // needs to report, exactly as an assertion's `status` does.
-      detail: ok ? 'The request completed.' : 'The request did not complete successfully.',
+      detail: !ok
+        ? 'The request did not complete successfully.'
+        : matchedJsonRpc
+          ? initializationSucceeded
+            ? 'The request completed.'
+            : 'The MCP initialization response did not establish a usable session.'
+          : 'The response did not contain a valid JSON-RPC message matching the request.',
       jsonRpcBody,
       evidence: publicHttpEvidence(request),
     };

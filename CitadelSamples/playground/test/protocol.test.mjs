@@ -13,11 +13,13 @@ import {
   extractToolCallText,
   extractToolNames,
   interpretJsonRpc,
+  MAX_SSE_EVENTS,
   parseHttpResponse,
   parseSseBody,
   parseWeatherPayload,
   readHeader,
 } from '../src/core/parsing.mjs';
+import { evaluateAssertion } from '../src/server/assertions.mjs';
 import { makeFixtureReader } from './helpers/fixtures.mjs';
 
 const ENDPOINT = 'https://gw.test/mcp/weather-tool-mcp/mcp';
@@ -65,45 +67,122 @@ test('a JSON response is parsed as JSON', () => {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
     text: '{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"get-weather"}]}}',
-  });
+  }, { jsonRpcId: 1 });
   assert.equal(parsed.format, 'json');
+  assert.equal(parsed.jsonRpc.matched, true);
   assert.deepEqual(extractToolNames(parsed.data.result), ['get-weather']);
 });
 
-test('an SSE response yields the first JSON data frame, as the notebook does', () => {
+test('a JSON response for an unrelated id is not accepted as the request response', () => {
+  const parsed = parseHttpResponse({
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+    text: '{"jsonrpc":"2.0","id":9,"result":{"ignored":true}}',
+  }, { jsonRpcId: 1 });
+  assert.equal(parsed.data, null);
+  assert.equal(parsed.jsonRpc.matched, false);
+});
+
+test('an SSE response ignores notifications and unrelated ids before the matching response', () => {
   const body = [
     ': keep-alive',
     'event: message',
-    'data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}',
+    'data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}',
     '',
-    'data: {"jsonrpc":"2.0","id":2,"result":{"ignored":true}}',
+    'data: {"jsonrpc":"2.0","id":99,"result":{"ignored":true}}',
+    '',
+    'data: {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"get-weather"}]}}',
     '',
   ].join('\n');
   const parsed = parseHttpResponse({
     status: 200,
     headers: { 'content-type': 'text/event-stream; charset=utf-8' },
     text: body,
-  });
+  }, { jsonRpcId: 2 });
   assert.equal(parsed.format, 'sse');
-  assert.equal(parsed.data.id, 1);
-  assert.equal(parsed.events.length, 2);
+  assert.equal(parsed.data.id, 2);
+  assert.equal(parsed.events.length, 3);
+  assert.equal(parsed.jsonRpc.matched, true);
 });
 
 test('SSE data folding across lines is reassembled before parsing', () => {
   const body = ['data: {"jsonrpc":"2.0",', 'data: "id":7,', 'data: "result":{"ok":true}}', ''].join('\n');
-  const { data } = parseSseBody(body);
+  const { data } = parseSseBody(body, { jsonRpcId: 7 });
   assert.deepEqual(data, { jsonrpc: '2.0', id: 7, result: { ok: true } });
 });
 
-test('a non-JSON SSE frame is skipped rather than throwing', () => {
-  const { events, data } = parseSseBody('data: not json\n\ndata: {"id":2}\n\n');
-  assert.deepEqual(events, [{ id: 2 }]);
-  assert.deepEqual(data, { id: 2 });
+test('a matching JSON-RPC error is selected for normal failure interpretation', () => {
+  const { data } = parseSseBody(
+    'data: {"jsonrpc":"2.0","method":"notifications/progress"}\n\ndata: {"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"unavailable"}}\n\n',
+    { jsonRpcId: 2 },
+  );
+  assert.equal(data.id, 2);
+  assert.equal(data.error.code, -32000);
+});
+
+test('a same-id server request does not shadow a later matching response', () => {
+  const { data, malformed } = parseSseBody(
+    [
+      'data: {"jsonrpc":"2.0","id":2,"method":"sampling/createMessage","params":{}}',
+      '',
+      'data: {"jsonrpc":"2.0","id":2,"result":{"ok":true}}',
+      '',
+    ].join('\n'),
+    { jsonRpcId: 2 },
+  );
+  assert.deepEqual(data, { jsonrpc: '2.0', id: 2, result: { ok: true } });
+  assert.equal(malformed, false);
+});
+
+test('a matching envelope with both result and error is malformed, never a success', () => {
+  const parsed = parseSseBody(
+    'data: {"jsonrpc":"2.0","id":2,"result":{"ok":true},"error":null}\n\n',
+    { jsonRpcId: 2 },
+  );
+  assert.equal(parsed.data, null);
+  assert.equal(parsed.malformed, true);
+  assert.equal(
+    interpretJsonRpc({
+      status: 200,
+      body: { jsonrpc: '2.0', id: 2, result: { ok: true }, error: null },
+    }).outcome,
+    'inconclusive',
+  );
+});
+
+test('an SSE stream with no matching id is inconclusive', () => {
+  const parsed = parseSseBody(
+    'data: {"jsonrpc":"2.0","method":"notifications/progress"}\n\ndata: {"jsonrpc":"2.0","id":9,"result":{}}\n\n',
+    { jsonRpcId: 2 },
+  );
+  assert.equal(parsed.data, null);
+  assert.equal(parsed.malformed, false);
+});
+
+test('a malformed SSE data event rejects the stream even if a later id matches', () => {
+  const parsed = parseSseBody(
+    'data: not json\n\ndata: {"jsonrpc":"2.0","id":2,"result":{"ok":true}}\n\n',
+    { jsonRpcId: 2 },
+  );
+  assert.equal(parsed.data, null);
+  assert.equal(parsed.malformed, true);
+});
+
+test('SSE response selection is bounded', () => {
+  const notifications = Array.from(
+    { length: MAX_SSE_EVENTS },
+    (_, index) => `data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"index":${index}}}\n\n`,
+  ).join('');
+  const parsed = parseSseBody(`${notifications}data: {"jsonrpc":"2.0","id":2,"result":{"tooLate":true}}\n\n`, {
+    jsonRpcId: 2,
+  });
+  assert.equal(parsed.data, null);
+  assert.equal(parsed.limitExceeded, true);
 });
 
 test('CRLF line endings and an empty body are handled', () => {
-  const { data } = parseSseBody('data: {"id":3}\r\n\r\n');
-  assert.deepEqual(data, { id: 3 });
+  const { data } = parseSseBody('data: {"jsonrpc":"2.0","id":3,"result":{}}\r\n\r\n', { jsonRpcId: 3 });
+  assert.deepEqual(data, { jsonrpc: '2.0', id: 3, result: {} });
   assert.equal(parseHttpResponse({ status: 204, headers: {}, text: '' }).format, 'empty');
   assert.equal(parseHttpResponse({ status: 200, headers: {}, text: 'plain' }).format, 'text');
 });
@@ -149,6 +228,93 @@ test('a non-2xx is a failure whether or not it carries a JSON-RPC body', () => {
 test('a 2xx with a non-object body is inconclusive rather than a pass', () => {
   assert.equal(interpretJsonRpc({ status: 200, body: null }).outcome, 'inconclusive');
   assert.equal(interpretJsonRpc({ status: 200, body: 'plain text' }).outcome, 'inconclusive');
+});
+
+test('MCP assertions cannot pass without the required session capture', () => {
+  const outputs = new Map([
+    ['mcp-initialize.status', 200],
+    ['tools-list.status', 200],
+    ['tools-call.status', 200],
+  ]);
+  const stepResults = [
+    { id: 'mcp-initialize', jsonRpcBody: { jsonrpc: '2.0', id: 1, result: {} } },
+    { id: 'tools-list', jsonRpcBody: { jsonrpc: '2.0', id: 2, result: { tools: [{ name: 'get-weather' }] } } },
+    {
+      id: 'tools-call',
+      jsonRpcBody: {
+        jsonrpc: '2.0',
+        id: 2,
+        result: {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                city: 'Seattle',
+                temperature: 61,
+                temperature_format: 'Fahrenheit',
+                description: 'cloudy',
+                humidity: 71,
+                wind_speed: 4,
+              }),
+            },
+          ],
+        },
+      },
+    },
+  ];
+  const tools = evaluateAssertion(
+    { assertion: { kind: 'mcp-tools' }, produces: [] },
+    { outputs, stepResults },
+  );
+  const weather = evaluateAssertion(
+    {
+      assertion: {
+        kind: 'weather-payload',
+        expectedFields: ['city', 'temperature', 'temperature_format', 'description', 'humidity', 'wind_speed'],
+        expectedUnit: 'Fahrenheit',
+      },
+      produces: [],
+    },
+    { outputs, stepResults },
+  );
+  assert.equal(tools.status, 'failed');
+  assert.equal(weather.status, 'failed');
+  assert.deepEqual(tools.evidence, { sessionCaptured: false });
+  assert.deepEqual(weather.evidence, { sessionCaptured: false });
+});
+
+test('MCP assertions cannot pass when initialize returns a matching JSON-RPC error', () => {
+  const outputs = new Map([
+    ['mcp-initialize.status', 200],
+    ['mcp-initialize.sessionId', 'session-abc'],
+    ['tools-list.status', 200],
+    ['tools-call.status', 200],
+  ]);
+  const stepResults = [
+    {
+      id: 'mcp-initialize',
+      jsonRpcBody: { jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'initialization failed' } },
+    },
+    { id: 'tools-list', jsonRpcBody: { jsonrpc: '2.0', id: 2, result: { tools: [{ name: 'get-weather' }] } } },
+    {
+      id: 'tools-call',
+      jsonRpcBody: {
+        jsonrpc: '2.0',
+        id: 2,
+        result: { content: [{ type: 'text', text: '{"city":"Seattle"}' }] },
+      },
+    },
+  ];
+  const tools = evaluateAssertion(
+    { assertion: { kind: 'mcp-tools' }, produces: [] },
+    { outputs, stepResults },
+  );
+  const weather = evaluateAssertion(
+    { assertion: { kind: 'weather-payload', expectedFields: ['city'] }, produces: [] },
+    { outputs, stepResults },
+  );
+  assert.equal(tools.status, 'failed');
+  assert.equal(weather.status, 'failed');
 });
 
 test('the A2A recipe asserts on the JSON-RPC body, not only on the status', () => {

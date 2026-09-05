@@ -73,7 +73,11 @@ test('a real allow-listed sample runs end to end against a mocked gateway', asyn
       response: {
         status: 200,
         headers: { 'content-type': 'text/event-stream' },
-        text: sseFrame({ jsonrpc: '2.0', id: 2, result: { tools: [{ name: 'get-weather' }] } }),
+        text: [
+          sseFrame({ jsonrpc: '2.0', method: 'notifications/progress', params: { progress: 1 } }),
+          sseFrame({ jsonrpc: '2.0', id: 99, result: { ignored: true } }),
+          sseFrame({ jsonrpc: '2.0', id: 2, result: { tools: [{ name: 'get-weather' }] } }),
+        ].join(''),
       },
     },
   ]);
@@ -86,6 +90,90 @@ test('a real allow-listed sample runs end to end against a mocked gateway', asyn
   assert.equal(fetch.calls[1].headers['Mcp-Session-Id'], 'session-abc');
   const tools = result.assertions.find((assertion) => assertion.id === 'assert-tools');
   assert.equal(tools.status, 'passed');
+});
+
+test('a missing MCP session header blocks the relay follow-up before transport and cannot pass', async () => {
+  const sample = getSample('weather-mcp-discovery');
+  const inputs = fixtureInputsFor(sample);
+  const { plan } = rebuildRelayPlan({ sample, inputs }, CATALOGUE, { buildSamplePlan, requirementsFor });
+  const fetch = fakeFetch([
+    {
+      match: (_url, init) => JSON.parse(init.body).method === 'initialize',
+      response: {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        text: JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-06-18' } }),
+      },
+    },
+  ]);
+
+  const executor = createRelayHttpExecutor({ fetchImpl: fetch, allowlist: allowlist(), requestPolicy: allowAllRequestPolicy() });
+  const result = await executor.execute(plan, { secrets: FIXTURE_SECRETS });
+
+  assert.equal(fetch.calls.length, 1);
+  assert.equal(result.state, 'failed');
+  assert.equal(result.steps.at(-1).id, 'tools-list');
+  assert.match(result.steps.at(-1).detail, /required output "mcp-initialize\.sessionId" was not produced/i);
+  assert.equal(result.assertions.some((assertion) => assertion.status === 'passed'), false);
+});
+
+test('an MCP initialize stream with no matching response stops before the relay follow-up without reflecting ignored content', async () => {
+  const ignoredMarker = 'ignored-upstream-marker';
+  const sample = getSample('weather-mcp-discovery');
+  const inputs = fixtureInputsFor(sample);
+  const { plan } = rebuildRelayPlan({ sample, inputs }, CATALOGUE, { buildSamplePlan, requirementsFor });
+  const fetch = fakeFetch([
+    {
+      match: (_url, init) => JSON.parse(init.body).method === 'initialize',
+      response: {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream', 'Mcp-Session-Id': 'session-abc' },
+        text: [
+          sseFrame({ jsonrpc: '2.0', method: 'notifications/progress', params: { detail: ignoredMarker } }),
+          sseFrame({ jsonrpc: '2.0', id: 99, result: { detail: ignoredMarker } }),
+        ].join(''),
+      },
+    },
+  ]);
+
+  const executor = createRelayHttpExecutor({ fetchImpl: fetch, allowlist: allowlist(), requestPolicy: allowAllRequestPolicy() });
+  const result = await executor.execute(plan, { secrets: FIXTURE_SECRETS });
+
+  assert.equal(fetch.calls.length, 1);
+  assert.equal(result.state, 'inconclusive');
+  assert.equal(result.steps[0].state, 'inconclusive');
+  assert.equal(result.assertions.some((assertion) => assertion.status === 'passed'), false);
+  assert.equal(JSON.stringify(result).includes(ignoredMarker), false);
+});
+
+test('a matching MCP initialize error stops before the relay follow-up without reflecting the error', async () => {
+  const upstreamMarker = 'upstream-initialize-error';
+  const sample = getSample('weather-mcp-discovery');
+  const inputs = fixtureInputsFor(sample);
+  const { plan } = rebuildRelayPlan({ sample, inputs }, CATALOGUE, { buildSamplePlan, requirementsFor });
+  const fetch = fakeFetch([
+    {
+      match: (_url, init) => JSON.parse(init.body).method === 'initialize',
+      response: {
+        status: 200,
+        headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'session-abc' },
+        text: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          error: { code: -32000, message: upstreamMarker },
+        }),
+      },
+    },
+  ]);
+
+  const executor = createRelayHttpExecutor({ fetchImpl: fetch, allowlist: allowlist(), requestPolicy: allowAllRequestPolicy() });
+  const result = await executor.execute(plan, { secrets: FIXTURE_SECRETS });
+
+  assert.equal(fetch.calls.length, 1);
+  assert.equal(result.state, 'failed');
+  assert.equal(result.steps[0].state, 'failed');
+  assert.equal(result.assertions.some((assertion) => assertion.status === 'passed'), false);
+  assert.equal(JSON.stringify(result).includes(upstreamMarker), false);
 });
 
 /* ------------------------------------------------------- public-evidence leak */

@@ -123,6 +123,6 @@ export function mcpHandshakeExpectations(label) {
     `${label}: \`initialize\` returns an HTTP 2xx.`,
     'The body is a JSON-RPC response with a `result` member and no `error` member — an HTTP 2xx carrying `error` is a failure.',
     `A \`${MCP_SESSION_HEADER}\` response header is present and is echoed on the follow-up call.`,
-    'The body parses as JSON, or as the first JSON `data:` frame of an `text/event-stream` response.',
+    'The body parses as JSON, or as the bounded `text/event-stream` response whose JSON-RPC id matches the request.',
   ];
 }

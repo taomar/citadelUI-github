@@ -386,7 +386,11 @@ test('an MCP handshake chains the session header into the follow-up call', async
       response: {
         status: 200,
         headers: { 'content-type': 'text/event-stream' },
-        text: sseFrame({ jsonrpc: '2.0', id: 2, result: { tools: [{ name: 'get-weather' }] } }),
+        text: [
+          sseFrame({ jsonrpc: '2.0', method: 'notifications/progress', params: { progress: 1 } }),
+          sseFrame({ jsonrpc: '2.0', id: 99, result: { ignored: true } }),
+          sseFrame({ jsonrpc: '2.0', id: 2, result: { tools: [{ name: 'get-weather' }] } }),
+        ].join(''),
       },
     },
   ]);
@@ -398,6 +402,64 @@ test('an MCP handshake chains the session header into the follow-up call', async
   const tools = result.assertions.find((assertion) => assertion.id === 'assert-tools');
   assert.equal(tools.status, 'passed');
   assert.deepEqual(tools.detail.includes('1 tool'), true);
+});
+
+test('a missing MCP session header blocks the local follow-up before transport and cannot pass', async () => {
+  const fetch = fakeFetch([
+    {
+      match: (_url, init) => JSON.parse(init.body).method === 'initialize',
+      response: {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        text: JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-06-18' } }),
+      },
+    },
+  ]);
+  const { result, transports } = await run('weather-mcp-discovery', { fetch });
+  assert.equal(transports.fetch.calls.length, 1);
+  assert.equal(result.state, 'failed');
+  assert.equal(result.steps.at(-1).id, 'tools-list');
+  assert.match(result.steps.at(-1).detail, /required output "mcp-initialize\.sessionId" was not produced/i);
+  assert.equal(result.assertions.some((assertion) => assertion.status === 'passed'), false);
+});
+
+test('an MCP initialize stream with no matching response stops before the local follow-up', async () => {
+  const fetch = fakeFetch([
+    {
+      match: (_url, init) => JSON.parse(init.body).method === 'initialize',
+      response: {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream', 'Mcp-Session-Id': 'session-abc' },
+        text: [
+          sseFrame({ jsonrpc: '2.0', method: 'notifications/progress', params: { progress: 1 } }),
+          sseFrame({ jsonrpc: '2.0', id: 99, result: { ignored: true } }),
+        ].join(''),
+      },
+    },
+  ]);
+  const { result, transports } = await run('weather-mcp-discovery', { fetch });
+  assert.equal(transports.fetch.calls.length, 1);
+  assert.equal(result.state, 'inconclusive');
+  assert.equal(result.steps[0].state, 'inconclusive');
+  assert.equal(result.assertions.some((assertion) => assertion.status === 'passed'), false);
+});
+
+test('a matching MCP initialize error stops before the local follow-up', async () => {
+  const fetch = fakeFetch([
+    {
+      match: (_url, init) => JSON.parse(init.body).method === 'initialize',
+      response: {
+        status: 200,
+        headers: { 'content-type': 'application/json', 'Mcp-Session-Id': 'session-abc' },
+        text: JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'initialization failed' } }),
+      },
+    },
+  ]);
+  const { result, transports } = await run('weather-mcp-discovery', { fetch });
+  assert.equal(transports.fetch.calls.length, 1);
+  assert.equal(result.state, 'failed');
+  assert.equal(result.steps[0].state, 'failed');
+  assert.equal(result.assertions.some((assertion) => assertion.status === 'passed'), false);
 });
 
 test('an HTTP 200 carrying a JSON-RPC error is a failure, not a pass', async () => {

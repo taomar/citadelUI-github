@@ -23,6 +23,34 @@ function outcome(status, detail, evidence = {}, outputs = {}, configurationUpdat
   return { status, detail, evidence, outputs, configurationUpdates };
 }
 
+function inspectMcpHandshake(outputs, stepResults) {
+  const initialize = stepResults.find((step) => step.id === 'mcp-initialize');
+  if (!initialize) {
+    return { status: UNKNOWN, detail: 'The MCP initialize step did not run.', evidence: { sessionCaptured: false } };
+  }
+  const sessionId = outputs.get('mcp-initialize.sessionId');
+  const sessionCaptured = typeof sessionId === 'string' && sessionId.trim() !== '';
+  const verdict = interpretJsonRpc({
+    status: outputs.get('mcp-initialize.status'),
+    body: initialize.jsonRpcBody,
+  });
+  if (verdict.outcome !== 'success') {
+    return {
+      status: verdict.outcome === 'failure' ? FAIL : UNKNOWN,
+      detail: verdict.reason,
+      evidence: { sessionCaptured },
+    };
+  }
+  if (!sessionCaptured) {
+    return {
+      status: FAIL,
+      detail: 'The MCP initialize response did not provide the required session header.',
+      evidence: { sessionCaptured: false },
+    };
+  }
+  return { status: PASS, detail: verdict.reason, evidence: { sessionCaptured: true } };
+}
+
 /** `{{steps.x.y}}` -> the recorded output, or undefined. */
 function readSource(source, outputs) {
   if (typeof source !== 'string') return undefined;
@@ -176,18 +204,20 @@ const EVALUATORS = {
   },
 
   'mcp-tools'({ assertion, outputs, stepResults }) {
-    const initialize = stepResults.find((step) => step.id === 'mcp-initialize');
     const listStep = stepResults.find((step) => step.id === 'tools-list');
-    if (!initialize || !listStep) return outcome(UNKNOWN, 'The handshake did not complete, so the tool inventory is unknown.');
-    const sessionId = outputs.get('mcp-initialize.sessionId');
+    if (!listStep) return outcome(UNKNOWN, 'The handshake did not complete, so the tool inventory is unknown.');
+    const handshake = inspectMcpHandshake(outputs, stepResults);
+    if (handshake.status !== PASS) return outcome(handshake.status, handshake.detail, handshake.evidence);
     const verdict = interpretJsonRpc({ status: outputs.get('tools-list.status'), body: listStep.jsonRpcBody });
-    if (verdict.outcome !== 'success') return outcome(FAIL, verdict.reason, { sessionCaptured: Boolean(sessionId) });
+    if (verdict.outcome !== 'success') return outcome(FAIL, verdict.reason, handshake.evidence);
     const names = extractToolNames(verdict.result);
-    if (names.length === 0) return outcome(FAIL, '`tools/list` returned an empty tool array.', { sessionCaptured: Boolean(sessionId) });
-    return outcome(PASS, `${names.length} tool(s) returned.`, { tools: names, sessionCaptured: Boolean(sessionId) });
+    if (names.length === 0) return outcome(FAIL, '`tools/list` returned an empty tool array.', handshake.evidence);
+    return outcome(PASS, `${names.length} tool(s) returned.`, { tools: names, ...handshake.evidence });
   },
 
   'weather-payload'({ assertion, outputs, stepResults }) {
+    const handshake = inspectMcpHandshake(outputs, stepResults);
+    if (handshake.status !== PASS) return outcome(handshake.status, handshake.detail, handshake.evidence);
     const callStep = stepResults.find((step) => step.id === 'tools-call');
     const verdict = interpretJsonRpc({ status: outputs.get('tools-call.status'), body: callStep?.jsonRpcBody });
     if (verdict.outcome !== 'success') return outcome(verdict.outcome === 'failure' ? FAIL : UNKNOWN, verdict.reason);
@@ -202,7 +232,10 @@ const EVALUATORS = {
         { payload },
       );
     }
-    return outcome(PASS, 'Every expected field is present and the unit branch matches the city.', { payload });
+    return outcome(PASS, 'Every expected field is present and the unit branch matches the city.', {
+      payload,
+      ...handshake.evidence,
+    });
   },
 
   'a2a-card'({ assertion, outputs }) {
