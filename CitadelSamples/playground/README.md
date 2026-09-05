@@ -80,36 +80,36 @@ subscription IDs/names, match status, key presence/header name, and the fixed
 returns `state: "unavailable"` without probing Azure CLI or contacting a
 network.
 
-Local Azure CLI sign-in is explicit. The server never starts it because a
-sample failed:
+Local Azure CLI sign-in is explicit. A sample failure never starts it. The
+browser offers account switching only when the loopback server advertises a
+launch-gated system-browser capability. The UI models disabled, signed-out,
+starting, waiting for system UI, verifying, status-unknown, cancelled, failed,
+timed-out, ready, and subscription-mismatch states without exposing a sign-in
+URL, short code, token, command argument, or process output.
 
-| Endpoint | Exact JSON request |
-| --- | --- |
-| `POST /api/azure-login/start` | `{ "protocolVersion": 2 }` |
-| `POST /api/azure-login/status` | `{ "protocolVersion": 2, "loginId": "azure-login-0001" }` |
-| `POST /api/azure-login/cancel` | `{ "protocolVersion": 2, "loginId": "azure-login-0001" }` |
-
-These endpoints are same-origin, JSON-only, and available only from the
-loopback execute server. Start invokes exactly `az login --use-device-code`
-with no shell and no browser-supplied arguments. One login may be in flight.
-Status reports `starting`, `waiting-for-user`, `succeeded`, `failed`,
-`cancelled`, or `timed-out`, plus a safely parsed verification URL and user
-code. Success refreshes the safe Azure CLI account projection. Raw process
-output and tokens are never returned or persisted.
+When launch permission is unavailable, account switching fails closed and the
+interface names terminal-only `az login` as an external prerequisite. Gateway
+key recipes do not show Azure account controls. A server-enumerated subscription
+selector requires a fixed **Set Active** action and warns that it changes the
+shared Azure CLI default.
 
 ## What the interface shows
 
-One of the 19 catalogue samples is selected at a time. The notebook-like
-workspace separates:
+One of the 19 catalogue samples is selected at a time. Its Signed Run Dossier
+keeps the operator path in one semantic document:
 
-- guidance and prerequisites;
-- declared configuration;
-- exact protected source and provenance;
-- the deterministic typed request plan; and
-- streamed progress, final assertions, evidence, and artifacts.
+1. purpose, prerequisites, and the global execution context;
+2. required, conditional, secret, defaulted, and generated inputs;
+3. a decision-first review of identity, target, authorization, effect, blast
+   radius, reversibility, and the deterministic operation; and
+4. streamed progress, final assertions, evidence, and artifacts.
 
 Source remains fixed. Configuration controls are the only editable surface.
-Risk acknowledgement is fresh per run and is invalidated when an input changes.
+Protected source and guide content open as secondary inspectors and never
+precede blockers on compact layouts. Risk acknowledgement and destructive
+confirmation are fresh per run and are invalidated when an input or execution
+context changes. Output alone uses internal Transcript, Evidence, and Artifacts
+tabs.
 
 ## Runner and evidence meanings
 

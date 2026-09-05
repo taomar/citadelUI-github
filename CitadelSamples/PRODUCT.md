@@ -75,20 +75,22 @@ and executor while borrowing notebook interaction patterns.
 
 ## Experience Model
 
-The product direction is a linear runbook:
+The product direction is a Signed Run Dossier:
 
-`Protected source -> declared inputs -> generated operation -> review and approval -> runner transcript and evidence`
+`Configure -> Review -> Run -> Result`
 
-The trust boundary must be visible in the page structure. Protected source
-cells, playground parameter and secret cells, generated plan cells, and evidence
-cells use different labels and treatment. Primary controls say **Review sample**,
-**Run sample**, and **Cancel run**; they do not say "edit notebook", "run this
-code", or "terminal".
+The primary semantic document starts with purpose, prerequisites, execution
+context, and required inputs. It continues into a decision-first review and the
+runner result. Protected source, guide content, provenance, and diagnostics are
+secondary inspectors: they remain attributable and immutable, but they never
+appear before an actionable blocker on compact layouts.
 
-The first protected-source delivery may preserve parts of the existing
-Guide/Configure/Request/Response workbench while the exact source path is added.
-That is an incremental delivery choice, not a decision to keep mutually
-exclusive tabs as the final information architecture.
+The trust boundary stays visible through separate **Identity**, **Target**, and
+**Authorization** facts. Authorization uses **Ready to Attempt** when the known
+gates pass; it never claims that Azure or the target has authorized an operation
+before the attempt. Primary controls say **Review Sample**, **Run Sample**, and
+**Cancel Run**. Output alone may use internal **Transcript**, **Evidence**, and
+**Artifacts** tabs.
 
 ## Operating Context
 
@@ -142,10 +144,19 @@ as a synonym for simulated or offline.
 - Show the exact cited notebook cells in a read-only, notebook-like surface with
   per-cell provenance.
 - Show only the fields a selected sample actually uses, grouped as mandatory, conditional, optional/defaulted, generated/override, or secret.
-- Provide protected Code, Guide, Review & approve, and Output views for every
-  sample. Code is the default workspace and includes the one canonical
-  execution-identity and Parameters pane; there is no disconnected duplicate
-  Configure surface.
+- Provide one continuous dossier for context, inputs, review, and output. Source
+  and guide content open as inspectors rather than top-level workflow tabs.
+- Keep one global execution-context surface. Gateway-key recipes show key
+  presence and never offer Azure sign-in. Hosted relay recipes show the Entra
+  caller, playground identity, relay managed identity, Key Vault mapping, and
+  target as separate authority hops.
+- Allow local account switching only when the loopback server advertises a
+  launch-gated system-browser capability. Otherwise the UI fails closed and
+  names terminal-only `az login` as the external prerequisite. The UI never
+  exposes a device URL, short code, or copy action.
+- Treat active Azure CLI subscription and intended recipe target as separate
+  facts. A server-enumerated subscription selector requires an explicit
+  **Set Active** action and warns that it changes the shared Azure CLI default.
 - Generate deterministic, redacted configuration manifests and execution plans that users can copy or download.
 - Distinguish parser-only Python validation from registered Python sample
   execution in both controls and evidence.

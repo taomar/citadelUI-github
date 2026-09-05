@@ -67,10 +67,12 @@ hosted Azure CLI or Python work must run in a fresh, immutable, no-ingress job
 with dedicated identity, external egress control, durable owned state, enforced
 quota, verified termination, and artifact quarantine.
 
-The target information architecture is a linear notebook-like runbook:
-protected source, declared inputs, generated operation, review and approval,
-then runner transcript and evidence. Existing workbench views may be retained
-during incremental delivery, but they are not a reason to adopt an editable
+The target information architecture is a Signed Run Dossier:
+purpose and prerequisites, global execution context, declared inputs,
+decision-first review, run, then result. Protected source, guide content,
+provenance, and diagnostics are secondary inspectors rather than workflow tabs.
+They preserve attribution without appearing before actionable blockers on
+compact layouts. This remains a protected-source product, not an editable
 kernel or terminal.
 
 ## Runner and Evidence Labels
