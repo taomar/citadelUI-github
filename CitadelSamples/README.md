@@ -15,6 +15,16 @@ the selected catalogue sample. The server remains authoritative for source
 selection, validation, plan construction, operation registration, and
 execution.
 
+The current accepted **application** is
+`e98829604eb4853bd2fb3fdc7b3d815cd9988392`: the scoped offline Docker HTTPS
+in-app authentication and seven-adapter phase, accepted after final independent
+source and native workflow review. A subsequent documentation-only commit does
+not replace that application SHA. No live deployment, Microsoft login or
+all-nineteen execution is accepted.
+
+**Historical workspace acceptance:** the following earlier reference and its
+evidence remain attributed to that candidate.
+
 The coordinator accepted application candidate
 `72efec891c69003ea3055c28ccc40b0974742d07` after independent workspace and
 focus-continuity review. This application reference is separate from any later
@@ -139,9 +149,30 @@ the Docker user flow. Deployment owners must first configure TLS, the Entra Web
 registration, explicit operators and target policies as described in the
 [hosting contract](playground/README.md#docker-ordinary-application-owned-sign-in).
 
+Sign in refreshes read-only session readiness before starting authentication,
+including when a focused page's pre-auth cookie has expired. Recovery stays in
+the application, without reloading, terminal commands, copied bootstrap fragments
+or Copilot access. Declared non-secret recipe/input state survives sign-in;
+gateway keys must be re-entered and are not persisted. Every gateway recipe still
+requires an authorized application operator, but its separate key authorizes the
+gateway: it is not a delegated ARM identity or a hosted managed identity acting
+as the user. For management recipes, connect Azure and explicitly choose the
+permitted subscription inside the application; gateway recipes omit that step.
+Weather's returned payload is under **Evidence**, **Step evidence**;
+the default **Transcript** contains execution summaries.
+
 The Node 24 Docker image defaults to the HTTPS BFF and installs only the pinned
-MSAL/JOSE authentication dependencies. Seven adapters are supported; twelve
-remain pending a protected execution decision, not enabled by sign-in.
+MSAL/JOSE authentication dependencies. Seven adapters are implemented; eleven
+fixed adapters remain pending, plus one Agent Framework protected-execution
+decision. Kubernetes was only a proposal for that one item, not selected and not
+required for sign-in. See the [remaining Docker map](CONTINUATION-PLAN.md#remaining-docker-implementation).
+
+Real Entra registration, server-only confidential secret, operator authorization,
+delegated consent and target policy, trusted HTTPS on every hop, and permitted
+egress are one-time deployment prerequisites, not proven configured. These
+[deployment prerequisites](CONTINUATION-PLAN.md#docker-deployment-prerequisites)
+are distinct from the original seven external release gates. Existing user HTTP
+previews are not this Docker deployment and do not prove live Microsoft login.
 
 The following is the separate legacy workstation preview/local compatibility
 workflow, not instructions for a Docker end user:
@@ -529,10 +560,17 @@ Results are candidate-specific, not a rolling aggregate:
 
 | Application candidate | Recorded evidence |
 | --- | --- |
+| `6159f1b` (v4) | Scoped backend/core and regression selection: 195; production-container HTTPS case: 1 |
+| `e988296` (v5, current application) | Targeted source checks: 28; static check: 167 modules; final independent native HTTPS workflow: 41, once |
 | `72efec8` | Implementation: 71 frontend Node, 89 dossier regressions, 23 smoke and 203 navigation checks passed |
 | `72efec8` | Independent recheck: 71 frontend Node, 30 reviewer-native focus, 89 regressions and 23 smoke checks passed |
 | `ad720f0` | 168 dossier/gallery checks passed before the focus-only correction; CSS is unchanged at `72efec8` |
 | `0adcd54` | Full recursive Node suite: 995/995, on the earlier v1 application web tree, not on `72efec8` |
+
+There is no final full-suite total for `e988296` and no new v5 production-container
+run. The 195/core and production-container results remain v4 evidence, not v5
+reruns. V3/v4 review failures and all diagnostic limitations remain preserved;
+later acceptance does not erase or relabel them.
 
 No final full-suite aggregate is claimed for `72efec8`, and documentation
 closeout does not rerun or extend those results. The earlier independent v1
@@ -582,6 +620,11 @@ forced colors, and the offline self-test through the real server.
 ---
 
 ## Current limitations
+
+The accepted Docker scope is seven fixed HTTPS adapters, not nineteen executable
+recipes. Local CLI/Python descriptions below concern workstation compatibility,
+not Docker sign-in. Additional deployment prerequisites do not close or renumber
+the [seven external gates](CONTINUATION-PLAN.md#external-gates).
 
 - **Nothing has been executed against Azure.** No live endpoint, subscription,
   gateway key or Foundry project was available. Every assertion in the catalogue

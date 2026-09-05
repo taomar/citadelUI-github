@@ -15,6 +15,63 @@ specific Windows username, drive, or local checkout path.
 
 ## Current checkpoint
 
+The coordinator accepted application `e98829604eb4853bd2fb3fdc7b3d815cd9988392`
+for scoped offline application-owned HTTPS sign-in and seven adapters, following
+both final independent accepts. This application SHA is separate from the later
+documentation-only commit. Its playground tree is
+`04681758345cccfc9bd3207c788805223c8e43fb`; its web tree is
+`cc9e6b0041626f20805c6fc3d675b4265ff5847e`.
+
+Open the stable Docker HTTPS application URL and sign in with Microsoft there.
+Explicit sign-in refreshes expired pre-auth state; recovery requires no terminal,
+bootstrap copying, Copilot access or manual reload. Non-secret input/recipe state
+is retained, while gateway keys are re-entered. Azure context and APIM discovery
+use the signed-in user's delegated ARM credential. Gateway calls instead use the
+entered key after application operator authorization, with no ARM consent and no
+claim that a hosted managed identity is the user. Weather payloads appear in
+**Evidence**, **Step evidence**; **Transcript** contains execution summaries.
+
+Evidence remains tied to candidates: v4 `6159f1b` has the 195 scoped backend/core
+and regression checks and production-container case 1; v5 `e988296` has targeted
+source 28, static check 167 modules, and final independent native 41 once.
+There is no final full-suite total or new v5 production-container run.
+V3/v4 held reviews, diagnostic failures and their limits remain preserved.
+Earlier 995 and other totals below retain their historical SHAs.
+
+### Remaining Docker implementation
+
+| Scope | Status |
+| --- | --- |
+| `azure-context-check`, `apim-discovery`, `weather-mcp-discovery`, `learn-mcp-discovery`, `a2a-agent-card`, `a2a-message-send`, `weather-tools-call` | Seven implemented HTTPS adapters; scoped offline acceptance only |
+| `foundry-enable-a2a`, `apim-foundry-grant`, `weather-api-ensure`, `publish-assets`, `access-contract-deploy`, `access-contract-kv-verify`, `usage-metrics`, `circuit-breaker-check`, `tool-rate-limit-burst`, `agent-rate-limit-burst`, `cleanup` | Eleven fixed adapters pending; not unlocked or authorized by sign-in |
+| `agent-framework-hr-question` | One protected-execution decision pending; no process capability approved |
+
+Kubernetes was only a proposal for the Agent Framework item, not a selected
+platform and not a requirement for sign-in. No remaining adapter or external
+effect is authorized by the current application acceptance.
+
+### Docker deployment prerequisites
+
+One-time owner configuration still needs the real tenant/cloud and Entra Web
+registration, both exact HTTPS callback/logout return URIs, a server-only
+confidential secret, explicit operator role/allowlist, delegated ARM consent for
+the two management recipes, and subscription/gateway origin-and-route policies.
+Trusted TLS must cover browser, application, identity and target traffic,
+including verified proxy upstreams when present; certificate renewal and allowed
+DNS/egress must be established end to end. None is proven configured by offline
+acceptance, and no live Microsoft login or deployment is claimed.
+
+These are deployment/isolation prerequisites, not additions to or replacements
+for the original seven external release gates below. Old user HTTP previews
+are not the Docker deployment. The
+[hosting contract](playground/README.md#docker-ordinary-application-owned-sign-in)
+is the deployment reference, not the historical workstation commands.
+
+### Historical pre-review checkpoint
+
+The following prior checkpoint is retained as history, not current acceptance
+status or Docker deployment instructions:
+
 The application-owned HTTPS BFF implementation is a new, unreviewed candidate,
 not a replacement for the accepted historical evidence below. Its deployment
 contract and exact seven-supported/twelve-pending map are in
@@ -79,6 +136,10 @@ govern continuation.
 
 ### Authoritative execution queue
 
+Completed rows retain their historical implementation references. Current
+acceptance does not authorize deployment, pending Docker adapters, protected
+execution, publication or live effects; those need separate owner decisions.
+
 This queue governs continuation work. Hosted development and offline verification
 do not require Azure authentication. Every live item remains blocked until an
 isolated non-production environment is selected and its owner approves the
@@ -126,7 +187,7 @@ EE706B4DAC2978D4F35885EA5F77A7D6A12ADD337E7F959690550BE28D4523BB
 4. Never persist gateway keys, Foundry tokens, GitHub PATs, or other credentials
    in source, fixtures, exports, logs, screenshots, URLs, job arguments, or run
    results.
-5. Keep ordinary startup preview-only.
+5. Keep legacy workstation ordinary startup preview-only; Docker uses the gated HTTPS BFF.
 6. Keep the local process executor restricted to loopback.
 7. Never expose the local process executor directly from Container Apps.
 8. Do not run Policy bursts or Lifecycle cleanup until scenarios 1-16 pass in
@@ -147,6 +208,10 @@ EE706B4DAC2978D4F35885EA5F77A7D6A12ADD337E7F959690550BE28D4523BB
     long-lived relay.
 
 ## Execution models
+
+The preview/local operator, relay and manual-export instructions below describe
+separate compatibility workflows. They do not replace the accepted Docker
+application-owned sign-in path or make end users depend on a terminal.
 
 ### Preview mode
 
@@ -1144,6 +1209,11 @@ from final evidence, and changes must be committed, pushed, reviewed, and
 merged.
 
 ## Exact continuation instruction
+
+The retained prompt below preserves earlier safety constraints, not blanket work
+authorization. Start from the current accepted application reference and the
+seven/eleven/one split above; obtain explicit authority before implementation,
+deployment or live operations.
 
 Use this prompt in the continuation session:
 

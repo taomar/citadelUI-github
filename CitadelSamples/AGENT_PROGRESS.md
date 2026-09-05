@@ -2,6 +2,36 @@
 
 ## Current Milestone
 
+The coordinator accepted **application**
+`e98829604eb4853bd2fb3fdc7b3d815cd9988392` for the scoped offline in-app HTTPS
+authentication/seven-adapter phase after both final independent reviews accepted.
+Application root: `6fcbc7f8c3a6998def83f888dd708727d80df021`.
+Playground tree: `04681758345cccfc9bd3207c788805223c8e43fb`.
+Web tree: `cc9e6b0041626f20805c6fc3d675b4265ff5847e`.
+A later docs-only commit is a handover revision, not a new application candidate.
+
+The Docker flow starts at a stable HTTPS application URL. Microsoft sign-in and
+expired pre-auth recovery are application-owned, without an end-user terminal,
+bootstrap fragment or Copilot dependency. Azure context/APIM use the signed-in
+user's delegated ARM credential; gateway recipes require the application operator
+but use a separately entered gateway key, without ARM consent. A hosted managed
+identity is not the user. Weather's returned payload is reachable in **Evidence**
+under **Step evidence**; **Transcript** contains execution summaries.
+
+Seven adapters are implemented. Eleven fixed adapters remain pending, plus the
+Agent Framework protected-execution decision. Kubernetes was proposed only for
+that one item; it was not selected and is not required for sign-in. The exact
+[remaining map](CONTINUATION-PLAN.md#remaining-docker-implementation) does not
+authorize additional implementation or live effects.
+
+Real registration, server secret, operator/consent/target policy and end-to-end
+trusted TLS/egress remain unproven one-time deployment prerequisites, separate
+from the unchanged [seven external gates](CONTINUATION-PLAN.md#external-gates).
+Old user HTTP previews are not this Docker deployment. No live Microsoft login,
+deployment, full-nineteen outcome or user aesthetic acceptance is claimed.
+
+## Historical Workspace Milestone
+
 The coordinator accepted application candidate
 `72efec891c69003ea3055c28ccc40b0974742d07` after the independent v2 recheck.
 Its application web tree is `5209f90c1d1e9bb8826624e43c2781a73fc8680f`.
@@ -21,6 +51,10 @@ not explicit user aesthetic or live execution approval. All
 [seven external gates](CONTINUATION-PLAN.md#external-gates) remain open.
 
 ## Redesign Decision Record
+
+The workstation/relay record below retains earlier architectural and validation
+claims at their historical scope. Its CLI/bootstrap and managed-identity paths
+are not the current Docker BFF user flow described above.
 
 ### Fixed product boundary
 
@@ -160,6 +194,26 @@ not explicit user aesthetic or live execution approval. All
   provenance, protected-source acceptance, and smoke reconciliation.
 
 ### Accepted application evidence
+
+Current authentication-phase evidence is candidate-specific:
+
+| Application candidate | Recorded evidence |
+| --- | --- |
+| `6159f1b4241112f58f734dd5156ee635d3d62235` (v4) | Scoped backend/core and regression selection: 195; production-container HTTPS case: 1 |
+| `e98829604eb4853bd2fb3fdc7b3d815cd9988392` (v5) | Targeted source checks: 28; static check: 167 modules; final independent native HTTPS workflow: 41, once; both final reviewers accepted the narrow phase |
+
+No final full-suite total is recorded. V5 did not run a new production-container
+case. Frozen v3/v4 held reviews, native failures and diagnostic limitations remain
+history; they are not retroactively changed by acceptance. The v5 initial 39/41
+run retained two object-identity comparator false failures; the single diagnostic
+replay and final independent native 41 are distinct records.
+
+The HTTPS fixture identity exercises MSAL/JOSE transport. ARM/gateway resources
+remain synthetic in-process fixtures; external DNS/egress, real consent and
+live target authorization are unproven. The coordinator preserves the original
+implementation and independent packets. Documentation closeout adds no app run.
+
+Historical workspace evidence follows unchanged:
 
 Results belong to the stated application candidate, not to a later docs commit:
 
@@ -433,6 +487,11 @@ These are honest gaps, not deferred work described as done.
 9. **The vendored Bicep entry points compile, with one upstream warning.** `citadel-publish-contracts/modules/publishA2aAgent.bicep` emits BCP089 because the installed Bicep type definition does not recognize `a2aProperties` on the preview APIM API shape. This is inherited from the source bundle and must be verified against the target APIM API version during the first live publish run.
 
 ## Exact Next Action
+
+The following historical workstation runbook is not authorization to run it.
+Current follow-up requires separate approval for deployment prerequisites,
+eleven pending fixed adapters and the one protected-execution decision; consult
+the current [continuation checkpoint](CONTINUATION-PLAN.md#current-checkpoint).
 
 Select and obtain owner approval for an isolated non-production environment.
 Then install optional Python modules only when a registered scenario needs them
