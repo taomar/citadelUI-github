@@ -1,0 +1,89 @@
+{
+  "classification": "SIMULATION",
+  "schema_version": 1,
+  "executed": false,
+  "authority": "Read and reason only. No tools for external effects or writes.",
+  "fresh_resume": {
+    "checkpoint_generation": 1,
+    "task_id": "sim-operator-copy",
+    "assignment_version": 2,
+    "owner": "sim-worker-b",
+    "artifact": "unfinished-artifact.md",
+    "artifact_status": "saved draft, not accepted",
+    "previous_writer_stop": "unconfirmed",
+    "remaining_budget": "one read-only diagnostic; zero external mutations",
+    "unresolved_question": "Capability diagnostic or environment-owner review for an unknown target check?",
+    "last_verified_result": "Draft bytes saved; no product/browser acceptance",
+    "next_action": "Locate the actual draft and report the unresolved decision without editing."
+  },
+  "stale_result": {
+    "current_assignment": {
+      "task_id": "sim-label-fix",
+      "assignment_version": 2,
+      "owner": "sim-worker-new",
+      "contract_version": "copy-v2",
+      "status": "running",
+      "integration_owner": "sim-coordinator"
+    },
+    "received_result": {
+      "task_id": "sim-label-fix",
+      "assignment_version": 1,
+      "owner": "sim-worker-old",
+      "contract_version": "copy-v1",
+      "candidate": "SIMULATION-candidate-v1-not-a-git-sha",
+      "check": "SIMULATION: copy assertion passed",
+      "saved_output": "Old draft text: Verify the target now.",
+      "requested_disposition": "review"
+    }
+  },
+  "unknown_external_effect": {
+    "task_id": "sim-deploy-relay",
+    "assignment_version": 1,
+    "operation_id": "SIMULATION-operation-17",
+    "intended_effect": "Set synthetic relay image from image-A to image-B",
+    "status_after_client_timeout": "outcome unknown",
+    "idempotency": "not established",
+    "last_client_observation": "Timeout before terminal response",
+    "simulated_readback": {
+      "operation_id": "SIMULATION-operation-17",
+      "terminal_status": "succeeded",
+      "observed_resource_image": "image-B",
+      "source": "SUPPLIED SIMULATION provider and resource readback, not a live call"
+    },
+    "retry_authority": "none"
+  },
+  "route_change": {
+    "ordinary_request": "Clarify an existing wizard label without changing input schema, authority or risk gates",
+    "new_evidence": "SIMULATION: the requested deployment must support two active relay replicas",
+    "invalidated_assumption": "One active replica is sufficient while nonce/admission state is process-local",
+    "candidate_route": "Shared atomic nonce/admission adapter before any scale-out",
+    "route_status": "proposed, not authorized",
+    "current_contract": "sim-relay-direct-v1",
+    "proposed_contract": "sim-relay-shared-v2",
+    "affected": [
+      {
+        "task_id": "sim-relay-adapter",
+        "assignment_version": 1,
+        "saved_partial": "SIMULATION draft: admission storage remains process-local."
+      },
+      {
+        "task_id": "sim-relay-deploy",
+        "assignment_version": 1,
+        "depends_on": "sim-relay-direct-v1",
+        "status": "ready"
+      }
+    ],
+    "affected_contracts_and_gates": [
+      "nonce/admission API and durable storage",
+      "replica and rollout configuration",
+      "concurrency/replay/restart tests",
+      "cost and environment-owner approval",
+      "prior single-replica acceptance evidence"
+    ],
+    "independent_task": {
+      "task_id": "sim-independent-source-copy",
+      "assignment_version": 1,
+      "scope": "read-only source explanatory copy, no relay contract dependency"
+    }
+  }
+}
