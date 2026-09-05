@@ -16,11 +16,15 @@ selection, validation, plan construction, operation registration, and
 execution.
 
 The current accepted **application** is
-`e98829604eb4853bd2fb3fdc7b3d815cd9988392`: the scoped offline Docker HTTPS
-in-app authentication and seven-adapter phase, accepted after final independent
-source and native workflow review. A subsequent documentation-only commit does
-not replace that application SHA. No live deployment, Microsoft login or
-all-nineteen execution is accepted.
+`36a1660b56e06acb1a4dded1b6ed045eafb555e8`: the scoped offline Docker HTTPS
+phase with default browser sign-in and an explicit optional device-code method,
+accepted after final independent source/client and native review. A subsequent
+documentation-only commit does not replace that application SHA. No live
+deployment, tenant/device login or all-nineteen execution is accepted.
+
+Accepted W1 `7faa4ff` is included as a disabled staged foundation, not additional
+production adapters. The registry still has seven adapters; eleven remain
+pending and Agent Framework isolation remains unapproved.
 
 **Historical workspace acceptance:** the following earlier reference and its
 evidence remain attributed to that candidate.
@@ -145,9 +149,17 @@ For Docker, open the deployment's stable **HTTPS application URL** and use
 **Sign in with Microsoft** in the application. Azure context/APIM use the same
 user's delegated ARM credential; gateway recipes use their separately entered
 access-contract key and need no ARM consent. No terminal launch URL is part of
-the Docker user flow. Deployment owners must first configure TLS, the Entra Web
-registration, explicit operators and target policies as described in the
+the Docker user flow. Deployment owners must first configure TLS, method-specific
+Entra registrations, explicit operators and target policies as described in the
 [hosting contract](playground/README.md#docker-ordinary-application-owned-sign-in).
+
+When the owner enables it, **Sign in with device code** and **Connect Azure with
+device code** display the transient code, trusted HTTPS verification link and
+expiry here, with Cancel, explicit Retry and read-only Check status recovery.
+There is no automatic fallback, terminal or Copilot dependency, and codes/tokens
+must not enter durable outputs. A device-only deployment is supported when
+configured; it still requires a dedicated public registration and operator
+assignments. See the [one-time configuration](CONTINUATION-PLAN.md#docker-deployment-prerequisites).
 
 Sign in refreshes read-only session readiness before starting authentication,
 including when a focused page's pre-auth cookie has expired. Recovery stays in
@@ -167,7 +179,7 @@ fixed adapters remain pending, plus one Agent Framework protected-execution
 decision. Kubernetes was only a proposal for that one item, not selected and not
 required for sign-in. See the [remaining Docker map](CONTINUATION-PLAN.md#remaining-docker-implementation).
 
-Real Entra registration, server-only confidential secret, operator authorization,
+Real Entra registration, a server-only secret for the browser method, operator authorization,
 delegated consent and target policy, trusted HTTPS on every hop, and permitted
 egress are one-time deployment prerequisites, not proven configured. These
 [deployment prerequisites](CONTINUATION-PLAN.md#docker-deployment-prerequisites)
@@ -558,10 +570,17 @@ produce an error wall; the nearby action explains what is blocking progress.
 Commands and their purposes are listed under [Quick start](#quick-start).
 Results are candidate-specific, not a rolling aggregate:
 
+Current `36a1660` evidence is recorded in the
+[current milestone](AGENT_PROGRESS.md#current-milestone): producer targeted 91,
+final client 45 plus the independent closure probe, producer device-native 19,
+and independent browser 41/device 19, once each. Backend expiry 46 belongs to
+`92d7ff8`. These are separate scoped results, not a whole-final-suite total.
+The table below retains earlier browser-only and workspace evidence:
+
 | Application candidate | Recorded evidence |
 | --- | --- |
 | `6159f1b` (v4) | Scoped backend/core and regression selection: 195; production-container HTTPS case: 1 |
-| `e988296` (v5, current application) | Targeted source checks: 28; static check: 167 modules; final independent native HTTPS workflow: 41, once |
+| `e988296` (historical browser-only v5) | Targeted source checks: 28; static check: 167 modules; final independent native HTTPS workflow: 41, once |
 | `72efec8` | Implementation: 71 frontend Node, 89 dossier regressions, 23 smoke and 203 navigation checks passed |
 | `72efec8` | Independent recheck: 71 frontend Node, 30 reviewer-native focus, 89 regressions and 23 smoke checks passed |
 | `ad720f0` | 168 dossier/gallery checks passed before the focus-only correction; CSS is unchanged at `72efec8` |
@@ -623,8 +642,9 @@ forced colors, and the offline self-test through the real server.
 
 The accepted Docker scope is seven fixed HTTPS adapters, not nineteen executable
 recipes. Local CLI/Python descriptions below concern workstation compatibility,
-not Docker sign-in. Additional deployment prerequisites do not close or renumber
-the [seven external gates](CONTINUATION-PLAN.md#external-gates).
+not Docker sign-in. All [nine tracked blockers](CONTINUATION-PLAN.md#current-checkpoint)
+persist; deployment prerequisites do not close or renumber the original
+[seven external gates](CONTINUATION-PLAN.md#external-gates).
 
 - **Nothing has been executed against Azure.** No live endpoint, subscription,
   gateway key or Foundry project was available. Every assertion in the catalogue

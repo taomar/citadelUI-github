@@ -15,12 +15,12 @@ specific Windows username, drive, or local checkout path.
 
 ## Current checkpoint
 
-The coordinator accepted application `e98829604eb4853bd2fb3fdc7b3d815cd9988392`
-for scoped offline application-owned HTTPS sign-in and seven adapters, following
-both final independent accepts. This application SHA is separate from the later
+The coordinator accepted application `36a1660b56e06acb1a4dded1b6ed045eafb555e8`
+for scoped offline default-browser and explicit optional-device HTTPS sign-in,
+following final independent source/client and native accepts. This SHA is separate from the later
 documentation-only commit. Its playground tree is
-`04681758345cccfc9bd3207c788805223c8e43fb`; its web tree is
-`cc9e6b0041626f20805c6fc3d675b4265ff5847e`.
+`1deb18b5e73fdc7290bc03f2ae3df98725ac5c86`; its web tree is
+`cef9d12da304abb4116b89bd3816688004f1c547`.
 
 Open the stable Docker HTTPS application URL and sign in with Microsoft there.
 Explicit sign-in refreshes expired pre-auth state; recovery requires no terminal,
@@ -31,7 +31,28 @@ entered key after application operator authorization, with no ARM consent and no
 claim that a hosted managed identity is the user. Weather payloads appear in
 **Evidence**, **Step evidence**; **Transcript** contains execution summaries.
 
-Evidence remains tied to candidates: v4 `6159f1b` has the 195 scoped backend/core
+The explicit device option owns its transient code/trusted HTTPS link, expiry,
+Cancel, manual Retry and read-only Check status. It never silently falls back,
+automatically replays a failed cancellation/completion, or writes codes/tokens into durable
+output. Session/flow ownership, expiry causes and freshness fencing remain
+fail-closed. Device-only mode is supported with owner configuration, not without
+registration.
+
+Current evidence: backend expiry 46 at `92d7ff8`; producer related 91, final
+client 45 plus independent closure probe, producer device 19, and independent
+browser 41/device 19 once each at `36a1660`. These use a synthetic HTTPS IdP and
+real MSAL/JOSE, not live tenants/cloud. W1 `7faa4ff` is an accepted but disabled
+staged foundation; inherited Linux SQLite/native evidence is separate.
+Earlier `606cd0` browser 41 and device-native v2-v8 outcomes retain their original
+attribution and diagnostic limits. No whole-final-suite result is claimed.
+
+All nine tracked blockers remain: `browser-matrix`, `screen-reader`,
+`nonprod-approval`, `live-baseline`, `live-fixtures`, `live-policy-cleanup`,
+`hosted-integration`, `configure-hosted-deployment`, and
+`approve-hosted-agent-framework`. They do not close or renumber the original
+[seven external release gates](#external-gates).
+
+**Historical browser-only evidence:** v4 `6159f1b` has the 195 scoped backend/core
 and regression checks and production-container case 1; v5 `e988296` has targeted
 source 28, static check 167 modules, and final independent native 41 once.
 There is no final full-suite total or new v5 production-container run.
@@ -52,10 +73,27 @@ effect is authorized by the current application acceptance.
 
 ### Docker deployment prerequisites
 
-One-time owner configuration still needs the real tenant/cloud and Entra Web
-registration, both exact HTTPS callback/logout return URIs, a server-only
-confidential secret, explicit operator role/allowlist, delegated ARM consent for
-the two management recipes, and subscription/gateway origin-and-route policies.
+One-time owner configuration still needs the real tenant/cloud, method-specific
+registration, explicit operator role/principal assignments, delegated ARM consent
+for the two management recipes, and subscription/gateway origin-and-route policies.
+The default browser method needs an Entra Web registration, exact HTTPS
+callback/logout return URIs and a server-only confidential secret.
+
+| Optional device setting | Owner configuration |
+| --- | --- |
+| `CITADEL_HOSTED_AUTH_METHODS` | `["browser","device-code"]` to offer both; browser is the default |
+| `CITADEL_PLAYGROUND_ENTRA_DEVICE_CLIENT_ID` | Dedicated public client, distinct from the configured browser client; enable Allow public client flows |
+| `CITADEL_PLAYGROUND_ENTRA_DEVICE_APP_NAME` | Exact registered application name displayed in the phishing warning |
+
+Device-only mode can be configured, but still requires that public registration,
+tenant and operator policy. No registration, assignment or real device login was
+created by this work. Device authorization has no PKCE/nonce transaction; browser
+PKCE/state/nonce checks stay unchanged. Public grants keep exact client/account/
+purpose identity and use fresh operation-scoped PCA transport, never a CCA cache
+or an aborted transaction client. Resource consent stays bound to the same
+operator and reviewed target/context. See the
+[device hosting contract](playground/README.md#optional-application-owned-device-code-sign-in).
+
 Trusted TLS must cover browser, application, identity and target traffic,
 including verified proxy upstreams when present; certificate renewal and allowed
 DNS/egress must be established end to end. None is proven configured by offline

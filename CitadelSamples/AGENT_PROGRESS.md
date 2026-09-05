@@ -3,32 +3,54 @@
 ## Current Milestone
 
 The coordinator accepted **application**
-`e98829604eb4853bd2fb3fdc7b3d815cd9988392` for the scoped offline in-app HTTPS
-authentication/seven-adapter phase after both final independent reviews accepted.
-Application root: `6fcbc7f8c3a6998def83f888dd708727d80df021`.
-Playground tree: `04681758345cccfc9bd3207c788805223c8e43fb`.
-Web tree: `cc9e6b0041626f20805c6fc3d675b4265ff5847e`.
+`36a1660b56e06acb1a4dded1b6ed045eafb555e8` for the scoped offline optional-device
+HTTPS sign-in phase after final independent source/client and native accepts.
+Application root: `93240213be3545eb33c31ca0a5937db774592774`.
+Playground tree: `1deb18b5e73fdc7290bc03f2ae3df98725ac5c86`.
+Web tree: `cef9d12da304abb4116b89bd3816688004f1c547`.
 A later docs-only commit is a handover revision, not a new application candidate.
 
-The Docker flow starts at a stable HTTPS application URL. Microsoft sign-in and
-expired pre-auth recovery are application-owned, without an end-user terminal,
-bootstrap fragment or Copilot dependency. Azure context/APIM use the signed-in
+The Docker flow starts at a stable HTTPS application URL. Browser sign-in stays
+default; owner-configured device sign-in/Connect Azure adds a transient code and
+trusted HTTPS link, expiry, Cancel, manual Retry and read-only Check status.
+Expiry classification, cancellation intent, exact-flow/session recovery and
+freshness gates prevent late adoption or stale responses replacing a newer flow.
+There is no terminal, bootstrap fragment, auto-fallback or Copilot dependency;
+codes and tokens are excluded from durable output. Azure context/APIM use the signed-in
 user's delegated ARM credential; gateway recipes require the application operator
 but use a separately entered gateway key, without ARM consent. A hosted managed
 identity is not the user. Weather's returned payload is reachable in **Evidence**
 under **Step evidence**; **Transcript** contains execution summaries.
 
+Accepted W1 `7faa4ff` remains a disabled staged foundation in the lineage; its
+Linux SQLite/native evidence is inherited separately, not new-adapter acceptance.
 Seven adapters are implemented. Eleven fixed adapters remain pending, plus the
 Agent Framework protected-execution decision. Kubernetes was proposed only for
 that one item; it was not selected and is not required for sign-in. The exact
 [remaining map](CONTINUATION-PLAN.md#remaining-docker-implementation) does not
 authorize additional implementation or live effects.
 
-Real registration, server secret, operator/consent/target policy and end-to-end
-trusted TLS/egress remain unproven one-time deployment prerequisites, separate
-from the unchanged [seven external gates](CONTINUATION-PLAN.md#external-gates).
+Real method-specific registration, browser secret where applicable,
+operator/consent/target policy and end-to-end trusted TLS/egress remain unproven
+[one-time prerequisites](CONTINUATION-PLAN.md#docker-deployment-prerequisites).
+Device-only configuration still requires registration and explicit operators.
+All [nine tracked blockers](CONTINUATION-PLAN.md#current-checkpoint) persist,
+without replacing the original seven external gates.
 Old user HTTP previews are not this Docker deployment. No live Microsoft login,
 deployment, full-nineteen outcome or user aesthetic acceptance is claimed.
+
+| Candidate | Scoped evidence |
+| --- | --- |
+| `92d7ff8` | Producer expiry-order/device/backend selection: 46/46 |
+| `36a1660` | Producer related selection: 91/91; final client review: 45/45 plus independent CL-1 closure probe |
+| `36a1660` | Producer device-native: 19/19; independent browser-native 41/41 and device-native 19/19, once each |
+
+These are synthetic HTTPS IdP/resource fixtures using real MSAL/JOSE, not live
+tenant/cloud results or a whole-final-suite total. Earlier `606cd0` browser 41,
+device-native v2-v8 outcomes and their artifact limitations remain historical.
+The coordinator's receipts distinguish preserved artifacts from unavailable
+raw diagnostics. The earlier browser-only `e988296` and workspace records below
+retain their original candidate attribution.
 
 ## Historical Workspace Milestone
 
@@ -195,7 +217,7 @@ are not the current Docker BFF user flow described above.
 
 ### Accepted application evidence
 
-Current authentication-phase evidence is candidate-specific:
+Historical browser-only authentication-phase evidence is candidate-specific:
 
 | Application candidate | Recorded evidence |
 | --- | --- |

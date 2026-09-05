@@ -29,15 +29,27 @@ execution capability, and result assertions.
 
 ## Product and Architecture Decision
 
-Docker uses application-owned Microsoft authorization-code + PKCE sign-in at a
-stable, end-to-end HTTPS URL. A fresh browser must expose Sign in or actionable
+Docker defaults to application-owned Microsoft authorization-code + PKCE sign-in
+at a stable, end-to-end HTTPS URL. An explicitly owner-configured public-client
+device option adds in-app sign-in/Connect Azure with a transient code, trusted
+HTTPS link, expiry, Cancel, manual Retry and read-only Check status. Device-only
+mode is supported when configured, not without registration or operator policy.
+There is no terminal/Copilot dependency or automatic fallback. Codes/tokens must
+not enter durable output. Device authorization has no PKCE/nonce transaction;
+browser PKCE/state/nonce stays intact. Exact owner/flow/target identity,
+expiry/cancellation/freshness fencing and separate correctly typed public-client
+caches prevent cross-account adoption or mutation replay.
+
+A fresh browser must expose Sign in or actionable
 deployment-configuration requirements, not a terminal bootstrap instruction.
 Operator authorization and downstream credentials are distinct: the two ARM
 adapters use the signed-in user's delegated token; the five gateway adapters
 use an entered ephemeral gateway key without ARM consent. No hosted route
-imports local CLI/Python execution. This seven-recipe phase leaves twelve
-explicitly unavailable pending the separate protected execution decision; the
-overall nineteen-recipe goal and seven external gates are unchanged.
+imports local CLI/Python execution. The accepted W1 staged foundation remains
+disabled, not new production adapters: seven are implemented, eleven are pending,
+and Agent Framework isolation is unapproved. The overall nineteen-recipe goal and
+[nine external/configuration blockers](CONTINUATION-PLAN.md#current-checkpoint)
+are unchanged.
 
 The product keeps the server-authoritative catalogue and typed, allowlisted
 executor. The browser selects a catalogue sample and supplies only that sample's
@@ -186,8 +198,9 @@ as a synonym for simulated or offline.
 - Allow local account switching only when the loopback server advertises a
   launch-gated system-browser capability. Otherwise the UI fails closed and
   explains that the launch-private CLI session is unavailable rather than
-  exposing its path for terminal authentication. The UI never exposes a device
-  URL, short code, private profile path, or copy action.
+  exposing its path for terminal authentication. This legacy local flow never
+  exposes a device URL, short code, private profile path, or copy action. The
+  separately configured Docker device option above does not import that profile.
 - Treat active Azure CLI subscription and intended recipe target as separate
   facts. A server-enumerated subscription selector requires an explicit
   **Set Active** action and explains that the change affects only this launch.
