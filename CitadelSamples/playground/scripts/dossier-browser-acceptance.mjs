@@ -2097,6 +2097,13 @@ async function main() {
       }
     }
 
+    const malformedUrl = await malformedWizardUrlSnapshot(harness);
+    reporter.check(
+      'a malformed wizard step fails closed without breaking startup',
+      malformedUrl.step === 'account-target' && malformedUrl.hash === '#step=account-target',
+      JSON.stringify(malformedUrl),
+    );
+
     const blurRerender = await blurRerenderSnapshot(harness);
     reporter.check(
       'tabbing after a field edit preserves workspace scroll and visible keyboard focus',
@@ -2108,13 +2115,6 @@ async function main() {
         blurRerender.activeInsideWorkspace &&
         blurRerender.activeVisible,
       JSON.stringify(blurRerender),
-    );
-
-    const malformedUrl = await malformedWizardUrlSnapshot(harness);
-    reporter.check(
-      'a malformed wizard step fails closed without breaking startup',
-      malformedUrl.step === 'account-target' && malformedUrl.hash === '#step=account-target',
-      JSON.stringify(malformedUrl),
     );
 
     reportIssues(
