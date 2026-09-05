@@ -136,7 +136,14 @@ function resolveValue(value, outputs, secrets) {
  * @param {object} [options.limits]
  * @param {string} [options.pythonExecutable]
  */
-export function createLocalExecutor({ transports, workspace, limits = {}, pythonExecutable = 'python', pythonRoot }) {
+export function createLocalExecutor({
+  transports,
+  workspace,
+  limits = {},
+  pythonExecutable = 'python',
+  pythonRoot,
+  verifyAzureIdentity = null,
+}) {
   const bounds = validateLimits(limits);
   if (!workspace || typeof workspace.root !== 'string' || !isAbsolute(workspace.root)) {
     throw new Error('The local executor requires an absolute run-workspace root.');
@@ -146,6 +153,9 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
   }
   if (typeof pythonRoot !== 'string' || !isAbsolute(pythonRoot)) {
     throw new Error('The local executor requires an absolute shipped-wrapper root.');
+  }
+  if (verifyAzureIdentity !== null && typeof verifyAzureIdentity !== 'function') {
+    throw new Error('The local executor Azure identity verifier must be a function.');
   }
   const approvedExecutables = Object.freeze([...new Set(['az', pythonExecutable])]);
   const approvedPythonRoot = resolve(pythonRoot);
@@ -310,6 +320,7 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
     // A path argument is executed against the run workspace, not against
     // whatever the plan text says.
     const mapped = await mapPathArguments(args, entry, signal);
+    await verifyIdentityBeforeEffect({ signal });
     const result = await runProcess(command.executable, mapped, { signal, deadlineAt });
     const stdout = clip(result.stdout, bounds.maxOutputBytes);
     const stderr = clip(result.stderr, bounds.maxOutputBytes);
@@ -372,6 +383,7 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
         ? undefined
         : resolveValue(request.body, outputs, secrets);
     const body = resolvedBody === undefined ? undefined : typeof resolvedBody === 'string' ? resolvedBody : JSON.stringify(resolvedBody);
+    await verifyIdentityBeforeEffect({ signal });
     const outboundJsonRpcId = jsonRpcRequestId(resolvedBody);
     const expectsJsonRpc = outboundJsonRpcId !== undefined;
     const timeoutMs = remainingTimeout(deadlineAt, (request.timeoutSeconds ?? 60) * 1000);
@@ -552,6 +564,7 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
     if (scriptRelative.startsWith('..') || isAbsolute(scriptRelative)) {
       throw new Error(`Refused Python wrapper path "${wrapper.script}".`);
     }
+    if (wrapper.azureCliCredential === true) await verifyIdentityBeforeEffect({ signal });
     const result = await runProcess(pythonExecutable, [script], {
       signal,
       deadlineAt,
@@ -632,6 +645,13 @@ export function createLocalExecutor({ transports, workspace, limits = {}, python
     const error = new Error('The run was cancelled.');
     error.name = 'AbortError';
     throw error;
+  }
+
+  async function verifyIdentityBeforeEffect({ signal }) {
+    if (!verifyAzureIdentity) return;
+    throwIfAborted(signal);
+    await verifyAzureIdentity({ signal });
+    throwIfAborted(signal);
   }
 
   async function runProcess(executable, args, { signal, deadlineAt, stdin, env = {} }) {

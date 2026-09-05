@@ -79,6 +79,7 @@ export function createRunManager({
     let activeRun;
     let executionStarted = false;
     let releaseIdentityLease = () => {};
+    let reviewedIdentityFingerprint = null;
     try {
       if (typeof identity.acquireRunLease === 'function') {
         const release = identity.acquireRunLease();
@@ -109,6 +110,12 @@ export function createRunManager({
         { signal: controller.signal },
       );
       throwIfStartAborted(controller.signal);
+      reviewedIdentityFingerprint = request.reviewedIdentity
+        ? Object.freeze({ ...request.reviewedIdentity })
+        : null;
+      if (reviewedIdentityFingerprint && typeof identity.verifyRunIdentity !== 'function') {
+        throw new Error('The execution-context manager did not provide a run identity verifier.');
+      }
 
       sequence += 1;
       runId = makeRunId(request.sample.id, sequence);
@@ -124,6 +131,10 @@ export function createRunManager({
         limits,
         pythonExecutable,
         pythonRoot: resolve(playgroundRoot, 'runtime', 'python'),
+        verifyAzureIdentity: reviewedIdentityFingerprint
+          ? ({ signal: verificationSignal }) =>
+              identity.verifyRunIdentity(reviewedIdentityFingerprint, { signal: verificationSignal })
+          : null,
       });
 
       // The access-contract fallback needs the same subscription name the
@@ -131,7 +142,15 @@ export function createRunManager({
       contract = contractFor(request.sample.id, resolvedInputs);
       throwIfStartAborted(controller.signal);
 
-      activeRun = { runId, sampleId: request.sample.id, controller, startedAt: Date.now(), promise: null, done };
+      activeRun = {
+        runId,
+        sampleId: request.sample.id,
+        controller,
+        startedAt: Date.now(),
+        promise: null,
+        done,
+        reviewedIdentityFingerprint,
+      };
       reservations.delete(reservation);
       active.set(runId, activeRun);
       onStart?.({

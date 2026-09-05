@@ -15,7 +15,7 @@ export const DISCOVER_SAMPLES = [
     group: 'discover',
     title: 'Azure context check',
     shortTitle: 'Azure context',
-    summary: 'Confirm the Azure CLI is signed in and pointed at the subscription this run expects.',
+    summary: 'Confirm the Citadel private Azure CLI session is signed in and pointed at the subscription this run expects.',
     purpose:
       'Every other recipe in this catalogue either deploys at subscription scope or reads management-plane resources. Those commands are bound explicitly to the Hub profile subscription, while this recipe separately confirms that the signed-in principal and active context are the ones the operator expects.',
     explanation: [
@@ -41,7 +41,7 @@ export const DISCOVER_SAMPLES = [
         id: 'signed-in',
         title: 'Signed in',
         detail: 'An interactive or service-principal sign-in with access to the hub subscription.',
-        howTo: 'Run `az login`, or `az login --tenant <tenantId>` when your account spans several tenants.',
+        howTo: 'Start the playground with system sign-in enabled, then use **Sign in with Microsoft** for this launch.',
         links: [LINKS.azLogin],
       },
     ],
@@ -55,11 +55,11 @@ export const DISCOVER_SAMPLES = [
     ],
     runtime: {
       dependencies: ['azure-cli'],
-      note: 'Reads the local Azure CLI profile only. No network call to Azure is made by this recipe.',
+      note: 'Reads this launch-private Azure CLI profile only. No network call to Azure is made by this recipe.',
     },
     risk: {
       level: 'read-only',
-      effect: 'Reads the local Azure CLI profile. Nothing in Azure is created, changed or deleted.',
+      effect: 'Reads the Citadel private Azure CLI profile. Nothing in Azure is created, changed or deleted.',
       blastRadius: 'None.',
       reversibility: 'Not applicable.',
     },

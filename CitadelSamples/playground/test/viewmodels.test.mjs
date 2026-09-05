@@ -89,7 +89,12 @@ test('execution identity stays honest while unavailable and maps the separated A
         activeCliSubscription: { id: 'sub-1', name: 'Sandbox', tenantId: 'tenant-1' },
         intendedTarget: { subscriptionId: 'sub-1', matchesActive: true },
         authorization: { state: 'not-checked', label: 'Authorization Not Checked' },
-        guarantees: { tokensExposed: false, credentialsPersisted: false },
+        guarantees: {
+          tokensExposed: false,
+          credentialsPersistedInApplicationState: false,
+          privateAzureCliCache: 'launch-temporary',
+          crashResiduePossible: true,
+        },
   };
   const azureAuthCapability = {
     systemLoginAllowed: true,

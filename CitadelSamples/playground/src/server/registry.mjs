@@ -848,6 +848,7 @@ export const PYTHON_WRAPPERS = Object.freeze({
   'weather-api-ensure/upsert-api': {
     script: 'apim_weather_api.py',
     modules: ['azure.mgmt.apimanagement', 'azure.identity'],
+    azureCliCredential: true,
     summary: 'Upsert `weather-api` and its mock policy through the management SDK.',
     params: ({ inputs }) => ({
       action: 'upsert',
@@ -868,6 +869,7 @@ export const PYTHON_WRAPPERS = Object.freeze({
   'weather-api-ensure/list-operations': {
     script: 'apim_weather_api.py',
     modules: ['azure.mgmt.apimanagement', 'azure.identity'],
+    azureCliCredential: true,
     summary: 'List the API`s operations.',
     params: ({ inputs }) => ({
       action: 'list-operations',
@@ -885,6 +887,7 @@ export const PYTHON_WRAPPERS = Object.freeze({
   'access-contract-deploy/key-fallback': {
     script: 'apim_subscription_key.py',
     modules: ['azure.mgmt.apimanagement', 'azure.identity'],
+    azureCliCredential: true,
     credential: true,
     summary: 'Read the subscription primary key, only when the deployment returned none.',
     skipWhen: ({ outputs }) => Boolean(outputs.get('deploy.__keyReturned')),

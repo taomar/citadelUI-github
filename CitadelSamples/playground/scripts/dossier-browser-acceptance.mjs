@@ -1542,7 +1542,7 @@ async function runScenario(harness, reporter, scenario) {
     if (scenario.recipeId === 'apim-discovery') {
       reporter.includes(`${scenario.name}: Azure step title is correct`, wizard.title, 'Azure account & target');
       reporter.check(
-        `${scenario.name}: unsupported browser login fails closed to terminal handoff`,
+        `${scenario.name}: unavailable system login fails closed without exposing the private CLI path`,
         wizard.terminalFallback && !wizard.azureAccountControls,
         JSON.stringify(wizard),
       );
@@ -1817,7 +1817,7 @@ async function checkSystemAzureIdentityControls(reporter) {
       return document.querySelector('.dossier-current-id')?.textContent ?? '';
     })()`);
     reporter.equal(
-      'recipe navigation is locked while the shared Azure subscription changes',
+      'recipe navigation is locked while the launch-private Azure subscription changes',
       recipeDuringActivation,
       'azure-context-check',
     );
@@ -1828,7 +1828,7 @@ async function checkSystemAzureIdentityControls(reporter) {
       { label: 'verified Azure subscription activation' },
     );
     reporter.check(
-      'subscription activation reconciles the wizard to the verified shared CLI default',
+      'subscription activation reconciles the wizard to the verified launch-private CLI subscription',
       await harness.evaluate(
         `document.getElementById('dossier-account-subscription')?.value === ${JSON.stringify(ALTERNATE_SUBSCRIPTION_ID)}`,
       ),

@@ -159,11 +159,12 @@ as a synonym for simulated or offline.
   target as separate authority hops.
 - Allow local account switching only when the loopback server advertises a
   launch-gated system-browser capability. Otherwise the UI fails closed and
-  names terminal-only `az login` as the external prerequisite. The UI never
-  exposes a device URL, short code, or copy action.
+  explains that the launch-private CLI session is unavailable rather than
+  exposing its path for terminal authentication. The UI never exposes a device
+  URL, short code, private profile path, or copy action.
 - Treat active Azure CLI subscription and intended recipe target as separate
   facts. A server-enumerated subscription selector requires an explicit
-  **Set Active** action and warns that it changes the shared Azure CLI default.
+  **Set Active** action and explains that the change affects only this launch.
 - Generate deterministic, redacted configuration manifests and execution plans that users can copy or download.
 - Distinguish parser-only Python validation from registered Python sample
   execution in both controls and evidence.

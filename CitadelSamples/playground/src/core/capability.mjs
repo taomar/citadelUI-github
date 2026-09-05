@@ -85,7 +85,7 @@ function evaluateDependency(id, sample, probe) {
         available: probe.azureCli === undefined ? null : false,
         reason:
           probe.azureCli?.reason ??
-          'The Azure CLI was not found on PATH. Install it and run `az login`, then restart the playground.',
+          'The Azure CLI was not found on PATH. Install it, then restart the playground.',
       };
     case 'python': {
       const required = sample.runtime?.python?.modules ?? [];

@@ -41,7 +41,6 @@ export const INHERITED_ENVIRONMENT_KEYS = Object.freeze([
   'SSL_CERT_DIR',
   'REQUESTS_CA_BUNDLE',
   'CURL_CA_BUNDLE',
-  'AZURE_CONFIG_DIR',
   'HTTP_PROXY',
   'HTTPS_PROXY',
   'NO_PROXY',
@@ -71,7 +70,11 @@ const EXPLICIT_ENVIRONMENT_KEYS = Object.freeze([
  * settings are not inherited; wrappers may add only reviewed, registry-owned
  * secret variables.
  */
-export function createProcessEnvironment(explicit = {}, source = process.env, { profile = 'default' } = {}) {
+export function createProcessEnvironment(
+  explicit = {},
+  source = process.env,
+  { profile = 'default', azureConfigDir = null } = {},
+) {
   if (!explicit || typeof explicit !== 'object' || Array.isArray(explicit)) {
     throw new Error('Process environment overrides must be an object.');
   }
@@ -87,6 +90,12 @@ export function createProcessEnvironment(explicit = {}, source = process.env, { 
   for (const key of inheritedKeys) {
     const value = source[key];
     if (typeof value === 'string' && value !== '' && !value.includes('\0')) result[key] = value;
+  }
+  if (azureConfigDir !== null) {
+    if (typeof azureConfigDir !== 'string' || !isAbsolute(azureConfigDir) || azureConfigDir.includes('\0')) {
+      throw new Error('The private Azure CLI configuration directory must be an absolute path.');
+    }
+    result.AZURE_CONFIG_DIR = azureConfigDir;
   }
   for (const [key, value] of Object.entries(explicit)) {
     if (!EXPLICIT_ENVIRONMENT_KEYS.includes(key)) {
@@ -183,6 +192,8 @@ function resolveWindowsCommand(executable, { pathValue, pathExt, exists }) {
  * @param {(chunk:{stream:'stdout'|'stderr',text:string}) => void} [options.onOutput]
  * @param {boolean} [options.captureOutput] whether stdout/stderr are retained in the result
  * @param {'default'|'system-browser'} [options.environmentProfile] reviewed inherited environment profile
+ * @param {string|null} [options.azureConfigDir] server-owned private Azure CLI profile
+ * @param {(process:{pid:number,processGroupId:number|null}) => (() => void)|void} [options.onSpawn]
  * @returns {Promise<{code:number, stdout:string, stderr:string, timedOut:boolean, aborted:boolean, spawnFailed?:boolean}>}
  */
 export function spawnProcess({
@@ -198,6 +209,8 @@ export function spawnProcess({
   onOutput,
   captureOutput = true,
   environmentProfile = 'default',
+  azureConfigDir = null,
+  onSpawn,
 }) {
   if (!Array.isArray(allowedExecutables) || !allowedExecutables.includes(executable)) {
     return Promise.reject(new Error(`Refused to spawn "${executable}": it is not on the executable allow-list.`));
@@ -228,9 +241,15 @@ export function spawnProcess({
   if (typeof captureOutput !== 'boolean') {
     return Promise.reject(new Error('Process output capture must be a boolean.'));
   }
+  if (onSpawn !== undefined && typeof onSpawn !== 'function') {
+    return Promise.reject(new Error('Process ownership observer must be a function when supplied.'));
+  }
   let childEnv;
   try {
-    childEnv = createProcessEnvironment(env, process.env, { profile: environmentProfile });
+    childEnv = createProcessEnvironment(env, process.env, {
+      profile: environmentProfile,
+      azureConfigDir,
+    });
   } catch (error) {
     return Promise.reject(error);
   }
@@ -266,6 +285,33 @@ export function spawnProcess({
         timedOut: false,
         aborted: false,
         spawnFailed: true,
+      });
+      return;
+    }
+    let releaseOwnership = () => {};
+    try {
+      const release =
+        typeof child.pid === 'number'
+          ? onSpawn?.({
+              pid: child.pid,
+              processGroupId: process.platform === 'win32' ? null : child.pid,
+            })
+          : undefined;
+      if (release !== undefined && typeof release !== 'function') {
+        throw new Error('Process ownership observer did not return a release function.');
+      }
+      if (release) releaseOwnership = release;
+    } catch {
+      child.once('error', () => {});
+      void terminateProcessTree(child).then(() => {
+        resolve({
+          code: -1,
+          stdout: '',
+          stderr: captureOutput ? 'Process ownership tracking failed.' : '',
+          timedOut: false,
+          aborted: false,
+          spawnFailed: true,
+        });
       });
       return;
     }
@@ -326,6 +372,11 @@ export function spawnProcess({
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
       if (termination) await termination;
+      try {
+        releaseOwnership();
+      } catch {
+        /* a stale marker is safer than masking the completed process result */
+      }
       const result = {
         code,
         stdout: captureOutput ? decodeCollectedOutput(stdout, stdoutBytes, maxOutputBytes) : '',

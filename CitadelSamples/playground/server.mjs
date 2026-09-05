@@ -31,7 +31,8 @@ import { offlinePythonContext } from './src/core/executionContext.mjs';
 import { EXECUTION_PROTOCOL_VERSION } from './src/core/types.mjs';
 import { createRunManager } from './src/server/runManager.mjs';
 import { RequestRefused } from './src/server/runRequest.mjs';
-import { spawnProcess } from './src/server/transports.mjs';
+import { realTransports, spawnProcess } from './src/server/transports.mjs';
+import { createPrivateAzureCliContext } from './src/server/azureCliContext.mjs';
 import {
   createExecutionContextManager,
   validateLoginStartRequest,
@@ -381,8 +382,8 @@ function cliVersion(text) {
 
 function cliReason(result) {
   return result.spawnFailed
-    ? 'The Azure CLI was not found on PATH. Install it and run `az login`, then restart the playground.'
-    : `\`az version\` exited ${result.code}. Sign in with \`az login\` and try again.`;
+    ? 'The Azure CLI was not found on PATH. Install it, then restart the playground.'
+    : `\`az version\` exited ${result.code}. Repair the Azure CLI installation and restart the playground.`;
 }
 
 /** What the browser is told about execution capability. No secrets, ever. */
@@ -496,8 +497,7 @@ export function capabilitiesPayload({
         available: azureControlsAvailable,
         listEndpoint: azureControlsAvailable ? '/api/azure-subscriptions/list' : null,
         activateEndpoint: azureControlsAvailable ? '/api/azure-subscriptions/activate' : null,
-        warning:
-          'Changing the active subscription updates the shared Azure CLI default for other terminals and tools on this machine.',
+        warning: 'Changing the active subscription affects only this Citadel playground launch.',
       }),
     }),
   };
@@ -1419,6 +1419,8 @@ function decodeSampleId(value) {
  * @param {object} [options.relay]        injected relay config for tests (see buildRelayConfig)
  * @param {string|null} [options.publicOrigin] exact hosted HTTPS browser origin
  * @param {string} [options.testBootstrapCapability] deterministic test-only bootstrap
+ * @param {object} [options.processTransports] injected local process transports
+ * @param {Function} [options.privateAzureCliContextFactory] injected context factory
  */
 export function createPlaygroundServer({
   mode = 'preview',
@@ -1433,6 +1435,8 @@ export function createPlaygroundServer({
   testBootstrapCapability,
   secureSessionCookie = false,
   allowSystemAzureLogin = false,
+  processTransports = null,
+  privateAzureCliContextFactory = createPrivateAzureCliContext,
 } = {}) {
   publicOrigin =
     publicOrigin === null
@@ -1446,31 +1450,56 @@ export function createPlaygroundServer({
       })
     : null;
   const browserHost = localSessionAuth?.browserHost ?? null;
-  const identityManager =
-    executionContextManager ??
-    createExecutionContextManager({
-      playgroundRoot: ROOT,
-      mode: mode === 'execute' && isLoopbackHost(host) ? 'execute' : 'preview',
-      relay,
-      allowSystemAzureLogin:
-        allowSystemAzureLogin === true &&
-        mode === 'execute' &&
-        isLoopbackHost(host) &&
-        relay.enabled !== true,
-    });
-  const manager =
-    mode === 'execute'
-      ? (runManager ??
-        createRunManager({
-          playgroundRoot: ROOT,
-          pythonExecutable: PYTHON,
-          executionContextManager: identityManager,
-        }))
-      : runManager;
-  const validationManager =
-    mode === 'execute'
-      ? (codeValidationManager ?? createCodeValidationManager({ playgroundRoot: ROOT, pythonExecutable: PYTHON }))
-      : codeValidationManager;
+  const localExecutionEnabled = mode === 'execute' && relay.enabled !== true;
+  const ownsPrivateAzureCliContext =
+    localExecutionEnabled && isLoopbackHost(host);
+  let privateAzureCliContext = null;
+  let localProcessTransports;
+  let identityManager;
+  let manager;
+  let validationManager;
+  try {
+    privateAzureCliContext = ownsPrivateAzureCliContext
+      ? privateAzureCliContextFactory()
+      : null;
+    localProcessTransports = privateAzureCliContext
+      ? privateAzureCliContext.bindTransports(processTransports ?? realTransports())
+      : (processTransports ?? realTransports());
+    identityManager =
+      executionContextManager ??
+      createExecutionContextManager({
+        playgroundRoot: ROOT,
+        mode: localExecutionEnabled && isLoopbackHost(host) ? 'execute' : 'preview',
+        relay,
+        allowSystemAzureLogin:
+          allowSystemAzureLogin === true &&
+          localExecutionEnabled &&
+          isLoopbackHost(host) &&
+          relay.enabled !== true,
+        transports: localProcessTransports,
+      });
+    manager =
+      localExecutionEnabled
+        ? (runManager ??
+          createRunManager({
+            playgroundRoot: ROOT,
+            transports: localProcessTransports,
+            pythonExecutable: PYTHON,
+            executionContextManager: identityManager,
+          }))
+        : runManager;
+    validationManager =
+      localExecutionEnabled
+        ? (codeValidationManager ?? createCodeValidationManager({ playgroundRoot: ROOT, pythonExecutable: PYTHON }))
+        : codeValidationManager;
+  } catch (error) {
+    try {
+      Promise.resolve(privateAzureCliContext?.close()).catch(() => {});
+    } catch {
+      /* the original construction failure remains the useful startup error */
+    }
+    throw error;
+  }
   let runtimeProbe = probe;
   const shutdownController = new AbortController();
 
@@ -1544,7 +1573,7 @@ export function createPlaygroundServer({
           return;
         }
         await handleRun(request, response, {
-          mode,
+          mode: localExecutionEnabled ? 'execute' : 'preview',
           manager,
           port,
           host,
@@ -1653,7 +1682,7 @@ export function createPlaygroundServer({
           return;
         }
         await handleSourceValidation(request, response, {
-          mode,
+          mode: localExecutionEnabled ? 'execute' : 'preview',
           manager: validationManager,
           sampleId: decodeSampleId(validationRoute[1]),
           port,
@@ -1707,6 +1736,15 @@ export function createPlaygroundServer({
   server.codeValidationManager = validationManager;
   server.executionContextManager = identityManager;
   server.localSessionAuth = localSessionAuth;
+  server.localExecutionEnabled = localExecutionEnabled;
+  server.probeRuntimes = (options = {}) =>
+    probeRuntimes({
+      mode: localExecutionEnabled ? 'execute' : 'preview',
+      python: PYTHON,
+      root: ROOT,
+      ...options,
+      spawn: localProcessTransports.spawn,
+    });
   const close = server.close.bind(server);
   let shutdown = null;
   server.close = (callback) => {
@@ -1727,7 +1765,14 @@ export function createPlaygroundServer({
           resolveClosed();
         });
       });
-      shutdown = Promise.all([serverClosed, ...drains]).then(() => shutdownError);
+      shutdown = Promise.all([serverClosed, ...drains]).then(async () => {
+        try {
+          await privateAzureCliContext?.close();
+        } catch (error) {
+          recordShutdownError(error);
+        }
+        return shutdownError;
+      });
     }
     if (typeof callback === 'function') shutdown.then((error) => callback(error));
     return server;
@@ -1782,9 +1827,9 @@ if (invokedDirectly) {
       process.stdout.write('The plain URL is preview-only until this browser claims the launch capability.\n');
     }
     process.stdout.write(`Mode: ${mode}\n`);
-    if (mode === 'execute') {
+    if (server.localExecutionEnabled) {
       process.stdout.write('Probing local runtimes…\n');
-      const probe = await probeRuntimes({ mode, python: PYTHON });
+      const probe = await server.probeRuntimes();
       server.setProbe(probe);
       const { capability } = capabilitiesPayload({ mode, probe, relay: DEFAULT_RELAY_CONFIG });
       process.stdout.write(`Local execution: ${capability.label} (${capability.ready}/${capability.total} samples ready)\n`);
@@ -1794,7 +1839,7 @@ if (invokedDirectly) {
           ? 'System Azure sign-in and subscription switching: enabled for this secure browser launch.\n'
           : 'System Azure sign-in and subscription switching: disabled. Add --allow-system-azure-login to opt in for this launch.\n',
       );
-    } else {
+    } else if (mode !== 'execute') {
       process.stdout.write('Preview only — plans are generated and inspected, and nothing is executed.\n');
       process.stdout.write('Run `npm run start:execute` to attach the local executor.\n');
     }

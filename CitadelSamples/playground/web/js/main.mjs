@@ -529,8 +529,9 @@ function shellIdentity(models) {
     && accountControl.launchMode !== 'system-browser'
   ) {
     base.terminalFallback = {
-      available: true,
-      message: 'Use az login in the terminal, then verify the execution context here.',
+      available: false,
+      message:
+        'This private Azure CLI session is not exposed to terminals. Restart with system sign-in enabled to authenticate this launch.',
     };
   }
   return base;
@@ -553,8 +554,8 @@ function shellExecution(models) {
       detail: gateway
         ? 'Gateway recipes do not use Azure account or subscription controls.'
         : identity.targetSubscriptionMismatch
-          ? 'The Azure CLI default and intended target do not match.'
-          : 'Azure CLI default; the intended target remains separate.',
+          ? 'The private Azure CLI subscription and intended target do not match.'
+          : 'Citadel private Azure CLI subscription; the intended target remains separate.',
     },
     target: {
       value: models.dossier.reviewDecision.target.exact,
@@ -773,9 +774,11 @@ function openDiagnostics() {
       capabilities?.azureAuth?.systemLogin?.available !== true
         && capabilities?.sessionAuth?.state !== 'unclaimed'
         ? node('div', { class: 'terminal-handoff' }, [
-            node('h3', { text: 'Terminal fallback' }),
-            node('p', { text: 'Run az login in a trusted terminal. Authentication instructions stay in the terminal.' }),
-            node('code', { text: 'az login', translate: 'no' }),
+            node('h3', { text: 'Private Azure sign-in unavailable' }),
+            node('p', {
+              text:
+                'This launch never exposes its private Azure CLI session to a terminal. Restart with system sign-in enabled to authenticate it.',
+            }),
           ])
         : null,
     ]),
@@ -1731,7 +1734,7 @@ async function setActiveSubscription(subscriptionId) {
   state.azureSubscriptions = {
     ...state.azureSubscriptions,
     status: 'activating',
-    message: 'Changing and verifying the shared Azure CLI default subscription.',
+    message: 'Changing and verifying this launch-private Azure CLI subscription.',
   };
   render();
   try {
@@ -1752,7 +1755,7 @@ async function setActiveSubscription(subscriptionId) {
     state.azureSubscriptions = {
       ...state.azureSubscriptions,
       status: 'error',
-      message: safeMessage(error, 'The Azure CLI default subscription could not be changed.'),
+      message: safeMessage(error, 'This launch-private Azure CLI subscription could not be changed.'),
     };
     await refreshExecutionContext();
     render();

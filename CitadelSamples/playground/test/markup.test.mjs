@@ -104,15 +104,16 @@ test('gateway, Azure, hosted, and offline identity directions remain distinct', 
   assert.match(shell, /kind === 'gateway-key'/);
   assert.match(shell, /Sign in with Microsoft/);
   assert.match(shell, /Switch Azure account/);
-  assert.match(shell, /Set Active changes the shared Azure CLI default subscription/);
+  assert.match(shell, /Set Active changes only this Citadel playground launch/);
 });
 
-test('system-browser account controls are capability-gated with a terminal fallback', () => {
+test('system-browser account controls are capability-gated without exposing a terminal fallback', () => {
   assert.match(shell, /identity\.systemBrowser\?\.available === true/);
   assert.match(shell, /identity\.launchCapability === 'system-browser'/);
   assert.match(shell, /identity\.launchCapability === 'wam'/);
   assert.match(shell, /Refresh Azure CLI Status/);
   assert.match(main, /accountControl\.launchMode !== 'system-browser'/);
+  assert.match(main, /private Azure CLI session is not exposed to terminals/);
 });
 
 test('field help is concise by default and technical data stays behind disclosure', () => {

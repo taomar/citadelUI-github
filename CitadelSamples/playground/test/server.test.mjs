@@ -1135,6 +1135,33 @@ test('a relay-disabled server answers /api/execute with 501, never forwarding an
   });
 });
 
+test('a relay-enabled server never exposes the local run route or creates a private CLI profile', async () => {
+  await withServer(
+    {
+      mode: 'execute',
+      relay: {
+        enabled: true,
+        url: 'https://relay.example.test/execute',
+        token: 'relay-token',
+        allowedSampleIds: [],
+      },
+      privateAzureCliContextFactory: () => {
+        throw new Error('relay mode must not create a local Azure CLI context');
+      },
+    },
+    async ({ call, server }) => {
+      assert.equal(server.localExecutionEnabled, false);
+      const response = await call('/api/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      assert.equal(response.status, 501);
+      assert.equal(server.runManager, null);
+    },
+  );
+});
+
 test('a loopback caller reaches an enabled relay without presenting a credential', async () => {
   const calls = [];
   const relay = fakeRelay({

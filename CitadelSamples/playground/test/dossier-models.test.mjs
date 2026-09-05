@@ -85,7 +85,7 @@ test('the dossier consumes the separated signed-in account and subscription cont
       status: 'ready',
       context: {
         kind: 'azure-cli-management',
-        label: 'Local Azure CLI user',
+        label: 'Citadel private Azure CLI session',
         summary: 'Ready to attempt.',
         state: 'ready-to-attempt',
         canExecute: true,

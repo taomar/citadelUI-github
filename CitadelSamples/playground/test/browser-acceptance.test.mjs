@@ -183,7 +183,12 @@ test('offline validation requires compile-only labels, negative live claims, and
       authorization: { state: 'not-checked', label: 'Authorization Not Checked' },
       gateway: null,
       hostedRelay: null,
-      guarantees: { tokensExposed: false, credentialsPersisted: false },
+      guarantees: {
+        tokensExposed: false,
+        credentialsPersistedInApplicationState: false,
+        privateAzureCliCache: 'none',
+        crashResiduePossible: false,
+      },
     },
     mode: 'offline-local',
     validation: 'python-compile-only',

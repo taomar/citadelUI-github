@@ -80,7 +80,7 @@ const DEVICE_FALLBACK_MARKERS = Object.freeze(
   ),
 );
 const SUBSCRIPTION_WARNING =
-  'Changing the active subscription updates the shared Azure CLI default for other terminals and tools on this machine.';
+  'Changing the active subscription affects only this Citadel playground launch.';
 
 export function validateExecutionContextRequest(payload, catalogue) {
   exactObject(payload, CONTEXT_REQUEST_KEYS, 'execution-context');
@@ -346,7 +346,8 @@ export function createExecutionContextManager({
       updateLogin(record, {
         state: 'device-fallback-blocked',
         code: 'device-fallback-blocked',
-        message: 'Azure CLI attempted a device fallback. Run `az login` in a terminal, then Refresh Azure CLI Status.',
+        message:
+          'Azure CLI attempted a device-code fallback, which is unavailable because this launch never exposes its private CLI session to a terminal.',
       });
       record.controller.abort();
     };
@@ -435,7 +436,7 @@ export function createExecutionContextManager({
       message:
         result.spawnFailed || azureCliUnavailable(result)
           ? 'Azure CLI is not available, so system sign-in could not start.'
-          : 'Azure CLI system sign-in failed. Run `az login` in a terminal, then Refresh Azure CLI Status.',
+          : 'Azure CLI system sign-in failed. This launch cannot fall back to a terminal because its private CLI session is not exposed.',
     });
   }
 
@@ -733,7 +734,7 @@ export function createExecutionContextManager({
   function requireSystemAzureControls() {
     if (systemLoginAllowed) return;
     throw new RequestRefused(
-      'System Azure sign-in and subscription switching are disabled for this launch. Restart with `--allow-system-azure-login` or run `az login` in a terminal.',
+      'System Azure sign-in and subscription switching are disabled for this launch. Restart with `--allow-system-azure-login`; the private CLI session is not exposed to terminals.',
       {
         status: 409,
         code: 'login-disabled',
@@ -853,6 +854,33 @@ export function createExecutionContextManager({
     }
   }
 
+  async function verifyRunIdentity(reviewedIdentity, { signal } = {}) {
+    const account = await requireVerifiedAccount({ signal });
+    const current = Object.freeze({
+      principalName: account.principalName,
+      principalType: account.principalType,
+      tenantId: account.tenantId,
+      subscriptionId: account.activeId.toLowerCase(),
+    });
+    if (
+      !reviewedIdentity
+      || reviewedIdentity.principalName !== current.principalName
+      || reviewedIdentity.principalType !== current.principalType
+      || reviewedIdentity.tenantId !== current.tenantId
+      || reviewedIdentity.subscriptionId?.toLowerCase() !== current.subscriptionId
+      || account.subscriptionState !== 'Enabled'
+    ) {
+      throw new RequestRefused(
+        'The Citadel private Azure CLI identity changed after review. The next Azure effect was blocked.',
+        {
+          status: 409,
+          code: 'reviewed-identity-changed',
+        },
+      );
+    }
+    return current;
+  }
+
   async function verifyLoginAccount(record) {
     if (closed) return Object.freeze({ signedIn: false, code: 'azure-cli-cancelled' });
     const controller = new AbortController();
@@ -908,6 +936,7 @@ export function createExecutionContextManager({
     listSubscriptions,
     activateSubscription,
     acquireRunLease,
+    verifyRunIdentity,
     cancelAll,
   });
 }
@@ -955,8 +984,8 @@ function azureContext(sampleId, descriptor, account, configuredSubscriptionId, {
             ? 'The Azure CLI account response was invalid. No sign-in state was inferred.'
             : state === 'signed-out'
               ? systemLoginAllowed
-                ? 'No signed-in Azure CLI account is available. Use system sign-in, or run `az login` in a terminal, then Refresh Azure CLI Status.'
-                : 'No signed-in Azure CLI account is available. Run `az login` in a terminal, then Refresh Azure CLI Status.'
+                ? 'This Citadel private Azure CLI session is signed out. Use Sign in with Microsoft for this launch.'
+                : 'This Citadel private Azure CLI session is signed out. Restart with system sign-in enabled; terminal authentication is intentionally unavailable.'
               : state === 'subscription-mismatch'
                 ? diagnosticMismatch
                   ? 'The active Azure CLI subscription does not match the intended target. This read-only diagnostic may run to report the mismatch.'
@@ -994,7 +1023,7 @@ function azureContext(sampleId, descriptor, account, configuredSubscriptionId, {
     authorization: authorizationNotChecked(),
     gateway: null,
     hostedRelay: null,
-    guarantees: guarantees(),
+    guarantees: guarantees({ privateAzureCliCache: true }),
   });
 }
 
@@ -1145,12 +1174,12 @@ function samePrincipal(left, right) {
 
 function loginRefreshFailureMessage(code) {
   if (code === 'azure-cli-timeout') {
-    return 'Azure CLI returned from sign-in, but refreshing account status timed out. Run `az account show` in a terminal, then Refresh Azure CLI Status.';
+    return 'Azure CLI returned from sign-in, but refreshing this private session timed out. Retry system sign-in or refresh the status.';
   }
   if (code === 'azure-cli-unavailable') {
-    return 'Azure CLI returned from sign-in, but account status could not be read. Run `az account show` in a terminal, then Refresh Azure CLI Status.';
+    return 'Azure CLI returned from sign-in, but this private session could not read account status. Retry system sign-in.';
   }
-  return 'Azure CLI returned from sign-in, but the signed-in account could not be verified. Run `az account show` in a terminal, then Refresh Azure CLI Status.';
+  return 'Azure CLI returned from sign-in, but this private session could not verify the signed-in account. Retry system sign-in.';
 }
 
 function loginResponse(record) {

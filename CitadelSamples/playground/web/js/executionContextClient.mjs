@@ -177,7 +177,7 @@ export function azureAuthCapabilityFromPayload(payload) {
     warning:
       typeof subscriptions?.warning === 'string'
         ? subscriptions.warning
-        : 'Changing the active subscription updates the shared Azure CLI default for other terminals and tools on this machine.',
+        : 'Changing the active subscription affects only this Citadel playground launch.',
   });
 }
 

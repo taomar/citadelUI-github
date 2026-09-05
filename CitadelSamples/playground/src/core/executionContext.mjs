@@ -33,29 +33,29 @@ export const AZURE_CLI_PRINCIPAL_TYPES = Object.freeze([
 
 const AZURE_CLI_MANAGEMENT = Object.freeze({
   kind: 'azure-cli-management',
-  label: 'Local Azure CLI user',
+  label: 'Citadel private Azure CLI session',
   authorityType: 'azure-cli-user',
   subscriptionSource: 'hub',
   summary:
-    'Azure management operations run as the user or service principal in the local Azure CLI session. No token is returned to the browser.',
+    'Azure management operations run as the user or service principal signed in only for this Citadel playground launch. No token is returned to the browser.',
 });
 
 const AZURE_CLI_PYTHON_MANAGEMENT = Object.freeze({
   kind: 'azure-cli-python-management',
-  label: 'Python using the local Azure CLI user',
+  label: 'Python using the Citadel private Azure CLI session',
   authorityType: 'azure-cli-user',
   subscriptionSource: 'hub',
   summary:
-    'The shipped Python management wrapper uses AzureCliCredential and therefore inherits the same local Azure CLI user, tenant, and active subscription.',
+    'The shipped Python management wrapper uses AzureCliCredential and inherits this launch-private Azure CLI user, tenant, and active subscription.',
 });
 
 const AZURE_CLI_FOUNDRY_TOKEN = Object.freeze({
   kind: 'azure-cli-foundry-token',
-  label: 'Foundry token from the local Azure CLI user',
+  label: 'Foundry token from the Citadel private Azure CLI session',
   authorityType: 'azure-cli-user',
   subscriptionSource: 'hub',
   summary:
-    'The local executor obtains a Foundry audience token for the signed-in Azure CLI user. The token remains server-side and is never returned.',
+    'The local executor obtains a Foundry audience token for the user signed in only for this playground launch. The token remains server-side and is never returned.',
 });
 
 const GATEWAY_KEY = Object.freeze({
@@ -77,7 +77,7 @@ const SAMPLE_EXECUTION_CONTEXTS = Object.freeze({
   'access-contract-deploy': Object.freeze({
     ...AZURE_CLI_MANAGEMENT,
     summary:
-      'The deployment runs as the local Azure CLI user. Its documented Python key fallback uses AzureCliCredential and inherits that same session.',
+      'The deployment runs through the Citadel private Azure CLI session. Its documented Python key fallback uses AzureCliCredential and inherits that same launch-private session.',
   }),
   'access-contract-kv-verify': Object.freeze({
     ...AZURE_CLI_MANAGEMENT,
@@ -216,10 +216,12 @@ export function unavailableSampleContext(descriptor) {
   });
 }
 
-export function guarantees() {
+export function guarantees({ privateAzureCliCache = false } = {}) {
   return Object.freeze({
     tokensExposed: false,
-    credentialsPersisted: false,
+    credentialsPersistedInApplicationState: false,
+    privateAzureCliCache: privateAzureCliCache ? 'launch-temporary' : 'none',
+    crashResiduePossible: privateAzureCliCache,
   });
 }
 

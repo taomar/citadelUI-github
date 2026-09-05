@@ -236,7 +236,17 @@ export function buildExecutionIdentityModel({
       ? context.guarantees.map(String)
       : Object.entries(context.guarantees ?? {}).map(([key, value]) => {
           if (key === 'tokensExposed' && value === false) return 'No access token is exposed to the browser.';
-          if (key === 'credentialsPersisted' && value === false) return 'Credentials are not persisted by the playground.';
+          if (key === 'credentialsPersistedInApplicationState' && value === false) {
+            return 'Credential values are not persisted in playground state or results.';
+          }
+          if (key === 'privateAzureCliCache' && value === 'launch-temporary') {
+            return 'Azure CLI uses one launch-private temporary credential cache.';
+          }
+          if (key === 'privateAzureCliCache' && value === 'none') return 'No Azure CLI credential cache is used.';
+          if (key === 'crashResiduePossible' && value === true) {
+            return 'A crash can leave temporary CLI cache residue for conservative later cleanup.';
+          }
+          if (key === 'crashResiduePossible' && value === false) return 'No CLI cache crash residue applies.';
           return `${key}: ${String(value)}`;
         }),
     canExecute: context.canExecute === true,

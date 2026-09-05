@@ -25,6 +25,7 @@ export function fakeSpawn(rules = []) {
       cwd: options.cwd,
       stdin: options.stdin,
       env: options.env ?? {},
+      azureConfigDir: options.azureConfigDir ?? null,
       shellRequested: Object.prototype.hasOwnProperty.call(options, 'shell') ? options.shell : false,
     });
     if (options.signal?.aborted) return { code: -1, stdout: '', stderr: 'aborted', timedOut: false };

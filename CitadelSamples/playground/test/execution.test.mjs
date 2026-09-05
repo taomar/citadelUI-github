@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { CATALOGUE, buildSamplePlan, getSample, requirementsFor } from '../src/catalogue/index.mjs';
 import { EXECUTION_PROTOCOL_VERSION } from '../src/core/types.mjs';
 import { createLocalExecutor, assertExecutableUrl } from '../src/server/localExecutor.mjs';
+import { createPrivateAzureCliContext } from '../src/server/azureCliContext.mjs';
 import { createRunWorkspace, mapPlanPath, PathRefused } from '../src/server/workspace.mjs';
 import { RequestRefused, rebuildPlan, validateRunRequest } from '../src/server/runRequest.mjs';
 import {
@@ -898,6 +899,31 @@ test('a Python wrapper runs a shipped script with parameters on stdin, never gen
   assert.ok(upsert.specPath.includes('.runs'), 'the spec is read from the staged bundle inside .runs');
   assert.equal(result.state, 'completed');
   assert.equal(result.assertions.find((entry) => entry.id === 'assert-operation').status, 'passed');
+});
+
+test('every AzureCliCredential wrapper process inherits the same private Azure CLI profile', async () => {
+  const context = createPrivateAzureCliContext();
+  const baseSpawn = fakeSpawn([
+    { match: (options) => options.args[0] === '-c', result: { code: 0, stdout: '' } },
+    {
+      match: (options) => options.args[0].endsWith('apim_weather_api.py'),
+      result: (options) => {
+        const params = JSON.parse(options.stdin);
+        return {
+          code: 0,
+          stdout: params.action === 'upsert' ? '{"apiId":"weather-api"}' : '{"operationNames":["get-weather"]}',
+        };
+      },
+    },
+  ]);
+  try {
+    const { result } = await run('weather-api-ensure', { spawn: context.bindSpawn(baseSpawn) });
+    assert.equal(result.state, 'completed');
+    assert.ok(baseSpawn.calls.length >= 4);
+    assert.equal(baseSpawn.calls.every((call) => call.azureConfigDir === context.directory), true);
+  } finally {
+    await context.close();
+  }
 });
 
 test('a missing expected operation is a hard failure', async () => {

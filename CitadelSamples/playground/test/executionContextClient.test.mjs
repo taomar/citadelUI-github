@@ -67,7 +67,12 @@ test('the execution-context client sends only the safe per-sample context shape'
           subscription: null,
           gateway: { keyPresent: true, headerName: 'api-key' },
           hostedRelay: null,
-          guarantees: { tokensExposed: false, credentialsPersisted: false },
+          guarantees: {
+            tokensExposed: false,
+            credentialsPersistedInApplicationState: false,
+            privateAzureCliCache: 'launch-temporary',
+            crashResiduePossible: true,
+          },
         },
         futureHostedProcess: { state: 'deferred' },
       });
@@ -119,7 +124,12 @@ test('the client preserves a disabled Azure subscription context for recovery co
           authorization: { state: 'not-checked', label: 'Authorization Not Checked' },
           gateway: null,
           hostedRelay: null,
-          guarantees: { tokensExposed: false, credentialsPersisted: false },
+          guarantees: {
+            tokensExposed: false,
+            credentialsPersistedInApplicationState: false,
+            privateAzureCliCache: 'launch-temporary',
+            crashResiduePossible: true,
+          },
         },
         futureHostedProcess: { state: 'deferred' },
       }),
@@ -163,7 +173,7 @@ test('Azure system login and subscription switching use fixed endpoints and exac
             state: 'Enabled',
           },
         },
-        warning: 'Changes the shared Azure CLI default.',
+        warning: 'Changes only this Citadel playground launch.',
       });
     }
     if (path.endsWith('/activate')) {
@@ -189,7 +199,7 @@ test('Azure system login and subscription switching use fixed endpoints and exac
             state: 'Enabled',
           },
         },
-        warning: 'Changes the shared Azure CLI default.',
+        warning: 'Changes only this Citadel playground launch.',
       });
     }
     return response({

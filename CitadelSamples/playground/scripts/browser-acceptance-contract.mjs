@@ -262,7 +262,7 @@ export function validateValidationPayload(payload, { sampleId, expectedSource })
   issue(
     issues,
     payload?.executionContext?.guarantees?.tokensExposed === false &&
-      payload?.executionContext?.guarantees?.credentialsPersisted === false,
+      payload?.executionContext?.guarantees?.credentialsPersistedInApplicationState === false,
     'validation identity must preserve its no-token, no-persistence guarantees',
   );
 

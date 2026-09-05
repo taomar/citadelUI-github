@@ -217,7 +217,7 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
       ]),
       el('p', {
         class: 'dossier-identity-warning',
-        text: 'Set Active changes the shared Azure CLI default subscription for other terminal sessions.',
+        text: 'Set Active changes only this Citadel playground launch.',
       }),
     ];
   } else if (localAuthContext(identity)) {
@@ -226,7 +226,7 @@ function renderIdentitySurface(identity = {}, callbacks = {}) {
       el('p', {
         class: 'dossier-terminal-fallback-note',
         text: identity.terminalFallback?.message
-          ?? 'Run az login in a trusted terminal, then refresh Azure CLI status here.',
+          ?? 'This private Azure CLI session is not exposed to terminals. Restart with system sign-in enabled.',
       }),
       el('button', {
         type: 'button',

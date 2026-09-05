@@ -110,7 +110,7 @@ function credentialLabel(context) {
   if (context.kind === 'gateway-key') return 'Memory-Only APIM Key';
   if (context.kind === 'hosted-relay') return 'Managed Identity + Key Vault Mapping';
   if (context.kind === 'offline-python') return 'Local Parser; No Cloud Credential';
-  return 'Local Azure CLI Session';
+  return 'Citadel Private Azure CLI Session';
 }
 
 function humanLabel(context, account) {

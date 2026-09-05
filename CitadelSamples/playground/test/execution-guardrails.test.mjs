@@ -38,6 +38,7 @@ test('the process transport uses an exact executable allow-list and a workspace 
 });
 
 test('the child environment excludes ambient credentials and rejects arbitrary overrides', () => {
+  const privateAzureConfig = resolve('private-azure-cli');
   const environment = createProcessEnvironment(
     {
       CITADEL_GATEWAY_ACCESS_API_KEY: 'wrapper-secret',
@@ -53,10 +54,11 @@ test('the child environment excludes ambient credentials and rejects arbitrary o
       XDG_RUNTIME_DIR: '/run/user/1000',
       DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
       BROWSER: 'unreviewed-browser-command',
+      AZURE_CONFIG_DIR: resolve('ambient-azure-cli'),
       GH_TOKEN: 'must-not-pass',
       AZURE_CLIENT_SECRET: 'must-not-pass',
     },
-    { profile: 'system-browser' },
+    { profile: 'system-browser', azureConfigDir: privateAzureConfig },
   );
   assert.equal(environment.PATH, 'safe-path');
   assert.equal(environment.HOME, 'safe-home');
@@ -65,6 +67,7 @@ test('the child environment excludes ambient credentials and rejects arbitrary o
   assert.equal(environment.XDG_RUNTIME_DIR, '/run/user/1000');
   assert.equal(environment.DBUS_SESSION_BUS_ADDRESS, 'unix:path=/run/user/1000/bus');
   assert.equal(environment.BROWSER, undefined);
+  assert.equal(environment.AZURE_CONFIG_DIR, privateAzureConfig);
   assert.equal(environment.CITADEL_GATEWAY_ACCESS_API_KEY, 'wrapper-secret');
   assert.equal(environment.AZURE_CORE_LOGIN_EXPERIENCE_V2, 'off');
   assert.equal(environment.AZURE_CORE_NO_COLOR, 'true');
@@ -72,6 +75,14 @@ test('the child environment excludes ambient credentials and rejects arbitrary o
   assert.equal(environment.GH_TOKEN, undefined);
   assert.equal(environment.AZURE_CLIENT_SECRET, undefined);
   assert.equal(createProcessEnvironment({}, { DISPLAY: ':1' }).DISPLAY, undefined);
+  assert.equal(
+    createProcessEnvironment({}, { AZURE_CONFIG_DIR: resolve('ambient-azure-cli') }).AZURE_CONFIG_DIR,
+    undefined,
+  );
+  assert.throws(
+    () => createProcessEnvironment({ AZURE_CONFIG_DIR: resolve('browser-choice') }, {}),
+    /unapproved/,
+  );
   assert.throws(() => createProcessEnvironment({ PATH: 'browser-choice' }, {}), /unapproved/);
   assert.throws(() => createProcessEnvironment({}, {}, { profile: 'browser-choice' }), /Unknown/);
 });

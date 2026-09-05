@@ -258,7 +258,9 @@ test('signed-in Azure CLI context exposes only the safe principal and subscripti
   assert.equal(result.context.intendedTarget.matchesActive, true);
   assert.equal(result.context.authorization.label, 'Authorization Not Checked');
   assert.equal(result.context.guarantees.tokensExposed, false);
-  assert.equal(result.context.guarantees.credentialsPersisted, false);
+  assert.equal(result.context.guarantees.credentialsPersistedInApplicationState, false);
+  assert.equal(result.context.guarantees.privateAzureCliCache, 'launch-temporary');
+  assert.equal(result.context.guarantees.crashResiduePossible, true);
   assert.equal(JSON.stringify(result).includes(JWT), false);
 });
 
@@ -660,7 +662,7 @@ test('system login blocks a CLI device fallback immediately without returning UR
   const started = manager.startSystemLogin();
   const blocked = await waitForLogin(manager, started.login.id, 'device-fallback-blocked');
   assert.equal(blocked.login.code, 'device-fallback-blocked');
-  assert.match(blocked.login.message, /run `az login` in a terminal/i);
+  assert.match(blocked.login.message, /private CLI session.*terminal/i);
   assert.equal(JSON.stringify(blocked).includes('devicelogin'), false);
   assert.equal(JSON.stringify(blocked).includes('ABCD-EFGH'), false);
   assert.equal(JSON.stringify(blocked).includes(JWT), false);
@@ -1125,7 +1127,7 @@ test('subscription list returns only enabled records for the current principal a
       isDefault: true,
     },
   ]);
-  assert.match(result.warning, /shared Azure CLI default/);
+  assert.match(result.warning, /only this Citadel playground launch/);
 });
 
 test('subscription list accepts the complete bounded 500-record inventory', async () => {
@@ -1535,7 +1537,72 @@ test('the read-only Azure context diagnostic still runs so it can report a subsc
   assert.equal(result.executionContext.state, 'subscription-mismatch');
   assert.equal(result.executionContext.canExecute, true);
   assert.equal(result.assertions[0].status, 'failed');
-  assert.equal(spawn.calls.length, 2, 'one admission probe and one registered diagnostic command should run');
+  assert.equal(
+    spawn.calls.length,
+    3,
+    'admission and pre-effect identity probes must precede the registered diagnostic command',
+  );
+});
+
+test('identity drift after admission blocks the registered Azure effect', async () => {
+  let identityReads = 0;
+  const spawn = recordingSpawn(async (options) => {
+    if (options.args.join(' ') === ACCOUNT_SHOW_ARGS.join(' ')) {
+      identityReads += 1;
+      return {
+        code: 0,
+        stdout:
+          identityReads === 1
+            ? account(ACTIVE_SUBSCRIPTION)
+            : JSON.stringify({
+                id: ACTIVE_SUBSCRIPTION,
+                name: 'Operator Subscription',
+                tenantId: 'tenant-0001',
+                user: { name: 'drifted@example.test', type: 'user' },
+                isDefault: true,
+                state: 'Enabled',
+              }),
+        stderr: '',
+        timedOut: false,
+        aborted: false,
+      };
+    }
+    assert.fail(`registered effect ran after identity drift: ${options.args.join(' ')}`);
+  });
+  const filesystem = fakeFileSystem({ realReadRoots: [ACCELERATOR_ROOT] });
+  const identity = createExecutionContextManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    mode: 'execute',
+    transports: { spawn },
+  });
+  const manager = createRunManager({
+    playgroundRoot: PLAYGROUND_ROOT,
+    transports: {
+      spawn,
+      fetch: async () => {
+        throw new Error('network must not be reached');
+      },
+      writeFile: filesystem.writeFile,
+      access: filesystem.access,
+    },
+    fs: filesystem.fs,
+    executionContextManager: identity,
+  });
+  const result = await manager.start({
+    protocolVersion: EXECUTION_PROTOCOL_VERSION,
+    sampleId: 'azure-context-check',
+    inputs: { 'hub.subscriptionId': ACTIVE_SUBSCRIPTION },
+    reviewedIdentity: {
+      principalName: 'operator@example.test',
+      principalType: 'user',
+      tenantId: 'tenant-0001',
+      subscriptionId: ACTIVE_SUBSCRIPTION,
+    },
+  });
+  assert.equal(result.state, 'failed');
+  assert.match(result.steps[0].detail, /next Azure effect was blocked/);
+  assert.equal(identityReads, 2);
+  assert.equal(spawn.calls.some((call) => call.args.join(' ') === 'account show -o json'), false);
 });
 
 test('server advertises disabled system login by default and retires the former endpoint', async () => {

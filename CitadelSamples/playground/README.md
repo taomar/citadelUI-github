@@ -52,12 +52,28 @@ that mode. Opt in for one server launch with:
 npm run start:execute:system-login
 ```
 
-Execution-capable startup is loopback-only. It uses the operator's local Azure
-CLI and optional registered Python dependencies; it is not a hostile-code
-sandbox. The launch capability and session rotate on every server restart, and
-only a browser opened from the current terminal URL can invoke local execution,
-validation, self-test, or Azure account operations. Hosted deployments continue
-to use their trusted proxy and Entra boundary instead of this local cookie.
+Execution-capable startup is loopback-only. Each launch creates an empty,
+randomly named, restrictive Azure CLI profile under the operating-system
+temporary directory. It never copies tokens from the user's default Azure CLI
+profile, so the launch starts signed out and another terminal cannot switch its
+account or subscription. Every registered `az` process and every shipped Python
+wrapper that uses `AzureCliCredential` receives that same private
+`AZURE_CONFIG_DIR`. Optional registered Python dependencies still come from the
+operator's machine; this is not a hostile-code sandbox.
+
+The private profile path is never returned to the browser, written to a result,
+or printed for terminal use. Graceful shutdown removes it after child processes
+drain. A crash can leave credential-cache residue in the operating-system
+temporary directory. A later launch reaps only old, app-marked directories that
+have the expected owner and no live server or recorded child process group;
+recent residue or a reused process ID is deliberately left for a later attempt
+rather than deleted aggressively.
+
+The launch capability and browser session also rotate on every server restart,
+and only a browser opened from the current terminal URL can invoke local
+execution, validation, self-test, or Azure account operations. Hosted
+deployments continue to use their trusted proxy and Entra boundary instead of
+this local cookie or private CLI profile.
 
 ## Execution identity contract
 
@@ -67,9 +83,9 @@ identity, command, executable, argument, token, or credential value.
 
 | Context | Authority |
 | --- | --- |
-| Azure CLI management | The locally signed-in `az` user or service principal |
-| Python management | `AzureCliCredential`, inheriting that same local Azure CLI session |
-| Foundry REST | A `https://ai.azure.com` audience token minted for that same Azure CLI principal; the token is never returned |
+| Azure CLI management | The user or service principal signed in to this Citadel private Azure CLI session |
+| Python management | `AzureCliCredential`, inheriting that same launch-private Azure CLI session |
+| Foundry REST | A `https://ai.azure.com` audience token minted for that launch-private Azure CLI principal; the token is never returned |
 | Gateway REST, MCP, and A2A | The memory-only APIM subscription key under the configured header; only presence and header name are reported |
 | Offline source validation | The local Python parser, with no Azure identity or network |
 | Hosted HTTP relay | The authenticated Entra caller authorizes the request; the relay uses tenant-scoped managed identity and a Key Vault key mapping |
@@ -94,9 +110,11 @@ current sample subscription or `null`. The response separates the signed-in
 account, execution credential, active CLI subscription, intended target, and
 `Authorization Not Checked` status. A valid local context is `Ready to Attempt`,
 not proof that Azure authorization will succeed. Key presence/header name and
-the fixed `tokensExposed: false` and `credentialsPersisted: false` guarantees
-remain safe projections. Preview returns `state: "unavailable"` without probing
-Azure CLI or contacting a network.
+the fixed `tokensExposed: false` and
+`credentialsPersistedInApplicationState: false` guarantees remain safe
+projections. Azure contexts also report the launch-temporary private CLI cache
+and honest crash-residue possibility. Preview returns `state: "unavailable"`
+without probing Azure CLI or contacting a network.
 
 Local Azure CLI sign-in is explicit. A sample failure never starts it. The
 browser offers account switching only when the loopback server advertises a
@@ -134,25 +152,31 @@ command override. One login may be in flight.
 If Azure CLI falls back to a short-code flow, the server aborts it immediately,
 returns `device-fallback-blocked`, and observes the bounded stream without
 retaining stdout or stderr. It never returns, logs, persists, or copies the URL,
-code, or raw output into application state. Run `az login` directly in a terminal, then use
-**Refresh Azure CLI Status**. Other states are `login-disabled`, `starting`,
-`waiting-system-ui`, `verifying`, `status-unknown`, `cancel-requested`,
-`cancelled`, `failed`, `timed-out`, and `ready`.
+code, private profile path, or raw output into application state. There is no
+terminal fallback because exposing the profile path would defeat the isolation
+boundary; system-browser/WAM sign-in must be available for this launch. Other
+states are `login-disabled`, `starting`, `waiting-system-ui`, `verifying`,
+`status-unknown`, `cancel-requested`, `cancelled`, `failed`, `timed-out`, and
+`ready`.
 
 Subscription listing executes one fixed `az account list` query and returns only
 Enabled records matching the current principal and tenant. Activation accepts
 one GUID, refreshes the list, executes fixed `az account set --subscription
-<id>`, and verifies the result with `az account show`. Changing it updates the
-shared Azure CLI default used by other terminals and tools. Runs hold an
-identity lease for their complete lifecycle: sign-in and subscription changes
-are refused while a run is reserved or active, and new runs are refused while
-either Azure CLI mutation is in flight.
+<id>`, and verifies the result with `az account show`. Changing it updates only
+this playground launch. Runs hold an identity lease for their complete
+lifecycle: sign-in and subscription changes are refused while a run is reserved
+or active, and new runs are refused while either Azure CLI mutation is in
+flight. Admission records the reviewed principal name/type, tenant, and active
+subscription. The server re-probes that fingerprint in the same private profile
+immediately before each registered Azure CLI operation, Azure-backed HTTP
+effect, and `AzureCliCredential` wrapper; drift or an unverifiable account stops
+the run before the next effect.
 
 When launch permission is unavailable, account switching fails closed and the
-interface names terminal-only `az login` as an external prerequisite. Gateway
-key recipes do not show Azure account controls. A server-enumerated subscription
-selector requires a fixed **Set Active** action and warns that it changes the
-shared Azure CLI default.
+interface explains that this private session cannot be authenticated from a
+terminal. Gateway key recipes do not show Azure account controls. A
+server-enumerated subscription selector requires a fixed **Set Active** action
+and explains that it changes only this launch.
 
 ## What the interface shows
 
