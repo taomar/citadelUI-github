@@ -7,6 +7,105 @@ import { CATALOGUE } from '../src/catalogue/index.mjs';
 
 const wait = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
 const flow = { flowId: 'owned-flow', purpose: 'signin', state: 'pending', expiresAt: Date.now() + 300000 };
+const deferred = () => {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+};
+
+test('older capability response cannot replace an admitted Retry with the previous terminal handle', async () => {
+  const oldRead = deferred(), admittedStart = deferred();
+  const previous = { ...flow, state: 'cancelled', settled: true };
+  const next = { ...flow, flowId: 'new-admitted-flow', state: 'pending', settled: false };
+  const controller = createDeviceSignIn({ changed() {}, refresh: async () => {},
+    post: () => admittedStart.promise });
+  try {
+    controller.reconcile({ deviceFlow: previous });
+    const lateCapabilities = oldRead.promise.then((auth) => controller.reconcile(auth));
+    const starting = controller.start('signin');
+    admittedStart.resolve(next);
+    await starting;
+    assert.equal(controller.snapshot().flowId, next.flowId);
+    oldRead.resolve({ deviceFlow: previous });
+    await lateCapabilities;
+    assert.equal(controller.snapshot().flowId, next.flowId);
+    assert.equal(controller.snapshot().state, 'pending');
+  } finally { controller.dispose(); }
+});
+
+test('old terminal capabilities during the deferred start do not fence its eventual admission', async () => {
+  const admission = deferred(), previous = { ...flow, state: 'cancelled', settled: true };
+  let starts = 0;
+  const controller = createDeviceSignIn({ changed() {}, refresh: async () => {},
+    post: () => { starts++; return admission.promise; } });
+  try {
+    controller.reconcile({ deviceFlow: previous });
+    const starting = controller.start('signin');
+    controller.reconcile({ deviceFlow: previous });
+    admission.resolve({ ...flow, flowId: 'new-admitted-flow' });
+    await starting;
+    assert.equal(controller.snapshot().flowId, 'new-admitted-flow');
+    assert.equal(starts, 1);
+  } finally { controller.dispose(); }
+});
+
+test('late old status after cancel and Retry cannot change the new flow', async () => {
+  const oldStatus = deferred(), observedStatus = deferred();
+  let starts = 0;
+  const controller = createDeviceSignIn({ intervalMs: 1, changed() {}, refresh: async () => {},
+    post: async (action) => {
+      if (action === 'status') { observedStatus.resolve(); return oldStatus.promise; }
+      if (action === 'cancel') return { ...flow, state: 'cancelled', settled: true };
+      return { ...flow, flowId: ++starts === 1 ? flow.flowId : 'new-flow' };
+    } });
+  try {
+    await controller.start('signin');
+    await observedStatus.promise;
+    await controller.cancel();
+    await controller.start('signin');
+    oldStatus.resolve({ ...flow, state: 'ready' });
+    await oldStatus.promise;
+    await Promise.resolve();
+    assert.equal(controller.snapshot().flowId, 'new-flow');
+    assert.equal(controller.snapshot().state, 'pending');
+    assert.equal(starts, 2);
+  } finally { controller.dispose(); }
+});
+
+test('late completion cannot clear a newer flow after genuine external session invalidation', async () => {
+  const completion = deferred();
+  const controller = createDeviceSignIn({ changed() {}, refresh: async () => {},
+    post: () => completion.promise });
+  try {
+    controller.reconcile({ deviceFlow: { ...flow, state: 'ready' } });
+    const completing = controller.complete();
+    controller.reconcile({ deviceFlow: null, authorized: false });
+    assert.equal(controller.snapshot(), null);
+    controller.reconcile({ deviceFlow: { ...flow, flowId: 'new-owner-flow' } });
+    completion.resolve({});
+    await completing;
+    assert.equal(controller.snapshot().flowId, 'new-owner-flow');
+    controller.reconcile({ deviceFlow: { ...flow, state: 'ready' } });
+    assert.equal(controller.snapshot().flowId, 'new-owner-flow');
+  } finally { controller.dispose(); }
+});
+
+test('cancelled state is monotonic while a fresh reload may hydrate its current owning handle', async () => {
+  const controller = createDeviceSignIn({ changed() {}, refresh: async () => {},
+    post: async () => ({ ...flow, state: 'cancelled', settled: true }) });
+  const reloaded = createDeviceSignIn({ changed() {}, refresh: async () => {}, post: async () => flow });
+  try {
+    controller.reconcile({ deviceFlow: flow });
+    await controller.cancel();
+    controller.reconcile({ deviceFlow: { ...flow, state: 'ready' } });
+    assert.equal(controller.snapshot().state, 'cancelled');
+    reloaded.reconcile({ deviceFlow: { ...flow, state: 'cancelled', settled: true } });
+    assert.equal(reloaded.snapshot().flowId, flow.flowId);
+    assert.equal(reloaded.snapshot().userCode, undefined);
+    assert.equal(reloaded.snapshot().resumed, true);
+  } finally { controller.dispose(); reloaded.dispose(); }
+});
+
 test('reload keeps exact cancellation handle without restoring transient code', async () => {
   const calls = [];
   const controller = createDeviceSignIn({ intervalMs: 5, changed() {}, refresh: async () => {},

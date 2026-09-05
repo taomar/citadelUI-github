@@ -19,7 +19,8 @@ import {
   reconcileAzureContextCurrent,
 } from './executionContextClient.mjs';
 import { createLocalExecutorClient } from './localClient.mjs';
-import { createHostedExecutorClient, hostedPost, hostedDevicePost, sessionFetch, setHostedCapabilities } from './hostedClient.mjs';
+import { createHostedExecutorClient, hostedPost, hostedDevicePost, sessionFetch, setHostedCapabilities,
+  beginHostedCapabilityRead, isHostedCapabilityReadCurrent } from './hostedClient.mjs';
 import { createDeviceSignIn, updateDeviceSignIn } from './deviceSignIn.mjs';
 import { consumeHostedResume, discardHostedResume, saveHostedResume } from './hostedResume.mjs';
 import { renderShell } from './render/shell.mjs';
@@ -1659,11 +1660,16 @@ async function validateSource() {
 }
 
 async function fetchCapabilities({ throwOnFailure = false } = {}) {
+  const ticket = beginHostedCapabilityRead();
   try {
     const response = await fetch('/api/capabilities', { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`Capability probe failed with HTTP ${response.status}.`);
-    state.capabilities = await response.json();
-    setHostedCapabilities(state.capabilities);
+    const next = await response.json();
+    if (!setHostedCapabilities(next, ticket)) {
+      if (throwOnFailure) throw new Error('Sign-in readiness was superseded. Retry explicitly from this application.');
+      return;
+    }
+    state.capabilities = next;
     deviceSignIn.reconcile(state.capabilities.auth);
     state.runtimeProbe = {
       mode: state.capabilities.mode ?? 'preview',
@@ -1691,6 +1697,10 @@ async function fetchCapabilities({ throwOnFailure = false } = {}) {
     }
     state.executorCapability = state.executor.describeCapability();
   } catch (error) {
+    if (!isHostedCapabilityReadCurrent(ticket)) {
+      if (throwOnFailure) throw new Error('Sign-in readiness was superseded. Retry explicitly from this application.', { cause: error });
+      return;
+    }
     const hosted = state.capabilities?.auth?.mode === 'bff' || document.documentElement.dataset.citadelHosted === 'true';
     const previousHosted = state.capabilities?.hosted;
     setHostedCapabilities(null);

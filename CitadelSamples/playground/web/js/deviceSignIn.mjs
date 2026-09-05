@@ -12,6 +12,13 @@ const messages = {
 
 export function createDeviceSignIn({ post, refresh, changed, intervalMs = 1000 }) {
   let current = null, generation = 0, timer, completionAttempted = false, transientDisplay = false;
+  // Recent retired handles add local rollback protection behind capability request epochs.
+  const retired = new Set();
+  function retire(id) {
+    if (!id) return;
+    retired.add(id);
+    if (retired.size > 32) retired.delete(retired.values().next().value);
+  }
   function publish(value) { current = value; changed(value); }
   function stop() { clearTimeout(timer); timer = null; }
   function schedule() {
@@ -48,10 +55,12 @@ export function createDeviceSignIn({ post, refresh, changed, intervalMs = 1000 }
     reconcile(auth) {
       const flow = auth?.deviceFlow;
       if (!flow) {
-        if (current && active.has(current.state)) { generation++; stop(); publish(null); }
+        if (current && active.has(current.state)) { retire(current.flowId); generation++; stop(); publish(null); }
         return;
       }
+      if (retired.has(flow.flowId)) return;
       if (flow.flowId === current?.flowId) return;
+      retire(current?.flowId);
       generation++; stop(); completionAttempted = false; transientDisplay = false;
       publish({ ...flow, resumed: true });
       schedule();
@@ -66,6 +75,7 @@ export function createDeviceSignIn({ post, refresh, changed, intervalMs = 1000 }
         throw error;
       }
       if (version !== generation) return;
+      if (current?.flowId !== result.flowId) retire(current?.flowId);
       publish(result);
       await refresh();
       if (version === generation) schedule();
@@ -83,17 +93,21 @@ export function createDeviceSignIn({ post, refresh, changed, intervalMs = 1000 }
     },
     async complete() {
       if (!current || current.state !== 'ready' || completionAttempted) return;
-      const id = current.flowId;
-      completionAttempted = true; generation++; stop();
+      const id = current.flowId, version = ++generation;
+      completionAttempted = true; stop();
       publish({ ...current, completionAttempted: true });
       try { await post('complete', { flowId: id }); }
       catch {
+        if (version !== generation) return;
         // An uncertain response is reconciled, never replayed into a new account.
         await refresh();
+        if (version !== generation) return;
         if (current?.flowId === id) publish({ ...current, completionAttempted: true,
           message: 'Completion could not be confirmed. Cancel and restart; completion will not be replayed.' });
         return;
       }
+      if (version !== generation) return;
+      retire(id);
       publish(null);
       await refresh();
     },
