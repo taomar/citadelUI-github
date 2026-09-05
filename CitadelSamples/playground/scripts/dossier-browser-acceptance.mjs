@@ -556,35 +556,20 @@ async function advanceToReadOnlyRun(harness) {
 }
 
 async function openFieldHelp(harness, path) {
-  return harness.evaluate(`(() => {
+  const selector = await harness.evaluate(`(() => {
     const row = [...document.querySelectorAll('[data-parameter-path]')]
       .find((candidate) => candidate.dataset.parameterPath === ${JSON.stringify(path)});
-    const help = row?.querySelector('.configure-field-help');
-    if (!help) return false;
-    help.open = true;
-    help.scrollIntoView({ block: 'center', inline: 'nearest' });
-    return true;
+    const summary = row?.querySelector('.configure-field-help > summary');
+    return summary ? '#' + CSS.escape(summary.id) : null;
   })()`);
+  if (!selector) return false;
+  await workspacePointer(harness, selector);
+  return true;
 }
 
 async function openSource(harness) {
-  const guideOpened = await harness.evaluate(`(() => {
-    const button = [...document.querySelectorAll('button')]
-      .find((candidate) => candidate.textContent.trim() === 'Guide');
-    button?.click();
-    return Boolean(button);
-  })()`);
-  if (!guideOpened) return false;
-  await harness.waitFor("document.getElementById('provenance-drawer')?.open === true", {
-    label: 'guide drawer',
-  });
-  const sourceOpened = await harness.evaluate(`(() => {
-    const button = [...document.querySelectorAll('#provenance-drawer button')]
-      .find((candidate) => candidate.textContent.trim() === 'Inspect cited source');
-    button?.click();
-    return Boolean(button);
-  })()`);
-  if (!sourceOpened) return false;
+  await workspacePointer(harness, '.task-support > summary');
+  await workspacePointer(harness, '.task-support .configure-actions button:first-child');
   await harness.waitFor("document.getElementById('source-inspector')?.open === true", {
     label: 'protected source inspector',
   });
@@ -593,13 +578,8 @@ async function openSource(harness) {
 }
 
 async function openDiagnostics(harness) {
-  const opened = await harness.evaluate(`(() => {
-    const button = [...document.querySelectorAll('button')]
-      .find((candidate) => candidate.textContent.trim() === 'Checks');
-    button?.click();
-    return Boolean(button);
-  })()`);
-  if (!opened) return false;
+  await workspacePointer(harness, '.task-support > summary');
+  await workspacePointer(harness, '.task-support .configure-actions button:last-child');
   await harness.waitFor("document.getElementById('diagnostics-drawer')?.open === true", {
     label: 'diagnostics drawer',
   });
