@@ -1798,6 +1798,11 @@ async function checkSystemAzureIdentityControls(reporter) {
       "document.querySelector('.dossier-identity-action-primary')?.textContent === 'Switch Azure account'",
       { label: 'cancelled login recovery' },
     );
+    await harness.waitFor(
+      "document.querySelectorAll('#dossier-account-subscription option').length === 2 && " +
+        "document.getElementById('dossier-account-subscription')?.disabled === false",
+      { label: 'refreshed Azure subscription inventory' },
+    );
 
     await harness.evaluate(`(() => {
       const select = document.getElementById('dossier-account-subscription');
