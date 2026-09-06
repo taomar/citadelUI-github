@@ -26,7 +26,8 @@
 // and its auth config are raw resources on purpose. Three rules in this
 // deployment are load-bearing, and all three must be legible in one screen
 // rather than inferred from a module's parameter list:
-//   1. public ingress exists only if Entra authentication exists (see `ingress`);
+//   1. internet ingress requires Entra or explicit public-owner opt-in, and an
+//      environment that actually permits public traffic (see `ingress`);
 //   2. the exact Host and Origin the server enforces are derived from the
 //      environment's default domain *before* the app exists;
 //   3. the health probes have to send that same Host or the server answers 421.
@@ -50,10 +51,10 @@ targetScope = 'resourceGroup'
 param environmentName string
 
 @minLength(1)
-@description('Region for every resource (AZURE_LOCATION). West Europe for this deployment.')
+@description('Region for resources created here (AZURE_LOCATION). Must match an existing Container Apps environment when one is selected.')
 param location string = resourceGroup().location
 
-@description('Object id of whoever is running azd (AZURE_PRINCIPAL_ID). Only used to grant that person write access to a vault this template creates -- see the Secrets Officer assignment below.')
+@description('Object id of the deploying principal (AZURE_PRINCIPAL_ID). Grants push/build permissions on the selected registry and Secrets Officer on a newly created vault only. If omitted, the operator must arrange those permissions separately.')
 param principalId string = ''
 
 @description('Mount /data on Azure Files so workspaces, connection profiles, the activity log and the sealed credential envelopes survive a restart. Requires shared-key access on the storage account, which some tenants deny by policy -- see the resource group preprovision hook. Set false to run with an ephemeral /data: the app boots and works, but forgets everything on a restart, a scale to zero, or a new revision.')
@@ -79,17 +80,53 @@ param keyVaultName string = ''
 @description('Resource group of the existing vault, when it is not this one. Ignored when a vault is being created.')
 param keyVaultResourceGroup string = ''
 
-@description('Name of the secret holding the credential key-encryption key. The app reads the key from the vault at startup; this template deliberately does not create the secret, because generating key material in a deployment would put it in the deployment history in plain text.')
+@description('Name of an existing Container Apps environment in this subscription. Empty creates a new environment. Reuse preserves its networking, logging, tags and workload profiles; only the Azure Files storage binding for this UI is added. Its region must match location.')
+param existingContainerAppsEnvironmentName string = ''
+
+@description('Resource group of the existing Container Apps environment. Defaults to the UI deployment resource group. Requires existingContainerAppsEnvironmentName.')
+param existingContainerAppsEnvironmentResourceGroup string = ''
+
+@description('Name of an existing Log Analytics workspace in this subscription, for a NEW environment only. Reads its customerId/shared key without changing the workspace. Empty creates a workspace only for a new environment. When reusing an environment, validate its logging separately and omit both workspace selectors; its logging remains unchanged.')
+param existingLogAnalyticsWorkspaceName string = ''
+
+@description('Resource group of the existing Log Analytics workspace. Defaults to the UI deployment resource group. Requires existingLogAnalyticsWorkspaceName.')
+param existingLogAnalyticsWorkspaceResourceGroup string = ''
+
+@description('Name of an existing Azure Container Registry in this subscription. Empty creates a registry. Reuse reads its endpoint and RBAC/ABAC permission mode; only app pull and deployer push/build role assignments are added. Registry settings are never changed.')
+param existingContainerRegistryName string = ''
+
+@description('Resource group of the existing registry. Defaults to the UI deployment resource group. Requires existingContainerRegistryName.')
+param existingContainerRegistryResourceGroup string = ''
+
+@description('Create a new private VNet and dedicated Container Apps subnet when no existing environment or subnet is selected. Existing subnets are reused without changes. An existing environment selected with true must already use an internal load balancer.')
+param privateDeployment bool = false
+
+@description('Name of an existing storage account in this subscription. Empty creates the original generated account. Reuse never changes account tags, networking, SKU or shared-key policy; Azure Files SMB/shared-key access must already be usable.')
+param existingStorageAccountName string = ''
+
+@description('Resource group of the existing storage account. Defaults to the UI deployment group. Requires existingStorageAccountName.')
+param existingStorageAccountResourceGroup string = ''
+
+@description('Name of an existing SMB Azure Files share in the selected existing account. Requires existingStorageAccountName. The share and its data are never recreated or modified by this template. Empty creates a UI-specific share in an existing account, or the original citadel-data share in a new account. Preserve this selection and the credential key when retaining UI state.')
+param existingFileShareName string = ''
+
+@description('Name of an existing user-assigned managed identity in this subscription. Empty creates the original generated identity. Reuse changes no identity properties; only the required registry and vault role assignments are added.')
+param existingManagedIdentityName string = ''
+
+@description('Resource group of the existing managed identity. Defaults to the UI deployment group. Requires existingManagedIdentityName.')
+param existingManagedIdentityResourceGroup string = ''
+
+@description('Name of the credential key-encryption secret (CITADEL_CREDENTIAL_SECRET_NAME). Defaults to citadel-credential-key. Choose a UI-specific name before first deployment when sharing a vault, then keep it stable with the encrypted data. The app reads the key at startup; this template never creates or rotates secret material.')
 param credentialSecretName string = 'citadel-credential-key'
 
-@description('Entra application (client) id for Container Apps built-in authentication. Supplying it publishes the app with Entra in front of it -- see the ingress block. Leave it empty and the app is on internal ingress, unreachable from the internet, unless allowPublicIngressWithoutAuth is also set.')
+@description('Entra application (client) id for Container Apps built-in authentication. Prefer a secret-backed Web app registration for hybrid sign-in. Without a client secret, built-in authentication uses implicit ID-token flow, not SPA/PKCE. Requests external ingress, but never enables a disabled public network. Leave empty for owner-only sign-in; public exposure then requires allowPublicIngressWithoutAuth.')
 param entraAuthClientId string = ''
 
-@description('Resource id of a subnet in the Citadel AI Hub Gateway VNet, delegated to Microsoft.App/environments and at least a /27. Supplying it places the Container Apps environment inside that VNet with no public endpoint at all: the application is reachable only from the VNet and whatever is peered, VPN-connected or ExpressRoute-connected to it. This is the private topology -- it overrides allowPublicIngressWithoutAuth and entraAuthClientId as far as internet exposure is concerned, because there is no internet-facing load balancer to expose it on. Leave empty to deploy outside a VNet.')
+@description('Existing subnet ID in this subscription and region, for a NEW internal environment only. It must be dedicated, unused, delegated to Microsoft.App/environments and at least a /27. When reusing an environment, validate its subnet separately and omit this input. Empty plus privateDeployment creates a VNet/subnet only when no existing environment is selected.')
 param infrastructureSubnetId string = ''
 
 @secure()
-@description('Optional client secret for the Entra app registration, stored as a container app secret. Leave empty and the secretless form is used, which is what a SPA-style app registration (no secret, PKCE) wants. Supply it only if your registration is a confidential web client and the login redirect fails without it.')
+@description('Optional Entra Web app client secret, stored as a container app secret. Supplying it selects hybrid flow; omitting it uses implicit ID-token flow and requires ID token issuance enabled in the registration. Neither option configures a SPA/PKCE client.')
 param entraAuthClientSecret string = ''
 
 // ---------------------------------------------------------------------------
@@ -99,11 +136,69 @@ param entraAuthClientSecret string = ''
 // Hashing the subscription, environment and region gives names that are stable
 // across redeploys of the same environment and unique across different ones,
 // which matters for the globally unique names (registry, storage, vault).
-var resourceToken = toLower(uniqueString(subscription().id, environmentName, location))
+// Mirror the preprovision checks for callers using Bicep directly. These
+// parameter-only constraints are evaluated while resource names are computed,
+// not after any resource has been created. No shared setting is silently ignored.
+var reuseInputError = !empty(existingContainerAppsEnvironmentResourceGroup) && empty(existingContainerAppsEnvironmentName)
+  ? 'AZURE_EXISTING_CONTAINER_APPS_ENVIRONMENT_RESOURCE_GROUP requires AZURE_EXISTING_CONTAINER_APPS_ENVIRONMENT_NAME.'
+  : !empty(existingLogAnalyticsWorkspaceResourceGroup) && empty(existingLogAnalyticsWorkspaceName)
+    ? 'AZURE_EXISTING_LOG_ANALYTICS_WORKSPACE_RESOURCE_GROUP requires AZURE_EXISTING_LOG_ANALYTICS_WORKSPACE_NAME.'
+    : !empty(existingContainerAppsEnvironmentName) && !empty(infrastructureSubnetId)
+      ? 'AZURE_INFRASTRUCTURE_SUBNET_ID cannot be combined with an existing Container Apps environment; validate its subnet separately and omit this input.'
+      : !empty(existingContainerAppsEnvironmentName) && !empty(existingLogAnalyticsWorkspaceName)
+        ? 'AZURE_EXISTING_LOG_ANALYTICS_WORKSPACE_NAME cannot be combined with an existing Container Apps environment; validate its logging separately and omit both workspace inputs.'
+        : !empty(existingContainerRegistryResourceGroup) && empty(existingContainerRegistryName)
+          ? 'AZURE_EXISTING_CONTAINER_REGISTRY_RESOURCE_GROUP requires AZURE_EXISTING_CONTAINER_REGISTRY_NAME.'
+          : !empty(existingStorageAccountResourceGroup) && empty(existingStorageAccountName)
+            ? 'AZURE_EXISTING_STORAGE_ACCOUNT_RESOURCE_GROUP requires AZURE_EXISTING_STORAGE_ACCOUNT_NAME.'
+            : !empty(existingFileShareName) && empty(existingStorageAccountName)
+              ? 'AZURE_EXISTING_FILE_SHARE_NAME requires AZURE_EXISTING_STORAGE_ACCOUNT_NAME.'
+              : !empty(existingManagedIdentityResourceGroup) && empty(existingManagedIdentityName)
+                ? 'AZURE_EXISTING_MANAGED_IDENTITY_RESOURCE_GROUP requires AZURE_EXISTING_MANAGED_IDENTITY_NAME.'
+                : !empty(infrastructureSubnetId) && !startsWith(toLower(infrastructureSubnetId), toLower('/subscriptions/${subscription().subscriptionId}/'))
+                  ? 'AZURE_INFRASTRUCTURE_SUBNET_ID must be in the deployment subscription.'
+                  : ''
+var resourceToken = empty(reuseInputError)
+  ? toLower(uniqueString(subscription().id, environmentName, location))
+  : fail(reuseInputError)
 
-// Whether the Container Apps environment is placed inside a caller-supplied VNet.
-// Declared here because both the environment and the ingress depend on it.
-var vnetInjected = !empty(infrastructureSubnetId)
+// This flag describes only the NEW environment path. An existing environment
+// can have a subnet AND an external load balancer; its actual internal property
+// is read below instead of guessing its exposure from VNet integration.
+var vnetInjected = privateDeployment || !empty(infrastructureSubnetId)
+var createContainerAppsEnvironment = empty(existingContainerAppsEnvironmentName)
+var createPrivateNetwork = createContainerAppsEnvironment && privateDeployment && empty(infrastructureSubnetId)
+var privateVirtualNetworkName = 'vnet-citadelui-${resourceToken}'
+var privateSubnetName = 'snet-containerapps'
+var effectiveInfrastructureSubnetId = createPrivateNetwork
+  ? resourceId('Microsoft.Network/virtualNetworks/subnets', privateVirtualNetworkName, privateSubnetName)
+  : infrastructureSubnetId
+var effectiveContainerAppsEnvironmentName = createContainerAppsEnvironment
+  ? 'cae-citadelui-${resourceToken}'
+  : existingContainerAppsEnvironmentName
+var effectiveContainerAppsEnvironmentResourceGroup = empty(existingContainerAppsEnvironmentResourceGroup)
+  ? resourceGroup().name
+  : existingContainerAppsEnvironmentResourceGroup
+var createLogAnalytics = createContainerAppsEnvironment && empty(existingLogAnalyticsWorkspaceName)
+var effectiveLogAnalyticsWorkspaceName = createLogAnalytics ? 'log-citadelui-${resourceToken}' : existingLogAnalyticsWorkspaceName
+var effectiveLogAnalyticsWorkspaceResourceGroup = empty(existingLogAnalyticsWorkspaceResourceGroup)
+  ? resourceGroup().name
+  : existingLogAnalyticsWorkspaceResourceGroup
+var createRegistry = empty(existingContainerRegistryName)
+var effectiveRegistryName = createRegistry ? 'crcitadelui${resourceToken}' : existingContainerRegistryName
+var effectiveRegistryResourceGroup = empty(existingContainerRegistryResourceGroup)
+  ? resourceGroup().name
+  : existingContainerRegistryResourceGroup
+var createStorage = empty(existingStorageAccountName)
+var effectiveStorageAccountName = createStorage ? 'stcitadelui${resourceToken}' : existingStorageAccountName
+var effectiveStorageAccountResourceGroup = empty(existingStorageAccountResourceGroup)
+  ? resourceGroup().name
+  : existingStorageAccountResourceGroup
+var createIdentity = empty(existingManagedIdentityName)
+var effectiveIdentityName = createIdentity ? 'id-citadelui-${resourceToken}' : existingManagedIdentityName
+var effectiveIdentityResourceGroup = empty(existingManagedIdentityResourceGroup)
+  ? resourceGroup().name
+  : existingManagedIdentityResourceGroup
 
 // Every resource carries this so `azd down`, the portal and a cost report can
 // all see one environment as one thing.
@@ -114,29 +209,44 @@ var tags = {
 var containerAppName = 'ca-citadelui-${resourceToken}'
 var containerPort = 4173
 var dataMountPath = '/data'
-// Three names have to line up before /data exists inside the container: the
-// Azure Files share, the environment's binding to that share, and the volume the
-// container mounts. They are deliberately the same string. A mismatch is not
-// caught at deploy time -- the deployment succeeds and the replica then fails to
-// start, which is a much more expensive way to find out.
+// The share and in-container volume keep their original names. The environment
+// binding is shared by all apps in an environment, so on reuse it must identify
+// this deployment (including its RG), not overwrite another UI's citadel-data.
+// Keep the original binding name on the create path for redeploy compatibility.
 var dataVolumeName = 'citadel-data'
 var fileShareName = 'citadel-data'
+var effectiveFileShareName = !empty(existingFileShareName)
+  ? existingFileShareName
+  : (createStorage ? fileShareName : 'citadel-data-${uniqueString(resourceGroup().id, containerAppName)}')
+var createShareInExistingAccount = persistData && !createStorage && empty(existingFileShareName)
+var environmentStorageName = createContainerAppsEnvironment
+  ? dataVolumeName
+  : 'citadel-data-${uniqueString(resourceGroup().id, containerAppName)}'
 
 // Role definition GUIDs. Written out rather than looked up so a reader can
 // check them against the docs without deploying anything.
 var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 var acrPushRoleId = '8311e382-0749-4cb8-b61a-304f252e45ec'
+// ABAC-enabled registries do not honor AcrPull/AcrPush. These roles grant
+// repository read/write without delete or catalog listing. Assignments remain
+// registry-scoped (all repositories); no existing ABAC conditions are rewritten.
+var acrRepositoryReaderRoleId = 'b93aa761-3e63-49ed-ac28-beffa264f7ac'
+var acrRepositoryWriterRoleId = '2a1e307c-b015-4ebd-883e-5b7698a07328'
+// Push permission is NOT permission to schedule an ACR remote build.
+var acrTasksContributorRoleId = 'fb382eab-e894-4461-af04-94435c366c3f'
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 var keyVaultSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
 
 // ---------------------------------------------------------------------------
-// Log Analytics -- required by the Container Apps environment
+// Log Analytics -- create or read an existing workspace for a NEW environment.
+// An existing environment keeps its own logging configuration unchanged, and
+// requires neither a new workspace nor permission to read its workspace keys.
 // ---------------------------------------------------------------------------
 
-module logAnalytics 'br/public:avm/res/operational-insights/workspace:0.16.1' = {
+module logAnalytics 'br/public:avm/res/operational-insights/workspace:0.16.1' = if (createLogAnalytics) {
   name: 'log-analytics'
   params: {
-    name: 'log-citadelui-${resourceToken}'
+    name: effectiveLogAnalyticsWorkspaceName
     location: location
     tags: tags
     skuName: 'PerGB2018'
@@ -151,12 +261,17 @@ module logAnalytics 'br/public:avm/res/operational-insights/workspace:0.16.1' = 
   }
 }
 
+resource existingLogAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = if (createContainerAppsEnvironment && !createLogAnalytics) {
+  name: existingLogAnalyticsWorkspaceName
+  scope: resourceGroup(effectiveLogAnalyticsWorkspaceResourceGroup)
+}
+
 // ---------------------------------------------------------------------------
 // Identity -- one identity for both ACR pull and Key Vault read
 // ---------------------------------------------------------------------------
 
 // User-assigned rather than system-assigned because the identity has to exist,
-// and be granted AcrPull, *before* the container app can pull its first image.
+// and be granted registry read access, *before* the app pulls its first image.
 // A system-assigned identity is created with the app, which is one ordering
 // problem too late.
 //
@@ -167,20 +282,38 @@ module logAnalytics 'br/public:avm/res/operational-insights/workspace:0.16.1' = 
 // the AVM version compiles and then fails validation (BCP120). A plain resource
 // has an id that is computable up front. The module also adds nothing here --
 // there are no defaults worth inheriting on a resource with three properties.
-resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: 'id-citadelui-${resourceToken}'
+resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (createIdentity) {
+  name: effectiveIdentityName
   location: location
   tags: tags
 }
 
+resource existingIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = if (!createIdentity) {
+  name: existingManagedIdentityName
+  scope: resourceGroup(effectiveIdentityResourceGroup)
+}
+
+// IDs in the identity map must be known before deployment starts. Resource IDs
+// remain computable from names/scopes; only client/principal IDs are read at runtime.
+var effectiveIdentityId = createIdentity ? identity.id : existingIdentity.id
+var effectiveIdentityClientId = createIdentity ? identity!.properties.clientId : existingIdentity!.properties.clientId
+var effectiveIdentityPrincipalId = createIdentity ? identity!.properties.principalId : existingIdentity!.properties.principalId
+
 // ---------------------------------------------------------------------------
-// Container registry
+// Container registry -- create or reuse, including a different resource group.
 // ---------------------------------------------------------------------------
 
-module registry 'br/public:avm/res/container-registry/registry:0.13.0' = {
+// This read API includes roleAssignmentMode; older stable APIs omit it and
+// would incorrectly select AcrPull/AcrPush for an ABAC-enabled registry.
+resource existingRegistry 'Microsoft.ContainerRegistry/registries@2025-11-01' existing = if (!createRegistry) {
+  name: existingContainerRegistryName
+  scope: resourceGroup(effectiveRegistryResourceGroup)
+}
+
+module registry 'br/public:avm/res/container-registry/registry:0.13.0' = if (createRegistry) {
   name: 'registry'
   params: {
-    name: 'crcitadelui${resourceToken}'
+    name: effectiveRegistryName
     location: location
     tags: tags
     // Basic is enough for one image and one puller, and it is a fifth of the
@@ -191,6 +324,13 @@ module registry 'br/public:avm/res/container-registry/registry:0.13.0' = {
     // have to be stored somewhere, and the whole point of the identity above is
     // that there is nothing to store.
     acrAdminUserEnabled: false
+    // New registries use the established AcrPull/AcrPush permission model.
+    // Existing registries retain their own mode, including ABAC.
+    roleAssignmentMode: 'LegacyRegistryPermissions'
+    // Container Apps managed-identity image pull requires ARM audience tokens.
+    // AVM defaults this to disabled; set the required policy on CREATE only.
+    // Reuse preflight checks it, but never changes an existing registry policy.
+    azureADAuthenticationAsArmPolicyStatus: 'enabled'
     publicNetworkAccess: 'Enabled'
     // AVM emits a `networkRuleSet` whenever public access is Enabled and the
     // default action is Deny, and Deny is its default. ACR Basic cannot accept
@@ -208,36 +348,64 @@ module registry 'br/public:avm/res/container-registry/registry:0.13.0' = {
   }
 }
 
+var registryEndpoint = createRegistry ? registry!.outputs.loginServer : existingRegistry!.properties.loginServer
+var registryRoleAssignmentMode = createRegistry
+  ? 'LegacyRegistryPermissions'
+  : (existingRegistry!.properties.?roleAssignmentMode ?? 'LegacyRegistryPermissions')
+var registryUsesAbac = registryRoleAssignmentMode == 'AbacRepositoryPermissions'
+  ? true
+  : (registryRoleAssignmentMode == 'LegacyRegistryPermissions' ? false : fail('Unsupported registry roleAssignmentMode. Expected LegacyRegistryPermissions or AbacRepositoryPermissions.'))
+
 module acrPull 'modules/registry-role-assignment.bicep' = {
-  name: 'rbac-acr-pull'
+  name: 'rbac-acr-pull-${uniqueString(resourceGroup().id, containerAppName)}'
+  scope: resourceGroup(effectiveRegistryResourceGroup)
   params: {
-    registryName: registry.outputs.name
-    principalId: identity.properties.principalId
-    subjectId: identity.id
-    roleDefinitionId: acrPullRoleId
+    registryName: effectiveRegistryName
+    principalId: effectiveIdentityPrincipalId
+    subjectId: effectiveIdentityId
+    roleDefinitionId: registryUsesAbac ? acrRepositoryReaderRoleId : acrPullRoleId
     principalType: 'ServicePrincipal'
   }
+  dependsOn: [
+    registry
+  ]
 }
 
-// The identity above can PULL, which is what the running app needs. Nothing was
-// granted PUSH, and the deployment cannot complete without it: `azd deploy`
-// builds the image locally and pushes it as the signed-in user, and with the
-// admin account deliberately disabled there is no fallback credential. The
-// symptom is a 401 from the registry's token exchange at the publish step,
-// after every resource has provisioned successfully -- which reads as a broken
-// registry rather than a missing grant.
-//
-// Scoped to this registry, and only when a principal is known: `principalId` is
-// empty in unattended contexts that have no interactive user to grant.
+// The app only pulls. The deploying principal separately needs image push and
+// task execution for azure.yaml's remoteBuild. All grants target this registry,
+// never its whole RG/subscription, and do not permit registry reconfiguration.
+// A caller omitting principalId must arrange its own build/push permissions.
 module acrPush 'modules/registry-role-assignment.bicep' = if (!empty(principalId)) {
-  name: 'rbac-acr-push'
+  name: 'rbac-acr-push-${uniqueString(resourceGroup().id, containerAppName)}'
+  scope: resourceGroup(effectiveRegistryResourceGroup)
   params: {
-    registryName: registry.outputs.name
+    registryName: effectiveRegistryName
     principalId: principalId
     subjectId: principalId
-    roleDefinitionId: acrPushRoleId
-    principalType: 'User'
+    roleDefinitionId: registryUsesAbac ? acrRepositoryWriterRoleId : acrPushRoleId
+    principalType: principalType
   }
+  dependsOn: [
+    registry
+  ]
+}
+
+// ABAC quick builds additionally require caller source authentication
+// (`az acr build --source-acr-auth-id "[caller]"`). A role assignment alone
+// cannot add that setting to an azd version whose remote builder omits it.
+module acrBuild 'modules/registry-role-assignment.bicep' = if (!empty(principalId)) {
+  name: 'rbac-acr-build-${uniqueString(resourceGroup().id, containerAppName)}'
+  scope: resourceGroup(effectiveRegistryResourceGroup)
+  params: {
+    registryName: effectiveRegistryName
+    principalId: principalId
+    subjectId: principalId
+    roleDefinitionId: acrTasksContributorRoleId
+    principalType: principalType
+  }
+  dependsOn: [
+    registry
+  ]
 }
 
 // ---------------------------------------------------------------------------
@@ -246,7 +414,7 @@ module acrPush 'modules/registry-role-assignment.bicep' = if (!empty(principalId
 
 var createKeyVault = empty(keyVaultName)
 var effectiveKeyVaultName = createKeyVault ? 'kv-citadel-${resourceToken}' : keyVaultName
-var effectiveKeyVaultResourceGroup = empty(keyVaultResourceGroup) ? resourceGroup().name : keyVaultResourceGroup
+var effectiveKeyVaultResourceGroup = createKeyVault || empty(keyVaultResourceGroup) ? resourceGroup().name : keyVaultResourceGroup
 
 module keyVault 'br/public:avm/res/key-vault/vault:0.14.0' = if (createKeyVault) {
   name: 'key-vault'
@@ -298,8 +466,8 @@ module keyVaultSecretsUser 'modules/keyvault-role-assignment.bicep' = {
   scope: resourceGroup(effectiveKeyVaultResourceGroup)
   params: {
     keyVaultName: effectiveKeyVaultName
-    principalId: identity.properties.principalId
-    subjectId: identity.id
+    principalId: effectiveIdentityPrincipalId
+    subjectId: effectiveIdentityId
     roleDefinitionId: keyVaultSecretsUserRoleId
     principalType: 'ServicePrincipal'
   }
@@ -336,10 +504,10 @@ module keyVaultSecretsOfficer 'modules/keyvault-role-assignment.bicep' = if (cre
 // encrypted credential envelopes. Without this share a routine revision change
 // -- which is what every `azd deploy` performs -- silently discards the user's
 // work.
-module storage 'br/public:avm/res/storage/storage-account:0.33.0' = {
+module storage 'br/public:avm/res/storage/storage-account:0.33.0' = if (createStorage) {
   name: 'storage'
   params: {
-    name: 'stcitadelui${resourceToken}'
+    name: effectiveStorageAccountName
     location: location
     tags: tags
     kind: 'StorageV2'
@@ -378,7 +546,7 @@ module storage 'br/public:avm/res/storage/storage-account:0.33.0' = {
     fileServices: {
       shares: [
         {
-          name: fileShareName
+          name: effectiveFileShareName
           // 5 GiB. Azure Files on a standard account bills for what is used,
           // not for the quota, so this is a guard rail rather than a purchase.
           shareQuota: 5
@@ -388,12 +556,54 @@ module storage 'br/public:avm/res/storage/storage-account:0.33.0' = {
   }
 }
 
+resource existingStorageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing = if (!createStorage) {
+  name: existingStorageAccountName
+  scope: resourceGroup(effectiveStorageAccountResourceGroup)
+}
+
+resource existingDataShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-05-01' existing = if (!empty(existingFileShareName)) {
+  name: '${existingStorageAccountName}/default/${existingFileShareName}'
+  scope: resourceGroup(effectiveStorageAccountResourceGroup)
+}
+
+// This deliberately NEW share has a deployment-specific name. Naming an
+// existing share above instead suppresses this module entirely: no quota,
+// protocol, metadata or data writes are sent for a selected existing share.
+module newDataShare 'modules/storage-share.bicep' = if (createShareInExistingAccount) {
+  name: 'storage-share-${uniqueString(resourceGroup().id, containerAppName)}'
+  scope: resourceGroup(effectiveStorageAccountResourceGroup)
+  params: {
+    accountName: effectiveStorageAccountName
+    shareName: effectiveFileShareName
+    // Classic premium file shares require at least 100 GiB. Standard accounts
+    // retain the small 5 GiB guardrail. Existing shares keep their own quotas.
+    shareQuotaGiB: createShareInExistingAccount ? (existingStorageAccount!.sku.tier == 'Premium' ? 100 : 5) : 5
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Container Apps environment
 // ---------------------------------------------------------------------------
 
-resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
-  name: 'cae-citadelui-${resourceToken}'
+module privateNetwork 'modules/private-network.bicep' = if (createPrivateNetwork) {
+  name: 'private-network'
+  params: {
+    name: privateVirtualNetworkName
+    subnetName: privateSubnetName
+    location: location
+    tags: tags
+  }
+}
+
+// The newer read API exposes publicNetworkAccess. The create resource retains
+// its existing API/defaults; no PUT of an existing environment is emitted.
+resource existingContainerAppsEnvironment 'Microsoft.App/managedEnvironments@2025-07-01' existing = if (!createContainerAppsEnvironment) {
+  name: existingContainerAppsEnvironmentName
+  scope: resourceGroup(effectiveContainerAppsEnvironmentResourceGroup)
+}
+
+resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = if (createContainerAppsEnvironment) {
+  name: effectiveContainerAppsEnvironmentName
   location: location
   tags: tags
   properties: union({
@@ -402,12 +612,19 @@ resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01'
       logAnalyticsConfiguration: {
         // The environment authenticates to the workspace with its shared key --
         // there is no managed-identity option for this hop today. The key is
-        // taken from the module's secure output, so ARM resolves it at deploy
-        // time, masks it in the deployment history, and it never exists in
-        // source control, in the azd .env, or anywhere the application can read
-        // it.
-        customerId: logAnalytics.outputs.logAnalyticsWorkspaceId
-        sharedKey: logAnalytics.outputs.primarySharedKey
+        // taken from a secure AVM output or listKeys at the existing workspace's
+        // scope. Neither is exposed as a deployment output or app environment
+        // variable. Guard BOTH branches: ARM can evaluate reference/listKeys
+        // expressions even on a resource with a false deployment condition.
+        customerId: createLogAnalytics
+          ? logAnalytics!.outputs.logAnalyticsWorkspaceId
+          : (createContainerAppsEnvironment ? existingLogAnalyticsWorkspace!.properties.customerId : '')
+        // The matching condition guards this access. A module null assertion
+        // cannot be used here: secure outputs require a DIRECT module reference.
+        sharedKey: createLogAnalytics
+          #disable-next-line BCP318
+          ? logAnalytics.outputs.primarySharedKey
+          : (createContainerAppsEnvironment ? existingLogAnalyticsWorkspace!.listKeys().primarySharedKey : '')
       }
     }
     // Consumption only. A dedicated workload profile bills for a reserved
@@ -427,11 +644,51 @@ resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01'
     // and be at least a /27; Azure rejects the deployment otherwise rather than
     // degrading to a public environment.
     vnetConfiguration: {
-      infrastructureSubnetId: infrastructureSubnetId
+      infrastructureSubnetId: effectiveInfrastructureSubnetId
       internal: true
     }
   } : {})
+  dependsOn: [
+    privateNetwork
+  ]
 }
+
+// Fresh private networking includes resolution of the ILB environment hostname.
+// Existing VNet/subnet DNS and connectivity remain operator-owned; no shared
+// DNS zones, links, peerings, gateways or private endpoints are reconfigured.
+module privateDns 'modules/private-environment-dns.bicep' = if (createPrivateNetwork) {
+  name: 'private-environment-dns'
+  params: {
+    domainName: createPrivateNetwork ? containerAppsEnvironment!.properties.defaultDomain : ''
+    staticIp: createPrivateNetwork ? containerAppsEnvironment!.properties.staticIp : ''
+    virtualNetworkId: resourceId('Microsoft.Network/virtualNetworks', privateVirtualNetworkName)
+    tags: tags
+  }
+  dependsOn: [
+    privateNetwork
+  ]
+}
+
+var effectiveContainerAppsEnvironmentId = createContainerAppsEnvironment
+  ? containerAppsEnvironment.id
+  : existingContainerAppsEnvironment.id
+var containerAppsEnvironmentDefaultDomain = createContainerAppsEnvironment
+  ? containerAppsEnvironment!.properties.defaultDomain
+  : existingContainerAppsEnvironment!.properties.defaultDomain
+var environmentIsInternal = createContainerAppsEnvironment
+  ? vnetInjected
+  : (privateDeployment && !(existingContainerAppsEnvironment!.properties.?vnetConfiguration.?internal ?? false)
+      ? fail('CITADEL_PRIVATE_DEPLOYMENT=true requires an internal existing Container Apps environment; its network will not be changed.')
+      : (existingContainerAppsEnvironment!.properties.?vnetConfiguration.?internal ?? false))
+var environmentAllowsPublicNetwork = createContainerAppsEnvironment
+  ? !vnetInjected
+  : toLower(existingContainerAppsEnvironment!.properties.?publicNetworkAccess ?? 'Enabled') == 'enabled'
+// Legacy consumption-only environments have no workloadProfiles. Omit a
+// workload profile for those; a profiles environment must already have the
+// Consumption profile (checked by preflight, never added to the shared env).
+var environmentUsesWorkloadProfiles = createContainerAppsEnvironment
+  ? true
+  : !empty(existingContainerAppsEnvironment!.properties.?workloadProfiles)
 
 // The environment, not the app, owns the Azure Files binding; the app then
 // mounts it by name. accessMode is ReadWrite because /data is written on every
@@ -444,17 +701,25 @@ resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01'
 // container exits 1 at startup -- /data is required to boot, not merely to
 // persist. Rather than fail there, `persistData` selects an ephemeral volume so
 // the app runs; see the volume declaration for what that costs.
-resource dataStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = if (persistData) {
-  parent: containerAppsEnvironment
-  name: dataVolumeName
-  properties: {
-    azureFile: {
-      accountName: storage.outputs.name
-      accountKey: storage.outputs.primaryAccessKey
-      shareName: fileShareName
-      accessMode: 'ReadWrite'
-    }
+module dataStorage 'modules/container-apps-storage.bicep' = if (persistData) {
+  name: 'container-apps-storage-${uniqueString(resourceGroup().id, containerAppName)}'
+  scope: resourceGroup(effectiveContainerAppsEnvironmentResourceGroup)
+  params: {
+    environmentName: effectiveContainerAppsEnvironmentName
+    storageName: environmentStorageName
+    accountName: effectiveStorageAccountName
+    // Guard runtime key operations even when this module is not deployed.
+    // Secure AVM outputs require a direct module reference, not storage!.
+    accountKey: !persistData ? '' : (createStorage
+      #disable-next-line BCP318
+      ? storage.outputs.primaryAccessKey
+      : existingStorageAccount!.listKeys().keys[0].value)
+    shareName: effectiveFileShareName
   }
+  dependsOn: [
+    containerAppsEnvironment
+    newDataShare
+  ]
 }
 
 // ---------------------------------------------------------------------------
@@ -465,17 +730,18 @@ resource dataStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = i
 // `authConfigured` means Entra is in front of the app. `publicIngress` means
 // the app is on the internet, by either route. See the ingress block below.
 //
-// `vnetInjected` overrides both. An environment inside a VNet has no public
-// load balancer, so there is nothing for a public ingress to be published on:
-// the app is reachable from the VNet and from whatever reaches that VNet, and
-// from nowhere else. It is the private topology, and it wins.
+// Only an INTERNAL environment has a private load balancer. VNet integration
+// alone says nothing about internet exposure. Existing environments also retain
+// their publicNetworkAccess setting: this template never enables it. On an
+// external environment with public access disabled, keep this app environment-
+// only, even when a public option is supplied; no private endpoint is provisioned.
 var authConfigured = !empty(entraAuthClientId)
-var publicIngress = !vnetInjected && (authConfigured || allowPublicIngressWithoutAuth)
+var publicIngress = !environmentIsInternal && environmentAllowsPublicNetwork && (authConfigured || allowPublicIngressWithoutAuth)
 // True when the app is reachable beyond the Container Apps environment itself --
 // on the internet when the environment is public, on the VNet's internal load
 // balancer when it is injected. Container Apps spells both `external: true`; the
 // difference is the environment, not the app.
-var reachableBeyondEnvironment = vnetInjected || publicIngress
+var reachableBeyondEnvironment = environmentIsInternal || publicIngress
 var authClientSecretConfigured = authConfigured && !empty(entraAuthClientSecret)
 var authClientSecretName = 'entra-client-secret'
 
@@ -486,8 +752,14 @@ var authClientSecretName = 'entra-client-secret'
 // it wrong is not a degraded deployment, it is 421 on every request including
 // the probes, which looks exactly like a broken image.
 var appFqdn = reachableBeyondEnvironment
-  ? '${containerAppName}.${containerAppsEnvironment.properties.defaultDomain}'
-  : '${containerAppName}.internal.${containerAppsEnvironment.properties.defaultDomain}'
+  ? '${containerAppName}.${containerAppsEnvironmentDefaultDomain}'
+  : '${containerAppName}.internal.${containerAppsEnvironmentDefaultDomain}'
+// A public-capable environment uses the future external URL to bootstrap
+// registration before auth is configured. A disabled public network cannot
+// publish this app, so its callback must retain the actual .internal. host.
+var authRedirectFqdn = environmentIsInternal || environmentAllowsPublicNetwork
+  ? '${containerAppName}.${containerAppsEnvironmentDefaultDomain}'
+  : appFqdn
 
 // First `azd up` has an empty registry, so the app is created against a public
 // placeholder and azd replaces it the moment the build finishes. The placeholder
@@ -546,12 +818,12 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   identity: {
     type: 'UserAssigned'
     userAssignedIdentities: {
-      '${identity.id}': {}
+      '${effectiveIdentityId}': {}
     }
   }
   properties: {
-    environmentId: containerAppsEnvironment.id
-    workloadProfileName: 'Consumption'
+    environmentId: effectiveContainerAppsEnvironmentId
+    workloadProfileName: environmentUsesWorkloadProfiles ? 'Consumption' : null
     configuration: {
       activeRevisionsMode: 'Single'
       // ---------------------------------------------------------------------
@@ -561,7 +833,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
       // someone decided it should be, never as a side effect of another setting.
       //
       // What "beyond" means is decided by the environment, not by this flag.
-      // On a VNet-injected environment there is no public load balancer, so this
+      // On an internal environment there is no public load balancer, so this
       // publishes the app on the VNet's internal one -- a private address,
       // reachable from the Citadel AI Hub Gateway VNet and from whatever is
       // peered or connected to it, and from nowhere else.
@@ -590,12 +862,12 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
           }
         ]
       }
-      // Identity-based pull. No admin credentials exist on the registry to put
-      // here even if somebody wanted to.
+      // Identity-based pull only. No registry credentials are fetched or
+      // injected, even if an existing registry has its admin account enabled.
       registries: [
         {
-          server: registry.outputs.loginServer
-          identity: identity.id
+          server: registryEndpoint
+          identity: effectiveIdentityId
         }
       ]
       secrets: authClientSecretConfigured ? [
@@ -668,7 +940,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               // wrong principal or returns 400. It fails at runtime, on the
               // first vault read, long after a green deployment.
               name: 'AZURE_CLIENT_ID'
-              value: identity.properties.clientId
+              value: effectiveIdentityClientId
             }
           ]
           volumeMounts: [
@@ -685,7 +957,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
           ? {
               name: dataVolumeName
               storageType: 'AzureFile'
-              storageName: dataVolumeName
+              storageName: environmentStorageName
               // SMB has no POSIX ownership, so the mount decides it once for every
               // file on it. This image runs as UID 10001 and every store under /data
               // opens its files 0600 and its directories 0700; a mount owned by root
@@ -740,7 +1012,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   }
   // Two orderings ARM cannot infer. The volume names the environment's storage
   // by string, not by reference, so nothing tells ARM the binding has to exist
-  // first; and the AcrPull grant is on the registry, not on the app, so the app
+  // first; and the pull grant is on the registry, not on the app, so the app
   // would otherwise be free to start pulling before it is allowed to. Both
   // failures land after a green deployment, on the replica, as "image pull
   // failed" or "volume mount failed".
@@ -770,12 +1042,11 @@ resource authConfig 'Microsoft.App/containerApps/authConfigs@2024-03-01' = if (a
     }
     identityProviders: {
       azureActiveDirectory: {
-        // No client secret unless one was supplied. A registration configured
-        // as a single-page application authenticates with PKCE and has no
-        // secret to leak or rotate. Supply entraAuthClientSecret only if the
-        // registration is a confidential web client, in which case the value is
-        // stored as a container app secret and referenced by name -- never
-        // inlined here.
+        // A secret-backed Web app registration uses hybrid flow. Without a
+        // client secret, built-in auth uses implicit ID-token flow and the
+        // registration must enable ID token issuance. Neither is SPA/PKCE.
+        // A supplied client secret is stored as a container app secret and
+        // referenced here by name, never inlined.
         registration: union({
           // environment() rather than a literal login.microsoftonline.com, so
           // the template is still correct in a sovereign cloud. The endpoint
@@ -807,46 +1078,94 @@ resource authConfig 'Microsoft.App/containerApps/authConfigs@2024-03-01' = if (a
 // ---------------------------------------------------------------------------
 
 @description('Registry login server. azd pushes the built image here.')
-output AZURE_CONTAINER_REGISTRY_ENDPOINT string = registry.outputs.loginServer
+output AZURE_CONTAINER_REGISTRY_ENDPOINT string = registryEndpoint
 
 @description('Registry name.')
-output AZURE_CONTAINER_REGISTRY_NAME string = registry.outputs.name
+output AZURE_CONTAINER_REGISTRY_NAME string = effectiveRegistryName
+
+@description('Resource group of the created or reused registry. Build and role-assignment operations must target this group, not assume AZURE_RESOURCE_GROUP.')
+output AZURE_CONTAINER_REGISTRY_RESOURCE_GROUP string = effectiveRegistryResourceGroup
+
+@description('Whether the registry was reused without reconfiguring it.')
+output AZURE_CONTAINER_REGISTRY_REUSED bool = !createRegistry
+
+@description('Actual registry permission mode: LegacyRegistryPermissions or AbacRepositoryPermissions. ABAC quick builds require explicit caller source authentication, not just a push role.')
+output AZURE_CONTAINER_REGISTRY_ROLE_ASSIGNMENT_MODE string = registryRoleAssignmentMode
 
 @description('Resource id of the Container Apps environment.')
-output AZURE_CONTAINER_APP_ENVIRONMENT_ID string = containerAppsEnvironment.id
+output AZURE_CONTAINER_APP_ENVIRONMENT_ID string = effectiveContainerAppsEnvironmentId
 
 @description('Name of the Container Apps environment.')
-output AZURE_CONTAINER_APP_ENVIRONMENT_NAME string = containerAppsEnvironment.name
+output AZURE_CONTAINER_APP_ENVIRONMENT_NAME string = effectiveContainerAppsEnvironmentName
+
+@description('Resource group containing the created or reused Container Apps environment. May differ from AZURE_RESOURCE_GROUP.')
+output AZURE_CONTAINER_APP_ENVIRONMENT_RESOURCE_GROUP string = effectiveContainerAppsEnvironmentResourceGroup
+
+@description('True when the environment is reused without reconfiguring it. Only the storage binding for this UI is added.')
+output AZURE_CONTAINER_APP_ENVIRONMENT_REUSED bool = !createContainerAppsEnvironment
+
+@description('Subnet of the created environment, or the actual subnet of a reused environment. Empty for non-VNet environments. An output, not an override selector.')
+output AZURE_CONTAINER_APP_ENVIRONMENT_SUBNET_ID string = createContainerAppsEnvironment
+  ? effectiveInfrastructureSubnetId
+  : (existingContainerAppsEnvironment!.properties.?vnetConfiguration.?infrastructureSubnetId ?? '')
+
+@description('Environment DNS suffix, useful when configuring private DNS on an existing VNet.')
+output AZURE_CONTAINER_APP_ENVIRONMENT_DEFAULT_DOMAIN string = containerAppsEnvironmentDefaultDomain
+
+@description('Environment static IP. For an internal ILB environment, private DNS must resolve its default domain to this address.')
+output AZURE_CONTAINER_APP_ENVIRONMENT_STATIC_IP string = createContainerAppsEnvironment
+  ? containerAppsEnvironment!.properties.staticIp
+  : (existingContainerAppsEnvironment!.properties.?staticIp ?? '')
+
+@description('Workspace resource id for a NEW environment, whether created or reused. Empty for an existing environment, whose logging remains unchanged and whose workspace selectors must be omitted.')
+output AZURE_LOG_ANALYTICS_WORKSPACE_RESOURCE_ID string = createContainerAppsEnvironment
+  ? resourceId(effectiveLogAnalyticsWorkspaceResourceGroup, 'Microsoft.OperationalInsights/workspaces', effectiveLogAnalyticsWorkspaceName)
+  : ''
 
 @description('Resource group the deployment landed in.')
 output AZURE_RESOURCE_GROUP string = resourceGroup().name
 
-@description('Public URL of the app. Read back from the platform rather than recomputed, so that if it ever disagrees with CITADEL_ALLOWED_HOST below, the disagreement is visible instead of silent. On a deployment that is neither Entra-authenticated nor explicitly published this is the internal address and is not reachable from the internet -- that is the intent, not a fault.')
+@description('URL of the app, read back from the platform. Reachability is reported separately by SERVICE_CITADELUI_NETWORK; a URL does not imply internet access.')
 output SERVICE_CITADELUI_URI string = 'https://${containerApp.properties.configuration.ingress.fqdn}'
 
 @description('Whether the app is reachable from the public internet. False while SERVICE_CITADELUI_NETWORK is `vnet` means it is reachable privately instead, not that it is unreachable.')
 output SERVICE_CITADELUI_PUBLIC bool = publicIngress
 
-@description('Which network the app is published on. `vnet` means the environment is inside the supplied subnet and the address is private. `internet` means it is published on the public internet. `environment` means it is reachable only from inside the Container Apps environment.')
-output SERVICE_CITADELUI_NETWORK string = vnetInjected ? 'vnet' : (publicIngress ? 'internet' : 'environment')
+@description('Which network the app is published on. `vnet` means an actual internal load balancer, not merely VNet integration. `internet` requires explicit publication and enabled public network access. `environment` means this app only accepts ingress from inside the environment, including external environments with public network access disabled.')
+output SERVICE_CITADELUI_NETWORK string = environmentIsInternal ? 'vnet' : (publicIngress ? 'internet' : 'environment')
 
 @description('Whether Container Apps built-in Entra authentication is in front of the app. False while SERVICE_CITADELUI_PUBLIC is true means the app is on the internet behind its own owner sign-in rather than behind Entra.')
 output SERVICE_CITADELUI_ENTRA_AUTH bool = authConfigured
 
-@description('Reply URL to register on the Entra application, before setting entraAuthClientId. This is deliberately the address the app will have *once it is published*, not necessarily the address it has now: on an internal deployment the two differ, because the internal address carries an `.internal.` segment. Registering that one would produce a redirect loop that is genuinely hard to read. So the intended order is: provision once with no client id, take this value, register it, then set the client id and provision again.')
-output AZURE_AUTH_REDIRECT_URI string = 'https://${containerAppName}.${containerAppsEnvironment.properties.defaultDomain}/.auth/login/aad/callback'
+@description('Web reply URL to register before configuring Entra. Uses the future external-ingress URL for a public-capable or internal-ILB environment. On an external environment with public network access disabled, uses the actual environment-only host because this template does not enable public access.')
+output AZURE_AUTH_REDIRECT_URI string = 'https://${authRedirectFqdn}/.auth/login/aad/callback'
 
 @description('Name of the vault in use, whether created here or reused.')
 output AZURE_KEY_VAULT_NAME string = effectiveKeyVaultName
 
+@description('Resource group of the vault in use. Retains the existing AZURE_KEY_VAULT_RESOURCE_GROUP input contract on subsequent provisions.')
+output AZURE_KEY_VAULT_RESOURCE_GROUP string = effectiveKeyVaultResourceGroup
+
 @description('URI of the vault in use.')
 output AZURE_KEY_VAULT_URI string = keyVaultUri
 
-@description('Name of the secret the app expects to find the credential key in. Create it with: az keyvault secret set --vault-name <name> --name <this> --value <base64 32 random bytes>')
+@description('Selected credential-secret name, also accepted as an azd input. Credential-key setup must preserve an existing key under this name. This output contains no key material; changing the name is not a migration of existing encrypted data.')
 output CITADEL_CREDENTIAL_SECRET_NAME string = credentialSecretName
 
 @description('Client id of the user-assigned identity. The app needs this to ask the Container Apps identity endpoint for the right token.')
-output AZURE_CLIENT_ID string = identity.properties.clientId
+output AZURE_CLIENT_ID string = effectiveIdentityClientId
+
+@description('Resource ID of the created or reused user-assigned app identity.')
+output AZURE_MANAGED_IDENTITY_ID string = effectiveIdentityId
+
+@description('Name of the app identity.')
+output AZURE_MANAGED_IDENTITY_NAME string = effectiveIdentityName
+
+@description('Resource group of the app identity.')
+output AZURE_MANAGED_IDENTITY_RESOURCE_GROUP string = effectiveIdentityResourceGroup
+
+@description('Principal ID of the app identity receiving registry/vault roles, not the deploying principal.')
+output AZURE_MANAGED_IDENTITY_PRINCIPAL_ID string = effectiveIdentityPrincipalId
 
 @description('Exact Host header the server will accept.')
 output CITADEL_ALLOWED_HOST string = appFqdn
@@ -855,4 +1174,15 @@ output CITADEL_ALLOWED_HOST string = appFqdn
 output CITADEL_ALLOWED_ORIGIN string = 'https://${appFqdn}'
 
 @description('Storage account backing /data.')
-output AZURE_STORAGE_ACCOUNT_NAME string = storage.outputs.name
+output AZURE_STORAGE_ACCOUNT_NAME string = effectiveStorageAccountName
+
+@description('Resource group of the created or reused storage account.')
+output AZURE_STORAGE_ACCOUNT_RESOURCE_GROUP string = effectiveStorageAccountResourceGroup
+
+@description('Selected Azure Files share. Empty when persistence is explicitly disabled.')
+output AZURE_FILE_SHARE_NAME string = persistData ? effectiveFileShareName : ''
+
+@description('Selected Azure Files share resource ID. Existing shares are references only.')
+output AZURE_FILE_SHARE_RESOURCE_ID string = !persistData ? '' : (!empty(existingFileShareName)
+  ? existingDataShare.id
+  : resourceId(effectiveStorageAccountResourceGroup, 'Microsoft.Storage/storageAccounts/fileServices/shares', effectiveStorageAccountName, 'default', effectiveFileShareName))

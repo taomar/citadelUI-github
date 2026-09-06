@@ -12,6 +12,10 @@
 
 set -eu
 
+# Validate before even recording a default group, and before any Azure write.
+script_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+sh "$script_directory/validate-deployment.sh"
+
 if [ -z "${AZURE_RESOURCE_GROUP:-}" ]; then
   # Fall back to the name azd would have chosen anyway: it names resource groups
   # rg-<env-name> in its own templates, so deriving the same name here cannot

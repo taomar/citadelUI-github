@@ -11,11 +11,53 @@
     "principalId": {
       "value": "${AZURE_PRINCIPAL_ID}"
     },
+    "principalType": {
+      "value": "${AZURE_PRINCIPAL_TYPE=User}"
+    },
     "keyVaultName": {
       "value": "${AZURE_KEY_VAULT_NAME}"
     },
     "keyVaultResourceGroup": {
       "value": "${AZURE_KEY_VAULT_RESOURCE_GROUP}"
+    },
+    "credentialSecretName": {
+      "value": "${CITADEL_CREDENTIAL_SECRET_NAME=citadel-credential-key}"
+    },
+    "existingContainerAppsEnvironmentName": {
+      "value": "${AZURE_EXISTING_CONTAINER_APPS_ENVIRONMENT_NAME}"
+    },
+    "existingContainerAppsEnvironmentResourceGroup": {
+      "value": "${AZURE_EXISTING_CONTAINER_APPS_ENVIRONMENT_RESOURCE_GROUP}"
+    },
+    "existingLogAnalyticsWorkspaceName": {
+      "value": "${AZURE_EXISTING_LOG_ANALYTICS_WORKSPACE_NAME}"
+    },
+    "existingLogAnalyticsWorkspaceResourceGroup": {
+      "value": "${AZURE_EXISTING_LOG_ANALYTICS_WORKSPACE_RESOURCE_GROUP}"
+    },
+    "existingContainerRegistryName": {
+      "value": "${AZURE_EXISTING_CONTAINER_REGISTRY_NAME}"
+    },
+    "existingContainerRegistryResourceGroup": {
+      "value": "${AZURE_EXISTING_CONTAINER_REGISTRY_RESOURCE_GROUP}"
+    },
+    "privateDeployment": {
+      "value": "${CITADEL_PRIVATE_DEPLOYMENT=false}"
+    },
+    "existingStorageAccountName": {
+      "value": "${AZURE_EXISTING_STORAGE_ACCOUNT_NAME}"
+    },
+    "existingStorageAccountResourceGroup": {
+      "value": "${AZURE_EXISTING_STORAGE_ACCOUNT_RESOURCE_GROUP}"
+    },
+    "existingFileShareName": {
+      "value": "${AZURE_EXISTING_FILE_SHARE_NAME}"
+    },
+    "existingManagedIdentityName": {
+      "value": "${AZURE_EXISTING_MANAGED_IDENTITY_NAME}"
+    },
+    "existingManagedIdentityResourceGroup": {
+      "value": "${AZURE_EXISTING_MANAGED_IDENTITY_RESOURCE_GROUP}"
     },
     "allowPublicIngressWithoutAuth": {
       "value": "${ALLOW_PUBLIC_INGRESS_WITHOUT_AUTH=false}"

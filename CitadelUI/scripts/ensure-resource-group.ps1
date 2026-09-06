@@ -28,6 +28,11 @@
 
 $ErrorActionPreference = 'Stop'
 
+# Validate first: even an invalid reuse selector must not create/tag a resource
+# group (or write a derived AZURE_RESOURCE_GROUP into the azd environment).
+& (Join-Path $PSScriptRoot 'validate-deployment.ps1')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 $resourceGroup = $env:AZURE_RESOURCE_GROUP
 $location      = $env:AZURE_LOCATION
 $subscription  = $env:AZURE_SUBSCRIPTION_ID
@@ -93,6 +98,11 @@ if ($LASTEXITCODE -ne 0) {
 $readArgs = @('group', 'show', '--name', $resourceGroup, '--query', 'tags.SecurityControl', '--output', 'tsv')
 if (-not [string]::IsNullOrWhiteSpace($subscription)) { $readArgs += @('--subscription', $subscription) }
 $applied = (az @readArgs --only-show-errors)
+
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "Could not verify the SecurityControl tag for resource group '$resourceGroup'."
+  exit $LASTEXITCODE
+}
 
 if ($applied -ne 'Ignore') {
   Write-Host "SecurityControl tag did not persist (read back: '$applied')."

@@ -107,27 +107,64 @@ broken intermediate state because someone said "commit all".
 
 ## Azure deployment
 
-The azd project is `CitadelUI/`. `azd up` provisions seven resources: Container
-Apps environment, container app, container registry, storage account, Key Vault,
-user-assigned managed identity, Log Analytics workspace.
+The azd project is `CitadelUI/`. `azd up` runs the key-initialization
+`postprovision` hook before image deployment. Separate `azd provision` and
+`azd deploy citadelui` also run that hook. It calls
+`scripts\ensure-credential-key.ps1`, which preserves an existing Key Vault
+credential key or creates it once when absent. It must not rotate existing keys.
+Azure provisioning requires PowerShell 7 on every host and private endpoint
+connectivity when the selected vault is private.
+
+Operator inputs now live in `CitadelUI/infra/main.bicepparam`, which azd prefers
+natively. `scripts/prepare-deployment.ps1` compiles it and synchronizes evaluated
+nonsecret inputs to the active azd environment before the existing preflight/RG
+hook. `infra/main.parameters.json` remains the internal parameter-to-environment
+mapping, not the operator input file. Context/principal/image and legacy secret
+values are not copied into `.env` by the synchronization helper.
+`scripts/deploy-image.ps1` owns public Legacy/ABAC image build/update and accepts
+an already-built image reference for a private registry.
+
+For an existing ABAC-enabled registry, use the guide's explicit ACR image build
+with `--source-acr-auth-id '[caller]'` instead of azd's remote build, which does
+not supply that identity. Record the image in `SERVICE_CITADELUI_IMAGE_NAME`
+before updating the UI so later provisioning does not replace it with the
+bootstrap image. Existing registry authentication/network settings are not
+relaxed by reuse.
+
+Container Apps environment, registry, storage/Azure Files, Key Vault,
+user-assigned managed identity and Log Analytics support create-or-reuse:
+unnamed resources use generated defaults, named existing resources are referenced
+without reconfiguring shared settings. Fresh private deployment also creates the
+UI's VNet and dedicated subnet; an existing subnet is reused without alteration.
+Image-only updates of an existing configured UI app do not reprovision its state.
 
 Resource names derive from `uniqueString(subscription, environmentName, location)`,
-so **a new environment name is sufficient to get an entirely new set of names**.
+so **a new environment name gives new names for resources being created**.
+Explicit existing-resource selectors are not renamed.
 This was proven by a full `azd down` / `azd up` cycle into a fresh resource group.
 
-### The five deployment types
+### Deployment paths
 
-Documented in [`guides/deployment.md`](guides/deployment.md). In short: private
-inside an existing VNet (`AZURE_INFRASTRUCTURE_SUBNET_ID`), public behind Entra
-(`entraAuthClientId`), public behind owner sign-in
-(`ALLOW_PUBLIC_INGRESS_WITHOUT_AUTH`), environment-only, or local.
+Documented in [`guides/deployment.md`](guides/deployment.md): fresh Azure private
+VNet or public deployment, existing-subnet/resource reuse, local PowerShell and
+local Bash. The operator-facing guide deliberately does not configure an external
+container login provider. Hosted instances use the UI's owner sign-in and keep
+credential-encryption keys in Key Vault.
 
-The exposure invariant in `infra/main.bicep` is `external:
-reachableBeyondEnvironment`. Note that `external: true` does **not** mean "on the
-internet" — on a VNet-injected environment the same flag publishes on an internal
-load balancer. `publicIngress` means the internet specifically and excludes the
-VNet case. `SERVICE_CITADELUI_NETWORK` reports which of `vnet` / `internet` /
-`environment` a deployment landed on.
+`CITADEL_PRIVATE_DEPLOYMENT` selects fresh private networking when no existing
+subnet/environment is supplied. `AZURE_INFRASTRUCTURE_SUBNET_ID` selects an
+existing subnet. Public owner sign-in is an explicit
+`ALLOW_PUBLIC_INGRESS_WITHOUT_AUTH` opt-in. An existing environment retains its
+network and logging configuration; supplied subnet/workspace selections must
+not override either. The simplified guide selects an existing environment OR a
+subnet for a new environment; existing environments inherit their network/logging
+with no subnet/workspace inputs. Direct overrides remain prohibited.
+Fresh private networking includes UI-owned private DNS;
+existing-subnet connectivity and DNS remain operator-owned.
+
+Container Apps `external: true` does not by itself mean internet exposure: an
+internal environment publishes on a private load balancer instead.
+`SERVICE_CITADELUI_NETWORK` reports `vnet`, `internet` or `environment`.
 
 ### Tenant policy collisions
 

@@ -1,297 +1,264 @@
-# Deployment guide
+# Deploy Citadel UI
 
-Citadel Control Plane runs as a single container. It can run on your machine, or
-on Azure Container Apps. The two do not differ in behaviour; they differ in who
-can reach the container and where its state lives.
+Configure the UI in
+[`CitadelUI/infra/main.bicepparam`](../CitadelUI/infra/main.bicepparam), then deploy
+with azd. No large PowerShell configuration block is needed.
 
-The application never contacts Azure at runtime. Deploying it does not deploy the
-gateway it edits.
+**Citadel UI only:** use `main`, not a sample branch. Run commands from
+`CitadelUI`; the repository-root `azure.yaml` belongs to the gateway.
 
----
-
-## Deployment types
-
-Pick one of these before anything else. It is the only decision that is awkward to
-change later, because it determines the address the application answers on.
-
-| # | Type | Reachable from | Set |
-| --- | --- | --- | --- |
-| 1 | **Private — inside the gateway VNet** | The VNet only, plus whatever is peered, VPN- or ExpressRoute-connected to it. No public endpoint exists. | `AZURE_INFRASTRUCTURE_SUBNET_ID` |
-| 2 | **Public — behind Entra** | Members of your tenant. Entra authenticates before the request reaches the app. | `entraAuthClientId` |
-| 3 | **Public — behind owner sign-in** | Anyone can load the sign-in page; only the owner can use it. | `ALLOW_PUBLIC_INGRESS_WITHOUT_AUTH=true` |
-| 4 | **Environment only** | Nothing outside the Container Apps environment. The app runs, but nobody is on that network. | Nothing |
-| 5 | **Local** | `127.0.0.1` on your own machine. No Azure at all. | `scripts\start.ps1` |
-
-Nothing is public by default. Ingress is external only because someone decided it
-should be, never as a side effect of another setting.
-
-**Which to use.** Type 1 when the gateway itself is private, which is the usual
-case for a governed deployment — the Control Plane sits in the same network as the
-thing it configures. Type 2 when it must be reachable from outside and your tenant
-is the right boundary. Type 3 for a demo or a short-lived environment, understanding
-that the container belongs to whoever claims it first. Type 5 for day-to-day
-editing on one machine, where no shared deployment is wanted at all.
-
-Types 1 to 4 are the same `azd up`; they differ only in what you set beforehand.
-Type 1 overrides types 2 and 3 — a VNet-injected environment has no public load
-balancer for a public ingress to be published on.
-
-Whichever you get, the deployment reports it in `SERVICE_CITADELUI_NETWORK` as
-`vnet`, `internet` or `environment`.
-
----
-
-## What gets deployed on Azure
-
-`azd up` provisions seven resources into one resource group:
-
-| Resource | Purpose |
+| Scenario | Instructions |
 | --- | --- |
-| Container Apps environment | Runs the container |
-| Container app | The application itself, one replica maximum |
-| Container registry | Holds the image, built here rather than on your machine |
-| Storage account | Azure Files share mounted at `/data` |
-| Key Vault | Holds the key that encrypts stored GitHub credentials |
-| User-assigned managed identity | Pulls the image and reads the vault secret |
-| Log Analytics workspace | Container logs |
+| New Azure resources, public or private VNet | [Fresh deployment](#fresh-azure-deployment) |
+| Existing resources or a mixture of existing and new | [Resource reuse](#deploy-on-an-existing-subnet-and-resources) |
+| Local Docker | [PowerShell](#local-deployment---powershell) or [Bash](#local-deployment---bash) |
+| Update an already configured UI | [Image-only update](#redeploy-an-existing-citadel-ui-container-app) |
 
-The application keeps session state in memory and writes to `/data`, so it is
-capped at one replica. A second replica would be a second writer and a second
-session store.
-
----
+**Live status:** fresh public deployment and repeat `azd up` passed in West
+Europe, preserving the owner, stored state and exact Key Vault key version.
+The native parameter-file workflow and image-only script also passed live checks.
+Protected-resource reuse passed private DNS, HTTP/sign-in, Azure Files, Key Vault
+and private log-query checks, repeated after redeployment. The eight shared
+resource configuration snapshots were unchanged. Fresh private mode has not
+been tested live.
 
 ## Prerequisites
 
-- An Azure subscription and permission to create the resources above.
-- [Azure Developer CLI](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd)
-  and the Azure CLI, both signed in.
-- No Docker daemon. The image is built in the container registry.
+Azure deployment needs Git, PowerShell 7.4+, Azure CLI and Azure Developer CLI
+1.33+. Use a dedicated UI resource group and an account permitted to create
+resources and their role assignments. Reused resources must be in the selected
+subscription; the region must match the subnet/Container Apps environment.
 
----
+The Key Vault provisioning identity needs secret-list permission and permission
+to create a key when absent. The app identity only reads it. The automatic
+postprovision hook preserves an existing enabled credential key; it never
+rotates that key or prints it.
 
-## Deploy to Azure
+The existing resource-group hook applies `SecurityControl=Ignore` for the
+originating tenant's shared-key storage exception. Obtain your organization's
+approval; this tag is not a universal Azure exemption. Shared-resource firewalls
+are never relaxed by reuse.
 
-Run from `CitadelUI/`, not the repository root — the root belongs to the gateway
-platform this application edits.
+## Fresh Azure deployment
 
+Clone and create an azd environment:
+
+```powershell
+git clone --branch main --single-branch https://github.com/taomar/citadelUI-github.git
+cd .\citadelUI-github\CitadelUI
+az login
+azd config set auth.useAzCliAuth true
+azd env new citadel-new --subscription '<subscription-id>' --location '<azure-region>'
 ```
-cd CitadelUI
-azd env new citadel-prod --subscription <subscription-id> --location westeurope
-azd env set ALLOW_PUBLIC_INGRESS_WITHOUT_AUTH true
+
+Open **`infra/main.bicepparam`** and replace the two network assignments with
+the values you want:
+
+```bicep
+// Public endpoint with Citadel UI owner sign-in.
+param privateDeployment = false
+param allowPublicIngressWithoutAuth = true
+```
+
+For a **private VNet**, use `privateDeployment = true` and
+`allowPublicIngressWithoutAuth = false`. That creates a VNet, dedicated subnet,
+internal Container Apps environment and private DNS. The default network is
+`10.240.0.0/16`, with subnet `10.240.0.0/23`; client VPN/peering is operator-owned.
+
+Deploy:
+
+```powershell
 azd up
+azd env get-value SERVICE_CITADELUI_URI
 ```
 
-Provisioning takes roughly fifteen minutes, most of it the Container Apps
-environment. When it finishes, `azd` prints the application URL.
+On a public deployment, open the URL and **claim the owner immediately**:
+the first visitor owns a new container. There is no password reset.
 
-The resource group is named `rg-<env-name>` unless you set `AZURE_RESOURCE_GROUP`
-yourself. It is created and tagged before provisioning begins, because that tag is
-what permits the storage account the shared-key access the file share needs.
+## Deploy on an existing subnet and resources
 
-Every resource name derives from a hash of the subscription, environment name and
-region, so a new environment name is all that is needed to stand up a second,
-parallel deployment.
+Clone and create a separate azd environment:
 
----
-
-## Deployment types in detail
-
-### Type 1 — Private, inside the Citadel AI Hub Gateway VNet
-
-This is the private topology. The Container Apps environment is placed in a subnet
-of a VNet you already have — typically the one the gateway itself is deployed into
-— and gets an internal load balancer with **no public endpoint at all**. The
-application is then reached at a private address from inside that network: a jump
-box, a peered network, a VPN or ExpressRoute connection.
-
-```
-cd CitadelUI
-azd env new citadel-private --subscription <subscription-id> --location westeurope
-azd env set AZURE_INFRASTRUCTURE_SUBNET_ID "/subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Network/virtualNetworks/<vnet>/subnets/<subnet>"
-azd up
+```powershell
+git clone --branch main --single-branch https://github.com/taomar/citadelUI-github.git
+cd .\citadelUI-github\CitadelUI
+az login
+azd config set auth.useAzCliAuth true
+azd env new citadel-existing --subscription '<subscription-id>' --location '<resource-region>'
 ```
 
-**The deployment does not create any network resources.** It does not create the
-VNet, the subnet, the route table, the NSG or any peering. It joins a subnet you
-already own, and it will refuse to deploy rather than work around a subnet that is
-not suitable. The subnet must:
+Edit **`infra/main.bicepparam` directly**. Replace only the assignments you need.
+For example, reuse an existing private environment, registry and vault:
 
-- already exist, in the same region as the deployment;
-- be delegated to `Microsoft.App/environments`;
-- be at least a `/27`, and be otherwise empty.
-
-Get the resource id of an existing subnet with:
-
+```bicep
+param privateDeployment = true
+param allowPublicIngressWithoutAuth = false
+param existingContainerAppsEnvironmentName = 'my-container-apps-environment'
+param existingContainerAppsEnvironmentResourceGroup = 'my-platform-rg'
+param infrastructureSubnetId = ''
+param existingLogAnalyticsWorkspaceName = ''
+param existingLogAnalyticsWorkspaceResourceGroup = ''
+param existingContainerRegistryName = 'myregistry'
+param existingContainerRegistryResourceGroup = 'my-registry-rg'
+param keyVaultName = 'my-key-vault'
+param keyVaultResourceGroup = 'my-vault-rg'
+param credentialSecretName = 'citadel-credential-key'
 ```
-az network vnet subnet show \
-  --resource-group <rg> --vnet-name <vnet> --name <subnet> \
-  --query id -o tsv
+
+The same file contains the storage account, file share, managed identity and
+workspace parameters. **Set an existing-resource name to `''` to create the
+generated default.** A nonempty name must already exist. An empty resource-group
+parameter means the UI group.
+
+| Network choice | Parameters |
+| --- | --- |
+| New environment on an existing subnet | Set `infrastructureSubnetId`; clear the existing-environment name/group |
+| Existing environment | Set its name/group; leave subnet and workspace selectors empty because the environment owns them |
+
+A subnet for a new environment must be unused, in the same region, delegated
+to `Microsoft.App/environments`, and IPv4 `/27` or larger. Its DNS and client
+connectivity must be prepared by the network owner. A reused environment keeps
+its existing network, DNS and logging.
+
+Deploy using the checked-in scripts, which handle registry permissions:
+
+```powershell
+azd provision
+.\scripts\deploy-image.ps1
+azd env get-value SERVICE_CITADELUI_URI
 ```
 
-When this is set it overrides the two public options. There is no internet-facing
-load balancer for a public ingress to be published on, so `entraAuthClientId` and
-`ALLOW_PUBLIC_INGRESS_WITHOUT_AUTH` no longer affect reachability. The owner
-sign-in still applies — network privacy and authentication are separate controls,
-and the application does not drop one because it has the other.
+**How the file reaches azd:** azd reads `main.bicepparam` natively. The preprovision
+hook also imports evaluated, nonsecret inputs into the selected environment so
+preflight and Bicep agree. The existing `readEnvironmentVariable(...)` expressions
+are compatibility defaults; replace them with literals to override saved values.
+Leave the azd-managed context/image assignments at the bottom unchanged.
+Do not put passwords, tokens or key material in the parameter file.
+Review the file when switching environments: literal overrides apply to the
+environment currently selected in azd.
 
-The deployment reports which of the three it ended up on in
-`SERVICE_CITADELUI_NETWORK`: `vnet`, `internet`, or `environment`.
+**Keep existing data:** select the original storage account/share and original
+Key Vault/credential-secret name. A blank share name creates a new share, not
+adoption of an old one. Never run two UI instances against one data share.
 
-### Type 2 — Public, behind Entra
+### Fully protected resources need pre-staging
 
-Provision once without a client id, take the `AZURE_AUTH_REDIRECT_URI` value from
-the outputs, register it as the reply URL on an Entra application, then set the
-client id and provision again. That reply URL is deliberately the address the
-application will have once published, which is not the address it has before then.
+Naming a resource does not create its private endpoints. Pre-stage Premium ACR,
+Key Vault, storage/share, the internal Container Apps environment, monitoring,
+private endpoints and DNS. Disable public data-plane access before testing reuse.
+The provisioning/build host must be inside that network.
 
-### Type 3 — Public, behind owner sign-in
+Direct Container Apps logging to Log Analytics through customer Private Link is
+[unsupported](https://learn.microsoft.com/azure/container-apps/log-options#limitations).
+Use `azure-monitor` plus diagnostic settings: Microsoft privately delivers logs;
+public workspace ingestion/query remain disabled, and queries use AMPLS private
+endpoints. The delivery channel does not traverse your own private endpoint.
 
-The owner sign-in is a real control — an anonymous visitor is issued no session
-token and every data route refuses one — but it is weaker than Entra or a private
-network, because the claim window stays open until someone claims the container.
+Private ACR requires an in-network build/push host; ordinary azd remote build is
+not sufficient. Build/push there and pass the resulting reference to
+`deploy-image.ps1 -ImageReference '<registry>/<image>@sha256:<digest>'`.
+Do not open a service firewall to make deployment pass.
 
-A container with no owner belongs to whoever reaches it first. On a public address
-that is whoever finds the URL. Claim it as soon as it is deployed.
+For an isolated test platform, the checked-in staging script creates these
+prerequisites and a temporary private build/test VM. **Citadel UI still runs in
+Container Apps, not on this VM.** An existing connected workstation or private CI
+runner can replace this test VM. Choose an available x64 VM size and keep
+artifacts outside the checkout. Both group names must use `rg-citadel-protected-`:
 
-### Type 4 — Environment only
-
-Set none of the three. The application deploys and runs, reachable inside the
-Container Apps environment and nowhere else. Useful as a first pass before an
-Entra registration exists — provision, take the reply URL from the outputs, then
-provision again as type 2.
-
----
-
-## Deployment options
-
-| Setting | Default | Effect |
-| --- | --- | --- |
-| `AZURE_INFRASTRUCTURE_SUBNET_ID` | empty | Places the Container Apps environment in an **existing** subnet, with no public endpoint. No network resources are created. Overrides the two public options. |
-| `ALLOW_PUBLIC_INGRESS_WITHOUT_AUTH` | `false` | Publishes the application behind its own owner sign-in. |
-| `entraAuthClientId` | empty | Puts Container Apps built-in Entra authentication in front, and publishes it. |
-| `entraAuthClientSecret` | empty | Needed only if your registration is a confidential web client. A SPA-style registration wants no secret. |
-| `persistData` | `true` | Mounts Azure Files at `/data`. See below. |
-| `AZURE_KEY_VAULT_NAME` | empty | Reuses an existing vault instead of creating one. Reuse provisions no vault, only a role assignment on the one you named. |
-| `AZURE_KEY_VAULT_RESOURCE_GROUP` | empty | Where that existing vault lives, if not in this group. |
-| `credentialSecretName` | `citadel-credential-key` | Name of the secret holding the credential encryption key. |
-| `AZURE_RESOURCE_GROUP` | `rg-<env-name>` | Target group, created and tagged before provisioning. |
-| `AZURE_LOCATION` | — | Region. Nothing in the design depends on it. |
-
-### Persistence is not optional in practice
-
-`/data` is required to boot, not merely to persist. A container without the mount
-exits immediately, which presents as a crash rather than a storage problem.
-
-With `persistData` off the application runs but forgets everything on restart, on
-scale to zero, and on every new revision — including the owner account, which means
-the deployment becomes claimable again each time it starts.
-
-### The credential key
-
-Stored GitHub connections are encrypted with a key read from Key Vault at startup.
-The deployment does not create that secret: generating key material inside a
-deployment would place it in the deployment history in plain text.
-
-Until you create it the application works normally, but GitHub connections last
-only for the current session. The interface says so rather than failing later.
-
----
-
-## Type 5 — Run it locally
-
+```powershell
+.\scripts\protected-stage.ps1 `
+  -EnvironmentName protected-demo -SubscriptionId '<subscription-id>' -Location '<azure-region>' `
+  -PlatformResourceGroup rg-citadel-protected-platform `
+  -UiResourceGroup rg-citadel-protected-ui `
+  -SshPublicKeyPath '<path-to-your-public-key.pub>' `
+  -OutputDirectory '<private-directory-outside-the-checkout>' `
+  -RunnerVmSize '<available-x64-vm-size>'
 ```
-cd CitadelUI
-Copy-Item container.env.example container.env
+
+Without `-Execute`, this only compiles locally. Add `-Execute -Preview` to prepare
+the two dedicated groups and run Azure what-if; add `-Execute` without `-Preview`
+to create the billable platform. The script prints a `contract.json` path after
+successful staging.
+
+After reviewing the staged platform, transfer the current UI source privately
+and deploy from its runner:
+
+```powershell
+.\scripts\protected-transfer.ps1 `
+  -ContractPath '<printed-contract.json-path>' `
+  -OutputDirectory '<private-directory-outside-the-checkout>' `
+  -Execute -Deploy
+```
+
+The runner uses its managed identity, your `main.bicepparam` environment defaults,
+private DNS, a local Docker build/push, and azd deployment of an immutable image.
+Literal parameter overrides that disagree with the staged contract are rejected.
+It receives no public IP or inbound SSH access. Outbound HTTPS through NAT is
+still required for Azure/platform and signed package/image sources; this is not
+an air-gapped design. This path passed live application, private log-query and
+retained-state acceptance in West Europe.
+
+Source transfers require LF shell line endings; the UI's Git attributes preserve
+them on checkout, and the transfer fails locally if it finds CRLF shell files.
+The noninteractive runner sets its own private `HOME` for azd/tool configuration.
+
+The staging template preserves Azure platform DNS/metadata connectivity without
+invalid `Allow` rules for the special `AzurePlatformDNS`/`AzurePlatformIMDS` tags.
+Its Key Vault enables purge protection: after cleanup, the deleted vault's name
+remains reserved for its seven-day recovery period.
+
+## Local deployment - PowerShell
+
+Requires Docker Desktop/Engine 29+ with Compose and Edge or Chrome.
+No Azure account is needed; Windows PowerShell 5.1 or PowerShell 7 works.
+
+```powershell
+git clone --branch main --single-branch https://github.com/taomar/citadelUI-github.git
+cd .\citadelUI-github\CitadelUI
+if (-not (Test-Path container.env)) { Copy-Item container.env.example container.env }
 .\scripts\start.ps1
 ```
 
-Open <http://127.0.0.1:4173>.
+Open <http://127.0.0.1:4173>. Use `.\scripts\logs.ps1` for logs and
+`.\scripts\stop.ps1` to stop.
 
-The port is fixed. Retained directory handles are bound to the exact origin, so
-changing the port makes the browser forget which folders you granted. If the port
-is occupied, stop the process using it rather than changing ports.
+## Local deployment - Bash
 
-Requirements are Docker with Compose, and Microsoft Edge or Google Chrome — the
-File System Access API is what grants the browser access to a repository folder.
+Requires Docker Desktop/Engine 29+ with Compose, Bash and Edge or Chrome.
 
-| Local setting | Purpose |
-| --- | --- |
-| `CITADEL_DATA_PATH` | Host directory bound to `/data`. Defaults to `./.data`. |
-| `CITADEL_ALLOWED_HOST` | Exact `Host` header to accept. No scheme, no trailing slash. |
-| `CITADEL_ALLOWED_ORIGIN` | Exact `Origin` to accept on state-changing requests. |
-| `CITADEL_IMAGE` | Image tag to run, if not building locally. |
-
-`scripts\status.ps1`, `scripts\logs.ps1` and `scripts\stop.ps1` cover local
-operation.
-
----
-
-## Updating and removing
-
-Ship a code change to an existing deployment:
-
-```
-cd CitadelUI
-azd deploy
+```bash
+set -euo pipefail
+git clone --branch main --single-branch https://github.com/taomar/citadelUI-github.git
+cd citadelUI-github/CitadelUI
+if [ ! -f container.env ]; then cp container.env.example container.env; fi
+if [ "$(uname -s)" = "Linux" ]; then
+  sudo install -d -m 0700 -o 10001 -g 10001 .data
+fi
+bash scripts/start.sh
 ```
 
-Rebuild infrastructure without redeploying the image with `azd provision`. Remove
-everything with:
+Open <http://127.0.0.1:4173>. Use
+`docker compose --env-file container.env logs --tail 200 --follow app` for logs
+and `docker compose --env-file container.env down` to stop.
 
+Keep port **4173** because browser folder permissions are origin-bound.
+Data defaults to `CitadelUI/.data`; stopping retains it. If you change
+`CITADEL_DATA_PATH` in `container.env`, prepare that directory instead; Linux
+requires UID/GID `10001:10001` (adjust for rootless Docker).
+
+## Redeploy an existing Citadel UI container app
+
+From `CitadelUI`, select the original environment, then update only its image:
+
+```powershell
+azd env select '<original-environment-name>'
+.\scripts\deploy-image.ps1
 ```
-azd down --force --purge
-```
 
-`--purge` matters. Without it the Key Vault is left soft-deleted and its name stays
-reserved.
+On a new checkout, use `azd env refresh '<original-environment-name>'` to recover
+the deployment's environment first. The script preserves mounts, identity,
+network and owner state, and records the image for later reprovisioning.
+Do not create a new environment to update an existing app.
 
----
-
-## Troubleshooting
-
-**The container starts and immediately exits.**
-`/data` is not mounted, or not writable by the container user. The application
-requires it to boot.
-
-**Every request returns 421.**
-The `Host` header does not match what the server was told to expect. Check
-`CITADEL_ALLOWED_HOST`: no scheme, no trailing slash, and no port unless the
-browser sends one. Container Apps terminates TLS on 443 and browsers omit the
-default port, so adding `:443` rejects every request including the health probes.
-
-**Saves fail with 403.**
-The browser's `Origin` does not match `CITADEL_ALLOWED_ORIGIN`. Usually a scheme
-mismatch after moving from a local `http` address to a deployed `https` one.
-
-**The file share mount is refused with `mount error(13)`.**
-Subscription policy is denying the storage account shared-key access. The resource
-group needs its exemption tag before the account is created. The deployment applies
-the tag and reads it back, so this is reported rather than silent.
-
-**The image fails to push with a 401.**
-The image is built in the registry, not locally, precisely to avoid this. Confirm
-`remoteBuild: true` is still set under `docker:` in `azure.yaml`.
-
-**The VNet deployment is rejected before anything is created.**
-The subnet is not suitable, and the deployment refuses rather than working around
-it. Check it is in the same region, delegated to `Microsoft.App/environments`, at
-least a `/27`, and not already in use by something else. The deployment never
-creates or modifies network resources, so all of this has to be true beforehand.
-
-**The application deployed privately but nothing can reach it.**
-That is the topology working. There is no public endpoint. Reach it from inside
-the VNet, or from a network peered, VPN- or ExpressRoute-connected to it. Confirm
-which topology you got by reading `SERVICE_CITADELUI_NETWORK` from
-`azd env get-values`.
-
-**It asks to create an owner again after every restart.**
-`/data` is ephemeral. The owner record lives there.
-
-**The owner password is lost.**
-There is no reset and no second account, by design. Recovering access means
-redeploying with fresh state.
-
-**GitHub connections disappear when the browser is closed.**
-No credential key is mounted, so connections are held in memory only. Create the
-Key Vault secret named by `credentialSecretName`.
+Review ownership before `azd down`. Never delete or purge shared resources or
+their resource groups to remove this UI.

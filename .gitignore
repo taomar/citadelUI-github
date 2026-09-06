@@ -446,6 +446,9 @@ CitadelUI/.srv.log
 !CitadelUI/test/
 !CitadelUI/test/**
 
+# Citadel UI shell line-ending rules are source, despite the .git* rule.
+!CitadelUI/.gitattributes
+
 # Local agent recovery checkpoint
 /AGENT_PROGRESS.md
 

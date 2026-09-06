@@ -1,15 +1,17 @@
 # Citadel UI
 
-A fully local, containerized editor for user-selected Citadel repositories.
+A containerized editor for user-selected Citadel repositories, run locally or
+hosted on Azure Container Apps.
 Citadel UI presents `.bicepparam` files and their associated APIM policy XML as
 explained forms and writes surgical changes without disturbing unrelated
 comments or formatting.
 
 One container manages any number of user-labeled environments. Microsoft Edge
 or Google Chrome grants repository access through the File System Access API;
-the container never receives a source mount, Docker socket, cloud
-credential, or broad host filesystem access. Citadel UI never contacts Azure,
-authenticates, deploys, sends telemetry, or checks for updates.
+the container never receives a source mount, Docker socket, operator cloud
+credential, or broad host filesystem access. Citadel UI does not deploy the
+gateway or send telemetry. An Azure-hosted instance uses its managed identity
+only to read the optional credential-encryption key from Key Vault.
 
 ---
 
@@ -21,17 +23,68 @@ Requirements:
 - Microsoft Edge or Google Chrome desktop.
 - A user-owned directory for durable Citadel UI data.
 
-From PowerShell:
+Clone **main**, which contains Citadel UI; no sample branch is needed.
+
+### PowerShell
 
 ```powershell
-cd CitadelUI
-Copy-Item container.env.example container.env
+git clone --branch main --single-branch https://github.com/taomar/citadelUI-github.git
+Set-Location .\citadelUI-github\CitadelUI
+if (-not (Test-Path container.env)) { Copy-Item container.env.example container.env }
 .\scripts\start.ps1
 ```
 
+### Bash
+
+```bash
+git clone --branch main --single-branch https://github.com/taomar/citadelUI-github.git
+cd citadelUI-github/CitadelUI
+if [ ! -f container.env ]; then cp container.env.example container.env; fi
+# Docker Engine on Linux needs the bind directory writable by container UID 10001.
+if [ "$(uname -s)" = "Linux" ]; then
+  sudo install -d -m 0700 -o 10001 -g 10001 .data
+fi
+bash scripts/start.sh
+```
+
+Choose one shell, not both. For an existing checkout, skip the clone and enter
+its `CitadelUI` directory. Both launchers wait for a healthy container before
+reporting success. Compose reads `CITADEL_DATA_PATH` from `container.env` or the
+shell; if you customize it on Linux, prepare that directory instead of `.data`.
+
 Open <http://127.0.0.1:4173>. The origin and port are fixed because retained
 directory handles are origin-bound. If the port is occupied, stop the conflicting
-process rather than changing ports.
+process you own rather than changing ports.
+
+## Deploy to Azure
+
+The [deployment guide](../guides/deployment.md) contains complete commands for
+fresh private-VNet and public deployments, deployment on an existing subnet with
+named resource reuse, and separate local PowerShell and Bash paths. Unnamed
+resources are created using defaults. Container Apps, networking, Key Vault, Log
+Analytics, Container Registry, storage/Azure Files and managed identity can be
+existing. A reused Container Apps environment retains its network and logging
+configuration.
+
+Hosted deployments use the UI's owner sign-in. The credential-encryption key is
+kept in Key Vault: setup creates it only if absent, preserves it on redeployment,
+and never prints it. An existing configured UI app can also be updated using the
+guide's image-only procedure without replacing its persistent state.
+
+Fresh public deployment, native Bicep parameter-file input, image-only updates
+and protected-resource reuse passed live acceptance in West Europe. The protected
+path kept service settings unchanged and retained its owner, data and key after
+redeployment. Its temporary private VM is a build/test host, not the UI runtime.
+Fresh private-network creation remains an unproven live path.
+
+Run Azure deployment commands from **`CitadelUI/`**, never from the repository
+root: the root `azure.yaml` deploys the gateway, not this UI.
+
+Edit `infra/main.bicepparam` for deployment inputs. azd reads that file natively;
+the preprovision hook synchronizes evaluated nonsecret settings into the selected
+environment before validating resource reuse. Replace its environment-default
+expressions with literals for explicit choices. Use `scripts\deploy-image.ps1`
+for image-only updates instead of copying registry build/update commands.
 
 ## Signing in
 
@@ -68,7 +121,10 @@ remain visible with their Local paths and each profile asks the user to reconnec
 its folder.
 
 Use `scripts\status.ps1`, `scripts\logs.ps1`, and `scripts\stop.ps1` for local
-operation. Direct `node server/index.mjs` execution is developer-only.
+operation in PowerShell. In Bash, use `docker compose --env-file container.env ps`,
+`docker compose --env-file container.env logs --tail 200 --follow app`, and
+`docker compose --env-file container.env down` from `CitadelUI/`.
+Direct `node server/index.mjs` execution is developer-only.
 
 ---
 

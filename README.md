@@ -6,6 +6,94 @@ The configuration surface for the Citadel AI Hub Gateway.
 
 ---
 
+## Start with a clone
+
+Clone **main** of this repository. These instructions deploy **Citadel UI only**;
+they do not use sample branches or deploy the gateway.
+
+```text
+git clone --branch main --single-branch https://github.com/taomar/citadelUI-github.git
+cd citadelUI-github
+```
+
+The application and its deployment live in **`CitadelUI/`**. Never run `azd up`
+at the repository root: its `azure.yaml` belongs to the gateway.
+
+## Run locally
+
+Install Docker Desktop or Docker Engine 29+ with Compose, start Docker, and use
+Microsoft Edge or Google Chrome. Choose one of these two paths from the cloned
+repository:
+
+### PowerShell
+
+```powershell
+Set-Location .\CitadelUI
+if (-not (Test-Path container.env)) { Copy-Item container.env.example container.env }
+.\scripts\start.ps1
+```
+
+### Bash
+
+```bash
+cd CitadelUI
+if [ ! -f container.env ]; then cp container.env.example container.env; fi
+# Linux Docker Engine: give the container's non-root user its data directory.
+if [ "$(uname -s)" = "Linux" ]; then
+  sudo install -d -m 0700 -o 10001 -g 10001 .data
+fi
+bash scripts/start.sh
+```
+
+Both launchers build the image, start the same container, and wait for it to be
+healthy. Open <http://127.0.0.1:4173> and create the container's owner account.
+Keep port **4173**: local folder permissions are tied to that exact browser
+origin. State is stored in `CitadelUI/.data` by default; for a custom
+`CITADEL_DATA_PATH`, prepare that directory instead.
+
+## Deploy to Azure
+
+Choose a path below. Edit **`CitadelUI/infra/main.bicepparam`** for deployment
+settings; azd reads it and the hook synchronizes inputs into its environment.
+Each linked section starts from a fresh clone and ends at the deployed app. Azure
+examples use PowerShell 7.4+, Azure CLI and, where provisioning is needed, Azure
+Developer CLI (`azd`). Images are built in Azure Container Registry; no local
+Docker daemon is needed for Azure deployment.
+
+| Deployment path | Complete commands |
+| --- | --- |
+| Fresh Azure deployment behind a new VNet | [Scenario 1: private mode](./guides/deployment.md#fresh-azure-deployment) |
+| Fresh Azure deployment on a public endpoint | [Scenario 1: public mode](./guides/deployment.md#fresh-azure-deployment) |
+| Deployment on an existing subnet and existing resources | [Reuse named resources; create anything unnamed](./guides/deployment.md#deploy-on-an-existing-subnet-and-resources) |
+| Local deployment through PowerShell | [Complete PowerShell commands](./guides/deployment.md#local-deployment---powershell) |
+| Local deployment through Bash | [Complete Bash commands](./guides/deployment.md#local-deployment---bash) |
+
+**Create or reuse:** Container Apps, VNet/subnet, Azure Container Registry, Key
+Vault, Log Analytics, storage/Azure Files and managed identity support existing
+resources. Leave existing-resource selectors empty to create the defaults.
+A reused Container Apps environment keeps its own network and logging settings.
+
+All Azure paths use Citadel UI's **owner sign-in**, with the credential-encryption
+secret retained in **Key Vault**. The deployment creates the key only when absent
+and never replaces it during a normal redeployment.
+
+For an already configured UI container app, use
+[image-only redeployment](./guides/deployment.md#redeploy-an-existing-citadel-ui-container-app)
+to preserve its mounts, identity, network and owner state. None of these paths
+deploys the gateway or sample applications.
+
+Fresh public deployment and the native parameter-file workflow passed live
+`azd up` tests. Protected-resource reuse also passed live private DNS, sign-in,
+storage, Key Vault and log-query checks, including a repeat deployment with
+unchanged shared settings and retained owner/data/key state. The azd hook
+preserves or initializes the Key Vault key before image deployment.
+
+Private endpoints require an in-network build/deployment host. The guide's
+temporary VM is for isolated staging/testing, **not the Citadel UI runtime**;
+an existing connected workstation or private CI runner can serve that role.
+
+---
+
 ## Overview
 
 Citadel Control Plane is a containerised, browser-based editor for the declarative
@@ -13,9 +101,11 @@ configuration of a Citadel AI Hub Gateway deployment. It presents Bicep paramete
 files and their associated API Management policy documents as explained forms, and
 writes surgical changes that leave unrelated comments and formatting untouched.
 
-It is an operations tool, not a runtime component. It never contacts Azure,
-authenticates to it, deploys, sends telemetry, or checks for updates. The gateway
-it configures is deployed by the accelerator's own pipeline, exactly as before.
+It is an operations tool, not a gateway runtime component. It does not deploy the
+gateway, send application telemetry, or check for updates. When hosted on Azure,
+its managed identity can read a credential-encryption key from Key Vault; the
+local default needs no Azure access. The gateway it configures is deployed by
+the accelerator's own pipeline, exactly as before.
 
 ## How it completes the Citadel AI Hub
 
@@ -54,7 +144,7 @@ Generated and unrelated directories are ignored.
 
 Repository access is granted by the browser through the File System Access API, or
 by a GitHub token scoped to the repositories it should reach. The container
-receives no source mount, no Docker socket, no cloud credential and no broad host
+receives no source mount, no Docker socket, no operator cloud credential and no broad host
 filesystem access.
 
 ## What it looks like

@@ -21,7 +21,9 @@ infra:
   module: main
 
 hooks:
-  # The resource group has to exist, and has to be tagged, before provisioning.
+  # The hooks first validate deployment inputs and read existing resources,
+  # without changing them. Only then may the UI resource group be created or
+  # tagged. No tags are written to separately selected existing-resource groups.
   #
   # This tenant enforces `allowSharedKeyAccess = false` on storage accounts, and
   # enforces it silently: the request to set it true is accepted and the value
@@ -31,16 +33,16 @@ hooks:
   # `SecurityControl: Ignore` exempts it, and the tag must be there before the
   # storage account is evaluated, so it cannot be applied afterwards by hand.
   preprovision:
-    windows:
-      shell: pwsh
-      run: ./scripts/ensure-resource-group.ps1
-      continueOnError: false
-      interactive: false
-    posix:
-      shell: sh
-      run: ./scripts/ensure-resource-group.sh
-      continueOnError: false
-      interactive: false
+    shell: pwsh
+    run: ./scripts/prepare-deployment.ps1
+    continueOnError: false
+    interactive: false
+  # Initialize the key before the first UI image starts, including during azd up.
+  postprovision:
+    shell: pwsh
+    run: ./scripts/ensure-credential-key.ps1
+    continueOnError: false
+    interactive: false
 
 services:
   citadelui:
