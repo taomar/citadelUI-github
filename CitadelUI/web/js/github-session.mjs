@@ -142,6 +142,36 @@ export async function listGitHubRepositories() {
   return githubRequest('/api/github/repos');
 }
 
+export async function getGitHubRepository(repositoryId) {
+  return githubRequest(`/api/github/repos/${encodeURIComponent(repositoryId)}`);
+}
+
+export async function prepareGitHubRepository(payload) {
+  return githubRequest('/api/github/repository-creations', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listGitHubRepositoryCreations() {
+  return githubRequest('/api/github/repository-creations');
+}
+
+export async function gitHubRepositoryCreationStatus(id) {
+  return githubRequest(`/api/github/repository-creations/${encodeURIComponent(id)}`);
+}
+
+function repositoryCreationAction(id, action) {
+  return githubRequest(`/api/github/repository-creations/${encodeURIComponent(id)}/${action}`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export const startGitHubRepositoryCreation = (id) => repositoryCreationAction(id, 'start');
+export const resumeGitHubRepositoryCreation = (id) => repositoryCreationAction(id, 'resume');
+export const pauseGitHubRepositoryCreation = (id) => repositoryCreationAction(id, 'pause');
+
 export async function listGitHubBranches(repositoryId) {
   return githubRequest(`/api/github/repos/${encodeURIComponent(repositoryId)}/branches`);
 }

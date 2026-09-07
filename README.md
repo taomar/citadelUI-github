@@ -101,6 +101,12 @@ configuration of a Citadel AI Hub Gateway deployment. It presents Bicep paramete
 files and their associated API Management policy documents as explained forms, and
 writes surgical changes that leave unrelated comments and formatting untouched.
 
+Workspace setup offers **Existing GitHub Repo**, **New GitHub Repo**, and **Local**.
+New GitHub Repo can initialize a private repository from the upstream `citadel-v1`
+snapshot (or an overridden GitHub source), then continue through the same
+repository and branch selection. Its temporary creation token requires more
+access than the normal editor token; the inline help explains that distinction.
+
 After opening a destination workspace, **Migrate Citadel Configuration** can
 compare older local, public GitHub, or private GitHub parameters against its
 current templates. It proposes values only for current parameter names, reports
@@ -148,6 +154,10 @@ The browser traverses only a directory or repository the operator selects, and t
 scope is limited to `.bicepparam` files, the Bicep templates those parameters refer
 to for schema, and the API Management policy XML belonging to an access contract.
 Generated and unrelated directories are ignored.
+
+The explicit New GitHub Repo initialization step copies the complete checked-in
+source snapshot, including binary assets and licenses, only into its newly
+created private repository. This does not widen the normal editor's file scope.
 
 Repository access is granted by the browser through the File System Access API, or
 by a GitHub token scoped to the repositories it should reach. The container

@@ -121,6 +121,53 @@ test('oversized GitHub responses are refused before parsing', async () => {
   );
 });
 
+test('repository creation transport keeps the deadline through the response body', async () => {
+  const client = new GitHubApiClient({
+    timeoutMs: 15,
+    fetch: async (_url, { signal }) => ({
+      status: 200,
+      headers: new Headers(),
+      body: (async function* () {
+        await new Promise((_resolve, reject) => signal.addEventListener('abort', () =>
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true }));
+        yield Buffer.from('{}');
+      })(),
+    }),
+  });
+  await assert.rejects(client.request('/user'), (error) => error.code === 'GITHUB_TIMEOUT');
+});
+
+test('repository creation transport exposes bounded retry metadata without misclassifying permission errors', async () => {
+  const client = new GitHubApiClient({
+    fetch: async () => new Response(JSON.stringify({ message: 'Secondary rate limit exceeded' }), {
+      status: 403,
+      headers: { 'retry-after': '60', 'x-ratelimit-remaining': '123', 'x-ratelimit-reset': '1800000000' },
+    }),
+  });
+  await assert.rejects(client.request('/user'), (error) =>
+    error.code === 'GITHUB_RATE_LIMITED' && error.retryAfterSeconds === 60 &&
+    error.rateResetAt === new Date(1800000000 * 1000).toISOString());
+  const denied = new GitHubApiClient({
+    fetch: async () => new Response(JSON.stringify({ message: 'Resource not accessible' }), { status: 403 }),
+  });
+  await assert.rejects(denied.request('/user'), (error) => error.code === 'GITHUB_REQUEST_FAILED');
+});
+
+test('repository creation transport permits fixed-host Actions configuration without following redirects', async () => {
+  let sent;
+  const client = new GitHubApiClient({
+    fetch: async (url, options) => {
+      sent = { url, method: options.method, body: JSON.parse(options.body), redirect: options.redirect };
+      return new Response(null, { status: 204 });
+    },
+  });
+  await client.request('/repos/owner/new-repo/actions/permissions', { method: 'PUT', body: { enabled: false } });
+  assert.deepEqual(sent, {
+    url: 'https://api.github.com/repos/owner/new-repo/actions/permissions',
+    method: 'PUT', body: { enabled: false }, redirect: 'manual',
+  });
+});
+
 test('classic tokens are refused and malformed tokens never reach GitHub', () => {
   assert.equal(classifyToken(TEST_TOKEN).kind, 'fine-grained');
   assert.throws(
@@ -2502,4 +2549,3 @@ test('disconnect erases the credential so later calls fail closed', async () => 
     (error) => error.code === 'GITHUB_SESSION_EXPIRED'
   );
 });
-

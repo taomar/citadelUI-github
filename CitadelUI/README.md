@@ -149,6 +149,11 @@ registry metadata API; it is never used to open, read, or write a repository.
 
 Capability signatures, not folder names, identify the guided areas below.
 
+The **New GitHub Repo** setup path is a separate, explicitly requested full-repository
+copy. It reads the checked-in snapshot of a GitHub source and writes only to the
+new private repository created for that operation. It does not widen the
+Bicep/XML editor's read/write scope or access any local source folder.
+
 ## Migrate Citadel Configuration
 
 Open the **current destination workspace** first, then choose **Migrate Citadel Configuration**
@@ -484,6 +489,30 @@ workflow, not a claim of semantic compatibility with a release.
 An environment can be a selected local folder or a GitHub repository. Both are
 reached the same way: from **Saved workspaces** on the landing page, or through
 **Add workspace** for a new one.
+
+Choose **Existing GitHub Repo** for the current repository picker, **New GitHub Repo** to
+initialize a private repository first, or **Local** for the existing folder flow.
+New GitHub Repo defaults to the upstream `citadel-v1` source URL, lets you override
+that source and name the destination, and creates a complete fresh snapshot on
+`main` in the connected personal account. It then rejoins the normal repository,
+explicit branch, details and attachment-review flow.
+
+New GitHub Repo uses a temporary creation token with All repositories access,
+Administration read/write and Contents read/write; Metadata read-only is
+automatic. Workflows read/write is needed only for sources containing workflow
+files, whose Actions are disabled before import and left disabled for review.
+Regular Existing GitHub Repo editing still needs only selected-repository Contents
+read/write. Narrow or replace the creation token after setup.
+
+Creation is private-only and refuses name collisions. Source preflight is
+read-only; repository creation needs its own explicit confirmation. A non-`main`
+bootstrap branch is renamed after the snapshot is published, never deleted.
+Paused or interrupted operations retain any private repository already created;
+the operation journal stores resumable metadata, never credentials or copied
+file contents. **Previous setup
+attempts** resumes the same operation after reconnecting the same account. See
+[the creation guide](../guides/using-the-control-plane.md#create-a-new-private-github-repository)
+for supported file modes, source-size limits and recovery behavior.
 
 ### Saved workspaces
 

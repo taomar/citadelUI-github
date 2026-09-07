@@ -22,6 +22,7 @@ export const ACTIVITY_LABELS = Object.freeze({
   'connection.persistence-disabled': 'Encrypted persistence disabled',
   'connection.remove': 'Connection removed',
   'repository.validate': 'Repository validated',
+  'repository.create': 'Private repository setup',
   'repository.attach': 'Repository attached',
   'repository.detach': 'Workspace detached',
   'environment.open': 'Workspace opened',
@@ -40,6 +41,9 @@ export const ACTIVITY_REASON_LABELS = Object.freeze({
   'persistence-unavailable': 'encrypted storage is unavailable',
   'rate-limited': 'GitHub rate-limited the request',
   'repository-renamed': 'the repository was renamed',
+  'repository-created': 'the private snapshot was verified',
+  'repository-create-refused': 'setup was refused; no existing repository was overwritten',
+  'repository-create-failed': 'setup did not complete; check the retained attempt',
   unreachable: 'GitHub could not be reached',
 });
 

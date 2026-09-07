@@ -30,23 +30,23 @@ in one click.
 
 ![Citadel workspaces](../docs/images/03-workspaces.png)
 
-Adding one is a guided sequence. Nothing is read until the repository is confirmed
-to carry the capabilities the editors need — an incomplete tree is rejected by
-name rather than half-opened.
+Adding one is a guided sequence. Choose **Existing GitHub Repo**, **New GitHub Repo**, or
+**Local**. The repository is checked for the capabilities the editors need before
+it is attached; an incomplete tree is rejected rather than half-opened.
 
 ![Add workspace](../docs/images/04-add-workspace.png)
 
 A **local folder** is granted through the browser's folder picker; the handle stays
-in the browser profile, because it cannot be moved into a container. A **GitHub
-repository** needs a fine-grained token with Contents read and write, limited to
+in the browser profile, because it cannot be moved into a container. **Existing
+GitHub Repo** needs a fine-grained token with Contents read and write, limited to
 the repositories it should reach. Saves become one commit on a working branch.
 
 ![GitHub connection](../docs/images/05-github-connection.png)
 
 ### Add a GitHub token
 
-Choose **Add workspace** (or **Add your first workspace**), then **GitHub
-repository**. If connections already exist, choose **Add a new connection**.
+Choose **Add workspace** (or **Add your first workspace**), then **Existing
+GitHub Repo**. If connections already exist, choose **Add a new connection**.
 Enter a **New connection name** first to enable the **GitHub token** field, paste
 your fine-grained personal access token, and select **Continue**. Choose a
 repository and explicitly select its branch, such as `main`.
@@ -158,6 +158,87 @@ Migration does not run deployment or upgrade scripts, clone Access Contract
 policies, or translate resource outputs between upgrade files. For exact target
 paths, supported formats, limits, and the pinned older `main` sample, see the
 [migration reference](../CitadelUI/README.md#migrate-citadel-configuration).
+
+---
+
+## Create a new private GitHub repository
+
+**New GitHub Repo** creates a repository in the connected token's personal account.
+It is always **private**; there is no public option or organization-owner selector.
+An existing repository with the requested name is never overwritten.
+
+1. Connect the account with a temporary creation token. **Token help** in this
+   mode explains the additional permissions below. Use **Update token for
+   repository creation** if a saved connection only covers existing repositories.
+2. Enter the new repository name. **Source repository URL** starts at
+   `https://github.com/mohamedsaif/ai-hub-gateway-solution-accelerator/blob/citadel-v1/`.
+   You can replace it with another GitHub repository or branch URL. The explicit
+   `citadel-v1` ref is used, not the upstream repository's default `main`.
+   Use an unencoded `https://github.com/owner/repository` or `/tree/ref` URL.
+   File/subdirectory URLs, credentials, query strings, fragments and other hosts
+   are not accepted.
+3. Choose **Check source**. Citadel pins a commit, checks compatibility and the
+   complete file snapshot, and shows its file count and size. This creates
+   nothing on GitHub. Review it, then choose **Create private repository**.
+4. After the full snapshot is verified, **Continue to repository** returns to the
+   normal repository, branch, details and attachment review steps. Branch choice
+   and later editing behave exactly as for Existing GitHub Repo.
+
+Creation needs **All repositories** access under the connected personal account:
+the new repository cannot be selected before it exists. Grant **Administration:
+Read and write** to create it and **Contents: Read and write** to populate it.
+**Metadata: Read-only** is automatic. This is broader than the normal editor
+token; afterward narrow it to the new repository and remove Administration, or
+reconnect with a regular Contents-only token.
+
+Only if the source preview reports `.github/workflows` files, also grant
+**Workflows: Read and write**. Citadel disables Actions on that new repository
+before copying those files and leaves Actions disabled for your review.
+No Actions, Pull requests or organization permission is required.
+
+The result is a fresh snapshot on `main`, not a fork or a copy of upstream commit
+history. All checked-in files, including binary assets, dotfiles and license
+notices, are part of the copy; the editor's normal Bicep/XML filter is not used.
+Unsupported files, unsafe URLs, oversized snapshots and incomplete trees are
+reported rather than silently omitted.
+
+GitHub initially creates a small bootstrap commit. If the account's default
+branch is not `main`, Citadel publishes the verified snapshot on that known
+branch and then renames it to `main`. It does not delete a bootstrap ref or force
+a branch update. A concurrent branch or default-branch change pauses setup
+instead of being overwritten.
+
+Supported source files are regular Git files (`100644`) and executable files
+(`100755`); bytes and modes are preserved. Symlinks, submodules and Git LFS
+pointers are rejected before repository creation.
+
+| Source limit | Maximum |
+| --- | --- |
+| Total checked-in file bytes | 64 MiB |
+| Individual file | 8 MiB |
+| Files | 10,000 |
+| Directories | 2,000 |
+| Git manifest entries | 20,000 |
+| Manifest response | 8 MiB |
+| One directory's encoded tree request | 16 MiB |
+
+The tree-request limit includes JSON escaping, so a source below the total-byte
+limit can still exceed a per-directory limit. These limits are enforced during
+preflight, not by dropping files. Import writes are paced and pause at the
+importer's rolling 60-per-minute or 450-per-hour budget, or when GitHub reports
+a rate limit.
+
+**Pause setup** preserves progress. If a repository has already been created,
+it remains private and is never automatically deleted. Return through **New
+GitHub Repo**, open **Previous setup attempts**, and resume the same attempt instead
+of creating another. After a container restart or token expiry, reconnect the
+same account first. Permission and rate-limit failures are shown with the
+retained repository; a successful import is not reported until the complete
+snapshot is verified.
+
+If recovery state cannot be written, the importer stops further GitHub requests.
+Restore access to the persistent data directory, then resume the retained
+attempt. Confirmed publication is never replayed over a later external reset.
 
 ---
 

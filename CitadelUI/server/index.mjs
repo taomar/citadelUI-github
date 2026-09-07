@@ -797,6 +797,7 @@ export async function createCitadelServer(options = {}) {
       ? null
       : options.githubRoutes ||
         new GitHubRoutes({
+          dataRoot,
           registryStore,
           audit: new GitHubAuditStore({ dataRoot }),
           profiles: connectionStore,
@@ -808,6 +809,7 @@ export async function createCitadelServer(options = {}) {
   await registryStore.initialize();
   await connectionStore.initialize();
   await credentialVault.initialize();
+  await githubRoutes?.creations?.initialize();
   const indexHtml = await readFile(resolve(webRoot, 'index.html'), 'utf8');
   /**
    * The bootstrap is chosen per request now, not baked once at startup.
@@ -946,6 +948,7 @@ export async function createCitadelServer(options = {}) {
   server.headersTimeout = options.headersTimeout ?? 10_000;
   server.requestTimeout = options.requestTimeout ?? 30_000;
   server.keepAliveTimeout = options.keepAliveTimeout ?? 5_000;
+  server.once('close', () => githubRoutes?.creations?.shutdown());
 
   return {
     server,

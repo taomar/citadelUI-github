@@ -384,8 +384,55 @@ test('migration anonymous GitHub client cannot be given a token or mutation by a
   let calls = 0;
   const client = new GitHubApiClient({ fetch: async () => { calls++; throw new Error('Should not fetch'); } });
   await assert.rejects(client.request('/repos/example/repo', { anonymous: true, token: 'synthetic-not-a-credential' }));
-  await assert.rejects(client.request('/repos/example/repo', { anonymous: true, method: 'POST', body: {} }));
+  for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+    await assert.rejects(client.request('/repos/example/repo', { anonymous: true, method, body: {} }), {
+      code: 'PUBLIC_DONOR_READ_ONLY',
+    });
+    await assert.rejects(client.request('/repos/example/repo', { migrationRead: true, method, body: {} }), {
+      code: 'GITHUB_DONOR_READ_ONLY',
+    });
+  }
   assert.equal(calls, 0);
+});
+
+test('migration donor errors discard upstream bodies while repository creation keeps PUT support', async () => {
+  for (const mode of ['anonymous', 'migrationRead']) {
+    for (const limited of [false, true]) {
+      let read = false;
+      let cancelled = false;
+      const client = new GitHubApiClient({
+        fetch: async () => ({
+          status: 403,
+          headers: new Headers(limited ? { 'retry-after': '60' } : {}),
+          body: {
+            cancel: async () => { cancelled = true; },
+            async *[Symbol.asyncIterator]() {
+              read = true;
+              yield Buffer.from('Private upstream error details');
+            },
+          },
+        }),
+      });
+      await assert.rejects(client.request('/repos/example/repo', { [mode]: true }), {
+        code: limited ? 'PUBLIC_DONOR_RATE_LIMIT' : 'PUBLIC_DONOR_READ_FAILED',
+        status: limited ? 429 : 403,
+      });
+      assert.equal(read, false);
+      assert.equal(cancelled, true);
+    }
+  }
+  const calls = [];
+  const client = new GitHubApiClient({
+    fetch: async (_url, options) => {
+      calls.push({ method: options.method, body: options.body });
+      return new Response(null, { status: 204 });
+    },
+  });
+  const result = await client.request('/repos/example/repo/actions/permissions', {
+    method: 'PUT', body: { enabled: false },
+  });
+  assert.equal(result.status, 204);
+  assert.deepEqual(calls, [{ method: 'PUT', body: '{"enabled":false}' }]);
 });
 
 function callHttp(port, path, headers = {}, method = 'GET') {

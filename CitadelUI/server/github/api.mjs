@@ -84,6 +84,22 @@ function describeStatus(status, fallback) {
   return fallback;
 }
 
+function rejectRateLimit(response, rate, message = '') {
+  const retry = response.headers.get('retry-after');
+  const seconds = retry && /^\d+$/.test(retry) ? Math.min(Number(retry), 86_400) : null;
+  if (
+    response.status !== 429 &&
+    !(response.status === 403 && (rate.remaining === 0 || seconds !== null || /rate limit|abuse detection/i.test(message)))
+  ) return;
+  const rateResetAt = Number.isFinite(rate.reset) && rate.reset > 0 && rate.reset < 8_640_000_000
+    ? new Date(rate.reset * 1000).toISOString()
+    : null;
+  throw githubError(response.status, 'GITHUB_RATE_LIMITED', 'GitHub rate limit reached. Wait before resuming this operation.', {
+    retryAfterSeconds: seconds,
+    rateResetAt,
+  });
+}
+
 async function readBounded(response, limit) {
   const declared = Number(response.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > limit) {
@@ -139,7 +155,7 @@ export class GitHubApiClient {
     if (options.migrationRead && (method !== 'GET' || options.body !== undefined)) {
       throw githubError(400, 'GITHUB_DONOR_READ_ONLY', 'GitHub donor operations are read-only.');
     }
-    if (!['GET', 'POST', 'PATCH', 'DELETE'].includes(method)) {
+    if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
       throw githubError(400, 'INVALID_GITHUB_METHOD', 'Unsupported GitHub method.');
     }
     const headers = {
@@ -157,6 +173,7 @@ export class GitHubApiClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     let response;
+    let bytes;
     try {
       response = await this.fetch(target.href, {
         method,
@@ -166,8 +183,29 @@ export class GitHubApiClient {
         signal: controller.signal,
         cache: 'no-store',
       });
+      if (response.status >= 300 && response.status < 400) {
+        throw githubError(502, 'GITHUB_REDIRECT', 'GitHub redirected the request and it was refused.');
+      }
+      if ((options.anonymous || options.migrationRead) && (response.status < 200 || response.status >= 300)) {
+        // Donor failures must not read or echo upstream bodies, even when the
+        // general client supports authenticated writes for repository creation.
+        const limited = response.status === 429 || (response.status === 403 &&
+          (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after')));
+        if (typeof response.body?.cancel === 'function') await response.body.cancel().catch(() => {});
+        throw githubError(
+          limited ? 429 : response.status < 500 ? response.status : 502,
+          limited ? 'PUBLIC_DONOR_RATE_LIMIT' : 'PUBLIC_DONOR_READ_FAILED',
+          limited ? 'GitHub donor rate limit reached.' : 'The GitHub donor read failed.'
+        );
+      }
+      // Keep the deadline active through streaming, not just response headers.
+      bytes = await readBounded(response, options.limit || this.jsonLimit);
     } catch (error) {
-      if (error?.name === 'AbortError') {
+      if (error?.github) {
+        controller.abort();
+        throw error;
+      }
+      if (controller.signal.aborted || error?.name === 'AbortError') {
         throw githubError(504, 'GITHUB_TIMEOUT', 'GitHub did not respond in time.');
       }
       throw githubError(502, 'GITHUB_UNREACHABLE', 'Citadel UI could not reach GitHub.');
@@ -175,36 +213,18 @@ export class GitHubApiClient {
       clearTimeout(timer);
     }
 
-    if (response.status >= 300 && response.status < 400) {
-      // A redirect could move the request to another host or to a renamed
-      // repository. Both are rejected rather than followed.
-      throw githubError(502, 'GITHUB_REDIRECT', 'GitHub redirected the request and it was refused.');
-    }
-
-    if ((options.anonymous || options.migrationRead) && (response.status < 200 || response.status >= 300)) {
-      // Public reads do not echo upstream error bodies or suggest reconnecting
-      // a PAT. GitHub uses both 403 and 429 for anonymous/secondary rate limits.
-      const limited = response.status === 429 || (response.status === 403 &&
-        (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after')));
-      if (typeof response.body?.cancel === 'function') await response.body.cancel().catch(() => {});
-      throw githubError(
-        limited ? 429 : response.status < 500 ? response.status : 502,
-        limited ? 'PUBLIC_DONOR_RATE_LIMIT' : 'PUBLIC_DONOR_READ_FAILED',
-        limited ? 'GitHub donor rate limit reached.' : 'The GitHub donor read failed.'
-      );
-    }
-
-    const limit = options.limit || this.jsonLimit;
-    const bytes = await readBounded(response, limit);
+    const remaining = response.headers.get('x-ratelimit-remaining');
+    const reset = response.headers.get('x-ratelimit-reset');
     const rate = {
-      remaining: Number(response.headers.get('x-ratelimit-remaining')),
-      reset: Number(response.headers.get('x-ratelimit-reset')),
+      remaining: remaining === null ? null : Number(remaining),
+      reset: reset === null ? null : Number(reset),
     };
     const link = response.headers.get('link') || '';
     const ok = response.status >= 200 && response.status < 300;
 
     if (bytes.length === 0) {
       if (ok) return { status: response.status, data: null, link, rate };
+      rejectRateLimit(response, rate);
       throw githubError(
         response.status < 500 ? response.status : 502,
         'GITHUB_REQUEST_FAILED',
@@ -221,6 +241,7 @@ export class GitHubApiClient {
       data = JSON.parse(bytes.toString('utf8'));
     } catch {
       if (!ok) {
+        rejectRateLimit(response, rate);
         throw githubError(
           response.status < 500 ? response.status : 502,
           'GITHUB_REQUEST_FAILED',
@@ -231,6 +252,7 @@ export class GitHubApiClient {
     }
 
     if (!ok) {
+      rejectRateLimit(response, rate, typeof data?.message === 'string' ? data.message : '');
       const detail =
         typeof data?.message === 'string' && data.message.length <= 300
           ? redactSecrets(data.message)

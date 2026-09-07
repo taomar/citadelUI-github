@@ -526,7 +526,7 @@ test('a repository response from a superseded connection is discarded', async ()
   assert.equal(selection.loading, false);
 });
 
-test('no repository or branch name is hardcoded in the shipped application', async () => {
+test('repository and branch names remain selectable outside the explicit New GitHub source default', async () => {
   const { readFile, readdir } = await import('node:fs/promises');
   const { join } = await import('node:path');
   const { fileURLToPath } = await import('node:url');
@@ -551,7 +551,12 @@ test('no repository or branch name is hardcoded in the shipped application', asy
   };
   for (const root of roots) {
     for (const file of await walk(root)) {
-      const text = await readFile(file, 'utf8');
+      let text = await readFile(file, 'utf8');
+      if (file === fileURLToPath(new URL('../shared/repository-source.mjs', import.meta.url))) {
+        const preset = /export const DEFAULT_REPOSITORY_SOURCE =\s*'https:\/\/github\.com\/mohamedsaif\/ai-hub-gateway-solution-accelerator\/blob\/citadel-v1\/';/;
+        assert.match(text, preset, 'New GitHub has the exact requested, overrideable source default');
+        text = text.replace(preset, '');
+      }
       for (const name of forbidden) {
         assert.equal(text.includes(name), false, `${file} must not hardcode ${name}`);
       }
