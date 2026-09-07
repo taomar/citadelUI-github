@@ -43,8 +43,27 @@ the repositories it should reach. Saves become one commit on a working branch.
 
 ![GitHub connection](../docs/images/05-github-connection.png)
 
-If no credential key is mounted, connections last for the session only. The
-dialog says so rather than failing later.
+### Add a GitHub token
+
+Choose **Add workspace** (or **Add your first workspace**), then **GitHub
+repository**. If connections already exist, choose **Add a new connection**.
+Enter a **New connection name** first to enable the **GitHub token** field, paste
+your fine-grained personal access token, and select **Continue**. Choose a
+repository and explicitly select its branch, such as `main`.
+
+Create the token in GitHub's **Settings > Developer settings > Personal access
+tokens > Fine-grained tokens**. Select the intended resource owner and
+**Only select repositories**, with **Contents: Read and write**.
+**Metadata: Read-only** is included automatically. Classic tokens and the OAuth
+token returned by `gh auth token` are not accepted.
+
+Enter the token only in the UI, not in `container.env`, a Compose file, or an Azure
+parameter file. Local-folder workspaces do not need a GitHub token.
+
+The default local deployment has no credential key mounted. This disables only
+**Persist this connection on this device (encrypted)**, not token entry or
+GitHub access. Session-only connections work normally; after a container restart,
+use **Reconnect** on the saved connection and supply a token for the same account.
 
 ---
 

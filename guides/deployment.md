@@ -246,6 +246,12 @@ Data defaults to `CitadelUI/.data`; stopping retains it. If you change
 `CITADEL_DATA_PATH` in `container.env`, prepare that directory instead; Linux
 requires UID/GID `10001:10001` (adjust for rootless Docker).
 
+For either local path, create the owner account in the browser, then follow
+[Add a GitHub token](./using-the-control-plane.md#add-a-github-token) to connect a
+repository. Tokens are entered in the UI, not in `container.env`. A credential
+key is optional: the default local deployment supports session-only connections
+without one; only encrypted persistence is disabled.
+
 ## Redeploy an existing Citadel UI container app
 
 From `CitadelUI`, select the original environment, then update only its image:

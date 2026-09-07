@@ -13,6 +13,8 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { installDom, readText } from './_dom-stub.mjs';
+import { TEST_TOKEN } from './_github-mock.mjs';
+import { RepositorySelection } from '../web/js/github-selection.mjs';
 
 installDom();
 
@@ -21,10 +23,12 @@ const {
   filterWorkspaces,
   presentWorkspaceCatalog,
   relativeTime,
+  runAddWorkspace,
   workspaceRow,
   workspaceStatus,
 } = await import('../web/js/workspace-catalog.mjs');
 const { RESUME_STAGES } = await import('../web/js/stage-progress.mjs');
+const { closeDialog } = await import('../web/js/dialog.mjs');
 
 const styles = readFileSync(new URL('../web/css/components.css', import.meta.url), 'utf8');
 const catalogSource = readFileSync(new URL('../web/js/workspace-catalog.mjs', import.meta.url), 'utf8');
@@ -392,6 +396,150 @@ test('recent activity reads as a sentence, with time, action and target', async 
 });
 
 // ------------------------------------------------------------ the stepper --
+
+function descendants(node) {
+  return [node, ...node.children.flatMap(descendants)];
+}
+
+function connectionControl(id) {
+  const controls = descendants(document.getElementById('modal'))
+    .filter((node) => node.getAttribute('id') === id);
+  assert.equal(controls.length, 1, `${id} must occur exactly once in the displayed dialog`);
+  return controls[0];
+}
+
+async function clickDialogButton(label) {
+  const button = descendants(document.getElementById('modal'))
+    .find((node) => node.tagName === 'BUTTON' && readText(node) === label);
+  assert.ok(button, `${label} must be in the displayed dialog`);
+  assert.equal(button.disabled, false);
+  for (const handler of button.listeners.get('click') || []) {
+    await handler({ target: button });
+  }
+}
+
+async function openConnectionStep(t, { connections = [], available = false, actions = {} } = {}) {
+  t.after(() => closeDialog());
+  runAddWorkspace({
+    connections,
+    vault: { available },
+    rows: [],
+    onDone: () => {},
+    actions: {
+      createSelection: () => new RepositorySelection({
+        listRepositories: async () => ({ repositories: [] }),
+      }),
+      ...actions,
+    },
+  });
+  const choice = descendants(document.getElementById('modal'))
+    .find((node) => node.tagName === 'BUTTON' && readText(node).startsWith('GitHub repository'));
+  assert.ok(choice);
+  choice.click();
+}
+
+for (const available of [false, true]) {
+  test(`new GitHub token input stays in the displayed form with persistence ${available}`, async (t) => {
+    const submitted = [];
+    await openConnectionStep(t, {
+      available,
+      actions: {
+        createConnection: async (value) => {
+          submitted.push(value);
+          assert.equal(connectionControl('catalog-connection-token').value, '');
+          return { login: 'octo-dev', profileId: 'profile-a' };
+        },
+      },
+    });
+    const name = connectionControl('catalog-connection-name');
+    const token = connectionControl('catalog-connection-token');
+    const persist = connectionControl('catalog-connection-persist');
+    assert.equal(token.disabled, true, 'a new connection still needs a name first');
+    name.value = '   ';
+    name.dispatch('input');
+    assert.equal(token.disabled, true);
+    name.value = 'Work account';
+    name.dispatch('input');
+    assert.equal(token.disabled, false);
+    assert.equal(token.parentElement.getAttribute('for'), 'catalog-connection-token');
+    assert.equal(persist.disabled, !available);
+    persist.checked = available;
+    token.value = TEST_TOKEN;
+    await clickDialogButton('Continue');
+    assert.deepEqual(submitted, [{ name: 'Work account', token: TEST_TOKEN, persist: available }]);
+    assert.equal(token.value, '');
+    assert.match(readText(document.getElementById('modal')), /Choose a repository/);
+  });
+}
+
+test('a rejected GitHub token leaves a visible empty input for retry', async (t) => {
+  let attempts = 0;
+  await openConnectionStep(t, {
+    actions: {
+      createConnection: async () => {
+        if (++attempts === 1) throw new Error('The GitHub token was rejected.');
+        return { login: 'octo-dev', profileId: 'profile-a' };
+      },
+    },
+  });
+  const name = connectionControl('catalog-connection-name');
+  name.value = 'Work account';
+  name.dispatch('input');
+  const token = connectionControl('catalog-connection-token');
+  token.value = TEST_TOKEN;
+  await clickDialogButton('Continue');
+  assert.equal(connectionControl('catalog-connection-token'), token);
+  assert.equal(token.value, '');
+  assert.equal(token.disabled, false);
+  assert.match(readText(document.getElementById('modal')), /The GitHub token was rejected/);
+  token.value = TEST_TOKEN;
+  await clickDialogButton('Continue');
+  assert.equal(attempts, 2);
+  assert.match(readText(document.getElementById('modal')), /Choose a repository/);
+});
+
+test('a reconnecting GitHub token stays in its existing connection form', async (t) => {
+  const submitted = [];
+  await openConnectionStep(t, {
+    connections: [dead],
+    actions: {
+      reconnectConnection: async (id, value) => {
+        submitted.push({ id, ...value });
+        return { login: dead.accountLogin, profileId: id };
+      },
+    },
+  });
+  assert.equal(descendants(document.getElementById('modal'))
+    .some((node) => node.getAttribute('id') === 'catalog-connection-name'), false);
+  const token = connectionControl('catalog-connection-token');
+  assert.equal(token.disabled, false);
+  token.value = TEST_TOKEN;
+  await clickDialogButton('Reconnect and continue');
+  assert.deepEqual(submitted, [{ id: dead.id, token: TEST_TOKEN, persist: undefined }]);
+  assert.equal(token.value, '');
+  assert.match(readText(document.getElementById('modal')), /Choose a repository/);
+});
+
+for (const profile of [live, idle]) {
+  test(`a ${profile.status} GitHub connection needs no token input`, async (t) => {
+    const used = [];
+    const use = async (id) => {
+      used.push(id);
+      return { login: profile.accountLogin, profileId: id };
+    };
+    await openConnectionStep(t, {
+      connections: [profile],
+      available: true,
+      actions: { useConnection: use, resumeConnection: use },
+    });
+    assert.equal(descendants(document.getElementById('modal'))
+      .some((node) => node.getAttribute('id') === 'catalog-connection-token'), false);
+    if (profile === live) await clickDialogButton('Continue');
+    else await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(used, [profile.id]);
+    assert.match(readText(document.getElementById('modal')), /Choose a repository/);
+  });
+}
 
 test('the stepper asks for a connection name before it enables the token field', () => {
   assert.match(

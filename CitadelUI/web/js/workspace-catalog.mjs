@@ -1414,10 +1414,12 @@ export function runAddWorkspace(options) {
       : h(
           'p',
           { class: 'hint' },
-          'No credential key is mounted on this deployment, so connections cannot be saved here.'
+          'No credential key is mounted on this deployment. Session-only connections still work; reconnect after a container restart. Encrypted persistence is unavailable.'
         );
 
-    const newFields = [
+    // Build only the active form: wrapping a shared input in an unused field
+    // moves it out of the form the user will actually see.
+    const newFields = mode === 'new' ? [
       field(
         'catalog-connection-name',
         'New connection name',
@@ -1432,7 +1434,7 @@ export function runAddWorkspace(options) {
       ),
       persistRow,
       persistHint,
-    ];
+    ] : [];
 
     // ---- an existing connection -------------------------------------------
 
@@ -1446,7 +1448,7 @@ export function runAddWorkspace(options) {
         )
       : null;
 
-    const reconnectFields = [
+    const reconnectFields = needsToken ? [
       h(
         'p',
         { class: 'hint' },
@@ -1457,7 +1459,7 @@ export function runAddWorkspace(options) {
       // nothing to tick, and a control that does nothing is worse than none.
       vault.available ? persistRow : null,
       vault.available ? null : persistHint,
-    ].filter(Boolean);
+    ].filter(Boolean) : [];
 
     const liveFields = [
       h(

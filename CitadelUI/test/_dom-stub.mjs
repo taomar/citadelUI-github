@@ -48,6 +48,11 @@ class StubNode {
 
   append(...nodes) {
     for (const node of nodes) {
+      // A browser moves an existing node; it cannot belong to two forms.
+      if (node.parentElement) {
+        const siblings = node.parentElement.children;
+        siblings.splice(siblings.indexOf(node), 1);
+      }
       node.parentElement = this;
       this.children.push(node);
     }
@@ -87,6 +92,10 @@ class StubNode {
     };
     for (const handler of this.listeners.get(type) || []) handler(payload);
     return payload;
+  }
+
+  click() {
+    if (!this.disabled) this.dispatch('click');
   }
 
   querySelector() {
