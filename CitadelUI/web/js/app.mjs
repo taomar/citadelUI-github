@@ -51,6 +51,7 @@ import { environmentLocation, environmentSourceOf, isGitHubEnvironment } from '.
 import { createProvider } from './source-factory.mjs';
 import { historyEntry } from './history-entry.mjs';
 import { createCompareSession } from './compare-session.mjs';
+import { openMigrationWizard } from './migration-wizard.mjs';
 import { describeCreatedBranch, saveStatusLine } from './save-resolution.mjs';
 import { refNameProblem } from '../../shared/git-refs.mjs';
 
@@ -2457,6 +2458,50 @@ async function openWorkspaceSettings() {
   await withStatus('Loading settings\u2026', openWorkspaceSettingsContent);
 }
 
+async function openParameterMigration() {
+  // Migration is separate from editor drafts. Do not discard or silently stash
+  // either tab's edits just because the operator opened a wizard.
+  if (pendingCount()) {
+    setStatus('Save or discard existing editor changes before opening Migrate Citadel Configuration. Your edits have been kept.', 'error');
+    return;
+  }
+  const context = activeWorkspace();
+  await openMigrationWizard({
+    session: api.createMigrationSession({
+      projectLabel: state.projectLabel,
+      pendingEdits: () => pendingCount() > 0,
+    }),
+    onApplied: async (result) => {
+      // A late completion belongs to its captured workspace, never to whichever
+      // workspace happens to be active now. Do not refresh over new editor work.
+      let current;
+      try { current = activeWorkspace(); } catch { return; }
+      if (current !== context || pendingCount()) return;
+      api.resetWorkspace();
+      if (state.current?.path === result.target) {
+        const stillCurrent = () => {
+          try {
+            return activeWorkspace() === context && !pendingCount() && state.current?.path === result.target;
+          } catch { return false; }
+        };
+        const document = await api.deployment(result.target);
+        if (!stillCurrent()) return;
+        const draft = await workspaceRegistry.getDraft(context.environment.id, result.target);
+        if (draft || !stillCurrent()) return;
+        // Refresh only this loaded document; do not clear any pending map,
+        // restore/delete drafts, reset the policy tab, or replace another view.
+        state.current = document;
+        state.baselineValidation = validateDocument(document);
+        if (state.contract?.param?.path === result.target) {
+          state.contract = { ...state.contract, param: document };
+        }
+        render();
+      }
+      setStatus('Reviewed local migration applied. Previous destination bytes are available in Settings > History.', 'ok');
+    },
+  });
+}
+
 /**
  * Global actions.
  *
@@ -2466,12 +2511,21 @@ async function openWorkspaceSettings() {
  * and a control that only appears when it matters teaches nobody where it is.
  */
 function renderActions() {
+  let workspace = null;
+  try { workspace = activeWorkspace(); } catch { /* Preserve setup/catalog flow. */ }
+  const migration = workspace
+    ? h('button', {
+      class: 'btn btn-ghost', type: 'button',
+      onclick: guardedHandler(openParameterMigration, { key: 'open-parameter-migration' }),
+    }, 'Migrate Citadel Configuration')
+    : null;
   if (!state.current) {
     mount(
       els.tbActions,
       h(
         'div',
         { class: 'tb-command-set' },
+        migration,
         h('button', { class: 'btn', onclick: openWorkspaceSettings }, 'Settings')
       )
     );
@@ -2570,7 +2624,7 @@ function renderActions() {
         validationLabel ? `${pendingLabel} · ${validationLabel}` : pendingLabel
       )
     ),
-    h('div', { class: 'tb-command-set' }, settings, discard, primary)
+    h('div', { class: 'tb-command-set' }, migration, settings, discard, primary)
   );
 }
 

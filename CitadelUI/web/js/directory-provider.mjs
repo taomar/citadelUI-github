@@ -19,13 +19,76 @@ import {
 
 export { sha256, sourceScope };
 
-async function permission(handle, request = false) {
-  const options = { mode: 'readwrite' };
+async function permission(handle, request = false, mode = 'readwrite') {
+  const options = { mode };
   let state = typeof handle.queryPermission === 'function' ? await handle.queryPermission(options) : 'granted';
   if (state !== 'granted' && request && typeof handle.requestPermission === 'function') {
     state = await handle.requestPermission(options);
   }
   return state;
+}
+
+/**
+ * Ephemeral donor access. This is intentionally NOT a subclass of the editor
+ * provider: it has no write/create/remove methods and no subscription bridge.
+ * Old repositories need no current-workspace compatibility scan to be read.
+ */
+export class BrowserReadOnlyDirectoryProvider {
+  constructor(handle) {
+    if (!handle || handle.kind !== 'directory') throw new Error('Directory handle required.');
+    this.root = handle;
+    this.instrument = () => {};
+  }
+
+  async permission(options = {}) {
+    return permission(this.root, Boolean(options.request), 'read');
+  }
+
+  async assertReadable(options = {}) {
+    if (await this.permission(options) !== 'granted') throw new Error('Read folder permission is required.');
+  }
+
+  safeAlias(alias) {
+    const safe = normalizeAlias(alias);
+    if (safe.split('/').slice(0, -1).some(isSkippedDirectory) ||
+        safe.split('/').at(-1).startsWith('.') ||
+        !['.bicepparam', '.bicep'].includes(sourceExtension(safe))) {
+      throw new Error('Unsupported donor source scope.');
+    }
+    return safe;
+  }
+
+  async entries() {
+    await this.assertReadable();
+    const files = [];
+    const walk = async (directory, prefix = '') => {
+      for await (const [name, handle] of directory.entries()) {
+        if (handle.kind === 'directory') {
+          if (!isSkippedDirectory(name)) await walk(handle, prefix ? `${prefix}/${name}` : name);
+        } else if (['.bicepparam', '.bicep'].includes(sourceExtension(name))) {
+          if (isEnvironmentFile(name) || name.startsWith('.')) continue;
+          const alias = this.safeAlias(prefix ? `${prefix}/${name}` : name);
+          files.push({ alias, kind: sourceExtension(name).slice(1) });
+        }
+      }
+    };
+    await walk(this.root);
+    return files.sort((left, right) => left.alias.localeCompare(right.alias));
+  }
+
+  async fileHandle(alias) {
+    const parts = this.safeAlias(alias).split('/');
+    const leaf = parts.pop();
+    let directory = this.root;
+    for (const part of parts) directory = await directory.getDirectoryHandle(part, { create: false });
+    return directory.getFileHandle(leaf, { create: false });
+  }
+
+  async read(alias) {
+    await this.assertReadable();
+    // Reuse byte limits/hashing, but resolve only through our read-only scope.
+    return BrowserDirectoryProvider.prototype.read.call(this, this.safeAlias(alias));
+  }
 }
 
 export class BrowserDirectoryProvider {
@@ -204,11 +267,11 @@ export class BrowserDirectoryProvider {
     const handle = await this.fileHandle(safe);
     const file = await handle.getFile();
     if (Number(file.size) > MAX_SOURCE_BYTES) {
-      throw new Error(`Source exceeds the 8 MiB limit: ${safe}`);
+      throw Object.assign(new Error(`Source exceeds the 8 MiB limit: ${safe}`), { code: 'SOURCE_TOO_LARGE' });
     }
     const bytes = new Uint8Array(await file.arrayBuffer());
     if (bytes.byteLength > MAX_SOURCE_BYTES) {
-      throw new Error(`Source exceeds the 8 MiB limit: ${safe}`);
+      throw Object.assign(new Error(`Source exceeds the 8 MiB limit: ${safe}`), { code: 'SOURCE_TOO_LARGE' });
     }
     const result = {
       alias: safe,
@@ -244,9 +307,14 @@ export class BrowserDirectoryProvider {
       }
     }
     const handle = await this.fileHandle(safe, { create: Boolean(options.create) });
+    await options.validateBeforeWrite?.();
     const stream = await handle.createWritable({ keepExistingData: false });
     try {
+      await options.validateBeforeWrite?.();
       await stream.write(content);
+      // File System Access stages writes until close. An operation-specific
+      // invalidation while opening/writing the stream must abort, not publish.
+      await options.validateBeforeWrite?.();
       await stream.close();
     } catch (error) {
       await stream.abort?.();

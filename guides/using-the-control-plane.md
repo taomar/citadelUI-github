@@ -75,6 +75,90 @@ The default local deployment has no credential key mounted. This disables only
 GitHub access. Session-only connections work normally; after a container restart,
 use **Reconnect** on the saved connection and supply a token for the same account.
 
+These permissions apply to editable workspaces. Reading an older GitHub source
+for migration needs only Contents read access, as described below.
+
+---
+
+## Migrate Citadel Configuration
+
+Open the **current destination workspace**, then choose **Migrate Citadel
+Configuration** in its command bar. The older repository is a read-only source:
+it does not need to pass current workspace compatibility checks and is not
+attached as another editable workspace. The destination's current parameter
+names and templates remain authoritative.
+
+### Source
+
+Choose **Local folder**, **Parameter files**, or **GitHub repository**.
+
+| Source | Access |
+| --- | --- |
+| Local folder | Read-only browser permission for the currently checked-out files |
+| Parameter files | Explicit `.bicepparam` files or strict ARM deployment-parameters JSON; selected `.bicep` files can provide source schema metadata |
+| Public GitHub | **GitHub access > Public repository (anonymous)**; no PAT |
+| Private GitHub | **GitHub access > Personal access token** or **Saved GitHub connection** |
+
+For a source PAT, select only the repository to read and grant **Contents:
+Read-only**; **Metadata: Read-only** is automatic. Write, Administration, Actions,
+and all-repository access are not required. **Token help** links to GitHub's token
+creation page. A pasted source token is session-only and is cleared from the
+form on submission. Reusing a saved connection creates a separate source session
+without replacing or signing out the destination connection.
+
+Select **Connect source** for a PAT, or **Use source connection** for a saved
+connection. Enter the repository root URL, use **Find repository**, and explicitly
+choose a branch, tag, or full commit SHA before **Read GitHub source**. A URL ending
+in `/tree/main` must be entered as the repository root plus the separate `main`
+branch field. The default branch is shown as metadata, not selected automatically.
+Local folder selection reads files already on disk; it does not check out a branch.
+
+### Files and mapping
+
+In **Files**, choose a migration area, one current destination parameter file,
+and the source parameter files to compare. Deployment, APIM Upgrade, Supporting
+Services Upgrade, LLM Onboarding, and Access Contracts are separate areas.
+Select an existing Access Contract instance explicitly; similarly named contracts
+are never paired automatically.
+
+Choose **Inspect mapping**. Names match using Bicep's case-insensitive identifier
+rules, preserving the destination's casing. Only current names can receive values;
+legacy-only parameters are never introduced. Each source/current file pair reports
+its old-only names, or **None** when there are none, without exposing unused values.
+Duplicate candidates remain separate for review rather than being resolved by
+file order.
+
+Review each proposed value against the current type, constraints, and feature
+guidance before accepting it. Keeping current values preserves defaults for fields
+not supplied by the source. Expressions, references, sensitive values, unsupported
+schemas, and incompatible types remain unresolved rather than being evaluated or
+coerced. Matching names do not prove that feature behavior or meaning is unchanged.
+
+### Review and apply
+
+Choose **Preview draft & report** to inspect the sanitized diff. **Download report**
+and **Download sanitized draft** do not write either repository. The draft omits
+sensitive and unresolved expression values; it is a manual handoff, not a
+deployment-ready replacement file.
+
+For a local destination, **Review & apply locally** asks for explicit confirmation
+and uses the normal backup, verification, and rollback transaction. Pending editor
+work, changed files or schemas, a moved GitHub source ref, or a switched workspace
+invalidate the plan rather than overwriting newer work. Source repositories are
+never written. GitHub destinations remain **preview/local-export-only**, even
+when the ordinary workspace connection has write permission.
+
+Use **Review another file** for another area or file pair. Separate name reports
+remain available in the wizard, including after an apply; **Download all per-file
+name reports** saves that history before closing. Changing or leaving an
+authenticated source erases its source session. If erasure cannot be confirmed,
+retry the reported cleanup instead of assuming the token has been removed.
+
+Migration does not run deployment or upgrade scripts, clone Access Contract
+policies, or translate resource outputs between upgrade files. For exact target
+paths, supported formats, limits, and the pinned older `main` sample, see the
+[migration reference](../CitadelUI/README.md#migrate-citadel-configuration).
+
 ---
 
 ## The three areas

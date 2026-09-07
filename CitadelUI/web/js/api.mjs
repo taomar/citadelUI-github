@@ -2,7 +2,8 @@ import { createTransactionCommit } from './transaction-client.mjs';
 import { WorkspaceService } from './workspace-service.mjs';
 import { localRequest as request } from './local-api.mjs';
 import { SourceMutationCoordinator } from './source-factory.mjs';
-import { activeWorkspace } from './workspace-context.mjs';
+import { activeWorkspace, workspaceRegistry } from './workspace-context.mjs';
+import { MigrationSession } from './migration-session.mjs';
 
 // Composition root: the coordinator dispatches on the attached source kind, so
 // every editor operation below stays source-agnostic.
@@ -15,6 +16,14 @@ const coordinator = new SourceMutationCoordinator({
 const workspace = new WorkspaceService({ request, coordinator });
 
 export const api = {
+  createMigrationSession: (options = {}) => new MigrationSession({
+    ...options,
+    contextProvider: activeWorkspace,
+    registry: workspaceRegistry,
+    // Migration deliberately bypasses source dispatch: there is no path from
+    // its apply action to GitHubCommitCoordinator, even on a writable branch.
+    coordinator: coordinator.local,
+  }),
   resetWorkspace: () => workspace.reset(),
   health: () => workspace.health(),
   deployments: () => workspace.deployments(),

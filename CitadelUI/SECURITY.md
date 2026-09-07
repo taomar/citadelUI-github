@@ -55,8 +55,8 @@ Known gaps, deliberate for a demo and listed for whoever hardens this next:
 - Shared browser modules parse, discover, preview, and edit source bytes.
 - The container owns only application files and durable `/data` state. It stores
   Local path as inert profile metadata and never uses it to open a repository.
-- For GitHub environments the container additionally owns the only outbound
-  network boundary in the product and a memory-only credential.
+- For GitHub workspaces and migration sources, the container additionally owns
+  the outbound network boundary and any in-memory credential.
 
 The container has no source, home, drive, Docker socket, Git credential, Azure
 credential, or cloud-service mount. Compose publishes only
@@ -198,6 +198,43 @@ separated by hardware.
 - Because the parent commit holds immutable originals, no GitHub source bytes are
   copied into `/data`.
 
+## Configuration migration
+
+**Migrate Citadel Configuration** separates the read-only older source from the
+current destination. Local sources use read-only browser file/folder grants, not
+server-side paths or source mounts. Public GitHub reads are anonymous;
+authenticated public/private sources use a separate source-session store.
+All GitHub egress in these source paths is fixed-host **GET-only**. Local
+credential exchange and erasure use owner-gated POST/DELETE routes; they do not
+create, edit, or delete GitHub resources.
+
+A source PAT needs only selected-repository **Contents: Read** and the automatic
+Metadata permission. A pasted PAT is session-only, and its form value is cleared
+on submission and exit. The browser retains only an in-memory source capability.
+Borrowing an existing live or explicitly encrypted saved credential does not
+replace, reconnect, or revoke the editable destination session or saved profile.
+Source sessions inherit the existing idle/absolute bounds. Disconnect, abandoned
+login attempts, and bounded attempt eviction erase their associated source
+credentials and snapshot caches; unconfirmed erasure is an explicit retry state.
+
+Source repository identity, explicit ref, pinned objects, access, and selected
+file/template fingerprints are revalidated at review and local transaction
+boundaries. Changed source credentials, files, schemas, or workspace identity
+invalidate the plan. There is no fallback to anonymous access or another account.
+Snapshots and decisions are bounded, short-lived state, not persisted donor data.
+
+Only reviewed values for names in the current schema can be written. Dynamic
+expressions are never evaluated, secure/credential-shaped values are withheld,
+and old-only reports contain names and metadata rather than unused source values.
+Sanitized exports are not raw source dumps or deployment-ready files. Explicit
+local apply uses the normal destination backup/authorization/rollback path;
+source bytes are never backed up as destination data. GitHub destinations are
+preview/local-export-only. No migration step runs an upgrade/deployment script,
+copies policy XML, or widens the ordinary editor's write scope.
+
+See [the migration reference](README.md#migrate-citadel-configuration) for
+supported inputs, limits, and the boundaries of conservative secret screening.
+
 ## Source exclusions
 
 Browser traversal skips generated and application directories. Generic alias
@@ -214,13 +251,20 @@ registry, audit, or logs. For a GitHub environment the patched `.env` blob
 participates in the same atomic commit protocol and the UI warns that the
 subscription id will be committed to the working branch.
 
+The source-only migration adapter also accepts strict ARM deployment-parameters
+JSON from explicitly selected files or GitHub snapshots. This does not add JSON
+write targets or permit arbitrary JSON, script, or environment-file evaluation.
+
 ## Local API controls
 
 - A random 256-bit session token is injected into the no-store bootstrap HTML.
 - API calls require the token, exact Host, same-origin Fetch Metadata, and exact
   Origin for mutations.
-- GitHub routes additionally require the opaque GitHub session id, and are the
-  only routes permitted to use `DELETE`.
+- Editable GitHub data routes additionally require the opaque workspace GitHub
+  session id. Public migration reads require the owner/browser guard but no PAT;
+  private migration reads require a separate source-session capability.
+  Credential-management routes use their explicit owner-gated exchange/erasure
+  protocol. GitHub routes remain the only routes permitted to use `DELETE`.
 - No CORS response is emitted.
 - JSON and backup bodies have explicit limits; concurrency is bounded.
 - CSP denies external scripts, connections, frames, forms, and objects. The

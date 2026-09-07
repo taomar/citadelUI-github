@@ -101,6 +101,13 @@ configuration of a Citadel AI Hub Gateway deployment. It presents Bicep paramete
 files and their associated API Management policy documents as explained forms, and
 writes surgical changes that leave unrelated comments and formatting untouched.
 
+After opening a destination workspace, **Migrate Citadel Configuration** can
+compare older local, public GitHub, or private GitHub parameters against its
+current templates. It proposes values only for current parameter names, reports
+unmatched names per file pair, and requires review before applying changes to a
+local destination. GitHub destinations support preview and sanitized export only.
+See [configuration migration](./guides/using-the-control-plane.md#migrate-citadel-configuration).
+
 It is an operations tool, not a gateway runtime component. It does not deploy the
 gateway, send application telemetry, or check for updates. When hosted on Azure,
 its managed identity can read a credential-encryption key from Key Vault; the
@@ -177,7 +184,8 @@ onboarded is flagged by name.
 - [Deployment guide](./guides/deployment.md) — running on Azure, running locally,
   and the choices available during deployment.
 - [Using Citadel Control Plane](./guides/using-the-control-plane.md) — workspaces,
-  the three editing areas, validation, and how saves are made.
+  configuration migration, the three editing areas, validation, and how saves
+  are made.
 
 ## Reference
 

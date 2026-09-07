@@ -149,6 +149,336 @@ registry metadata API; it is never used to open, read, or write a repository.
 
 Capability signatures, not folder names, identify the guided areas below.
 
+## Migrate Citadel Configuration
+
+Open the **current destination workspace** first, then choose **Migrate Citadel Configuration**
+in its command bar. Migration is separate from workspace attachment: an older
+donor does not have to pass the current Citadel compatibility signatures and
+never becomes an editable workspace.
+
+The wizard follows **Source**, **Files**, **Mapping**, and **Review**, using the
+same form controls, compact stepper, typography, and summaries as workspace setup.
+For a short walkthrough, see the
+[operator guide](../guides/using-the-control-plane.md#migrate-citadel-configuration).
+
+1. Choose a separate donor folder with **read-only** browser permission,
+   explicitly select parameter files, or choose a GitHub donor using anonymous
+   public access, a source PAT, or a saved connection. Local files are the files
+   currently checked out on disk; local branch switching and access to
+   unchecked-out branches are not supported. No host path is opened by the server
+   or mounted into Docker. GitHub donors instead use an explicitly selected branch, tag or full
+   commit SHA, as described below.
+2. Explicitly pair donor parameter file(s) with **one current destination
+   `.bicepparam` file**. Same filenames are listed first to help pairing; only
+   checked donor files contribute values. Use the **Migration area** selector
+   for Deployment, APIM Upgrade, Supporting Services Upgrade, LLM Onboarding,
+   or Access Contracts. Each target names its current `using` template.
+   Missing or unsupported templates are unresolved, not guessed.
+3. Review the source value, destination value/default, provenance, current type
+   and decorators for each parameter. Matching uses exact Bicep identifiers
+   (case-insensitive), preserving the destination's identifier casing. There
+   are no fuzzy renames or release-number rules. Individually accept an eligible
+   candidate after reviewing its meaning, or deliberately keep the destination.
+   **Keep all remaining current values** retains everything not already accepted.
+   Duplicate names across selected files or within a donor remain separate
+   candidates; nothing wins by file order.
+4. Inspect the sanitized value diff and the matched/accepted/unchanged counts.
+   Proposed edits are separate from actual destination copies, which remain
+   zero until a local transaction succeeds. Each explicit old/current file pair has a visible name report:
+   old-only names absent from the current target are listed, or **None**.
+   Current fields not supplied by the donor are distinguished from inherited
+   defaults omitted from both parameter files.
+   Download the report and/or sanitized local draft, or explicitly confirm
+   **Review & apply locally** when all blocking conditions have been resolved.
+   **Review another file** starts another explicit pairing without closing the
+   wizard. Earlier per-file name reports remain visible and downloadable,
+   including after an apply, until the wizard closes. These historical reports
+   contain names, provenance, and statuses, not parameter values or reusable
+   write plans.
+
+| Area | Existing current target |
+| --- | --- |
+| Deployment | `bicep/infra/main.bicepparam` |
+| APIM Upgrade | `bicep/infra/apim-gateway-upgrade/main.bicepparam` |
+| Supporting Services Upgrade | `bicep/infra/apim-gateway-upgrade/supporting-services.bicepparam` |
+| LLM Onboarding | `bicep/infra/llm-backend-onboarding/main.bicepparam` |
+| Access Contracts | `bicep/infra/citadel-access-contracts/main.bicepparam`, or the explicitly selected existing contract instance underneath the contract root |
+
+Access `base-contracts`, `modules`, and `policies` subtrees are not migration
+targets. Similar names never select another contract automatically. Parameter
+migration does not clone contracts, copy policy XML, or evaluate
+`loadTextContent` references. Other safe parameter files remain available under
+their separate area.
+
+The destination workspace, project, folder/repository, actual GitHub branch
+where supported, selected file and template are shown in the wizard. Browser
+handle identity and containment checks reject the same folder under another
+label, the same file through aliases, overlapping selections, and selections
+whose distinctness cannot be demonstrated.
+
+### Public GitHub donors: no PAT required
+
+In **Source**, choose **GitHub repository**, then set **GitHub access** to
+**Public repository (anonymous)**.
+Enter a repository root URL such as `https://github.com/owner/repo`, or
+`owner/repo`. Anonymous access supports only public repositories on **github.com**; private
+repositories, GitHub Enterprise, arbitrary hosts, credential-bearing URLs, and
+file/tree URLs are not accepted.
+
+**Find repository** confirms public visibility; the pinned source records the
+immutable repository ID. The default branch is displayed as metadata only and
+does not fill or select a ref. Choose **Branch**, **Tag**, or **Full commit SHA**,
+enter the explicit ref, then choose **Read GitHub source**.
+Lightweight and annotated tags are supported, with bounded tag
+resolution. Select the donor parameter files from the resulting pinned tree.
+
+For the supplied older sample, enter
+`https://github.com/mohamedsaif/ai-hub-gateway-solution-accelerator` as the
+repository root and choose the full commit
+`9ef37ad75a47ca89c179a0db5a4123e60c4c720e`, the supplied snapshot of upstream
+`main`. The application itself remains repository-agnostic. This pins the
+selected older main revision; it does not switch to `citadel-v1` or automatically
+follow the repository default branch. A `/tree/main` URL is not
+accepted as a repository-root URL; use the root plus an explicit `main` ref,
+or use the full commit above to remain pinned. Invalid input never falls back
+to a different branch.
+
+The wizard and report identify the public repository, ref kind/name, ref-object
+SHA, pinned commit/tree and each selected file/template fingerprint. Ref and
+public-visibility checks run again before preview/export/apply and at local
+transaction boundaries. Branch/tag movement, a changed repository identity,
+private/unavailable resources, expired snapshots and failed reads require
+reconnection and replanning. A full commit selection remains pinned when an
+unselected branch moves. Identical remote source/destination snapshots, even
+selected through different ref names, are refused.
+
+The browser uses an owner-gated, same-origin **GET-only** public-donor endpoint.
+It reuses the app's fixed `api.github.com` transport with **no Authorization
+header, PAT, saved GitHub session, cookie or credential fallback**. The normal
+owner sign-in is still required; public access does not make the UI server an
+open proxy. CSP remains `connect-src 'self'`; redirects and caller-supplied API
+paths/hosts are refused. GitHub setup, editable provider scope and authentication
+for already-selected destinations are unchanged.
+
+Public donors support `.bicepparam`, their relative `.bicep` templates, and strict
+ARM deployment-parameters JSON. JSON files are listed by extension, but a
+selected file must pass the standard envelope adapter; arbitrary JSON is not
+imported. The normal hidden/generated exclusions apply. Symlinks, submodules,
+Git LFS pointers and oversized sources cannot supply values.
+
+Additional public-read limits:
+
+- A complete recursive tree is required: no truncated listing is interpreted as
+  missing fields/templates, and no quota-heavy recursive fallback is attempted.
+- At most 100,000 raw tree entries, a 24 MiB tree response, and 2,000 scoped
+  file/exclusion entries. The ordinary per-file/plan limits below still apply.
+- Up to eight metadata-only snapshots are retained in server memory, expiring
+  after 30 minutes or earlier eviction. Reconnect after expiration.
+- Public source blobs are not persisted by the server. Verified immutable
+  selected blobs are cached only in the short-lived browser donor, bounded to
+  16 MiB of source bytes and 64 blobs even across repeated pairings.
+- GitHub's anonymous quota applies to the server's outgoing IP. Repeated
+  freshness checks consume quota. Rate-limit, not-found, redirect and read errors
+  stop the operation explicitly; they never produce an empty successful mapping
+  or prompt for a PAT solely to read a public donor.
+
+This option is a **source only**. GitHub destinations remain preview/local-export
+only, and applying public donor values to a local target still requires the
+normal reviewed backup/authorization/rollback transaction.
+
+### Private GitHub donors and source connections
+
+Private repositories are supported through an explicitly selected fine-grained
+source PAT or an existing GitHub connection. The token needs **Contents: Read**
+for the selected repository; Metadata Read is automatic. Push, Contents Write,
+administration, repository creation, and all-repository access are not required.
+The existing classic-token policy is unchanged.
+
+Under **GitHub access**, choose **Personal access token** and **Connect source**,
+or select **Saved GitHub connection**, choose the profile, and use **Use source
+connection**. Once connected, select the repository and an explicit ref, then
+choose **Read GitHub source**. **Token help** explains the read-only permissions
+and links to GitHub's fine-grained token creation page.
+
+Source credential sessions are separate from editable-workspace sessions.
+Selecting a saved connection borrows its live or already encrypted credential
+into a new source-only session. It never calls the ordinary reconnect/resume
+operations that can revoke a destination session, changes the destination
+connection, or replaces the saved credential.
+
+A pasted source PAT is session-only. The UI clears it immediately after starting
+submission and on every exit; it is not placed in URLs, reports, browser storage,
+registry metadata, or logs. Existing encrypted persistence remains an explicit
+Settings opt-in, not an implicit side effect of migration. The browser retains
+only an opaque source session in memory. Source disconnect revokes only that
+session and is retryable if erasure cannot be confirmed. A bounded cancellation
+capability also cleans up late or lost login responses without needing to learn
+a lost server-generated session ID.
+
+All authenticated GitHub egress is fixed-host GET-only, including identification,
+metadata, refs, trees, and selected blobs. Source authentication is carried in
+the separate owner-gated `/api/github/migration-source` flow, never through the
+destination's GitHub session manager. Missing, expired, wrong-account,
+insufficient-access, rate-limited, and changed source contexts stop the operation
+explicitly; none silently falls back to anonymous access or another credential.
+
+Authenticated sessions inherit the existing 30-minute idle and 8-hour absolute
+bounds. Private cached reads recheck their source session, and preview/export/
+apply also revalidate repository access, source identity, ref, and fingerprints.
+Changing the selected PAT or saved profile invalidates old donors. Credentials
+and pinned metadata stay in bounded process/browser memory; donor blobs are not
+persisted on the server. Destination apply remains the same local-only reviewed
+backup transaction.
+
+### Supported inputs and conservative validation
+
+- **Donor folders:** bounded `.bicepparam` inputs and their local `.bicep`
+  templates only. Normal hidden/generated directory exclusions remain in force,
+  including `.git`, `.azure`, `.env`, and `CitadelUI`. There is no subscription
+  environment bridge for donors.
+- **Explicit files:** `.bicepparam`, optionally selected sibling `.bicep`
+  templates for donor secure metadata, and standard ARM
+  `deploymentParameters.json` envelopes with `$schema`, `contentVersion` and
+  `parameters[name].value`. Arbitrary JSON is rejected. JSON duplicate
+  parameter keys become ambiguous candidates; duplicate envelope keys are
+  rejected, and duplicate nested/value keys cannot be copied. Key Vault
+  `reference` envelopes and ARM expressions remain unresolved.
+  Unsupported control characters or unpaired Unicode surrogates in object keys
+  are rejected as well as in values, including at nested levels; valid Unicode
+  keys retain their exact encoding through the migration edit.
+  Ambiguous selected donor templates and unreadable existing donor templates
+  block planning rather than silently losing their secure metadata.
+  Safe bounded ARM labels may contain periods even though current Bicep
+  identifiers cannot. Such old-only labels are report metadata only, never
+  aliases or generated declarations. A supplied but malformed donor schema
+  leaves its candidates unsupported, not implicitly nonsecret.
+- **Bicep values:** literals (strings, safe integers, booleans, arrays and
+  objects). Calls, identifiers and interpolation, including inside collections,
+  are never evaluated or copied, not even environment-variable fallbacks.
+  Bicep inheritance, variables/imports in parameter files, scripts and syntax
+  outside the bounded parameter grammar are not imported. Targets must also
+  be understood by the existing surgical editor parser.
+- **Current schema:** primitive parameter types, literal `@allowed` for scalar
+  types, `@minLength`/`@maxLength` and `@minValue`/`@maxValue` where applicable,
+  `@secure`, descriptions and literal defaults. Unions, nullable/typed arrays,
+  user-defined or inline nested types, unknown decorators and dynamic
+  constraints remain **unknown schema**, not compatibility proof.
+  Bare `object`/`array` types have outer-type and supported decorator checks,
+  plus available current Citadel feature/LLM validation; their nested semantics
+  still require operator review. Metadata prose is guidance, not a nested type
+  specification. Collection proposals are labelled semantic review, not full
+  compatibility. Current LLM field definitions also check intrinsic field types,
+  required fields and numeric bounds before allowing a replacement.
+- **Limits:** UTF-8, 8 MiB per file, 16 MiB per plan including selected templates,
+  at most 16 selected donor files, 1,000 parameters per file, and bounded
+  tokens/nesting. No environment file, script or expression evaluation occurs.
+
+The report distinguishes **compatible exact-name proposals**, **current fields
+without donor assignments**, **removed/unrecognized donor fields**, **type/current-constraint
+mismatches**, **ambiguous candidates**, **dynamic expressions/references**,
+**feature/semantic review**, **unknown schema**, and **sensitive values**.
+Even a same-name, same-type value requires semantic review. Unsafe replacements
+cannot be accepted. Unreviewed candidate decisions, duplicate destination
+declarations, known invalid final values and required fields without verifiably
+valid supplied/current/default values block local apply. Required unresolved
+expressions must be configured/reviewed outside migration; no fallback is
+silently evaluated. Removed donor fields do not block safe unrelated changes.
+An explicitly allowed empty string remains valid when the current schema permits
+it; that does not disable other constraints or the checks for unresolved required
+values. Names in the current schema but omitted from the parameter file can be
+populated only through explicit acceptance. Defaults omitted in both files are
+not labelled newly introduced version fields.
+
+### Privacy, freshness, and local apply
+
+Migration decisions and local donor handles stay in this short-lived browser
+session, not in the registry, editor drafts, activity, server logs, or URLs.
+Selected GitHub repository/ref identifiers and relative file aliases go to the same-origin
+read endpoint; its bounded snapshot metadata is held temporarily in server
+memory. Parameter values and GitHub credential headers are never put in those
+request URLs. Sensitive
+names, `@secure` fields, nested credential material, credential-shaped strings
+and credential-bearing URLs are withheld and cannot be copied. This conservative
+screen can flag nonsecret values; it is not a guarantee of discovering secrets
+hidden under arbitrary innocuous names. Do not select unreviewed private data.
+Configure safe environment/Key Vault references outside migration; the
+destination's existing placeholders/defaults are not replaced with plaintext
+donor secrets.
+
+The displayed diff is a **sanitized value projection**, not raw donor text or
+destination comments. The downloadable `.bicepparam` draft is likewise a manual
+handoff: it omits comments and sensitive/dynamic values, identifies omitted
+fields, and retains inherited defaults rather than manufacturing overrides.
+It is **not deployment-ready** and is not the byte stream used for local apply.
+Old-only fields expose their names, provenance, categories, and value types,
+never their unused values, even when those values do not match a sensitive-data
+heuristic.
+
+Local apply uses the existing `LocalTransactionCoordinator` and verified
+prepare/backup/authorize/hash-check/write/receipt protocol, with normal
+rollback and **Settings > History** undo/recovery. Only accepted AST value
+edits (or explicit additions for missing current-schema parameters) are written.
+Original `using`, comments, unrelated structure, retained expressions and
+unaccepted new defaults are preserved. As with a normal editor save, authorized
+destination backup bytes go to transaction storage; donor bytes do not.
+
+Source/destination/provider/workspace/project identities, all selected parameter
+and template fingerprints, and remote branch/head context bind every preview.
+GitHub source identity also includes the immutable repository ID, selected
+ref/ref-object SHA, pinned commit, tree and Git blob identities.
+They are re-read before export/apply and again at local transaction boundaries.
+A change invalidates the decisions and requires replanning. Workspace changes
+during asynchronous work cannot retarget a write. Repeated apply clicks share
+one transaction. Existing pending editor work and a saved draft for the target
+block migration rather than being overwritten.
+
+**GitHub destinations are always preview/local-export-only in this wizard**,
+even when normal editing has push permission. Migration never creates a remote
+commit, switches a branch, runs a deployment, executes an upgrade command, or
+infers resource-output handoffs between the supporting-services and APIM
+upgrade templates.
+
+### What has and has not been validated
+
+Zero-dependency tests use synthetic legacy/current inputs, in-memory browser
+handles, the real dialog wiring, and the existing local transaction protocol.
+They exercise real upgrade-target discovery and synthetic population without
+editing accelerator product data. Native OS folder/file pickers are not
+automated by these tests.
+Public donor tests use mocked GitHub API responses and an isolated HTTP server
+to exercise owner/CSP/transport boundaries, anonymous headers, branch/tag/commit
+pinning, rate/read errors, stale protection and the same mapping/local transaction
+flow. No live or private GitHub repository was fetched for those tests.
+
+Authenticated-source cases exercise the real source connection controller and
+routes with synthetic GitHub responses, including Contents-read-only access,
+saved-profile isolation, expiry, interrupted login cleanup, and local apply.
+Desktop and mobile browser exercises use the original app styles and synthetic
+files. They do not claim access to a user's private repository or token.
+
+The supplied public upstream `main` sample is pinned to
+`9ef37ad75a47ca89c179a0db5a4123e60c4c720e`. The five same-path file pairs contain
+97 Deployment, 39 APIM Upgrade, 44 Supporting Services Upgrade, 8 LLM Onboarding,
+and 17 Access root-template name matches: 205 per-file occurrences, not a merged
+global name set. All five actual old-only lists are empty. The current-only
+Deployment assignment `logicAppsSkuName` keeps its default; the current
+`logicAppsSkuCapacityUnits` constraints must still be enforced.
+
+That sample has no standalone Access Contract instances. Its Deployment file
+has 93 expression-containing assignments out of 97; these are not resolved
+deployed environment values and are never executed. Sanitized name evidence is
+kept in `test/migration-real-main-evidence.json`; synthetic nonidentical values,
+removed names, and explicitly separate instances exercise actual edit behavior
+without storing the public settings as fixtures. Name matches do not mean
+accepted or copied values: accepted values already current generate no edits.
+
+Legacy authentication/model shape changes, feature behavior changes, resource
+IDs/output translations, service dependencies, and deployment correctness are
+not certified by this sample. Current specialized LLM and Access checks are
+reused, but unsupported nested transformations and unresolved feature
+dependencies remain explicit. This is a reviewed, parameter-only migration
+workflow, not a claim of semantic compatibility with a release.
+
 ## GitHub repositories
 
 An environment can be a selected local folder or a GitHub repository. Both are

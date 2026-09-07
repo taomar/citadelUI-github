@@ -133,6 +133,12 @@ export class GitHubApiClient {
   async request(path, options = {}) {
     const target = assertApiPath(path);
     const method = String(options.method || 'GET').toUpperCase();
+    if (options.anonymous && (method !== 'GET' || options.token || options.body !== undefined)) {
+      throw githubError(400, 'PUBLIC_DONOR_READ_ONLY', 'Anonymous GitHub donor reads cannot carry credentials or mutations.');
+    }
+    if (options.migrationRead && (method !== 'GET' || options.body !== undefined)) {
+      throw githubError(400, 'GITHUB_DONOR_READ_ONLY', 'GitHub donor operations are read-only.');
+    }
     if (!['GET', 'POST', 'PATCH', 'DELETE'].includes(method)) {
       throw githubError(400, 'INVALID_GITHUB_METHOD', 'Unsupported GitHub method.');
     }
@@ -173,6 +179,19 @@ export class GitHubApiClient {
       // A redirect could move the request to another host or to a renamed
       // repository. Both are rejected rather than followed.
       throw githubError(502, 'GITHUB_REDIRECT', 'GitHub redirected the request and it was refused.');
+    }
+
+    if ((options.anonymous || options.migrationRead) && (response.status < 200 || response.status >= 300)) {
+      // Public reads do not echo upstream error bodies or suggest reconnecting
+      // a PAT. GitHub uses both 403 and 429 for anonymous/secondary rate limits.
+      const limited = response.status === 429 || (response.status === 403 &&
+        (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after')));
+      if (typeof response.body?.cancel === 'function') await response.body.cancel().catch(() => {});
+      throw githubError(
+        limited ? 429 : response.status < 500 ? response.status : 502,
+        limited ? 'PUBLIC_DONOR_RATE_LIMIT' : 'PUBLIC_DONOR_READ_FAILED',
+        limited ? 'GitHub donor rate limit reached.' : 'The GitHub donor read failed.'
+      );
     }
 
     const limit = options.limit || this.jsonLimit;

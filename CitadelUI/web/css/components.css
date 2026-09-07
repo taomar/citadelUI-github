@@ -14,6 +14,199 @@
    is never a `:has()` repair bolted on after the fact.
    ========================================================================== */
 
+/* ===================================================== parameter migration */
+
+.migration-body,
+.migration-mapping,
+.migration-pairing,
+.migration-review,
+.migration-result,
+.migration-name-report,
+.migration-name-pair,
+.migration-detail-body {
+  display: grid;
+  gap: var(--sp-5);
+  min-width: 0;
+}
+
+.migration-body h3 {
+  font-size: var(--t-h3);
+}
+
+.migration-body h4 {
+  font-size: var(--t-body);
+}
+
+.migration-context {
+  min-width: 0;
+  padding-bottom: var(--sp-5);
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.migration-context > details {
+  margin-top: var(--sp-3);
+}
+
+.migration-context .catalog-summary-row {
+  grid-template-columns: minmax(6rem, 9rem) minmax(0, 1fr);
+}
+
+.migration-actions,
+.migration-categories {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.migration-actions {
+  width: 100%;
+  justify-content: flex-end;
+}
+
+.migration-actions > .btn {
+  min-width: 0;
+  white-space: normal;
+  text-align: center;
+}
+
+.migration-notice {
+  margin: 0;
+}
+
+.migration-sources {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.migration-sources legend {
+  margin-bottom: var(--sp-3);
+  font-size: var(--t-meta);
+  font-weight: 600;
+}
+
+.migration-sources > .hint {
+  margin-bottom: var(--sp-4);
+}
+
+.migration-source {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-4);
+  min-height: var(--ctl-h);
+  padding-block: var(--sp-4);
+  border-bottom: 1px solid var(--rule-soft);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.migration-source > input {
+  flex: none;
+  margin-top: var(--sp-2);
+}
+
+.migration-source > span {
+  min-width: 0;
+}
+
+.migration-body summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.migration-body details {
+  min-width: 0;
+}
+
+.migration-detail-body {
+  padding-block: var(--sp-4) var(--sp-5);
+}
+
+.migration-row > .sec-band {
+  align-items: flex-start;
+}
+
+.migration-row-title {
+  display: grid;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.migration-categories .chip {
+  white-space: normal;
+}
+
+.migration-values {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 28ch), 1fr));
+  gap: var(--sp-4);
+}
+
+.migration-values > * {
+  min-width: 0;
+}
+
+.migration-values h4 {
+  margin-bottom: var(--sp-3);
+}
+
+.migration-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+  max-height: 24rem;
+  overflow: auto;
+  font-size: var(--t-small);
+  padding: var(--sp-4);
+  background: var(--well);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+}
+
+.migration-warning {
+  display: grid;
+  gap: var(--sp-3);
+  color: var(--warning);
+  font-size: var(--t-small);
+}
+
+.migration-warning ul,
+.migration-detail-body > ul {
+  padding-inline-start: var(--sp-6);
+  list-style: disc;
+}
+
+.migration-summary {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.migration-name-report code,
+.migration-result code {
+  overflow-wrap: anywhere;
+}
+
+.migration-body .catalog-form,
+.migration-body .catalog-field,
+.migration-body .catalog-form-actions {
+  min-width: 0;
+}
+
+@media (max-width: 52rem) {
+  .migration-context .catalog-summary-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 30rem) {
+  .migration-actions > .btn {
+    flex: 1 1 auto;
+    padding-block: var(--sp-3);
+  }
+}
+
 /* ============================================================== the sheet */
 
 .sheet {

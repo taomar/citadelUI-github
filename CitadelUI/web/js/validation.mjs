@@ -306,9 +306,11 @@ export function classifyValidation(findings, baseline = [], dirty = new Set()) {
   });
 }
 
-export function validateDocument(doc) {
+export function validateDocument(doc, { values: literalValues = null } = {}) {
   const findings = [];
-  const values = parameterMap(doc);
+  // Migration supplies an already-screened literal map. Do not pass those
+  // untrusted-source values through the editor's expression/fallback helper.
+  const values = literalValues || parameterMap(doc);
   const schema = doc && doc.schema && doc.schema.parameters || {};
 
   for (const [name, definition] of Object.entries(schema)) {

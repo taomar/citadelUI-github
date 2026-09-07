@@ -10,6 +10,7 @@
 
 import { parseBicepParam } from './parser.mjs';
 import { serializeValue, indentLevelAt } from './serialize.mjs';
+import { tokenize } from './lexer.mjs';
 
 export class EditError extends Error {}
 
@@ -111,14 +112,61 @@ function insertIntoEmptyLiteral(text, node, rendered, level) {
 }
 
 /**
+ * Whole-value migrations can replace a commented-out collection template.
+ * Preserve its comments as comments inside the new collection (or ahead of a
+ * scalar), never as data. Token gaps contain only trivia, so quote-like text
+ * inside strings cannot be misidentified as a comment.
+ */
+function renderPreservingComments(text, node, value, level) {
+  const newline = text.includes('\r\n') ? '\r\n' : '\n';
+  const rendered = serializeValue(value, level).replaceAll('\n', newline);
+  const original = text.slice(node.start, node.end);
+  const comments = [];
+  let previous = 0;
+  for (const token of tokenize(original)) {
+    const trivia = original.slice(previous, token.start);
+    comments.push(...[...trivia.matchAll(/\/\/[^\r\n]*|\/\*[\s\S]*?\*\//g)].map((match) => match[0]));
+    previous = token.end;
+  }
+  if (!comments.length) return rendered;
+  const prefix = comments.map((comment) => `${'  '.repeat(level + 1)}${comment}`).join(newline);
+  if (rendered.startsWith('[') || rendered.startsWith('{')) {
+    const rest = rendered.length === 2
+      ? `${newline}${'  '.repeat(level)}${rendered.at(-1)}`
+      : rendered.slice(1);
+    return `${rendered[0]}${newline}${prefix}${rest}`;
+  }
+  return `${newline}${prefix}${newline}${'  '.repeat(level + 1)}${rendered}`;
+}
+
+/**
  * Build a splice for one operation.
  * Ops: set | append | insert | remove
  */
 function buildSplice(doc, text, op) {
+  if (op.op === 'addParam') {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(op.name || '') ||
+        doc.params.some((parameter) => parameter.name.toLowerCase() === op.name.toLowerCase())) {
+      throw new EditError('A new parameter needs a unique Bicep identifier.');
+    }
+    const newline = text.includes('\r\n') ? '\r\n' : '\n';
+    const rendered = serializeValue(op.value).replaceAll('\n', newline);
+    return {
+      start: text.length,
+      end: text.length,
+      text: `${text.endsWith('\n') || !text ? '' : newline}param ${op.name} = ${rendered}${newline}`,
+    };
+  }
+
   if (op.op === 'set') {
     const { node } = resolvePath(doc, op.path);
     const level = indentLevelAt(text, node.start);
-    return { start: node.start, end: node.end, text: serializeValue(op.value, level) };
+    return {
+      start: node.start, end: node.end,
+      text: op.preserveComments
+        ? renderPreservingComments(text, node, op.value, level)
+        : serializeValue(op.value, level),
+    };
   }
 
   if (op.op === 'append' || op.op === 'insert') {
@@ -209,10 +257,15 @@ function buildAddProperty(doc, text, op) {
 export function applyEdits(text, operations) {
   if (!operations || operations.length === 0) return text;
   const doc = parseBicepParam(text);
+  const additions = operations.filter((operation) => operation.op === 'addParam');
+  const names = additions.map((operation) => String(operation.name).toLowerCase());
+  if (new Set(names).size !== names.length) throw new EditError('Conflicting parameter additions.');
 
-  const splices = operations.map((op) =>
-    op.op === 'addProperty' ? buildAddProperty(doc, text, op) : buildSplice(doc, text, op)
-  );
+  const splices = operations.map((op, index) => ({
+    ...(op.op === 'addProperty' ? buildAddProperty(doc, text, op) : buildSplice(doc, text, op)),
+    addition: op.op === 'addParam',
+    index,
+  }));
 
   // Reject overlapping edits rather than producing corrupt output.
   const sorted = [...splices].sort((a, b) => a.start - b.start);
@@ -223,7 +276,9 @@ export function applyEdits(text, operations) {
   }
 
   let out = text;
-  for (const splice of [...splices].sort((a, b) => b.start - a.start)) {
+  for (const splice of [...splices].sort((a, b) =>
+    b.start - a.start || (a.addition && b.addition ? b.index - a.index : 0)
+  )) {
     out = out.slice(0, splice.start) + splice.text + out.slice(splice.end);
   }
   return out;

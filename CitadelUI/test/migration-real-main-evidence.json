@@ -1,0 +1,235 @@
+{
+  "format": "citadel-sanitized-real-input-evidence",
+  "version": 1,
+  "recordedOn": "2026-09-07",
+  "scope": "Preserved anonymous parser stress-test evidence plus the independently checked five same-path name pairs below. Cross-area focusedCases are explicit exploratory inputs, not recommended migration relationships or semantic approval.",
+  "source": {
+    "requestedUrl": "https://github.com/mohamedsaif/ai-hub-gateway-solution-accelerator/tree/main",
+    "repository": "mohamedsaif/ai-hub-gateway-solution-accelerator",
+    "repositoryId": 797151794,
+    "selectedRef": "refs/heads/main",
+    "commit": "9ef37ad75a47ca89c179a0db5a4123e60c4c720e",
+    "tree": "585f6b7fd98a9d09ad9a5215aa2d6f9d0c5c8b66",
+    "authentication": "anonymous GET only",
+    "defaultBranchUsed": false,
+    "otherRefsRead": false,
+    "templateFilesEnumerated": 81,
+    "rawSourcePersisted": false
+  },
+  "destination": {
+    "repository": "taomar/citadelUI-github",
+    "baseline": "89a1692",
+    "targets": {
+      "main": {
+        "path": "bicep/infra/main.bicepparam",
+        "sha256": "f17667e63417985c52ee7af0f96497b4cd8654b621dfc828cea73ac84e889623",
+        "schemaSha256": "c5f928be95551c2148a6bfe2f26ee91a174eb75d763b950668f8475d01e9c357",
+        "withoutDonorAssignments": ["logicAppsSkuName", "foundryNetworkInjectionEnabled", "redisMinimumTlsVersion"],
+        "blockers": [
+          {"name": "environmentName", "code": "required"},
+          {"name": "location", "code": "required"},
+          {"name": "resourceGroupName", "code": "required"},
+          {"name": "aiFoundryModelsConfig", "code": "feature-unresolved"}
+        ]
+      },
+      "apim": {
+        "path": "bicep/infra/apim-gateway-upgrade/main.bicepparam",
+        "sha256": "bad991ce3d61e8dcc36d3276e0de0dd384ecd9171d625935d2793bc743b7eecf",
+        "schemaSha256": "d83b78746eafe36017ca896d077c592d15d6619fbe43087a3a8e1d34e2dce43c",
+        "withoutDonorAssignments": ["updateReleaseVersionApi", "apimRedisCacheName", "embeddingsBackendId"],
+        "blockers": [
+          {"name": "apimServiceName", "code": "required"},
+          {"name": "managedIdentityName", "code": "required"}
+        ]
+      },
+      "services": {
+        "path": "bicep/infra/apim-gateway-upgrade/supporting-services.bicepparam",
+        "sha256": "f24bfafc241637e5f6a7a7e9328a661610d2a6dc2165a199fcacc2f7595f6a4e",
+        "schemaSha256": "ebc5eca0185558a6b2b05d9494de32cffde3c0c13263a70b3837bb6d82af23d1",
+        "withoutDonorAssignments": ["location", "resourceToken", "vNetLocation", "existingLogAnalyticsName", "existingLogAnalyticsRG", "existingLogAnalyticsSubscriptionId", "foundryLocation"],
+        "blockers": [{"name": "apimManagedIdentityName", "code": "required"}]
+      }
+    }
+  },
+  "inventory": [
+    {"path": "bicep/infra/apim-gateway-upgrade/main.bicepparam", "blob": "a0a4ee2f3b6f242d7898b3662dc7036787c1d3f2", "parameters": 39, "literal": 39, "dynamic": 0},
+    {"path": "bicep/infra/apim-gateway-upgrade/supporting-services.bicepparam", "blob": "3dc0e9365c36d2a693c5e183d343cd88c17ea3ff", "parameters": 44, "literal": 44, "dynamic": 0},
+    {"path": "bicep/infra/app-insights-alert/main.bicepparam", "blob": "c807151e84d63ea59e61a51d30d523fad1eddc8d", "parameters": 9, "literal": 7, "dynamic": 2},
+    {"path": "bicep/infra/citadel-access-contracts/base-contracts/common/main.bicepparam", "blob": "7add50d82849ea1add78faeb827e75b4846892ea", "parameters": 10, "literal": 9, "dynamic": 1},
+    {"path": "bicep/infra/citadel-access-contracts/main.bicepparam", "blob": "45bc9a6d1c202c259c7efafac8d6ba9e6c6788a4", "parameters": 17, "literal": 17, "dynamic": 0},
+    {"path": "bicep/infra/citadel-cosmos-global-multi-master-sync/main.bicepparam", "blob": "464d135bb06f45c87f3bcd466ca7360b5dc6481e", "parameters": 4, "literal": 4, "dynamic": 0},
+    {"path": "bicep/infra/citadel-publish-contracts/main.bicepparam", "blob": "b8aa363c37faacd2575ee43f9ee10e180476a5f2", "parameters": 6, "literal": 6, "dynamic": 0},
+    {"path": "bicep/infra/foundry-integration/main.bicepparam", "blob": "7db9fdaf37938f2547c0d99e516b8b284a7ba34e", "parameters": 9, "literal": 9, "dynamic": 0},
+    {"path": "bicep/infra/foundry-integration/samples/custom-auth.bicepparam", "blob": "7c907eb43f0a1ec2d4e7e8c808332506d4874d44", "parameters": 10, "literal": 10, "dynamic": 0},
+    {"path": "bicep/infra/foundry-integration/samples/custom-headers.bicepparam", "blob": "d768ee058c81b2d4d6d12942b010ed7eadae03bb", "parameters": 10, "literal": 10, "dynamic": 0},
+    {"path": "bicep/infra/foundry-integration/samples/dynamic-discovery.bicepparam", "blob": "b5164a0e9b5bdc127e275bfd12b861efe6960750", "parameters": 12, "literal": 12, "dynamic": 0},
+    {"path": "bicep/infra/foundry-integration/samples/full-config.bicepparam", "blob": "78f96c5db227eeee75afcd519d281695ca531e31", "parameters": 14, "literal": 14, "dynamic": 0},
+    {"path": "bicep/infra/foundry-integration/samples/static-models.bicepparam", "blob": "4d171d4b22d84b69460d2422389c57f28d9a1b0f", "parameters": 9, "literal": 9, "dynamic": 0},
+    {"path": "bicep/infra/llm-backend-onboarding/main.bicepparam", "blob": "76c39383923c55d7642e95a7b2b930da7706273c", "parameters": 8, "literal": 8, "dynamic": 0},
+    {"path": "bicep/infra/main.bicepparam", "blob": "d65edbdbc88d4426a3972f8336d10e2b48fd3fe6", "parameters": 97, "literal": 4, "dynamic": 93},
+    {"path": "bicep/infra/resources.bicepparam", "blob": "bb85183a8b44cd7f51b20a3332fa16f61c85bca6", "parameters": 96, "literal": 4, "dynamic": 92},
+    {"path": "bicep/infra/foundry-integration/samples/parameters-custom-auth-config.json", "blob": "675da0ad776eeefb3685c4d06a4607ef13360d65", "parameters": 11, "literal": 11, "dynamic": 0},
+    {"path": "bicep/infra/foundry-integration/samples/parameters-custom-headers.json", "blob": "ce6df6528397e603347bac574db5ffd6de7cff7c", "parameters": 11, "literal": 11, "dynamic": 0},
+    {"path": "bicep/infra/foundry-integration/samples/parameters-dynamic-discovery.json", "blob": "58421d2852ca0087fda4999c9524a4a540ed6710", "parameters": 12, "literal": 12, "dynamic": 0},
+    {"path": "bicep/infra/foundry-integration/samples/parameters-static-models.json", "blob": "692cf04a51e731bc6cb1d3cc5594c39022a1b413", "parameters": 10, "literal": 10, "dynamic": 0}
+  ],
+  "selectedSourceFingerprints": {
+    "main": {"path": "bicep/infra/main.bicepparam", "sha256": "d59d45c7dcb75841fd66a936b65ff408b484f5c9ca51d402444d3d0079f7e4d6", "schemaBlob": "064429b954033d66cd9021dbf76a8d6665406380"},
+    "resources": {"path": "bicep/infra/resources.bicepparam", "sha256": "c4275166172a49733bae0c9b0bf96cc0d825ad3666428602f37b6a872db2296a", "schemaBlob": "c99475fa9607ef4b0477147d69b05be91754f554"},
+    "llm": {"path": "bicep/infra/llm-backend-onboarding/main.bicepparam", "sha256": "166bfc688465db726c4cdbb262eb3c72e875071bd995431fed2ac6356466e570", "schemaBlob": "d335803c4b03ea9675c6d2e3fcda4da3693bb385"},
+    "apim": {"path": "bicep/infra/apim-gateway-upgrade/main.bicepparam", "sha256": "8c015321057b5f334f49f031a02c7ffce2860c7c11ec7b833a97f628c215c2bb", "schemaBlob": "d9e14eac3d3ee7a3e4db239c2922c23081684e6f"},
+    "services": {"path": "bicep/infra/apim-gateway-upgrade/supporting-services.bicepparam", "sha256": "b6fb0464ed10b0b4d40c82043a6b285c94979f020fed8eadb2cc77db4242f215", "schemaBlob": "48f80c1a0eedc2167df18b810b0d7016a641d95d"}
+  },
+  "samePathPairs": [
+    {
+      "area": "Deployment",
+      "path": "bicep/infra/main.bicepparam",
+      "oldAssignedNames": [
+        "environmentName", "location", "apicLocation", "tags", "resourceGroupName",
+        "apimIdentityName", "usageLogicAppIdentityName", "apimServiceName", "logAnalyticsName",
+        "apimApplicationInsightsDashboardName", "funcApplicationInsightsDashboardName", "foundryApplicationInsightsDashboardName",
+        "apimApplicationInsightsName", "funcApplicationInsightsName", "foundryApplicationInsightsName",
+        "eventHubNamespaceName", "cosmosDbAccountName", "usageProcessingLogicAppName", "storageAccountName",
+        "apicServiceName", "aiFoundryResourceName", "keyVaultName", "redisCacheName",
+        "useExistingLogAnalytics", "existingLogAnalyticsName", "existingLogAnalyticsRG", "existingLogAnalyticsSubscriptionId",
+        "vnetName", "useExistingVnet", "existingVnetRG", "apimSubnetName", "privateEndpointSubnetName",
+        "functionAppSubnetName", "agentSubnetName", "apimNsgName", "privateEndpointNsgName", "functionAppNsgName",
+        "agentSubnetNsgName", "apimRouteTableName", "vnetAddressPrefix", "apimSubnetPrefix", "privateEndpointSubnetPrefix",
+        "functionAppSubnetPrefix", "agentSubnetPrefix", "dnsZoneRG", "dnsSubscriptionId", "existingPrivateDnsZones",
+        "storageBlobPrivateEndpointName", "storageFilePrivateEndpointName", "storageTablePrivateEndpointName",
+        "storageQueuePrivateEndpointName", "cosmosDbPrivateEndpointName", "eventHubPrivateEndpointName",
+        "apimV2PrivateEndpointName", "aiFoundryPrivateEndpointName", "keyVaultPrivateEndpointName", "redisPrivateEndpointName",
+        "apimNetworkType", "apimV2UsePrivateEndpoint", "apimV2PublicNetworkAccess", "cosmosDbPublicAccess",
+        "eventHubNetworkAccess", "aiFoundryExternalNetworkAccess", "keyVaultExternalNetworkAccess",
+        "useAzureMonitorPrivateLinkScope", "redisPublicNetworkAccess", "createAppInsightsDashboards",
+        "enableAIModelInference", "enableDocumentIntelligence", "enableAzureAISearch", "enableAIGatewayPiiRedaction",
+        "enableOpenAIRealtime", "entraAuth", "enableAPICenter", "enableManagedRedis", "enableUnifiedAiApi",
+        "azureMonitorLogSettings", "appInsightsLogSettings", "apimSku", "apimSkuUnits", "eventHubCapacityUnits",
+        "cosmosDbRUs", "logicAppsSkuCapacityUnits", "apicSku", "keyVaultSkuName", "redisSkuName", "redisSkuCapacity",
+        "redisHighAvailability", "logicContentShareName", "aiSearchInstances", "aiFoundryInstances",
+        "aiFoundryModelsConfig", "primaryFoundryEmbeddingModelName", "entraTenantId", "entraClientId",
+        "entraAudience", "entraClientSecret"
+      ],
+      "matched": 97,
+      "oldOnlyNames": [],
+      "currentAssignmentsWithoutDonor": ["logicAppsSkuName"],
+      "inheritedDefaultsWithoutDonor": ["foundryNetworkInjectionEnabled", "redisMinimumTlsVersion"],
+      "currentSchemaOnlyNames": ["logicAppsSkuName"],
+      "changedCurrentConstraintNames": ["logicAppsSkuCapacityUnits"],
+      "oldExpressionAssignments": 93
+    },
+    {
+      "area": "APIM Upgrade",
+      "path": "bicep/infra/apim-gateway-upgrade/main.bicepparam",
+      "oldAssignedNames": [
+        "apimServiceName", "managedIdentityName", "updatePolicyFragments", "enablePIIAnonymization",
+        "enableAIModelInference", "updateNamedValues", "aiLanguageServiceUrl", "contentSafetyServiceUrl",
+        "updateJwtNamedValues", "enableJwtAuth", "jwtTenantId", "jwtAppRegistrationId", "enableClassicLlmUsageContainer",
+        "classicCosmosDbAccountName", "classicCosmosDbDatabaseName", "classicLlmUsageContainerThroughput",
+        "updateLLMBackends", "updateLLMBackendPools", "updateLLMPolicyFragments", "anthropicVersion", "llmBackendConfig",
+        "updateUniversalLLMApi", "updateAzureOpenAIApi", "azureOpenAIApiPathPrefix", "universalLLMApiPathPrefix",
+        "updateUnifiedAiApi", "enableUnifiedAiApi", "updateOpenAIRealtimeApi", "updateRedisCache", "enableRedisCache",
+        "redisCacheConnectionString", "updateEmbeddingsBackend", "enableEmbeddingsBackend", "embeddingsBackendUrl",
+        "updateAppInsightsDiagnostics", "deployAzureMonitorLogger", "logAnalyticsWorkspaceResourceId",
+        "azureMonitorLogSettings", "appInsightsLogSettings"
+      ],
+      "matched": 39,
+      "oldOnlyNames": [],
+      "currentAssignmentsWithoutDonor": [],
+      "inheritedDefaultsWithoutDonor": ["updateReleaseVersionApi", "apimRedisCacheName", "embeddingsBackendId"],
+      "currentSchemaOnlyNames": [],
+      "oldExpressionAssignments": 0
+    },
+    {
+      "area": "Supporting Services Upgrade",
+      "path": "bicep/infra/apim-gateway-upgrade/supporting-services.bicepparam",
+      "oldAssignedNames": [
+        "provisionSupportingServices", "tags", "usePrivateEndpoints", "vNetName", "vNetRG",
+        "privateEndpointSubnetName", "existingPrivateDnsZones", "createApimManagedIdentity", "apimManagedIdentityName",
+        "createUsageManagedIdentity", "usageManagedIdentityName", "deployMonitoring", "createLogAnalytics",
+        "logAnalyticsName", "createAppInsights", "apimApplicationInsightsName", "functionApplicationInsightsName",
+        "deployKeyVault", "createKeyVault", "keyVaultName", "keyVaultPublicNetworkAccess", "apimSystemAssignedPrincipalId",
+        "deployEventHub", "createEventHub", "eventHubNamespaceName", "eventHubPublicNetworkAccess", "isPIIEnabled",
+        "deployCosmosDb", "createCosmosDb", "cosmosDbAccountName", "cosmosDbPublicAccess", "cosmosDbRUs",
+        "deployFoundry", "createFoundry", "foundryName", "foundryPublicNetworkAccess", "deployFoundryModels",
+        "foundryModelsConfig", "deployLogicApp", "createStorage", "storageAccountName",
+        "usageProcessingLogicAppName", "logicContentShareName", "logicAppSubnetId"
+      ],
+      "matched": 44,
+      "oldOnlyNames": [],
+      "currentAssignmentsWithoutDonor": [],
+      "inheritedDefaultsWithoutDonor": [
+        "location", "resourceToken", "vNetLocation", "existingLogAnalyticsName", "existingLogAnalyticsRG",
+        "existingLogAnalyticsSubscriptionId", "foundryLocation"
+      ],
+      "currentSchemaOnlyNames": [],
+      "oldExpressionAssignments": 0
+    },
+    {
+      "area": "LLM Onboarding",
+      "path": "bicep/infra/llm-backend-onboarding/main.bicepparam",
+      "oldAssignedNames": [
+        "apim", "apimManagedIdentity", "llmBackendConfig", "configureCircuitBreaker",
+        "circuitBreakerDefaults", "configureSessionAffinity", "sessionAffinityDefaults", "modelAliases"
+      ],
+      "matched": 8,
+      "oldOnlyNames": [],
+      "currentAssignmentsWithoutDonor": [],
+      "inheritedDefaultsWithoutDonor": ["awsAccessKey", "awsSecretKey", "awsRegion", "anthropicVersion", "keyVaultName"],
+      "currentSchemaOnlyNames": [],
+      "oldExpressionAssignments": 0
+    },
+    {
+      "area": "Access Contracts - root template",
+      "path": "bicep/infra/citadel-access-contracts/main.bicepparam",
+      "oldAssignedNames": [
+        "apim", "useTargetAzureKeyVault", "keyVault", "useCase", "apiNameMapping", "services",
+        "productTerms", "useTargetFoundry", "foundry", "foundryConfig", "globalGatewayUrl",
+        "additionalApimGateways", "additionalKeyVaults", "additionalFoundries", "usePrimaryKey",
+        "keyRotationEnabled", "rotationKeyOverride"
+      ],
+      "matched": 17,
+      "oldOnlyNames": [],
+      "currentAssignmentsWithoutDonor": [],
+      "inheritedDefaultsWithoutDonor": ["rotationKeySeed"],
+      "currentSchemaOnlyNames": [],
+      "oldExpressionAssignments": 0,
+      "standaloneInstanceCountInSample": 0
+    }
+  ],
+  "countColumns": ["targetFields", "matched", "compatibleScalar", "withoutDonor", "removed", "typeMismatch", "constraintMismatch", "ambiguous", "dynamic", "semantic", "unknownSchema", "sensitive", "eligibleUnique"],
+  "focusedCases": [
+    {"sources": ["main"], "target": "main", "counts": [100,97,0,3,0,0,0,0,93,97,0,1,4], "accepted": 4, "unchanged": 4, "copied": 0, "changedParameters": []},
+    {"sources": ["main"], "target": "apim", "counts": [42,5,0,37,92,0,0,0,93,5,0,1,2], "accepted": 2, "unchanged": 0, "copied": 2, "changedParameters": ["azureMonitorLogSettings", "appInsightsLogSettings"]},
+    {"sources": ["main"], "target": "services", "counts": [51,18,0,33,79,0,0,0,93,18,0,1,0], "accepted": 0, "unchanged": 0, "copied": 0, "changedParameters": []},
+    {"sources": ["apim"], "target": "apim", "counts": [42,39,35,3,0,0,0,0,0,39,0,1,38], "accepted": 38, "unchanged": 38, "copied": 0, "changedParameters": []},
+    {"sources": ["services"], "target": "services", "counts": [51,44,41,7,0,0,0,0,0,44,0,0,44], "accepted": 44, "unchanged": 44, "copied": 0, "changedParameters": []},
+    {"sources": ["llm"], "target": "apim", "counts": [42,1,0,41,7,0,0,0,0,1,0,0,1], "accepted": 1, "unchanged": 0, "copied": 1, "changedParameters": ["llmBackendConfig"]},
+    {"sources": ["resources"], "target": "main", "counts": [100,96,0,4,0,0,0,0,92,96,0,1,4], "accepted": 4, "unchanged": 4, "copied": 0, "changedParameters": []},
+    {"sources": ["main", "llm"], "target": "apim", "counts": [42,6,0,36,99,0,0,0,93,6,0,1,3], "accepted": 3, "unchanged": 0, "copied": 3, "changedParameters": ["llmBackendConfig", "azureMonitorLogSettings", "appInsightsLogSettings"]},
+    {"sources": ["main", "resources"], "target": "main", "counts": [100,97,0,3,0,0,0,96,93,97,0,1,0], "accepted": 0, "unchanged": 0, "copied": 0, "changedParameters": [], "purpose": "Explicit two-file collision exercise, not a recommended merge"}
+  ],
+  "verification": {
+    "parsedBicepParameterFiles": 16,
+    "parsedArmParameterFiles": 4,
+    "parserFailures": 0,
+    "matrixCases": 62,
+    "matrixErrors": 0,
+    "sessionReplays": 9,
+    "sanitizedReportsExported": 9,
+    "sanitizedDraftsExported": 9,
+    "applyAttemptsBlocked": 9,
+    "transactionsStarted": 0,
+    "realDonorWrites": 0,
+    "realDestinationWrites": 0,
+    "decisionPolicy": "In-memory structural stress test: accept unique eligible proposals and deliberately retain everything else. This is not human semantic approval.",
+    "transport": "Anonymous main-to-commit pin and indexed Git blob reads; actual captured blobs replayed through the public donor and migration session without further network access.",
+    "limitations": [
+      "Counts overlap: dynamic includes withheld references and removed donor rows; semantic counts every matched destination field.",
+      "WithoutDonor means not supplied by the selected donor parameter file, including inherited template defaults; it is not a release-history claim.",
+      "Matching eligible literal values in the exact upgrade pairings are already current, but entire source/destination files are not byte-identical.",
+      "Public environment expressions are not evaluated. Resolved deployment environment values were not supplied.",
+      "No resource-output, authentication/model, or fuzzy-name transformation was inferred. No deployment or historical-version certification was performed."
+    ]
+  }
+}

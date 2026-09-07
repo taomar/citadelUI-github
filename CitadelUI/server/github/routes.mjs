@@ -3,13 +3,16 @@
  *
  * The browser never calls GitHub. Every route here runs after the existing host,
  * origin, fetch-site, session-token, body-size, and concurrency checks, and then
- * additionally requires an opaque GitHub credential session id.
+ * additionally requires an opaque GitHub credential session id, except for the
+ * explicit anonymous, GET-only public-donor route.
  *
- * Repository and branch identity always come from the authoritative registry
- * record for the environment, never from the request body, so a browser cannot
- * redirect an environment at a different repository.
+ * Editable workspace repository/branch identity comes from the authoritative
+ * registry, never the request body. Public donors are separate ephemeral
+ * selections: they cannot redirect or attach an editable environment.
  */
 import { GitHubApiClient, githubError } from './api.mjs';
+import { PublicGitHubDonorRoutes } from './public-donor.mjs';
+import { MigrationSourceRoutes } from './migration-source.mjs';
 import { classifyToken, GitHubSessionStore } from './sessions.mjs';
 import {
   AttachmentReservations,
@@ -115,6 +118,9 @@ export class GitHubRoutes {
   constructor(options = {}) {
     this.sessions = options.sessions || new GitHubSessionStore(options.sessionOptions);
     this.client = options.client || new GitHubApiClient(options.clientOptions);
+    // Same fixed-host client, but no credential store or session is passed to
+    // the public donor. Its separate facade permits anonymous GETs only.
+    this.publicDonor = new PublicGitHubDonorRoutes({ client: this.client, ...(options.publicDonorOptions || {}) });
     this.registryStore = options.registryStore;
     this.audit = options.audit || null;
     this.profiles = options.profiles || null;
@@ -122,6 +128,11 @@ export class GitHubRoutes {
     this.activity = options.activity || null;
     this.attachments = options.attachments || new AttachmentReservations();
     this.allowClassicTokens = Boolean(options.allowClassicTokens);
+    this.migrationSource = new MigrationSourceRoutes({
+      client: this.client, editableSessions: this.sessions, profiles: this.profiles, vault: this.vault,
+      listConnections: () => this.connections(), allowClassicTokens: this.allowClassicTokens,
+      ...(options.migrationSourceOptions || {}),
+    });
     // Trees are immutable for a given commit, so caching by commit SHA is safe
     // and keeps an alias-scoped blob read from refetching the tree per file.
     this.treeCache = new Map();
@@ -726,6 +737,16 @@ export class GitHubRoutes {
   async handle({ req, url, parts, readBody }) {
     const method = req.method;
     const tail = parts.slice(2);
+
+    if (tail[0] === 'migration-source' && tail.length === 2) {
+      return this.migrationSource.handle({ req, url, operation: tail[1], readBody });
+    }
+
+    // The normal owner/browser transport guard still runs in server/index.mjs.
+    // This is the sole source-reading path that does NOT resolve a PAT/session.
+    if (tail[0] === 'public-donor' && tail.length === 2) {
+      return this.publicDonor.handle({ req, url, operation: tail[1] });
+    }
 
     if (method === 'POST' && tail[0] === 'sessions' && tail.length === 1) {
       return this.connect(await readBody());

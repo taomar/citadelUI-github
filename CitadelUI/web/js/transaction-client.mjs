@@ -27,6 +27,9 @@ async function createdDirectorySnapshot(provider, files) {
 export function createTransactionCommit(request) {
   return async function commitFiles(files, options = {}) {
     const { projectId, environment, provider } = options.context || activeWorkspace();
+    // Optional operation-specific freshness proof (migration also binds donor
+    // and schema reads). The existing destination hash checks remain mandatory.
+    await options.validateBeforeWrite?.();
     const preparedFiles = await Promise.all(
       files.map(async (file) => ({
         ...file,
@@ -92,6 +95,7 @@ export function createTransactionCommit(request) {
         }
       );
 
+      await options.validateBeforeWrite?.();
       for (const file of preparedFiles) {
         if (file.create) {
           try {
@@ -138,10 +142,12 @@ export function createTransactionCommit(request) {
       committing = true;
 
       for (const file of preparedFiles) {
+        await options.validateBeforeWrite?.();
         const verified = await provider.write(file.alias, file.after, {
           create: Boolean(file.create),
           expectedHash: file.create ? null : file.beforeHash,
           finalHash: file.afterHash,
+          validateBeforeWrite: options.validateBeforeWrite,
         });
         written.push({ ...file, finalHash: verified.hash });
       }
