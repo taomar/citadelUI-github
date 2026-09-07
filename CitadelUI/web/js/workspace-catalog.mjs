@@ -207,6 +207,68 @@ function field(id, labelText, control, hint = null) {
   );
 }
 
+function githubTokenField(id, labelText, control, hint = null) {
+  const help = h(
+    'div',
+    {
+      id: `${id}-help`,
+      class: 'catalog-token-help',
+      hidden: true,
+      role: 'region',
+      'aria-label': 'Create a GitHub personal access token',
+    },
+    h(
+      'a',
+      {
+        href: 'https://github.com/settings/personal-access-tokens/new',
+        target: '_blank',
+        rel: 'noopener noreferrer',
+      },
+      'Create a fine-grained token on GitHub'
+    ),
+    h(
+      'ol',
+      {},
+      h('li', {}, 'Give the token a name and a short expiration. Set Resource owner to the user or organization that owns the repositories.'),
+      h('li', {}, 'Under Repository access, choose Only select repositories and select only the repositories you will use.'),
+      h('li', {}, 'Under Repository permissions, set ', h('strong', {}, 'Contents: Read and write'), ' for Citadel editing.'),
+      h('li', {}, 'Generate the token, copy it once, and paste it into the GitHub token field.')
+    ),
+    h('p', {}, h('strong', {}, 'Metadata: Read-only'), ' is included automatically. Leave all other repository, account and organization permissions unset. Pull requests, Actions, Workflows and administration permissions are not required.'),
+    h('p', {}, 'Contents: Read-only can read files, but cannot create branches or save changes. Citadel attaches repositories for editing, not read-only browsing.'),
+    h('p', {}, 'If your organization requires approval, ask an organization owner to approve the token. Pending tokens can only read public resources. A token cannot grant more access than your account already has.')
+  );
+  const toggle = h(
+    'button',
+    {
+      class: 'btn btn-sm',
+      type: 'button',
+      'aria-label': 'Token help for GitHub personal access tokens',
+      'aria-expanded': 'false',
+      'aria-controls': `${id}-help`,
+      onclick: () => {
+        help.hidden = !help.hidden;
+        toggle.setAttribute('aria-expanded', String(!help.hidden));
+      },
+    },
+    'Token help'
+  );
+  // Keep help controls outside the input's label; toggling never rebuilds the form.
+  return h(
+    'div',
+    { class: 'catalog-field' },
+    h(
+      'div',
+      { class: 'catalog-field-head' },
+      h('label', { class: 'catalog-field-label', for: id }, labelText),
+      toggle
+    ),
+    control,
+    hint ? h('small', { class: 'hint' }, hint) : null,
+    help
+  );
+}
+
 function alertLine() {
   return h('p', { class: 'field-error catalog-error', role: 'alert', hidden: true });
 }
@@ -673,7 +735,7 @@ export function presentWorkspaceCatalog(options) {
             { class: 'hint' },
             `Paste a fine-grained token for ${profile.accountLogin}. A token for any other account is refused, because every workspace saved under this connection was chosen with this account's access.`
           ),
-          field('catalog-reconnect-token', 'GitHub token', token),
+          githubTokenField('catalog-reconnect-token', 'GitHub token', token),
           h(
             'label',
             { class: 'catalog-persist', for: 'catalog-reconnect-persist' },
@@ -1426,7 +1488,7 @@ export function runAddWorkspace(options) {
         nameInput,
         'Required. This is how the connection appears in the catalogue.'
       ),
-      field(
+      githubTokenField(
         'catalog-connection-token',
         'GitHub token',
         tokenInput,
@@ -1454,7 +1516,7 @@ export function runAddWorkspace(options) {
         { class: 'hint' },
         `The saved credential for "${selected?.name}" is not usable. Paste a replacement fine-grained token for ${selected?.accountLogin}. A token for any other account is refused, because every workspace saved under this connection was chosen with this account's access.`
       ),
-      field('catalog-connection-token', `Reconnect ${selected?.name}`, tokenInput),
+      githubTokenField('catalog-connection-token', `Reconnect ${selected?.name}`, tokenInput),
       // Offered only when it can change something: with no key mounted there is
       // nothing to tick, and a control that does nothing is worse than none.
       vault.available ? persistRow : null,

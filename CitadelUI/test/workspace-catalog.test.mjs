@@ -461,7 +461,8 @@ for (const available of [false, true]) {
     name.value = 'Work account';
     name.dispatch('input');
     assert.equal(token.disabled, false);
-    assert.equal(token.parentElement.getAttribute('for'), 'catalog-connection-token');
+    assert.ok(descendants(token.parentElement).some((node) =>
+      node.tagName === 'LABEL' && node.getAttribute('for') === 'catalog-connection-token'));
     assert.equal(persist.disabled, !available);
     persist.checked = available;
     token.value = TEST_TOKEN;
@@ -541,6 +542,112 @@ for (const profile of [live, idle]) {
   });
 }
 
+for (const reconnect of [false, true]) {
+  test(`GitHub token help toggles inline without changing ${reconnect ? 'reconnect' : 'new'} credentials`, async (t) => {
+    let submissions = 0;
+    const submit = async () => { submissions += 1; };
+    await openConnectionStep(t, {
+      connections: reconnect ? [dead] : [],
+      actions: { createConnection: submit, reconnectConnection: submit },
+    });
+    const token = connectionControl('catalog-connection-token');
+    const help = connectionControl('catalog-connection-token-help');
+    const toggle = descendants(document.getElementById('modal'))
+      .find((node) => node.getAttribute('aria-controls') === 'catalog-connection-token-help');
+    assert.ok(toggle);
+    assert.equal(toggle.tagName, 'BUTTON');
+    assert.equal(toggle.getAttribute('type'), 'button');
+    assert.equal(toggle.getAttribute('aria-label'), 'Token help for GitHub personal access tokens');
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+    assert.equal(toggle.disabled, false);
+    assert.equal(help.hidden, true);
+    assert.equal(help.getAttribute('role'), 'region');
+    assert.equal(help.getAttribute('aria-label'), 'Create a GitHub personal access token');
+    assert.equal(toggle.parentElement.children[0].tagName, 'LABEL');
+    assert.equal(toggle.parentElement.children[0].getAttribute('for'), 'catalog-connection-token');
+    assert.equal(token.disabled, !reconnect);
+
+    await clickDialogButton('Token help');
+    assert.equal(help.hidden, false);
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+    assert.equal(connectionControl('catalog-connection-token'), token);
+    assert.equal(token.disabled, !reconnect, 'help does not bypass the name gate');
+
+    const name = reconnect ? null : connectionControl('catalog-connection-name');
+    if (name) {
+      name.value = 'Personal connection';
+      name.dispatch('input');
+    }
+    token.value = TEST_TOKEN;
+    const tokenParent = token.parentElement;
+    for (const expanded of [false, true, false]) {
+      await clickDialogButton('Token help');
+      assert.equal(help.hidden, !expanded);
+      assert.equal(toggle.getAttribute('aria-expanded'), String(expanded));
+      assert.equal(connectionControl('catalog-connection-token'), token);
+      assert.equal(token.parentElement, tokenParent);
+      assert.equal(token.value, TEST_TOKEN);
+      assert.equal(token.disabled, false);
+      if (name) {
+        assert.equal(connectionControl('catalog-connection-name'), name);
+        assert.equal(name.value, 'Personal connection');
+      }
+    }
+    assert.equal(submissions, 0, 'help must never submit credentials');
+  });
+}
+
+test('GitHub token help links safely to fine-grained creation with least-privilege guidance', async (t) => {
+  await openConnectionStep(t);
+  await clickDialogButton('Token help');
+  const help = connectionControl('catalog-connection-token-help');
+  const links = descendants(help).filter((node) => node.tagName === 'A');
+  assert.equal(links.length, 1);
+  assert.equal(links[0].getAttribute('href'), 'https://github.com/settings/personal-access-tokens/new');
+  assert.equal(links[0].getAttribute('target'), '_blank');
+  assert.equal(links[0].getAttribute('rel'), 'noopener noreferrer');
+  const text = readText(help);
+  for (const phrase of [
+    'fine-grained token', 'short expiration', 'Resource owner',
+    'Only select repositories', 'select only the repositories you will use',
+    'Contents: Read and write', 'Metadata: Read-only', 'included automatically',
+    'Leave all other repository, account and organization permissions unset',
+    'Pull requests, Actions, Workflows and administration permissions are not required',
+    'copy it once', 'paste it into the GitHub token field',
+    'Contents: Read-only can read files, but cannot create branches or save changes',
+    'not read-only browsing', 'organization owner', 'Pending tokens can only read public resources',
+  ]) {
+    assert.ok(text.includes(phrase), `guidance must include: ${phrase}`);
+  }
+  assert.doesNotMatch(text, /(?:Pull requests|Actions|Workflows|administration): (?:Read|write)/);
+});
+
+test('saved-connection reconnect also offers inline GitHub token help', async (t) => {
+  t.after(() => closeDialog());
+  let submissions = 0;
+  const { container } = await paint({
+    listEnvironments: async () => [],
+    listConnections: async () => ({ vault: { available: false }, profiles: [dead] }),
+    reconnectConnection: async () => { submissions += 1; },
+  });
+  const reconnect = descendants(container)
+    .find((node) => node.tagName === 'BUTTON' && readText(node) === 'Reconnect');
+  assert.ok(reconnect);
+  reconnect.click();
+  const token = connectionControl('catalog-reconnect-token');
+  const help = connectionControl('catalog-reconnect-token-help');
+  const parent = token.parentElement;
+  token.value = TEST_TOKEN;
+  await clickDialogButton('Token help');
+  assert.equal(help.hidden, false);
+  await clickDialogButton('Token help');
+  assert.equal(help.hidden, true);
+  assert.equal(connectionControl('catalog-reconnect-token'), token);
+  assert.equal(token.parentElement, parent);
+  assert.equal(token.value, TEST_TOKEN);
+  assert.equal(submissions, 0);
+});
+
 test('the stepper asks for a connection name before it enables the token field', () => {
   assert.match(
     catalogSource,
@@ -583,7 +690,7 @@ test('a live connection is used as-is, and an idle one restores itself', () => {
 test('a connection with no usable credential reconnects itself, keeping its name and account', () => {
   // Not "add a new connection": the existing profile is reconnected, its name is
   // fixed, and the server verifies the immutable account id.
-  assert.match(catalogSource, /field\('catalog-connection-token', `Reconnect \$\{selected\?\.name\}`, tokenInput\)/);
+  assert.match(catalogSource, /githubTokenField\('catalog-connection-token', `Reconnect \$\{selected\?\.name\}`, tokenInput\)/);
   assert.match(catalogSource, /actions\.reconnectConnection\(selected\.id, \{/);
   assert.match(catalogSource, /A token for any other account is refused/);
   assert.match(catalogSource, /needsToken \? `Reconnect and continue` : 'Continue'/);

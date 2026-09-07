@@ -5927,6 +5927,37 @@
   font-size: var(--t-meta);
 }
 
+.catalog-field-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.catalog-token-help {
+  display: grid;
+  gap: var(--sp-3);
+  max-width: 68ch;
+  min-width: 0;
+  padding-inline-start: var(--sp-4);
+  border-inline-start: 1px solid var(--rule);
+  color: var(--ink-2);
+  font-size: var(--t-small);
+  font-weight: 400;
+}
+
+.catalog-token-help p,
+.catalog-token-help ol {
+  margin: 0;
+}
+
+.catalog-token-help ol {
+  display: grid;
+  gap: var(--sp-2);
+  padding-inline-start: var(--sp-5);
+  list-style: decimal;
+}
+
 .catalog-form-actions {
   display: flex;
   flex-wrap: wrap;

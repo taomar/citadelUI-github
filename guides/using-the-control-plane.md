@@ -51,11 +51,21 @@ Enter a **New connection name** first to enable the **GitHub token** field, past
 your fine-grained personal access token, and select **Continue**. Choose a
 repository and explicitly select its branch, such as `main`.
 
+**Token help** beside the token label expands inline creation steps and a link
+to GitHub, without clearing your entries. It is available before you name the
+connection and when replacing a token through **Reconnect**.
+
 Create the token in GitHub's **Settings > Developer settings > Personal access
 tokens > Fine-grained tokens**. Select the intended resource owner and
 **Only select repositories**, with **Contents: Read and write**.
 **Metadata: Read-only** is included automatically. Classic tokens and the OAuth
 token returned by `gh auth token` are not accepted.
+
+Leave other permissions unset: Pull requests, Actions, Workflows and
+administration permissions are not needed. Contents read-only cannot create
+branches or save edits; Citadel does not offer a read-only workspace mode.
+If the organization requires approval, a pending token can only read public
+resources until an organization owner approves it.
 
 Enter the token only in the UI, not in `container.env`, a Compose file, or an Azure
 parameter file. Local-folder workspaces do not need a GitHub token.
