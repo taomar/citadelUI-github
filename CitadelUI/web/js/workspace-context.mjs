@@ -9,10 +9,17 @@ import {
   attachGitHubRepository,
   attachGitHubStatus,
   checkGitHubCompatibility,
+  getGitHubRepository,
+  gitHubRepositoryCreationStatus,
   githubStatus,
   isSessionError,
   listGitHubBranches,
   listGitHubRepositories,
+  listGitHubRepositoryCreations,
+  pauseGitHubRepositoryCreation,
+  prepareGitHubRepository,
+  resumeGitHubRepositoryCreation,
+  startGitHubRepositoryCreation,
 } from './github-session.mjs';
 import { githubSessions } from './github-session-manager.mjs';
 import { RepositorySelection } from './github-selection.mjs';
@@ -721,6 +728,14 @@ function catalogActions() {
     },
 
     listActivity: () => listActivity(25),
+
+    getRepository: getGitHubRepository,
+    listRepositoryCreations: listGitHubRepositoryCreations,
+    prepareRepository: prepareGitHubRepository,
+    repositoryCreationStatus: gitHubRepositoryCreationStatus,
+    startRepositoryCreation: startGitHubRepositoryCreation,
+    resumeRepositoryCreation: resumeGitHubRepositoryCreation,
+    pauseRepositoryCreation: pauseGitHubRepositoryCreation,
 
     createSelection: () =>
       new RepositorySelection({

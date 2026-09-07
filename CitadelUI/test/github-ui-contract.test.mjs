@@ -328,7 +328,7 @@ test('a hidden source panel never narrates the visible one', () => {
   assert.doesNotMatch(context, /onMessage: \(text\) => \{\s*\n\s*message\.textContent = text/);
   assert.match(catalog, /\}\)\[state\.step\]\(\);/);
   // One source is chosen, and the flow branches on it rather than showing both.
-  assert.match(catalog, /state\.kind === 'local' \? \['source', 'details', 'review'\] : steps/);
+  assert.match(catalog, /if \(state\.kind === 'local'\) return \['source', 'details', 'review'\];/);
 });
 
 test('the wide setup layout keeps its two-column datasheet', () => {

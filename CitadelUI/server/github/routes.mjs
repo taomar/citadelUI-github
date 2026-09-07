@@ -54,6 +54,7 @@ import {
 } from './compatibility.mjs';
 import { profileName as profileNameOf } from '../connections.mjs';
 import { sameAccount } from '../credentials.mjs';
+import { RepositoryCreationService } from './repository-creation.mjs';
 
 const SESSION_HEADER = 'x-citadel-github-session';
 
@@ -121,6 +122,14 @@ export class GitHubRoutes {
     this.vault = options.vault || null;
     this.activity = options.activity || null;
     this.attachments = options.attachments || new AttachmentReservations();
+    this.creations = options.creations || (options.dataRoot
+      ? new RepositoryCreationService({
+          dataRoot: options.dataRoot,
+          client: this.client,
+          note: (event) => this.note(event),
+          validateSession: (session) => this.sessions.assertActive(session),
+        })
+      : null);
     this.allowClassicTokens = Boolean(options.allowClassicTokens);
     // Trees are immutable for a given commit, so caching by commit SHA is safe
     // and keeps an alias-scoped blob read from refetching the tree per file.
@@ -769,6 +778,28 @@ export class GitHubRoutes {
     if (method === 'GET' && tail[0] === 'repos' && tail.length === 1) {
       const session = this.session(req);
       return listRepositories(this.client, session.token);
+    }
+    if (method === 'GET' && tail[0] === 'repos' && tail.length === 2) {
+      const session = this.session(req);
+      return getRepository(this.client, session.token, validateRepositoryId(tail[1]));
+    }
+    if (tail[0] === 'repository-creations') {
+      const session = this.session(req);
+      if (!this.creations) {
+        throw githubError(503, 'REPOSITORY_CREATION_UNAVAILABLE', 'Repository creation is unavailable in this deployment.');
+      }
+      if (method === 'GET' && tail.length === 1) return this.creations.list(session);
+      if (method === 'POST' && tail.length === 1) {
+        const body = await readBody();
+        assertKeys(body, new Set(['name', 'sourceUrl', 'operationKey']));
+        return this.creations.prepare(session, body);
+      }
+      if (method === 'GET' && tail.length === 2) return this.creations.status(session, tail[1]);
+      if (method === 'POST' && tail.length === 3 && ['start', 'resume', 'pause'].includes(tail[2])) {
+        assertKeys(await readBody(), new Set());
+        return this.creations[tail[2]](session, tail[1]);
+      }
+      throw githubError(404, 'ROUTE_NOT_FOUND', 'API route not found.');
     }
     if (method === 'GET' && tail[0] === 'repos' && tail[2] === 'branches' && tail.length === 3) {
       const session = this.session(req);

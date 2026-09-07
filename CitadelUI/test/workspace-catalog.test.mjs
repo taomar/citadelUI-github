@@ -433,7 +433,7 @@ async function openConnectionStep(t, { connections = [], available = false, acti
     },
   });
   const choice = descendants(document.getElementById('modal'))
-    .find((node) => node.tagName === 'BUTTON' && readText(node).startsWith('GitHub repository'));
+    .find((node) => node.tagName === 'BUTTON' && readText(node).startsWith('Existing GitHub Repo'));
   assert.ok(choice);
   choice.click();
 }
@@ -668,7 +668,7 @@ test('new-connection fields exist only in new mode', () => {
     /\.\.\.\(mode === 'new' \? newFields : needsToken \? reconnectFields : live \? liveFields : idleFields\)/
   );
   assert.match(catalogSource, /const mode = selected \? 'existing' : 'new';/);
-  assert.match(catalogSource, /const needsToken = Boolean\(selected\) && !live && !idle;/);
+  assert.match(catalogSource, /const needsToken = Boolean\(selected\) && \(\(!live && !idle\)/);
   // Creating a connection happens only in new mode.
   assert.match(catalogSource, /if \(mode === 'new'\) \{[^}]*actions\.createConnection/s);
 });
@@ -680,7 +680,7 @@ test('a live connection is used as-is, and an idle one restores itself', () => {
   // Idle: restored automatically, with staged progress and no user step.
   assert.match(catalogSource, /Citadel is restoring it from the encrypted credential \\u2014 no token needed\./);
   assert.match(catalogSource, /new StageTracker\(RESUME_STAGES/);
-  assert.match(catalogSource, /if \(idle && !state\.resumeFailed && !state\.working\) \{\s*\n\s*next\.click\(\);/);
+  assert.match(catalogSource, /if \(idle && !needsToken && !state\.resumeFailed && !state\.working\) \{\s*\n\s*next\.click\(\);/);
   assert.deepEqual(
     RESUME_STAGES.map((stage) => stage.label),
     ['Restoring encrypted connection', 'Loading authorized repositories', 'Connected']
@@ -690,7 +690,7 @@ test('a live connection is used as-is, and an idle one restores itself', () => {
 test('a connection with no usable credential reconnects itself, keeping its name and account', () => {
   // Not "add a new connection": the existing profile is reconnected, its name is
   // fixed, and the server verifies the immutable account id.
-  assert.match(catalogSource, /githubTokenField\('catalog-connection-token', `Reconnect \$\{selected\?\.name\}`, tokenInput\)/);
+  assert.match(catalogSource, /githubTokenField\('catalog-connection-token', `Reconnect \$\{selected\?\.name\}`, tokenInput, null, creating \? 'create' : 'existing'\)/);
   assert.match(catalogSource, /actions\.reconnectConnection\(selected\.id, \{/);
   assert.match(catalogSource, /A token for any other account is refused/);
   assert.match(catalogSource, /needsToken \? `Reconnect and continue` : 'Continue'/);
@@ -717,7 +717,8 @@ test('the dropdown lists every saved connection and defaults to a usable one', (
 
 test('no branch is preselected, and the local path is a shorter flow', () => {
   assert.match(catalogSource, /h\('option', \{ value: '', selected: !selection\.branch \}, 'Select a branch/);
-  assert.match(catalogSource, /state\.kind === 'local' \? \['source', 'details', 'review'\] : steps/);
+  assert.match(catalogSource, /if \(state\.kind === 'local'\) return \['source', 'details', 'review'\];/);
+  assert.match(catalogSource, /state\.githubIntent === 'new'\s*\? \['source', 'connection', 'creation', 'repository', 'branch', 'details', 'review'\]\s*: steps/);
 });
 
 test('the review step names the exact commit the attach will be checked against', () => {

@@ -215,6 +215,14 @@ export class GitHubSessionStore {
     return session;
   }
 
+  assertActive(session) {
+    this.prune();
+    if (!session || ![...this.sessions.values()].includes(session)) {
+      throw githubError(401, 'GITHUB_SESSION_EXPIRED', 'The GitHub session expired. Reconnect GitHub.');
+    }
+    return session;
+  }
+
   status(sessionId) {
     try {
       return { connected: true, ...this.describe(this.resolve(sessionId)) };

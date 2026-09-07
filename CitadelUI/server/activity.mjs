@@ -48,6 +48,7 @@ export const ACTIVITY_ACTIONS = Object.freeze({
   'connection.persistence-disabled': 'Encrypted persistence disabled',
   'connection.remove': 'Connection removed',
   'repository.validate': 'Repository branch validated',
+  'repository.create': 'Private repository setup',
   'repository.attach': 'Repository branch attached',
   'repository.detach': 'Workspace detached',
   'environment.open': 'Workspace opened',
@@ -70,6 +71,9 @@ export const ACTIVITY_REASONS = Object.freeze(new Set([
   'persistence-unavailable',
   'rate-limited',
   'repository-renamed',
+  'repository-created',
+  'repository-create-refused',
+  'repository-create-failed',
   'unreachable',
 ]));
 

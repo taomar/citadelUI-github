@@ -90,7 +90,7 @@ async function start(options = {}) {
     allowedHost,
     allowedOrigin: `http://${allowedHost}`,
     sessionToken,
-    githubOptions: { clientOptions: { fetch: github.fetch } },
+    githubOptions: { clientOptions: { fetch: github.fetch }, ...(options.githubOptions || {}) },
   });
   await new Promise((resolve, reject) => {
     created.server.once('error', reject);
@@ -151,6 +151,56 @@ test('non-GitHub API routes keep their original method allow-list', async (t) =>
   const rejected = await fixture.call('/api/health', { method: 'DELETE' });
   assert.equal(rejected.status, 405);
   assert.equal(rejected.headers.allow, 'GET, POST, PUT');
+});
+
+test('repository creation routes enforce browser and credential protection and refuse visibility overrides', async (t) => {
+  const calls = [];
+  const operation = { id: 'operation-1', state: 'ready', destination: { private: true, fullName: 'octo-dev/new-repo' } };
+  const creations = {
+    initialize: async () => {},
+    shutdown: () => {},
+    list: async (session) => { calls.push(['list', session.accountId]); return { operations: [operation] }; },
+    prepare: async (session, body) => { calls.push(['prepare', session.accountId, body]); return operation; },
+    status: async (session, id) => { calls.push(['status', session.accountId, id]); return operation; },
+    ...Object.fromEntries(['start', 'resume', 'pause'].map((action) => [
+      action,
+      async (session, id) => { calls.push([action, session.accountId, id]); return operation; },
+    ])),
+  };
+  const fixture = await start({ githubOptions: { creations } });
+  t.after(() => close(fixture));
+  const base = '/api/github/repository-creations';
+  assert.equal((await fixture.call(base)).status, 401);
+  assert.equal((await fixture.call(base, { headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
+  const connected = await fixture.call('/api/github/sessions', {
+    method: 'POST', body: JSON.stringify({ token: TEST_TOKEN }),
+  });
+  const headers = { 'X-Citadel-GitHub-Session': connected.json().id };
+  for (const field of ['private', 'visibility', 'owner', 'token']) {
+    const refused = await fixture.call(base, {
+      method: 'POST', headers,
+      body: JSON.stringify({ name: 'new-repo', sourceUrl: 'https://github.com/source/repo/tree/main', operationKey: 'test-key-1', [field]: false }),
+    });
+    assert.equal(refused.status, 400, field);
+  }
+  assert.deepEqual(calls, []);
+  const body = { name: 'new-repo', sourceUrl: 'https://github.com/source/repo/tree/main', operationKey: 'test-key-1' };
+  const prepared = await fixture.call(base, { method: 'POST', headers, body: JSON.stringify(body) });
+  assert.equal(prepared.status, 200);
+  assert.equal(prepared.text().includes(TEST_TOKEN), false);
+  assert.deepEqual(calls[0], ['prepare', 4242, body]);
+  assert.equal((await fixture.call(base, { headers })).status, 200);
+  assert.equal((await fixture.call(`${base}/operation-1`, { headers })).status, 200);
+  for (const action of ['start', 'resume', 'pause']) {
+    assert.equal((await fixture.call(`${base}/operation-1/${action}`, {
+      method: 'POST', headers, body: '{}',
+    })).status, 200);
+    assert.equal((await fixture.call(`${base}/operation-1/${action}`, {
+      method: 'POST', headers, body: '{"private":false}',
+    })).status, 400);
+  }
+  assert.equal((await fixture.call(`${base}/operation-1/public`, { method: 'POST', headers, body: '{}' })).status, 404);
+  assert.deepEqual(calls.slice(1).map((item) => item[0]), ['list', 'status', 'start', 'resume', 'pause']);
 });
 
 test('connect, list, and disconnect work over HTTP without exposing the token', async (t) => {

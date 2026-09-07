@@ -223,6 +223,14 @@ export class RepositorySelection {
     this.onChange(this);
   }
 
+  includeRepository(repository) {
+    if (!Number.isSafeInteger(repository?.id) || repository.id <= 0 || typeof repository.fullName !== 'string') {
+      throw new Error('GitHub returned an unusable repository.');
+    }
+    this.repositories = [repository, ...this.repositories.filter((item) => item.id !== repository.id)];
+    this.onChange(this);
+  }
+
   setBranchFilter(value) {
     this.branchFilter = String(value || '');
     this.onChange(this);

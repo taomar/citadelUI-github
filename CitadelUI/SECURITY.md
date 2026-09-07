@@ -186,7 +186,7 @@ separated by hardware.
   local folder editor uses, and repeats that scan immediately before the first
   mutation, so a bypassed or replayed browser verdict cannot attach an ordinary
   repository or leave a working branch behind on one.
-- Every Citadel operation is one blob/tree/commit/ref transaction, so a
+- Every edit to an attached workspace is one blob/tree/commit/ref transaction, so a
   multi-file change such as contract creation can never land partially.
 - Ref updates always use `force: false`. A branch that moved after review causes
   a rejection that leaves the branch and the user's edits untouched; at worst
@@ -197,6 +197,53 @@ separated by hardware.
   values or file contents.
 - Because the parent commit holds immutable originals, no GitHub source bytes are
   copied into `/data`.
+
+### Private repository initialization
+
+**New GitHub Repo** is a separate, opt-in copy operation. A source URL must identify a
+repository/ref on `https://github.com`; it never becomes a fetch destination.
+All reads and writes still use the fixed, redirect-refusing `api.github.com`
+transport. Preflight pins an immutable source commit and fully checks the
+snapshot before the user confirms repository creation.
+
+The server fixes visibility to private and destination ownership to the
+authenticated personal account. Browser-supplied owner/visibility overrides are
+refused. Name collisions are never overwritten or adopted. An operation records
+its intent before creation and verifies repository provenance, immutable ID,
+account, privacy and expected branch heads on recovery. It never automatically
+deletes repositories or forces a ref update.
+
+For an account whose initial default branch is not `main`, the importer publishes
+on the proven bootstrap branch and then uses GitHub's branch-rename operation.
+There is no check-then-delete race. Once publication or the default branch has
+been confirmed, a later rollback is treated as an external change rather than
+an invitation to replay a write.
+
+Unlike editor access, initialization copies all supported checked-in file types,
+including binary assets, dotfiles and licenses. This capability is restricted to
+the pinned source and the new destination owned by that operation; it is not a
+generic arbitrary-file editor or write endpoint. Size/mode/truncation failures
+are explicit. Content hashes and the full destination tree must match before
+setup reports completion.
+
+Creation uses a temporary fine-grained token with All repositories access and
+Administration/Contents read-write permissions. Normal editing retains its
+selected-repository Contents-only recommendation. Workflows permission is
+conditional on source workflow files; for those imports, Actions are disabled
+before copying and remain disabled for operator review. No Actions or Pull
+requests permission is requested.
+
+The durable operation journal contains source/destination identifiers, file
+metadata, checkpoints and safe status information, never tokens, credential
+session IDs or copied file contents. Source buffers are bounded and transient.
+Paused/interrupted copies retain their private destination and require the same
+authenticated account to resume. Keep `/data` persistent to retain recovery
+provenance, and narrow or replace the creation token afterward.
+
+Background calls revalidate the held session against the same session store,
+including idle and absolute expiry, after queue and pacing waits. A fatal journal
+write failure halts further requests, remains observable even after the runner
+exits, and requires storage access to be restored before explicit resume.
 
 ## Source exclusions
 

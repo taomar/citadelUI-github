@@ -37,6 +37,14 @@ import { connectionStatusLabel, isConnectionLive, isConnectionResumable } from '
 import { activityLabel, activityReason } from './activity.mjs';
 import { isRepositorySelectable, repositoryBlockedReason } from './github-selection.mjs';
 import { ATTACH_STAGES, RESUME_STAGES, StageTracker, createStageRegion } from './stage-progress.mjs';
+import { DEFAULT_REPOSITORY_SOURCE, parseRepositorySource, validateNewRepositoryName } from '../../shared/repository-source.mjs';
+
+function newRepositoryCreationState(accountId = null) {
+  return {
+    accountId, name: '', sourceUrl: DEFAULT_REPOSITORY_SOURCE,
+    key: null, signature: null, operation: null, uncertain: false,
+  };
+}
 
 /**
  * The status vocabulary, in the order of how much attention a row deserves.
@@ -207,7 +215,8 @@ function field(id, labelText, control, hint = null) {
   );
 }
 
-function githubTokenField(id, labelText, control, hint = null) {
+function githubTokenField(id, labelText, control, hint = null, purpose = 'existing') {
+  const creating = purpose === 'create';
   const help = h(
     'div',
     {
@@ -229,14 +238,26 @@ function githubTokenField(id, labelText, control, hint = null) {
     h(
       'ol',
       {},
-      h('li', {}, 'Give the token a name and a short expiration. Set Resource owner to the user or organization that owns the repositories.'),
-      h('li', {}, 'Under Repository access, choose Only select repositories and select only the repositories you will use.'),
-      h('li', {}, 'Under Repository permissions, set ', h('strong', {}, 'Contents: Read and write'), ' for Citadel editing.'),
+      h('li', {}, creating
+        ? 'Create a temporary token with a short expiration. Set Resource owner to your connected personal account; the new repository will belong to that account.'
+        : 'Give the token a name and a short expiration. Set Resource owner to the user or organization that owns the repositories.'),
+      h('li', {}, creating
+        ? 'Under Repository access, choose All repositories for this creation flow. The new repository does not exist yet, so it cannot be selected beforehand.'
+        : 'Under Repository access, choose Only select repositories and select only the repositories you will use.'),
+      creating
+        ? h('li', {}, 'Under Repository permissions, grant ', h('strong', {}, 'Administration: Read and write'), ' to create the private repository, and ', h('strong', {}, 'Contents: Read and write'), ' to populate it.')
+        : h('li', {}, 'Under Repository permissions, set ', h('strong', {}, 'Contents: Read and write'), ' for Citadel editing.'),
       h('li', {}, 'Generate the token, copy it once, and paste it into the GitHub token field.')
     ),
-    h('p', {}, h('strong', {}, 'Metadata: Read-only'), ' is included automatically. Leave all other repository, account and organization permissions unset. Pull requests, Actions, Workflows and administration permissions are not required.'),
-    h('p', {}, 'Contents: Read-only can read files, but cannot create branches or save changes. Citadel attaches repositories for editing, not read-only browsing.'),
-    h('p', {}, 'If your organization requires approval, ask an organization owner to approve the token. Pending tokens can only read public resources. A token cannot grant more access than your account already has.')
+    creating
+      ? h('p', {}, h('strong', {}, 'Metadata: Read-only'), ' is automatic. Add ', h('strong', {}, 'Workflows: Read and write'), ' only if the source preview reports .github/workflows files. For those sources, Citadel disables Actions before copying and leaves Actions disabled for your review. No Actions, Pull requests or organization permission is needed.')
+      : h('p', {}, h('strong', {}, 'Metadata: Read-only'), ' is included automatically. Leave all other repository, account and organization permissions unset. Pull requests, Actions, Workflows and administration permissions are not required.'),
+    creating
+      ? h('p', {}, 'After setup, narrow the token to Only select repositories and the new repository, remove Administration and any unneeded Workflows permission, or reconnect with a regular Contents-only token. Never share the token.')
+      : h('p', {}, 'Contents: Read-only can read files, but cannot create branches or save changes. Citadel attaches repositories for editing, not read-only browsing.'),
+    creating
+      ? h('p', {}, 'New repositories are always private. A token cannot grant more access than your account already has.')
+      : h('p', {}, 'If your organization requires approval, ask an organization owner to approve the token. Pending tokens can only read public resources. A token cannot grant more access than your account already has.')
   );
   const toggle = h(
     'button',
@@ -1242,6 +1263,9 @@ export function runAddWorkspace(options) {
   const state = {
     step: 'source',
     kind: null,
+    githubIntent: 'existing',
+    replaceCreationToken: false,
+    creation: newRepositoryCreationState(),
     // Default to a connection the user can actually proceed with. Falling back
     // to any saved connection rather than to "new" matters: a profile that needs
     // reconnecting should offer to reconnect *itself*, not ask for a second
@@ -1266,10 +1290,12 @@ export function runAddWorkspace(options) {
   };
   const selection = actions.createSelection();
   let closed = false;
+  let disposeStep = null;
 
   function finish(workspace) {
     if (closed) return;
     closed = true;
+    disposeStep?.();
     onDone(workspace || null);
   }
 
@@ -1281,7 +1307,10 @@ export function runAddWorkspace(options) {
   const steps = ['source', 'connection', 'repository', 'branch', 'details', 'review'];
 
   function visibleSteps() {
-    return state.kind === 'local' ? ['source', 'details', 'review'] : steps;
+    if (state.kind === 'local') return ['source', 'details', 'review'];
+    return state.githubIntent === 'new'
+      ? ['source', 'connection', 'creation', 'repository', 'branch', 'details', 'review']
+      : steps;
   }
 
   function stepHeader() {
@@ -1299,7 +1328,7 @@ export function runAddWorkspace(options) {
             }`,
             'aria-current': position === index ? 'step' : null,
           },
-          { source: 'Source', connection: 'Connection', repository: 'Repository', branch: 'Branch', details: 'Details', review: 'Review' }[name]
+          { source: 'Source', connection: 'Connection', creation: 'Create repository', repository: 'Repository', branch: 'Branch', details: 'Details', review: 'Review' }[name]
         )
       )
     );
@@ -1327,6 +1356,8 @@ export function runAddWorkspace(options) {
       dismissDialog(false);
       return;
     }
+    disposeStep?.();
+    disposeStep = null;
     state.step = step;
     render();
   }
@@ -1334,8 +1365,9 @@ export function runAddWorkspace(options) {
   // ---- steps ------------------------------------------------------------
 
   function sourceStep() {
-    const choose = (kind) => {
+    const choose = (kind, intent = 'existing') => {
       state.kind = kind;
+      state.githubIntent = intent;
       go(kind === 'local' ? 'details' : 'connection');
     };
     present(
@@ -1346,7 +1378,7 @@ export function runAddWorkspace(options) {
         h(
           'button',
           { class: 'btn catalog-choice-option', type: 'button', onclick: () => choose('github') },
-          h('strong', {}, 'GitHub repository'),
+          h('strong', {}, 'Existing GitHub Repo'),
           h(
             'span',
             { class: 'hint' },
@@ -1355,8 +1387,14 @@ export function runAddWorkspace(options) {
         ),
         h(
           'button',
+          { class: 'btn catalog-choice-option', type: 'button', onclick: () => choose('github', 'new') },
+          h('strong', {}, 'New GitHub Repo'),
+          h('span', { class: 'hint' }, 'Create a private repository in your personal account from a Citadel source, then choose its workspace and branch as usual.')
+        ),
+        h(
+          'button',
           { class: 'btn catalog-choice-option', type: 'button', onclick: () => choose('local') },
-          h('strong', {}, 'Local folder'),
+          h('strong', {}, 'Local'),
           h(
             'span',
             { class: 'hint' },
@@ -1388,11 +1426,13 @@ export function runAddWorkspace(options) {
   function connectionStep() {
     const error = alertLine();
     const profiles = connections;
-    const selected = profiles.find((profile) => profile.id === state.profileId) || null;
+    const selected = profiles.find((profile) => profile.id === state.profileId) ||
+      (state.account?.profile?.id === state.profileId ? state.account.profile : null);
     const mode = selected ? 'existing' : 'new';
     const live = selected ? isConnectionLive(selected) : false;
     const idle = selected ? isConnectionResumable(selected) : false;
-    const needsToken = Boolean(selected) && !live && !idle;
+    const creating = state.githubIntent === 'new';
+    const needsToken = Boolean(selected) && ((!live && !idle) || (creating && state.replaceCreationToken));
 
     const stages = new StageTracker(RESUME_STAGES, { onChange: () => region.update(stages) });
     const region = createStageRegion({ label: 'Connection progress' });
@@ -1453,7 +1493,7 @@ export function runAddWorkspace(options) {
       id: 'catalog-connection-persist',
       type: 'checkbox',
       class: 'ctl-check',
-      checked: needsToken ? selected.credentialMode === 'persistent' : false,
+      checked: !creating && needsToken ? selected.credentialMode === 'persistent' : false,
       disabled: !vault.available,
     });
     nameInput.addEventListener('input', () => {
@@ -1492,7 +1532,10 @@ export function runAddWorkspace(options) {
         'catalog-connection-token',
         'GitHub token',
         tokenInput,
-        'Fine-grained token. Repository access: Only select repositories. Repository permissions: Contents \u2014 Read and write.'
+        creating
+          ? 'Temporary creation token: All repositories, Administration and Contents read/write. Token help explains conditional workflow access and narrowing access afterward.'
+          : 'Fine-grained token. Repository access: Only select repositories. Repository permissions: Contents \u2014 Read and write.',
+        creating ? 'create' : 'existing'
       ),
       persistRow,
       persistHint,
@@ -1516,7 +1559,7 @@ export function runAddWorkspace(options) {
         { class: 'hint' },
         `The saved credential for "${selected?.name}" is not usable. Paste a replacement fine-grained token for ${selected?.accountLogin}. A token for any other account is refused, because every workspace saved under this connection was chosen with this account's access.`
       ),
-      githubTokenField('catalog-connection-token', `Reconnect ${selected?.name}`, tokenInput),
+      githubTokenField('catalog-connection-token', `Reconnect ${selected?.name}`, tokenInput, null, creating ? 'create' : 'existing'),
       // Offered only when it can change something: with no key mounted there is
       // nothing to tick, and a control that does nothing is worse than none.
       vault.available ? persistRow : null,
@@ -1527,7 +1570,9 @@ export function runAddWorkspace(options) {
       h(
         'p',
         { class: 'hint' },
-        'This connection already has a credential. Continue to choose a repository \u2014 you can attach as many repositories and branches through it as you like.'
+        creating
+          ? 'This connection already has a credential. Creating and populating a new private repository needs All repositories access with Administration and Contents read/write. Use a temporary creation token if this connection is limited to existing repositories.'
+          : 'This connection already has a credential. Continue to choose a repository \u2014 you can attach as many repositories and branches through it as you like.'
       ),
     ];
 
@@ -1587,11 +1632,22 @@ export function runAddWorkspace(options) {
                 ? await actions.useConnection(selected.id)
                 : await actions.resumeConnection(selected.id);
             }
-            stages.begin('repos');
-            await selection.connect(state.account);
+            if (creating) {
+              if (!Number.isSafeInteger(state.account?.accountId)) {
+                throw new Error('GitHub returned an unusable account identity. Reconnect before creating a repository.');
+              }
+              if (state.creation.accountId !== state.account.accountId) {
+                // The old account's durable attempts remain on the server.
+                state.creation = newRepositoryCreationState(state.account.accountId);
+              }
+            } else {
+              stages.begin('repos');
+              await selection.connect(state.account);
+            }
             stages.succeed();
             state.working = false;
-            go('repository');
+            state.replaceCreationToken = false;
+            go(creating ? 'creation' : 'repository');
           } catch (failure) {
             state.working = false;
             stages.fail(failure?.message || String(failure));
@@ -1624,6 +1680,13 @@ export function runAddWorkspace(options) {
           ),
       summary,
       ...(mode === 'new' ? newFields : needsToken ? reconnectFields : live ? liveFields : idleFields),
+      creating && selected && !needsToken
+        ? h('button', {
+            class: 'btn btn-sm',
+            type: 'button',
+            onclick: () => { state.replaceCreationToken = true; go('connection'); },
+          }, 'Update token for repository creation')
+        : null,
       error
     );
 
@@ -1637,9 +1700,269 @@ export function runAddWorkspace(options) {
     // An idle connection restores itself. Kicking it off after `present` keeps
     // the dialog painted first, and the attempt is tried once per entry so a
     // refused credential does not spin.
-    if (idle && !state.resumeFailed && !state.working) {
+    if (idle && !needsToken && !state.resumeFailed && !state.working) {
       next.click();
     }
+  }
+
+  function creationStep() {
+    const form = state.creation;
+    const error = alertLine();
+    const progress = statusLine();
+    const preview = h('div');
+    const previous = h('div', { class: 'catalog-form' });
+    let operation = form.operation;
+    let history = [];
+    let listed = false;
+    let busy = false;
+    let disposed = false;
+    let timer = null;
+    let revision = 0;
+    const active = () => operation && (operation.running === true || ['preparing', 'creating', 'copying', 'verifying'].includes(operation.state));
+    const name = h('input', {
+      id: 'catalog-create-repository-name', class: 'ctl', type: 'text', maxlength: '100',
+      value: form.name, placeholder: 'my-citadel', autocomplete: 'off',
+      oninput: () => { form.name = name.value; },
+    });
+    const source = h('input', {
+      id: 'catalog-create-repository-source', class: 'ctl', type: 'url', maxlength: '2048',
+      value: form.sourceUrl, autocomplete: 'off', spellcheck: 'false',
+      oninput: () => { form.sourceUrl = source.value; },
+    });
+    const stopPolling = () => { if (timer) clearTimeout(timer); timer = null; };
+    disposeStep = () => { disposed = true; stopPolling(); };
+
+    function accept(result) {
+      operation = result;
+      form.operation = result;
+      form.uncertain = false;
+      form.name = result.destination.name;
+      if (result.sourceUrl) form.sourceUrl = result.sourceUrl;
+      else if (result.source?.fullName && result.source?.ref) {
+        form.sourceUrl = `https://github.com/${result.source.fullName}/tree/${result.source.ref.split('/').map(encodeURIComponent).join('/')}`;
+      }
+      name.value = form.name;
+      source.value = form.sourceUrl;
+      say(error, result.error?.message || '');
+    }
+
+    function schedule() {
+      stopPolling();
+      if (!disposed && (active() || form.uncertain)) timer = setTimeout(() => poll(), 1000);
+    }
+
+    async function poll() {
+      if (disposed || busy || !operation) return;
+      const id = operation.id;
+      const generation = revision;
+      try {
+        const result = await actions.repositoryCreationStatus(id);
+        if (disposed || busy || generation !== revision || id !== operation?.id) return;
+        accept(result);
+        paint();
+        schedule();
+      } catch (failure) {
+        if (disposed || busy || generation !== revision || id !== operation?.id) return;
+        state.working = false;
+        say(error, `Setup status could not be confirmed: ${failure.message} The private repository may already exist; refresh this attempt rather than creating another.`);
+        check.disabled = false;
+        back.disabled = false;
+        changeToken.disabled = false;
+      }
+    }
+
+    async function perform(work, { mutation = false } = {}) {
+      if (busy) return;
+      stopPolling();
+      revision += 1;
+      busy = true;
+      if (mutation) form.uncertain = true;
+      say(error, '');
+      paint();
+      try {
+        const result = await work();
+        if (!disposed) accept(result);
+      } catch (failure) {
+        if (!disposed) say(error, form.uncertain
+          ? `${failure.message} GitHub may have completed this request. Refresh this same attempt to confirm the result; do not start another setup.`
+          : failure?.message || String(failure));
+      } finally {
+        busy = false;
+        if (!disposed) { paint(); schedule(); }
+      }
+    }
+
+    async function refreshPrevious() {
+      try {
+        const result = await actions.listRepositoryCreations();
+        if (disposed) return;
+        history = result.operations;
+        listed = true;
+        paint();
+      } catch (failure) {
+        if (!disposed) say(error, `Previous setup attempts could not be loaded: ${failure.message} Refresh attempts before starting another setup.`);
+      }
+    }
+
+    const prepare = h('button', {
+      class: 'btn btn-primary', type: 'button',
+      onclick: () => perform(async () => {
+        const validName = validateNewRepositoryName(name.value);
+        parseRepositorySource(source.value);
+        const signature = JSON.stringify([validName, source.value.trim()]);
+        if (form.signature !== signature) {
+          form.key = globalThis.crypto.randomUUID();
+          form.signature = signature;
+        }
+        return actions.prepareRepository({ name: validName, sourceUrl: source.value.trim(), operationKey: form.key });
+      }),
+    }, 'Check source');
+    const create = h('button', {
+      class: 'btn btn-primary', type: 'button',
+      onclick: () => perform(() => actions.startRepositoryCreation(operation.id), { mutation: true }),
+    }, 'Create private repository');
+    const resume = h('button', {
+      class: 'btn btn-primary', type: 'button',
+      onclick: () => perform(() => actions.resumeRepositoryCreation(operation.id), { mutation: true }),
+    }, 'Resume this attempt');
+    const pause = h('button', {
+      class: 'btn', type: 'button',
+      onclick: () => perform(() => actions.pauseRepositoryCreation(operation.id), { mutation: true }),
+    }, 'Pause setup');
+    const check = h('button', {
+      class: 'btn', type: 'button',
+      onclick: () => perform(() => actions.repositoryCreationStatus(operation.id)),
+    }, 'Refresh status');
+    const edit = h('button', {
+      class: 'btn', type: 'button',
+      onclick: () => {
+        if (busy || form.uncertain || active() || operation?.created) {
+          say(error, 'This attempt cannot be discarded. Refresh its status or pause it before continuing.');
+          return;
+        }
+        stopPolling();
+        revision += 1;
+        operation = null;
+        form.operation = null;
+        form.key = null;
+        form.signature = null;
+        say(error, '');
+        paint();
+        name.focus();
+      },
+    }, 'Edit setup');
+    const changeToken = h('button', {
+      class: 'btn btn-sm', type: 'button',
+      onclick: () => { state.replaceCreationToken = true; go('connection'); },
+    }, 'Update connection token');
+    const next = h('button', {
+      class: 'btn btn-primary', type: 'button',
+      onclick: async () => {
+        if (busy) return;
+        revision += 1;
+        stopPolling();
+        busy = true;
+        paint();
+        try {
+          const confirmed = await actions.repositoryCreationStatus(operation.id);
+          if (confirmed.state !== 'complete') throw new Error('Repository setup is not complete. Resume this attempt first.');
+          const repository = await actions.getRepository(confirmed.destination.repositoryId);
+          await selection.connect(state.account);
+          selection.includeRepository(repository);
+          await selection.selectRepository(repository.id);
+          state.working = false;
+          go('repository');
+        } catch (failure) {
+          if (!disposed) say(error, `The private repository is retained, but the repository picker could not be opened: ${failure.message}`);
+        } finally {
+          busy = false;
+          if (!disposed) paint();
+        }
+      },
+    }, 'Continue to repository');
+    const back = backButton('connection');
+    const refresh = h('button', { class: 'btn btn-sm', type: 'button', onclick: refreshPrevious }, 'Refresh attempts');
+
+    function paint() {
+      state.working = busy || Boolean(active());
+      name.disabled = busy || Boolean(operation);
+      source.disabled = busy || Boolean(operation);
+      prepare.hidden = Boolean(operation);
+      prepare.disabled = busy || !listed || form.uncertain;
+      create.hidden = form.uncertain || !operation?.canStart;
+      create.disabled = busy;
+      resume.hidden = form.uncertain || !operation?.canResume;
+      resume.disabled = busy;
+      pause.hidden = !operation || (!operation.canPause && !form.uncertain);
+      pause.disabled = busy;
+      check.hidden = !operation;
+      check.disabled = busy;
+      edit.hidden = !operation || operation.created || Boolean(active()) || form.uncertain;
+      edit.disabled = busy || form.uncertain;
+      next.hidden = form.uncertain || operation?.state !== 'complete';
+      next.disabled = busy;
+      back.disabled = state.working;
+      changeToken.disabled = state.working;
+      refresh.disabled = busy;
+      const count = operation?.progress;
+      const detail = count?.total > 0 ? ` ${count.completed} of ${count.total} ${count.unit}.` : '';
+      const stage = operation?.stage || operation?.state || '';
+      say(progress, busy
+        ? 'Contacting GitHub\u2026'
+        : form.uncertain ? 'Confirming the previous GitHub request on this same attempt\u2026'
+          : operation ? `${stage}${stage.endsWith('.') ? '' : '.'}${detail}` : '');
+      for (const button of [prepare, create, resume, pause, next]) button.setAttribute('aria-busy', String(busy && !button.hidden));
+      const row = (label, value) => h('div', { class: 'catalog-summary-row' }, h('dt', {}, label), h('dd', {}, value));
+      mount(preview, operation ? h('div', { class: 'catalog-form' },
+        h('dl', { class: 'catalog-summary' },
+          row('Destination', h('code', {}, operation.destination.fullName)),
+          row('Visibility', 'Private only'),
+          row('Source', operation.source ? h('code', {}, `${operation.source.fullName} @ ${operation.source.ref}`) : 'Checking source'),
+          operation.source?.commit ? row('Pinned commit', h('code', {}, operation.source.commit)) : null,
+          operation.source?.fileCount ? row('Snapshot', `${operation.source.fileCount} files, ${(operation.source.totalBytes / 1024 / 1024).toFixed(1)} MiB; target branch main`) : null
+        ),
+        operation.source?.hasWorkflows
+          ? h('p', { class: 'hint' }, operation.actionsDisabled
+              ? 'Actions were disabled on this repository for the import. Review the copied workflows before re-enabling Actions. Workflows read/write is needed to copy these files.'
+              : 'This source contains workflow files. The token also needs Workflows read/write. Actions will be disabled on the new repository before copying and remain disabled until you review the workflows.')
+          : null,
+        form.uncertain
+          ? h('p', { class: 'hint' }, 'GitHub may have created or updated the private repository. This attempt is retained until its status is confirmed; editing the setup or starting a replacement is not safe yet.')
+          : operation.created
+          ? h('p', { class: 'hint' }, 'The private repository has been created and is retained if setup is interrupted. Resume this same attempt; it will not create another repository. ',
+              h('a', { href: `https://github.com/${operation.destination.fullName}`, target: '_blank', rel: 'noopener noreferrer' }, 'Open the private repository on GitHub'))
+          : h('p', { class: 'hint' }, 'Checking the source creates nothing on GitHub. Review the pinned snapshot before choosing Create private repository.')
+      ) : null);
+      mount(previous, history.length ? h('details', {},
+        h('summary', {}, 'Previous setup attempts'),
+        h('ul', { class: 'catalog-attached' }, history.map((item) => h('li', {},
+          h('button', {
+            class: 'btn btn-sm', type: 'button', disabled: state.working || form.uncertain,
+            onclick: () => perform(() => actions.repositoryCreationStatus(item.id)),
+          }, `Open ${item.destination.fullName}`),
+          h('span', { class: 'hint' }, ` \u2014 ${item.state}`)
+        )))
+      ) : null);
+    }
+
+    present(
+      'Create a private GitHub repository',
+      h('div', { class: 'catalog-form' },
+        h('p', { class: 'hint' }, `The repository will be created in your personal account @${state.account.login}. New repositories are always private. Existing repositories are never overwritten.`),
+        field('catalog-create-repository-name', 'Repository name', name),
+        field('catalog-create-repository-source', 'Source repository URL', source, 'Use a GitHub repository or branch URL. The checked-out source files, including binary assets and licenses, are copied into a fresh snapshot.'),
+        h('div', { class: 'catalog-form-actions' }, changeToken, refresh),
+        previous,
+        progress,
+        preview,
+        error
+      ),
+      [back, edit, prepare, create, resume, pause, check, next],
+      name
+    );
+    paint();
+    refreshPrevious();
+    if (operation) poll();
   }
 
   function repositoryStep() {
@@ -2208,6 +2531,7 @@ export function runAddWorkspace(options) {
     ({
       source: sourceStep,
       connection: connectionStep,
+      creation: creationStep,
       repository: repositoryStep,
       branch: branchStep,
       details: detailsStep,
@@ -2216,4 +2540,5 @@ export function runAddWorkspace(options) {
   }
 
   render();
+  return { dispose: () => { closed = true; disposeStep?.(); } };
 }
