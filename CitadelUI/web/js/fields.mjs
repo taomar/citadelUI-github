@@ -27,6 +27,7 @@
 
 import { h } from './dom.mjs';
 import { picker } from './picker.mjs';
+import { editorField } from './editor-focus.mjs';
 import {
   APIC_LOCATION_VALUES,
   PRIMARY_REGIONS,
@@ -65,7 +66,7 @@ function templateFrom(sample) {
 
 let comboSeq = 0;
 
-function namedControl(node, label) {
+function namedControl(node, label, path) {
   const controls = node.matches && node.matches('input, select, textarea')
     ? [node]
     : [...node.querySelectorAll('input, select, textarea')];
@@ -74,7 +75,7 @@ function namedControl(node, label) {
       control.setAttribute('aria-label', label);
     }
   }
-  return node;
+  return editorField(node, path);
 }
 
 function valueLabel(path, schema) {
@@ -368,7 +369,7 @@ function scalarControl(value, path, ctx, schema) {
       }),
       h('span', { class: 'toggle-track' }),
       h('span', { class: 'toggle-label' }, on ? 'true' : 'false')
-    ), label);
+    ), label, path);
   }
 
   // A number, whether it arrived as one or as the string an int() cast
@@ -384,11 +385,11 @@ function scalarControl(value, path, ctx, schema) {
         onchange: (e) => commit(numeric ? Number(e.target.value) : e.target.value),
       }),
       schema
-    ), label);
+    ), label, path);
   }
 
   if (schema && Array.isArray(schema.allowedValues) && schema.allowedValues.length) {
-    return namedControl(comboControl(value, schema.allowedValues, commit, schema.secure, schema), label);
+    return namedControl(comboControl(value, schema.allowedValues, commit, schema.secure, schema), label, path);
   }
 
   const str = value === null ? '' : String(value);
@@ -396,7 +397,7 @@ function scalarControl(value, path, ctx, schema) {
   // all. Sixty characters is where a value stops fitting the sheet's value
   // column on a laptop, so that is where the single line stops being honest.
   const multiline = str.includes('\n') || str.length > 60 || str.startsWith('@(');
-  if (multiline) return namedControl(exprBox(str, commit), label);
+  if (multiline) return namedControl(exprBox(str, commit), label, path);
 
   const input = h('input', {
     class: `ctl ${widthClass(schema, str)}`,
@@ -406,7 +407,7 @@ function scalarControl(value, path, ctx, schema) {
       schema && !schema.envVar && schema.hasDefault ? String(schema.defaultValue ?? '') : '',
     onchange: (e) => commit(e.target.value),
   });
-  return namedControl(schema && schema.secure ? withReveal(input) : input, label);
+  return namedControl(schema && schema.secure ? withReveal(input) : input, label, path);
 }
 
 /**

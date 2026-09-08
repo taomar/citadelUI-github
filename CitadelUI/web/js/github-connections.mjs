@@ -30,6 +30,18 @@ export function connectionStatusLabel(status) {
   return CONNECTION_STATUS_LABELS[status] || 'Reconnect';
 }
 
+export const CONNECTION_PERSISTENCE_LABEL = 'Save this connection on the Citadel server (encrypted)';
+
+export function connectionStorageDescription({ available, persist = false, saved = false } = {}) {
+  if (persist) return saved
+    ? 'The credential is saved encrypted on this Citadel server and can be restored after a restart.'
+    : 'The credential will be saved encrypted on this Citadel server so the connection can be restored after a restart.';
+  const session = 'Session only: the credential stays in server memory and is cleared on restart or disconnect.';
+  if (available == null) return `${session} Encrypted persistence is disabled until storage availability is confirmed.`;
+  return available ? session
+    : `${session} Encrypted persistence is unavailable because no usable credential key is configured on this server.`;
+}
+
 /** A connection whose credential the server can use right now. */
 export function isConnectionLive(profile) {
   return profile?.status === 'persistent' || profile?.status === 'session';
@@ -118,4 +130,3 @@ export async function removeConnection(profileId) {
     method: 'DELETE',
   });
 }
-

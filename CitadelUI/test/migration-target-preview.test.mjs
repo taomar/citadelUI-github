@@ -236,6 +236,9 @@ test('reviewing then opening source matching and undoing the final import return
   assert(cx.actionNode('apply'));
   await cx.click('Match source values');
   assert.equal(cx.wizard.step, 'map');
+  assert.equal(all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Comparison view')[0].value, 'differences');
+  assert.equal(all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Import tags').length, 0,
+    'opening matching must not flood the differences-first worklist with target-only values');
   await cx.input('Import environmentName', false);
   assert.equal(cx.wizard.step, 'map');
   assert.equal(cx.wizard.busy, false);
@@ -255,12 +258,25 @@ test('scalar matching already expanded during review can revise a value and need
   await cx.pair('deployment', JOURNEY_MAIN);
   await cx.click('Match source values');
   await cx.input('Import environmentName', true);
+  await cx.input('Comparison view', 'selected');
+  const search = all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Filter parameter names')[0];
+  const targetForm = all(cx.workspace, (node) => node.classList?.contains('migration-target-preview'))[0];
+  search.value = 'environment';
+  search.dispatch('input');
+  assert.equal(all(cx.workspace, (node) => node.classList?.contains('migration-target-preview'))[0], targetForm,
+    'filtering must not rebuild the unrelated full target form');
   await cx.press('preview');
   assert.equal(cx.wizard.step, 'review');
+  assert.equal(all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Comparison view')[0].value, 'selected');
+  assert.equal(all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Filter parameter names')[0].value, 'environment');
   await cx.input('Import environmentName', false);
   assert.equal(cx.wizard.step, 'map');
   assert.equal(cx.wizard.busy, false);
   assert.equal(cx.actionNode('apply'), undefined);
+  const filtered = all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Filter parameter names')[0];
+  filtered.value = '';
+  filtered.dispatch('input');
+  await cx.input('Comparison view', 'differences');
   await cx.input('Import location', true);
   assert.equal(cx.h.api.trace.length, 0);
   await cx.press('preview');
@@ -271,6 +287,27 @@ test('scalar matching already expanded during review can revise a value and need
   const after = (await cx.h.provider.read(JOURNEY_MAIN)).text;
   assert.equal(after, journeyTargetFiles[JOURNEY_MAIN].replace("location = 'westus2'", "location = 'eastus2'"));
   assert.equal(cx.h.api.trace.filter((entry) => entry === 'prepare').length, 1);
+});
+
+test('general matching reopened from review preserves the scalar search and user-selected worklist', async (t) => {
+  const cx = await workspaceReview(t);
+  await cx.pair('deployment', JOURNEY_MAIN);
+  await cx.click('Match source values');
+  await cx.input('Import environmentName', true);
+  await cx.input('Comparison view', 'selected');
+  const search = all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Filter parameter names')[0];
+  search.value = 'environment';
+  search.dispatch('input');
+  await cx.press('preview');
+  await cx.click('Match source values');
+  assert.equal(cx.wizard.step, 'map');
+  assert.equal(cx.wizard.busy, false);
+  assert.equal(all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Comparison view')[0].value, 'selected');
+  assert.equal(all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Filter parameter names')[0].value, 'environment');
+  assert.equal(all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Import location').length, 0);
+  await cx.input('Import environmentName', false);
+  assert.equal(cx.actionNode('apply'), undefined);
+  assert.equal(cx.wizard.session.view().rows.find((row) => row.name === 'environmentName').decision.kind, 'keep');
 });
 
 for (const mutation of ['model field', 'backend pairing']) {
@@ -285,8 +322,12 @@ for (const mutation of ['model field', 'backend pairing']) {
     await cx.input('Old backend for aaif-new', backend().options.find((entry) => entry.backendId === 'aif-old').key);
     await cx.click('Confirm backend pairing');
     await cx.input('Import Capacity for aaif-new / chat', true);
+    await cx.input('Comparison view', 'all');
     await cx.press('preview');
     assert.equal(cx.wizard.step, 'review');
+    await cx.click('Match source values');
+    assert.equal(all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Comparison view')[0].value, 'all');
+    await cx.press('preview');
     if (mutation === 'model field') {
       await cx.input('Import Capacity for aaif-new / chat', false);
     } else {
@@ -312,6 +353,38 @@ for (const mutation of ['model field', 'backend pairing']) {
     assert.equal((await cx.h.provider.read(JOURNEY_LLM)).text, journeyTargetFiles[JOURNEY_LLM]);
   });
 }
+
+test('a field-specific model jump reveals only its row without resetting the matching scope', async (t) => {
+  const cx = await workspaceReview(t);
+  await cx.pair('llm-onboarding', JOURNEY_LLM);
+  await cx.click('Match source values');
+  await cx.input('Comparison view', 'target-only');
+  const search = all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Filter parameter names')[0];
+  search.value = 'unrelated';
+  search.dispatch('input');
+  assert.match(readText(cx.workspace), /No parameter names match/);
+  await cx.click('Match source backends and model values');
+  assert.equal(all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Comparison view')[0].value, 'target-only');
+  assert.equal(all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Filter parameter names')[0].value, '');
+  assert(all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Old backend for aaif-new').length);
+  assert.equal(cx.wizard.busy, false);
+  assert.equal(cx.wizard.step, 'map');
+});
+
+test('search still releases held rows in the imported-only target view', async (t) => {
+  const cx = await workspaceReview(t);
+  await cx.pair('deployment', JOURNEY_MAIN);
+  await cx.click('Match source values');
+  await cx.input('Import environmentName', true);
+  await cx.click('Show imported');
+  await cx.click('Undo import environmentName');
+  const fields = () => all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Value for environmentName');
+  assert.equal(fields().length, 1, 'the just-undone field is held so its context is not lost');
+  const search = all(cx.workspace, (node) => node.getAttribute?.('aria-label') === 'Filter parameter names')[0];
+  search.value = 'environment';
+  search.dispatch('input');
+  assert.equal(fields().length, 0, 'a fresh search releases the held, no-longer-imported target field');
+});
 
 test('an initial async-action render error clears the operation lock and does not perform the action', async (t) => {
   const cx = await workspaceReview(t);

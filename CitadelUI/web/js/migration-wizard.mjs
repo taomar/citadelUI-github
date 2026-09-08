@@ -564,6 +564,10 @@ export async function openMigrationWizard({
     if (closed) return;
     const screen = `${area}:${step}:${sourceKind}:${accessMode}:${Boolean(connection?.connected)}`;
     const sameScreen = renderedScreen === screen;
+    // Searching changes the worklist, not the full typed target projection.
+    // Imported-only views still refresh because search releases held rows.
+    const targetForm = focusRow === 'filter' && sameScreen && expandedRows.get('target-preview:filter') !== 'imported'
+      ? body.querySelector('.migration-target-preview') : null;
     const scroller = body.parentElement;
     const scrollTop = sameScreen ? scroller?.scrollTop : null;
     const focusedAction = document.activeElement?.dataset?.action;
@@ -586,8 +590,8 @@ export async function openMigrationWizard({
     body.setAttribute('aria-busy', busy ? 'true' : 'false');
     const content = step === 'donor' ? renderSourceChoice()
       : step === 'pair' ? renderPairing()
-      : step === 'map' ? surface ? renderTargetWorkspace() : renderMapping()
-        : step === 'review' ? surface ? h('div', {}, renderTargetWorkspace(), renderReview()) : renderReview()
+      : step === 'map' ? surface ? renderTargetWorkspace(targetForm) : renderMapping()
+        : step === 'review' ? surface ? h('div', {}, renderTargetWorkspace(targetForm), renderReview()) : renderReview()
           : h('section', { class: 'migration-result' },
             h('p', {}, `${result.copied} reviewed parameter replacement${result.copied === 1 ? '' : 's'} applied to the displayed local destination.`),
             h('p', {}, 'Transaction receipt: ', h('code', {}, safeLabel(result.transactionId))),
@@ -1156,7 +1160,7 @@ export async function openMigrationWizard({
     });
   }
 
-  function renderTargetWorkspace() {
+  function renderTargetWorkspace(targetForm = null) {
     const matching = expandedRows.get('target-preview:matching') === true;
     const revise = (work, key) => run('Updating the migration preview…', async () => {
       for (const change of session.targetProjection().changes) heldMappingRows.add(change.rowId);
@@ -1170,7 +1174,7 @@ export async function openMigrationWizard({
         open: true, className: 'migration-matching-panel',
         ontoggle: (event) => expandedRows.set('target-preview:matching', event.target.open),
       }) : null,
-      renderMigrationTargetPreview({
+      targetForm || renderMigrationTargetPreview({
         projection: session.targetProjection(), rows: view.rows, expanded: expandedRows, heldRows: heldMappingRows,
         register: (key, node) => decisionControls.set(key, node),
         onRender: (key) => render(key),
@@ -1197,7 +1201,14 @@ export async function openMigrationWizard({
     const search = h('input', {
       type: 'search', value: filter, disabled: busy, autocomplete: 'off', spellcheck: false,
       'aria-label': 'Filter parameter names', placeholder: 'Parameter name…',
-      onchange: (event) => { filter = event.target.value; heldMappingRows.clear(); render('filter'); },
+      oninput: (event) => {
+        const { selectionStart, selectionEnd, selectionDirection } = event.target;
+        filter = event.target.value;
+        heldMappingRows.clear();
+        render('filter');
+        if (selectionStart !== null) pairingControls.get('filter')
+          ?.setSelectionRange?.(selectionStart, selectionEnd, selectionDirection);
+      },
     });
     pairingControls.set('filter', search);
     const scope = h('select', {
@@ -1321,11 +1332,12 @@ export async function openMigrationWizard({
 
   function reviewRow(rowId, controlKey = null) {
     step = 'map';
-    filter = '';
-    mappingScope = 'all';
-    heldMappingRows.clear();
     if (surface) expandedRows.set('target-preview:matching', true);
     if (rowId) {
+      const row = view.rows.find((row) => row.id === rowId);
+      if (row && !migrationRowVisible(row, { filter })) filter = '';
+      heldMappingRows.add(rowId);
+      if (controlKey) heldMappingRows.add(controlKey);
       expandedRows.set(rowId, true);
       for (const section of view.sections || []) {
         if (section.groups.some((group) => group.rowIds.includes(rowId))) {

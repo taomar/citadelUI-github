@@ -16,6 +16,7 @@
 import { h } from './dom.mjs';
 import { explains } from './explain.mjs';
 import { picker } from './picker.mjs';
+import { editorField } from './editor-focus.mjs';
 import {
   BACKEND_TYPES,
   AUTH_TYPES,
@@ -50,7 +51,7 @@ function writeField(ctx, objectPath, object, key, value) {
 
 /** Commit on change/blur rather than per keystroke, so one edit is one operation. */
 function textField(value, onCommit, props = {}) {
-  const { multiline = false, ...attributes } = props;
+  const { multiline = false, path, ...attributes } = props;
   const el = h(multiline ? 'textarea' : 'input', {
     class: multiline ? 'ctl lm-model-id' : 'ctl',
     ...(multiline ? { rows: 2 } : { type: 'text' }),
@@ -59,29 +60,31 @@ function textField(value, onCommit, props = {}) {
     ...attributes,
   });
   el.addEventListener('change', () => onCommit(el.value));
-  return el;
+  return path ? editorField(el, path) : el;
 }
 
 function numberField(value, onCommit, props = {}) {
-  const el = h('input', { class: 'ctl ctl-num', type: 'number', value: value ?? '', ...props });
+  const { path, ...attributes } = props;
+  const el = h('input', { class: 'ctl ctl-num', type: 'number', value: value ?? '', ...attributes });
   el.addEventListener('change', () => {
     if (el.value === '') return;
     onCommit(Number(el.value));
   });
-  return el;
+  return path ? editorField(el, path) : el;
 }
 
 function selectField(value, options, onCommit, props = {}) {
+  const { path, ...attributes } = props;
   const el = h(
     'select',
-    { class: 'ctl', ...props },
+    { class: 'ctl', ...attributes },
     options.map((o) => {
       const opt = typeof o === 'string' ? { value: o, label: o } : o;
       return h('option', { value: opt.value, selected: opt.value === value }, opt.label);
     })
   );
   el.addEventListener('change', () => onCommit(el.value));
-  return el;
+  return path ? editorField(el, path) : el;
 }
 
 function checkField(value, onCommit, label, help) {
@@ -268,6 +271,7 @@ function modelRow(model, index, entry, entryIndex, ctx, expanded, toggle) {
         const rendered = ctx.readOnly && !Object.hasOwn(model, descriptor.key)
           ? field(descriptor.label, h('span', { class: 'hint' }, 'Not supplied in target'))
           : modelField(descriptor, model, entry, type, write, ctx.readOnly);
+        editorField(rendered, [...path, descriptor.key]);
         return ctx.decorateValue ? ctx.decorateValue([...path, descriptor.key], rendered) : rendered;
       });
     if (!sectionFields.length) return null;
@@ -375,7 +379,7 @@ function addModelRow(entry, entryIndex, ctx) {
     'div',
     { class: 'lm-add' },
     modelPicker.el,
-    h('button', { class: 'btn btn-sm', onclick: modelPicker.choose }, 'Add model'),
+    modelPicker.action('Add model', { class: 'btn btn-sm' }),
     type && type.nameMeaning
       ? h(
           'p',
@@ -440,7 +444,7 @@ function backendCard(entry, index, ctx, findings) {
                   if (entry.authConfig) writeField(ctx, [...path, 'authConfig'], entry.authConfig, 'namedValueKey', v);
                   else ctx.onAddProperty(path, 'authConfig', { namedValueKey: v });
                 },
-                { placeholder: 'my-provider-key' }
+                { placeholder: 'my-provider-key', path: [...path, 'authConfig', 'namedValueKey'] }
               ),
               'APIM named value that holds the key. It is created for you at deploy time.'
             ),
@@ -452,7 +456,7 @@ function backendCard(entry, index, ctx, findings) {
                   if (entry.authConfig) writeField(ctx, [...path, 'authConfig'], entry.authConfig, 'keyVaultSecretUri', v);
                   else ctx.onAddProperty(path, 'authConfig', { namedValueKey: '', keyVaultSecretUri: v });
                 },
-                { placeholder: 'https://kv.vault.azure.net/secrets/\u2026' }
+                { placeholder: 'https://kv.vault.azure.net/secrets/\u2026', path: [...path, 'authConfig', 'keyVaultSecretUri'] }
               ),
               'Preferred. Rotatable and audited, and the secret never enters this file.'
             )
@@ -485,7 +489,7 @@ function backendCard(entry, index, ctx, findings) {
       { class: 'lf-grid' },
       field(
         'Backend ID',
-        textField(entry.backendId, (v) => write('backendId', v), { placeholder: 'aif-primary' }),
+        textField(entry.backendId, (v) => write('backendId', v), { placeholder: 'aif-primary', path: [...path, 'backendId'] }),
         'Unique across the deployment.'
       ),
       field(
@@ -493,7 +497,8 @@ function backendCard(entry, index, ctx, findings) {
         selectField(
           entry.backendType,
           BACKEND_TYPES.map((b) => ({ value: b.id, label: b.label })),
-          (v) => write('backendType', v)
+          (v) => write('backendType', v),
+          { path: [...path, 'backendType'] }
         ),
         type ? `Endpoint looks like ${type.endpointFormat}` : null
       ),
@@ -501,6 +506,7 @@ function backendCard(entry, index, ctx, findings) {
         'Endpoint',
         textField(entry.endpoint, (v) => write('endpoint', v), {
           placeholder: type ? type.endpointExample : 'https://\u2026',
+          path: [...path, 'endpoint'],
         }),
         null,
         null,
@@ -523,18 +529,19 @@ function backendCard(entry, index, ctx, findings) {
           (v) => {
             if (v === '' && explicitAuth) ctx.onRemove([...path, 'authType']);
             else if (v !== '') write('authType', v);
-          }
+          },
+          { path: [...path, 'authType'] }
         ),
         authInfo ? authInfo.summary : null
       ),
       field(
         'Priority',
-        numberField(entry.priority ?? 1, (v) => write('priority', v), { min: 1, max: 5 }),
+        numberField(entry.priority ?? 1, (v) => write('priority', v), { min: 1, max: 5, path: [...path, 'priority'] }),
         'Lower wins. Ties share traffic by weight.'
       ),
       field(
         'Weight',
-        numberField(entry.weight ?? 100, (v) => write('weight', v), { min: 1, max: 1000 }),
+        numberField(entry.weight ?? 100, (v) => write('weight', v), { min: 1, max: 1000, path: [...path, 'weight'] }),
         'Share within a priority tier.'
       )
     ),

@@ -149,6 +149,7 @@ export function requireOwnerSession() {
     form.noValidate = true;
 
     const error = document.createElement('p');
+    error.id = 'gate-error';
     error.className = 'gate-error';
     error.setAttribute('role', 'alert');
     error.hidden = true;
@@ -198,6 +199,10 @@ export function requireOwnerSession() {
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       error.hidden = true;
+      for (const control of [username, password, submit]) {
+        control.removeAttribute('aria-invalid');
+        control.removeAttribute('aria-describedby');
+      }
       submit.disabled = true;
       submit.textContent = claiming ? 'Creating\u2026' : 'Signing in\u2026';
       try {
@@ -217,10 +222,15 @@ export function requireOwnerSession() {
         }
         error.textContent = failure.message;
         error.hidden = false;
-        password.value = '';
-        password.focus();
         submit.disabled = false;
         submit.textContent = claiming ? 'Create owner and continue' : 'Sign in';
+        const invalid = failure.code === 'INVALID_USERNAME' ? username
+          : ['INVALID_PASSWORD', 'INVALID_CREDENTIALS'].includes(failure.code) ? password : null;
+        if (invalid) invalid.setAttribute('aria-invalid', 'true');
+        const target = invalid || submit;
+        target.setAttribute('aria-describedby', error.id);
+        if (invalid === password) password.value = '';
+        target.focus();
       }
     });
 

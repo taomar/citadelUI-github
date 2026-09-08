@@ -908,7 +908,8 @@ function catalogActions() {
       note({ action: 'repository.detach', target: snapshot.label });
     },
 
-    async attachLocal({ projectId, projectLabel, environmentLabel, localPath, handle, onProgress }) {
+    async attachLocal({ projectId, projectLabel, environmentLabel, localPath, handle, onProgress, stage = () => {} }) {
+      stage('revalidate');
       const path = validateLocalPath(localPath);
       if (
         !localPathMatchesHandle(path, handle.name) &&
@@ -921,11 +922,13 @@ function catalogActions() {
         throw new Error('Attach cancelled.');
       }
       onProgress?.('Reading the Citadel folder\u2026');
+      stage('read');
       const provider = new BrowserDirectoryProvider(handle);
       await provider.assertWritable({ request: true });
       const scan = await scanProvider(provider);
       assertSupportedScan(scan);
       onProgress?.('Saving the workspace\u2026');
+      stage('metadata');
       active = await attachEnvironment({
         project: projectId ? state.projects.find((project) => project.id === projectId) : null,
         projectLabel,
@@ -935,6 +938,7 @@ function catalogActions() {
         scan,
         provider,
       });
+      stage('ready');
       return active;
     },
 

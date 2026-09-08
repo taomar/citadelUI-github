@@ -1303,16 +1303,28 @@ test('migration UI opens native source pickers synchronously within the triggeri
   assert.equal(wizard.step, 'pair');
 });
 
-test('migration UI provides an empty filter state without losing parameter decisions', async () => {
+test('migration UI filters on input, preserves caret and decisions, and clears an empty worklist', async () => {
   const { wizard } = await open();
   await pair(wizard);
-  input(wizard, 'Filter parameter names', 'not-a-parameter');
-  const search = find(wizard.body, (node) => node.getAttribute?.('aria-label') === 'Filter parameter names');
-  search.dispatch('change');
-  assert.match(readText(wizard.body), /No parameter names match/);
-  search.value = '';
-  search.dispatch('change');
+  const decision = find(wizard.body, (node) => node.getAttribute?.('aria-label') === 'Import Count');
+  decision.checked = true;
+  decision.dispatch('change');
+  for (const value of ['no-match', 'a'.repeat(512), 'Co', '']) {
+    const search = find(wizard.body, (node) => node.getAttribute?.('aria-label') === 'Filter parameter names');
+    search.focus();
+    search.value = value;
+    search.setSelectionRange(Math.min(1, value.length), value.length, 'backward');
+    search.dispatch('input');
+    const replacement = find(wizard.body, (node) => node.getAttribute?.('aria-label') === 'Filter parameter names');
+    assert.equal(document.activeElement, replacement);
+    assert.equal(replacement.value, value);
+    assert.deepEqual([replacement.selectionStart, replacement.selectionEnd, replacement.selectionDirection],
+      [Math.min(1, value.length), value.length, 'backward']);
+    if (value === 'no-match' || value.length > 100) assert.match(readText(wizard.body), /No parameter names match/);
+    else assert(find(wizard.body, (node) => node.getAttribute?.('aria-label') === 'Import Count'));
+  }
   assert(find(wizard.body, (node) => node.getAttribute?.('aria-label') === 'Import Count'));
+  assert.equal(wizard.session.view().rows.find((row) => row.name === 'Count').decision.kind, 'accept');
 });
 
 test('migration source UI keeps PAT help outside its label and preserves the same password control and typed values', async () => {

@@ -4398,7 +4398,8 @@
   color: var(--ink-3);
 }
 
-.workspace-setup label {
+.workspace-setup label,
+.workspace-setup .setup-connection {
   display: grid;
   /* The control column takes the remaining width: repository full names, branch
      refs and absolute paths are long, and truncating them hides the identity the
@@ -4480,6 +4481,12 @@
 
 .setup-help-tabs .btn + .btn {
   border-left: 1px solid var(--rule-strong);
+}
+
+.setup-source-choice .btn:focus-visible,
+.setup-help-tabs .btn:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: -4px;
 }
 
 .setup-help-method {
@@ -4718,6 +4725,19 @@
 .setup-github-mode input {
   width: auto;
   margin-top: 0.15rem;
+}
+
+.setup-connection {
+  display: grid;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.setup-github .setup-github-mode,
+.settings-add-form .setup-github .setup-github-mode {
+  display: flex;
+  grid-template-columns: none;
+  align-items: center;
 }
 
 /* The write target, in words, before anything is created. */

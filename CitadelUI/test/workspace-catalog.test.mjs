@@ -339,7 +339,7 @@ test('the connections section names its account, status and attached workspaces'
   assert.match(text, /GitHub connections/);
   assert.match(text, /@octo-dev/);
   assert.match(text, /Session only/);
-  assert.match(text, /Persist this connection on this device \(encrypted\)/);
+  assert.match(text, /Save this connection on the Citadel server \(encrypted\)/);
   // A connected profile exposes what it actually reaches.
   assert.match(text, /taomar\/citadelQA @ main/);
 });
@@ -417,6 +417,53 @@ async function clickDialogButton(label) {
     await handler({ target: button });
   }
 }
+
+test('local attachment reports local stages and presents one actionable error through retry', async (t) => {
+  t.after(() => closeDialog());
+  const pathError = 'Enter an absolute local folder path.';
+  let attempts = 0;
+  let completed = null;
+  runAddWorkspace({
+    connections: [], vault: { available: false }, rows: [],
+    onDone: (workspace) => { completed = workspace; },
+    actions: {
+      createSelection: () => new RepositorySelection({ listRepositories: async () => ({ repositories: [] }) }),
+      pickFolder: async () => ({ name: 'fixture', kind: 'directory' }),
+      attachLocal: async ({ stage, localPath }) => {
+        stage('revalidate');
+        attempts += 1;
+        if (localPath === 'relative-fixture') throw new Error(pathError);
+        assert.equal(localPath, 'C:\\fixtures\\fixture');
+        stage('read');
+        stage('metadata');
+        stage('ready');
+        return { id: 'local-fixture' };
+      },
+    },
+  });
+  descendants(document.getElementById('modal')).find((node) => node.tagName === 'BUTTON' &&
+    readText(node).startsWith('LocalEdit')).click();
+  connectionControl('catalog-details-project-label').value = 'Fixture project';
+  connectionControl('catalog-details-environment').value = 'Fixture workspace';
+  connectionControl('catalog-details-path').value = 'relative-fixture';
+  await clickDialogButton('Choose Citadel folder');
+  await clickDialogButton('Continue');
+  await clickDialogButton('Attach workspace');
+  const modal = document.getElementById('modal');
+  const failures = descendants(modal).filter((node) => node.getAttribute('role') === 'alert' && !node.hidden);
+  assert.equal(failures.length, 1);
+  assert.equal(readText(failures[0]), pathError);
+  const labels = descendants(modal).filter((node) => node.classList.contains('stage-label')).map(readText);
+  assert.deepEqual(labels, ['Checking local folder', 'Reading Citadel configuration', 'Saving workspace metadata', 'Ready']);
+  assert.doesNotMatch(readText(modal), /Revalidating Citadel branch|working branch|waiting for GitHub/);
+  await clickDialogButton('Back');
+  connectionControl('catalog-details-path').value = 'C:\\fixtures\\fixture';
+  await clickDialogButton('Continue');
+  await clickDialogButton('Attach workspace');
+  assert.equal(attempts, 2);
+  assert.deepEqual(completed, { id: 'local-fixture' });
+  assert.equal(modal.open, false);
+});
 
 async function openConnectionStep(t, { connections = [], available = false, actions = {} } = {}) {
   t.after(() => closeDialog());

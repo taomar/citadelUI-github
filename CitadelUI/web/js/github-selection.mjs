@@ -19,7 +19,7 @@ import { resolveWriteTarget, suggestedBranchName } from './branch-target.mjs';
  * than the product uses.
  */
 export const TOKEN_REQUIREMENTS =
-  'Fine-grained token. Repository access: Only select repositories. Repository permissions: Contents — Read and write, Metadata — Read-only (automatic). Citadel UI never stores it.';
+  'Fine-grained token. Repository access: Only select repositories. Repository permissions: Contents — Read and write, Metadata — Read-only (automatic).';
 
 /** A repository that cannot receive Citadel commits is offered but not selectable. */
 export function repositoryBlockedReason(repository) {

@@ -33,10 +33,10 @@
 import { h, mount } from './dom.mjs';
 import { showDialog, dismissDialog, confirmDialog } from './dialog.mjs';
 import { environmentSourceOf } from './registry.mjs';
-import { connectionStatusLabel, isConnectionLive, isConnectionResumable } from './github-connections.mjs';
+import { CONNECTION_PERSISTENCE_LABEL, connectionStorageDescription, connectionStatusLabel, isConnectionLive, isConnectionResumable } from './github-connections.mjs';
 import { activityLabel, activityReason } from './activity.mjs';
 import { isRepositorySelectable, repositoryBlockedReason } from './github-selection.mjs';
-import { ATTACH_STAGES, RESUME_STAGES, StageTracker, createStageRegion } from './stage-progress.mjs';
+import { ATTACH_STAGES, LOCAL_ATTACH_STAGES, RESUME_STAGES, StageTracker, createStageRegion } from './stage-progress.mjs';
 import { DEFAULT_REPOSITORY_SOURCE, parseRepositorySource, validateNewRepositoryName } from '../../shared/repository-source.mjs';
 import { createRepositoryProgress } from './repository-progress.mjs';
 
@@ -623,7 +623,7 @@ export function presentWorkspaceCatalog(options) {
         'label',
         { class: 'catalog-persist', for: id },
         input,
-        h('span', {}, 'Persist this connection on this device (encrypted)')
+        h('span', {}, CONNECTION_PERSISTENCE_LABEL)
       );
     }
 
@@ -770,7 +770,7 @@ export function presentWorkspaceCatalog(options) {
             'label',
             { class: 'catalog-persist', for: 'catalog-reconnect-persist' },
             persistInput,
-            h('span', {}, 'Persist this connection on this device (encrypted)')
+            h('span', {}, CONNECTION_PERSISTENCE_LABEL)
           ),
           vault.available
             ? null
@@ -1514,7 +1514,7 @@ export function runAddWorkspace(options) {
       'label',
       { class: 'catalog-persist', for: 'catalog-connection-persist' },
       persistInput,
-      h('span', {}, 'Persist this connection on this device (encrypted)')
+      h('span', {}, CONNECTION_PERSISTENCE_LABEL)
     );
     const persistHint = vault.available
       ? h(
@@ -1525,7 +1525,7 @@ export function runAddWorkspace(options) {
       : h(
           'p',
           { class: 'hint' },
-          'No credential key is mounted on this deployment. Session-only connections still work; reconnect after a container restart. Encrypted persistence is unavailable.'
+          connectionStorageDescription({ available: false })
         );
 
     // Build only the active form: wrapping a shared input in an unused field
@@ -2400,8 +2400,12 @@ export function runAddWorkspace(options) {
     // Real stages, driven by the attachment workflow's own await boundaries.
     // The region carries the spinner on the running step, a checkmark on each
     // completed one, and its list is `role=status aria-live=polite`.
-    const stages = new StageTracker(ATTACH_STAGES, { onChange: () => region.update(stages) });
-    const region = createStageRegion({ label: 'Attachment progress', keepOnSuccess: true });
+    const local = state.kind === 'local';
+    const stages = new StageTracker(local ? LOCAL_ATTACH_STAGES : ATTACH_STAGES, { onChange: () => region.update(stages) });
+    const region = createStageRegion({
+      label: 'Attachment progress', keepOnSuccess: true,
+      waitingMessage: local ? 'Still working with the local folder\u2026 large folders or permission checks can take a moment.' : undefined,
+    });
     let ticking = null;
     const track = (id, label) => {
       if (id === 'ready') stages.succeed(label);
@@ -2424,6 +2428,7 @@ export function runAddWorkspace(options) {
           attach.disabled = true;
           state.working = true;
           say(error, '');
+          if (local) stages.reset();
           try {
             const workspace =
               state.kind === 'local'
@@ -2433,7 +2438,7 @@ export function runAddWorkspace(options) {
                     environmentLabel: state.environmentLabel,
                     localPath: state.localPath,
                     handle: state.handle,
-                    onProgress: (text) => track('branch', text),
+                    stage: track,
                   })
                 : await actions.attachGitHub({
                     projectId: state.projectId,
@@ -2464,7 +2469,7 @@ export function runAddWorkspace(options) {
               error,
               unresolved
                 ? 'GitHub may have completed this step; checking\u2026 Retry resumes the same attempt and cannot create a second branch.'
-                : failure?.message || String(failure)
+                : ''
             );
             attach.textContent = unresolved ? 'Retry this attempt' : 'Attach workspace';
             attach.disabled = false;

@@ -469,8 +469,8 @@ test('the stage vocabulary is the one the workflow reports, in order', () => {
 test('the review step renders the stages with a spinner, checkmarks and a live region', () => {
   const catalog = readFileSync(new URL('../web/js/workspace-catalog.mjs', import.meta.url), 'utf8');
   const styles = readFileSync(new URL('../web/css/components.css', import.meta.url), 'utf8');
-  assert.match(catalog, /new StageTracker\(ATTACH_STAGES/);
-  assert.match(catalog, /createStageRegion\(\{ label: 'Attachment progress'/);
+  assert.match(catalog, /new StageTracker\(local \? LOCAL_ATTACH_STAGES : ATTACH_STAGES/);
+  assert.match(catalog, /createStageRegion\(\{\s*label: 'Attachment progress'/);
   assert.match(catalog, /stage: track/);
   // An unresolved attempt is never labelled a failure, and the button resumes.
   assert.match(catalog, /GitHub may have completed this step; checking/);

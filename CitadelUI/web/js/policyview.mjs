@@ -284,7 +284,7 @@ function perModelAdder(limits, onboarded, key, onAdd, label) {
     'div',
     { class: 'pol-add' },
     p.el,
-    h('button', { class: 'btn', onclick: p.choose }, label),
+    p.action(label, { class: 'btn' }),
     h(
       'p',
       { class: 'hint' },

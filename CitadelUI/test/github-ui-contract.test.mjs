@@ -333,6 +333,6 @@ test('a hidden source panel never narrates the visible one', () => {
 
 test('the wide setup layout keeps its two-column datasheet', () => {
   const wide = styles.slice(0, styles.indexOf('@media (max-width: 48rem)'));
-  assert.match(wide, /\.workspace-setup label \{[^}]*grid-template-columns: minmax\(8rem, 10rem\) minmax\(0, 1fr\);/s);
+  assert.match(wide, /\.workspace-setup label,\s*\.workspace-setup \.setup-connection \{[^}]*grid-template-columns: minmax\(8rem, 10rem\) minmax\(0, 1fr\);/s);
   assert.match(wide, /\.setup-source-choice \{[^}]*margin-left: calc\(10rem \+ var\(--sp-5\)\);/s);
 });

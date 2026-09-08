@@ -20,6 +20,7 @@
 import { api } from './api.mjs';
 import { ensureOwnerSession } from './owner-gate.mjs';
 import { h, mount, clear } from './dom.mjs';
+import { preserveEditorFocus } from './editor-focus.mjs';
 import { renderDiff } from './diff.mjs';
 import { renderParamDocument, renderOutlineNav } from './paramview.mjs';
 import { previewDocument, queueOperation } from './preview.mjs';
@@ -333,7 +334,7 @@ async function restoreParameterDraft(document) {
 function pushOperation(op) {
   state.operations = queueOperation(state.operations, op, state.current);
   persistParameterDraft().catch((error) => setStatus(error.message, 'error'));
-  render();
+  preserveEditorFocus(els.workspace, render);
 }
 
 function pushOperations(operations) {
@@ -341,7 +342,7 @@ function pushOperations(operations) {
     state.operations = queueOperation(state.operations, operation, state.current);
   }
   persistParameterDraft().catch((error) => setStatus(error.message, 'error'));
-  render();
+  preserveEditorFocus(els.workspace, render);
 }
 
 function dirtyParams() {
