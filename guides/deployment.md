@@ -12,7 +12,8 @@ with azd. No large PowerShell configuration block is needed.
 | New Azure resources, public or private VNet | [Fresh deployment](#fresh-azure-deployment) |
 | Existing resources or a mixture of existing and new | [Resource reuse](#deploy-on-an-existing-subnet-and-resources) |
 | Local Docker | [PowerShell](#local-deployment---powershell) or [Bash](#local-deployment---bash) |
-| Update an already configured UI | [Image-only update](#redeploy-an-existing-citadel-ui-container-app) |
+| Update a local Docker installation | [Local image-only update](#update-an-existing-local-container) |
+| Update an Azure Container App | [Azure image-only update](#redeploy-an-existing-citadel-ui-container-app) |
 
 **Live status:** fresh public deployment and repeat `azd up` passed in West
 Europe, preserving the owner, stored state and exact Key Vault key version.
@@ -251,6 +252,99 @@ For either local path, create the owner account in the browser, then follow
 repository. Tokens are entered in the UI, not in `container.env`. A credential
 key is optional: the default local deployment supports session-only connections
 without one; only encrypted persistence is disabled.
+
+## Update an existing local container
+
+Use this procedure for an already built, reviewed local image. The normal
+`start.ps1` and `start.sh` launchers rebuild from their own checkout; do not use
+them to activate an image built from a different branch or worktree. A local
+commit is not automatically present in another checkout or on remote `main`.
+
+Save or explicitly discard pending editor and migration choices, and wait for
+any transaction to finish before restarting. Retain the current image for
+rollback. Updating the container must not replace or clear its existing `/data`
+directory, owner account, history or completed source snapshots.
+
+The unmodified PowerShell example below is for a **base-Compose, session-only
+installation**, using the default `citadel-ui` project, `app` service and
+`citadel-ui-app-1` container. Run it from the **original installation's
+`CitadelUI` directory**, not a new checkout with an empty `.data` directory.
+
+For an installation with overrides, retain the **same complete ordered Compose
+file list**, environment files and startup settings for both update and rollback.
+Confirm the original files using the container's
+`com.docker.compose.project.config_files` label and installation records; stop
+if the original configuration is unknown. Adapt the `$compose` declaration below
+to include every original `--file` argument before running any update commands.
+Also retain any customized project and container names.
+
+If encrypted persistence already used `compose.credentials.yaml`, keep
+`--file .\compose.yaml --file .\compose.credentials.yaml` in that order, along
+with any other existing overrides. Retain the existing
+`CITADEL_CREDENTIAL_KEY_PATH`, key file and read-only key mount; never create or
+rotate a key during an image update. Do not enable this overlay merely because
+the file exists: it is checked in even for session-only installations.
+
+Replace the two image-tag placeholders first; the rollback tag must be unused.
+The approved image and current container's image must already exist locally;
+this procedure neither builds nor pulls.
+
+Before running the image-tag and `up` commands, confirm that the original Compose
+file still publishes only `127.0.0.1:4173`, mounts the existing data directory at
+`/data`, and retains its user and runtime restrictions. Confirm the approved tag
+resolves to the image ID that was reviewed. Never print a full container
+environment or copy credentials into update notes.
+
+```powershell
+$ApprovedImage = 'citadel-ui:<approved-immutable-tag>'
+$RollbackTag = 'citadel-ui:<unused-rollback-tag>'
+$PreviousImage = docker inspect citadel-ui-app-1 --format '{{.Image}}'
+if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the current image.' }
+$mountJson = docker inspect citadel-ui-app-1 --format '{{json .Mounts}}'
+if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the existing data mount.' }
+$dataMount = @(($mountJson | ConvertFrom-Json) | Where-Object { $_.Destination -eq '/data' })
+if ($dataMount.Count -ne 1 -or $dataMount[0].Type -ne 'bind' -or -not $dataMount[0].RW) {
+    throw 'Expected one writable /data bind mount. Stop and inspect the existing installation.'
+}
+if (-not (Test-Path -LiteralPath $dataMount[0].Source -PathType Container)) {
+    throw 'The existing data directory is unavailable. Do not create a replacement.'
+}
+$env:CITADEL_DATA_PATH = $dataMount[0].Source
+$env:CITADEL_IMAGE = 'citadel-ui:local'
+$compose = @('compose', '--project-name', 'citadel-ui', '--file', '.\compose.yaml')
+if (Test-Path -LiteralPath '.\container.env') { $compose += @('--env-file', '.\container.env') }
+
+docker image tag $PreviousImage $RollbackTag
+if ($LASTEXITCODE -ne 0) { throw 'Cannot preserve the rollback image.' }
+docker image tag $ApprovedImage citadel-ui:local
+if ($LASTEXITCODE -ne 0) { throw 'Cannot select the approved local image.' }
+docker @compose up --detach --no-build --pull never --no-deps --force-recreate --wait --wait-timeout 120 app
+if ($LASTEXITCODE -ne 0) { throw 'Update failed. Restore the retained image before continuing.' }
+```
+
+Keep the full ordered Compose file list, original data/key-path settings and
+chosen `CITADEL_IMAGE=citadel-ui:local` in the installation's launch configuration
+so later Compose commands select the same mounts and image.
+
+Afterward, confirm the running image is the approved one and the container is
+healthy. Refresh <http://127.0.0.1:4173> to load the new browser code, sign in
+with the existing owner, and reconnect session-only GitHub connections as needed.
+If an established installation unexpectedly asks you to create an owner, stop
+and check its data mount rather than claiming a new empty installation.
+Do not switch to `localhost` or a different port: browser folder grants are
+origin-bound.
+
+If activation fails or rollback is required, restore the retained image tag:
+
+```powershell
+docker image tag $RollbackTag citadel-ui:local
+if ($LASTEXITCODE -ne 0) { throw 'Cannot select the retained rollback image.' }
+```
+
+Then repeat the same no-build Compose `up` command with the complete original
+override list, data/key paths and configuration. Rollback changes application
+code, not stored data; do not delete state or assume an older image can read an
+incompatible newer data format.
 
 ## Redeploy an existing Citadel UI container app
 

@@ -51,6 +51,11 @@ Keep port **4173**: local folder permissions are tied to that exact browser
 origin. State is stored in `CitadelUI/.data` by default; for a custom
 `CITADEL_DATA_PATH`, prepare that directory instead.
 
+For an existing installation, follow the
+[local image-only update procedure](./guides/deployment.md#update-an-existing-local-container)
+to activate an already built image without rebuilding from another checkout.
+Keep the original Compose configuration, data directory and browser origin.
+
 ## Deploy to Azure
 
 Choose a path below. Edit **`CitadelUI/infra/main.bicepparam`** for deployment

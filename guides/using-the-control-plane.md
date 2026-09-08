@@ -24,6 +24,20 @@ There is no second user and no password reset. Signing in is what issues the
 session token every other request uses, so reaching the URL is not on its own
 enough to use the application.
 
+### After a local app update
+
+Save or discard pending work before the container is restarted. After an
+[image-only update](./deployment.md#update-an-existing-local-container), refresh
+the browser page and sign in with the existing owner. Session-only GitHub
+connections need **Reconnect**; encrypted saved connections can be restored
+when their credential key remains available.
+
+Keep the same `http://127.0.0.1:4173` origin and browser profile for local folder
+access. Completed **Prepared sources** survive in the preserved data directory,
+but unsaved editor or migration choices are not a restart/reload recovery
+mechanism. If the app unexpectedly shows the first-owner form, stop and have the
+operator check the existing data mount rather than creating a new owner.
+
 ---
 
 ## Workspaces
