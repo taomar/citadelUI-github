@@ -193,8 +193,13 @@ For a short walkthrough, see the
    values, file/backend/model provenance and **Undo import**. Equal and
    unselected fields have no import highlight. **Match source values** opens
    secondary matching controls for competing assignments and backend pairing.
-   Expressions are not presented as runtime values. Filtered matching rows stay visible until
-   **Refresh view** reapplies the filter.
+   Matching starts with **Differences and unresolved matches**. Name search
+   filters as you type without losing focus or text selection. Reopening
+   matching, including from Review, preserves the search and chosen worklist;
+   a field-specific action can reveal the relevant row.
+   Expressions are not presented as runtime values. Edited matching rows stay
+   visible until a new search, a worklist change or **Refresh view** reapplies
+   the filter.
    Unchecking or undoing restores the current value. Discard is scoped to the named
    target; source replacement and exit protect pending choices in every target.
 4. **Review migration** records the intent to import selected values and keep all
@@ -610,22 +615,31 @@ Reconnecting a connection requires a token for the **same GitHub account**. A
 token for a different account is refused and you are offered a separate
 connection instead — rebinding would silently point every workspace under that
 connection at repositories you did not choose. Removing a connection deletes its
-saved credential on this device; it revokes no token and deletes no branch, and
+saved credential on the Citadel server; it revokes no token and deletes no branch, and
 the workspaces that used it stay listed as **Reconnect**.
 
-### Saving a connection on this device (optional)
+In **Settings > GitHub repository**, **How to create this token** opens stacked
+help. **Close** and **Escape** return to the same unfinished form and help opener,
+preserving the source choice, environment label and connection name. Help does
+not submit the form or change credential persistence.
 
-One checkbox: **Persist this connection on this device (encrypted)**, unticked by
-default. There is no passphrase, no unlock screen and no key-rotation ceremony.
+### Saving a connection on the server (optional)
 
-- **Unticked** — exactly the previous behaviour. The credential lives in server
-  memory and a container restart requires reconnecting.
-- **Ticked** — the credential is sealed at rest, and the server restores it by
-  itself on the next start. The browser never sees the token, before or after.
+One checkbox: **Save this connection on the Citadel server (encrypted)**,
+unticked for a new connection. There is no passphrase, no unlock screen and no
+key-rotation ceremony.
 
-It is available only when a key file is mounted (see **Encrypted credential
-persistence** in `SECURITY.md`). Without one the checkbox is disabled and says
-so, and session-only connections keep working normally.
+- **Unticked** - the credential lives only in server memory and is cleared on
+  restart or disconnect. A restart requires reconnecting.
+- **Ticked** - the credential is saved encrypted on this server and can be
+  restored after restart. The token is never returned to the browser.
+
+Saving requires a usable credential key: a mounted key file locally or the
+configured Key Vault key on Azure. Without one, the checkbox explains why it is
+disabled; session-only connections still work. While availability is unknown it
+stays disabled, and lookup failures are visible. The storage description reflects
+the selected connection's actual mode, not merely a previously requested option.
+See **Encrypted credential persistence** in `SECURITY.md`.
 
 ### Attaching a repository
 

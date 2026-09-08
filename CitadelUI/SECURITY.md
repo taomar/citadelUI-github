@@ -69,11 +69,12 @@ non-root UID/GID 10001, dropped capabilities, `no-new-privileges`, a bounded
 - Only a fine-grained personal access token is accepted. Classic tokens are
   refused unless explicitly enabled, because their scope cannot be limited to the
   selected repositories.
-- The token is sent once over the existing protected loopback session and is
-  retained **only in server process memory**. It is never written to `/data`, a
-  Docker environment variable, Git configuration, browser storage, a cookie, a
-  URL, a log line, an audit record, a transaction record, an error message, or
-  any response body.
+- The token is submitted through the protected application session. By default
+  it is retained **only in server process memory**. Explicit encrypted
+  persistence, described below, stores a sealed credential under `/data`.
+  Plaintext tokens are never written there, to a Docker environment variable,
+  Git configuration, browser storage, a cookie, a URL, a log line, an audit
+  record, a transaction record, an error message, or any response body.
 - The browser retains only an opaque, server-issued session id, in
   `sessionStorage`, so it dies with the tab.
 - Sessions are keyed by a SHA-256 of that id, compared in constant time, expire
@@ -104,9 +105,10 @@ non-root UID/GID 10001, dropped capabilities, `no-new-privileges`, a bounded
 
 ## Encrypted credential persistence (optional, off by default)
 
-One checkbox, `Persist this connection on this device (encrypted)`, unticked by
-default. With it unticked nothing in this section runs and the behaviour is
-memory-only. There is deliberately no passphrase and no unlock step: a local
+One checkbox, `Save this connection on the Citadel server (encrypted)`, unticked
+for a new connection. With it unticked nothing in this section runs and the
+behaviour is memory-only. Persistence belongs to the Citadel server, not to the
+browser or the operator's device. There is deliberately no passphrase and no unlock step: a local
 single-user control panel that demands a second secret every morning gets that
 secret written on a sticky note.
 

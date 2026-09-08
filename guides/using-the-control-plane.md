@@ -7,6 +7,10 @@ them as guidance, so the explanation beside a field is the repository's own.
 Nothing is written until you review and save, and every save is a verified
 transaction.
 
+Desktop screenshots use synthetic examples, zero subscription IDs and reserved
+`example.invalid` endpoints. They show the actual editor, not deployed services;
+placeholder warnings are left visible.
+
 ---
 
 ## First run
@@ -14,7 +18,7 @@ transaction.
 A new container has no owner. The first person to open it creates the account,
 and it is the only account that container will ever have.
 
-![Create the owner account](../docs/images/01-first-run-owner.png)
+![Fresh owner form with keyboard focus on Username](../docs/images/01-first-run-owner.png)
 
 There is no second user and no password reset. Signing in is what issues the
 session token every other request uses, so reaching the URL is not on its own
@@ -28,20 +32,25 @@ A workspace is one Citadel repository. It can be a folder on this machine, or a
 GitHub repository on a branch you choose. Attached workspaces are listed and open
 in one click.
 
-![Citadel workspaces](../docs/images/03-workspaces.png)
+![Workspace catalog with a named local sample and session-only connection status](../docs/images/03-workspaces.png)
 
 Adding one is a guided sequence. Choose **Existing GitHub Repo**, **New GitHub Repo**, or
 **Local**. The repository is checked for the capabilities the editors need before
 it is attached; an incomplete tree is rejected rather than half-opened.
 
-![Add workspace](../docs/images/04-add-workspace.png)
+![Add workspace source choices: Existing GitHub Repo, New GitHub Repo and Local](../docs/images/04-add-workspace.png)
 
 A **local folder** is granted through the browser's folder picker; the handle stays
 in the browser profile, because it cannot be moved into a container. **Existing
 GitHub Repo** needs a fine-grained token with Contents read and write, limited to
 the repositories it should reach. Saves become one commit on a working branch.
 
-![GitHub connection](../docs/images/05-github-connection.png)
+Local attachment reports folder checks, configuration reading and metadata
+saving, not GitHub branch creation. If the display path is invalid, its error
+appears in the attachment dialog. Choose **Back**, correct **Local path**, then
+continue and retry **Attach workspace**.
+
+![Named GitHub connection form with a blank token and an explanation of unavailable encrypted storage](../docs/images/05-github-connection.png)
 
 ### Add a GitHub token
 
@@ -54,6 +63,17 @@ repository and explicitly select its branch, such as `main`.
 **Token help** beside the token label expands inline creation steps and a link
 to GitHub, without clearing your entries. It is available before you name the
 connection and when replacing a token through **Reconnect**.
+
+In **Settings > GitHub repository**, **How to create this token** opens help over
+the unfinished Settings form. **Close** or **Escape** returns to that form and
+the help opener, keeping the chosen source, environment label and connection
+name. Opening help does not submit a connection or enable credential storage.
+
+![Token help opens over Settings with GitHub and command-line tabs and a Close action](../docs/images/08-settings-token-help.png)
+
+After returning, the unfinished GitHub form is still in place:
+
+![Settings retains the environment label, connection name and GitHub source after help closes](../docs/images/07-settings-help-return.png)
 
 Create the token in GitHub's **Settings > Developer settings > Personal access
 tokens > Fine-grained tokens**. Select the intended resource owner and
@@ -70,10 +90,19 @@ resources until an organization owner approves it.
 Enter the token only in the UI, not in `container.env`, a Compose file, or an Azure
 parameter file. Local-folder workspaces do not need a GitHub token.
 
-The default local deployment has no credential key mounted. This disables only
-**Persist this connection on this device (encrypted)**, not token entry or
-GitHub access. Session-only connections work normally; after a container restart,
-use **Reconnect** on the saved connection and supply a token for the same account.
+**Save this connection on the Citadel server (encrypted)** is optional and
+unchecked for a new connection. Left unchecked, the credential stays in server
+memory and is cleared on restart or disconnect. When checked and a usable
+credential key is configured, it is saved encrypted on that server and can be
+restored after restart; this is not storage in the browser or on the operator's
+device.
+
+The default local deployment has no credential key mounted, so encrypted saving
+is disabled with an explanation. Token entry and session-only GitHub access
+still work. After a container restart, use **Reconnect** and supply a token for
+the same account. Settings describes the selected connection's actual storage
+mode; a failure to load storage availability is reported rather than assumed
+to mean a key is missing.
 
 These permissions apply to editable workspaces. Reading an older GitHub source
 for migration needs only Contents read access, as described below.
@@ -165,10 +194,25 @@ and model pairings. Only changed selected fields show **Selected import - not
 saved**, with current/source values, exact provenance and **Undo import**.
 Equal and unselected fields have no import highlight. The form never calls normal
 editor save actions or the subscription/environment bridge.
+**Show imported** narrows the preview without changing your selections; **Show
+all** restores the complete target form.
+
+![Typed Main preview showing two selected imports, exact source provenance and Undo import](../docs/images/40-migration-preview.png)
+
+Matching starts with **Differences and unresolved matches** rather than all new
+parameters. **Find a new parameter** filters names as you type, keeping keyboard
+focus and the text selection. **Show** offers other worklists. Returning through
+**Match source values**, including from Review, keeps your search and chosen
+worklist; a field-specific matching action can reveal its relevant row.
+
+![Live location search within Differences and unresolved matches, with one selected row and one kept current](../docs/images/41-migration-matching.png)
+
 Resolve competing old sources explicitly. Full values, current
 constraints and provenance are available on demand. Unchecking a prior import
 or choosing **Discard choices for this target** removes only that target's decisions.
-Edited rows remain visible in filtered views until **Refresh view** is chosen.
+Edited rows stay visible until you type a new search, change **Show**, or choose
+**Refresh view**. Changing selections returns to editing and requires a fresh
+**Review migration** before applying.
 Expressions, references, sensitive values, unsupported
 schemas, and incompatible types remain unresolved rather than being evaluated or
 coerced. Matching names do not prove that feature behavior or meaning is unchanged.
@@ -183,6 +227,11 @@ models within it. Select model fields explicitly; the new backend identity,
 endpoint/auth/routing and all unselected models/fields stay unchanged. Unknown,
 duplicate or incompatible identities are not guessed, and the old backend array
 cannot be imported wholesale.
+
+The example below changes only the selected model's capacity from `50` to `90`.
+Its old backend is explicitly paired; the other model and backend stay unchanged.
+
+![Typed model preview with a selected capacity of 90, its previous value of 50 and backend-specific provenance](../docs/images/42-migration-model.png)
 
 Choose **Review migration** to review selected values and intentionally keep the
 rest. No-op previews say **Nothing will change**; remote destinations say
@@ -320,7 +369,7 @@ Each flag decides whether a capability is deployed at all. Turning one off does 
 merely hide it — the resources behind it are not created, and the parameters that
 belong only to it stop being asked for.
 
-![Feature flags](../docs/images/10-deployment-features.png)
+![Compact Azure Deployment editor with grouped capability flags and retained expressions](../docs/images/10-deployment-features.png)
 
 The flags are grouped by what they affect: gateway APIs such as model inference,
 document intelligence and realtime; data, safety and governance such as AI Search,
@@ -336,7 +385,7 @@ visible rather than vanishing with unsaved work inside them.
 Address fields are checked when you leave the control, against Azure's own rules
 rather than a regular expression.
 
-![Networking parameters](../docs/images/11-deployment-networking.png)
+![Synthetic VNet address plan with four non-overlapping subnets and usable-address counts](../docs/images/11-deployment-networking.png)
 
 Each prefix reports what it actually buys — `64 total addresses · 59 usable after
 Azure reserves the first four and last address` — so an undersized subnet is
@@ -345,7 +394,7 @@ visible before deployment rather than after it.
 Subnets are checked against one another. An overlap is named precisely, on both
 fields involved, and blocks the save:
 
-![Overlapping subnets](../docs/images/12-vnet-overlap.png)
+![Overlapping sample subnets with field errors and saving blocked](../docs/images/12-vnet-overlap.png)
 
 The header keeps a running count of blocking errors, and **Review & save** stays
 disabled while any remain. The same checks cover malformed and non-canonical
@@ -361,12 +410,12 @@ Everything about the models behind the gateway: the API Management instance they
 are registered on, the managed identity used to reach them, the backends
 themselves, circuit breaking, session affinity and model aliases.
 
-![LLM onboarding](../docs/images/20-llm-onboarding.png)
+![LLM onboarding APIM fields with a clearly identified placeholder subscription warning](../docs/images/20-llm-onboarding.png)
 
 `llmBackendConfig` is an untyped array in Bicep, which means the compiler cannot
 help you and neither can a generic form. It gets a purpose-built editor instead.
 
-![LLM backends](../docs/images/21-llm-backends.png)
+![Synthetic model backend with provider, managed identity, model rows and Add model controls](../docs/images/21-llm-backends.png)
 
 Each backend names its provider, endpoint and authentication mode. The editor
 knows the default authentication mode for each provider type, shows the derived
@@ -382,14 +431,16 @@ from memory.
 ## Access Contracts
 
 One contract is one use case: a product, its subscriptions, and the API Management
-policy that constrains it. Each is a folder holding a parameter file and its own
-policy document, created from a template and then edited independently.
+policy that constrains it. Each has a parameter file and may reference its own
+policy document. A contract without its own policy uses the module default;
+the catalog distinguishes **own policy** from **default**.
 
-![Access contracts](../docs/images/30-access-contracts.png)
+![Access catalog distinguishing the Template policy from two contracts using the default](../docs/images/30-access-contracts.png)
 
-Opening one gives its parameters, its policy, and the raw file.
+Opening one gives its parameters, its policy or default-policy status, and the raw
+file.
 
-![Contract parameters](../docs/images/31-contract-parameters.png)
+![Finance Assistant parameters with Policy default status and a placeholder subscription warning](../docs/images/31-contract-parameters.png)
 
 ### Editing the policy
 
@@ -397,7 +448,10 @@ The policy is API Management XML. The editor presents it as the blocks it is
 actually made of, each of which can be switched on or off, with the raw XML always
 one click away.
 
-![Contract policy](../docs/images/32-contract-policy.png)
+![Template policy editor with shared token budget, per-model budget action and raw XML access](../docs/images/32-contract-policy.png)
+
+This example edits the **Template** policy document. A contract marked **Policy
+(default)** reports its fallback rather than presenting a separate policy to edit.
 
 Scope, allowed models, token limits, request rate limits, quotas, content safety,
 semantic caching, authentication, PII handling, alerting, response headers and

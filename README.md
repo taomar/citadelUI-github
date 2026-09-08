@@ -166,28 +166,38 @@ filesystem access.
 
 ## What it looks like
 
+These desktop screenshots use synthetic examples, zero subscription IDs and
+reserved `example.invalid` endpoints, not deployed environments.
+
 Feature flags decide which capabilities the hub deploys at all. Turning one off
 does not merely hide it: the resources behind it are not created, and the
 parameters belonging only to it stop being asked for.
 
-![Feature flags](./docs/images/10-deployment-features.png)
+![Compact deployment editor with grouped feature flags and retained expressions](./docs/images/10-deployment-features.png)
 
 Address planning is checked against Azure's rules rather than a regular
 expression. Overlapping subnets are named on both fields and block the save.
 
-![Overlapping subnets](./docs/images/12-vnet-overlap.png)
+![Overlapping sample subnets with actionable field errors and saving blocked](./docs/images/12-vnet-overlap.png)
 
 `llmBackendConfig` is an untyped array in Bicep, so the compiler cannot help and
 neither can a generic form. It gets a purpose-built editor covering every
 supported provider, with credential handling that follows the provider.
 
-![LLM backends](./docs/images/21-llm-backends.png)
+![Model backend editor with provider, authentication, model rows and Add model controls](./docs/images/21-llm-backends.png)
 
 Access contract policies are presented as the blocks they are made of, each one
 switchable, with the raw XML always a click away. A model allowed here but never
 onboarded is flagged by name.
 
-![Contract policy](./docs/images/32-contract-policy.png)
+![Template policy editor with shared token budget and per-model budget controls](./docs/images/32-contract-policy.png)
+
+Migration uses the same typed target form. Only selected, changed values are
+highlighted with their source and **Undo import**; matching starts with
+differences and filters names as you type. This example uses **Show imported**
+to focus on two choices that have not been saved.
+
+![Typed migration preview showing selected values, source provenance and Undo import](./docs/images/40-migration-preview.png)
 
 ## Guides
 
