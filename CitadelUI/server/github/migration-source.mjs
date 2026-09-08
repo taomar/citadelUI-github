@@ -206,7 +206,7 @@ export class MigrationSourceRoutes {
           })),
         };
       }
-      if (!['repository', 'snapshot', 'verify', 'blob'].includes(operation)) throw fail('private-input');
+      if (!['repository', 'branches', 'snapshot', 'verify', 'blob', 'json-candidate'].includes(operation)) throw fail('private-input');
       const { record } = await this.resolve(id);
       const result = await record.reader.handle({ req, url, operation });
       await this.resolve(id);

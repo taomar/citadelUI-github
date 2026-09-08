@@ -3,7 +3,8 @@
  *
  * The browser owns every handle to Citadel source. This process serves the
  * packaged application, performs content-only transformations, and stores
- * transaction journals and backup bytes under CITADEL_DATA_ROOT. It never
+ * transaction journals, backup bytes and explicitly captured migration sources
+ * under CITADEL_DATA_ROOT. It never
  * discovers, opens, or writes a host workspace.
  */
 import { createServer } from 'node:http';
@@ -21,6 +22,9 @@ import { ConnectionProfileStore } from './connections.mjs';
 import { CredentialVault } from './credentials.mjs';
 import { OwnerAccount } from './owner.mjs';
 import { ActivityStore, ACTIVITY_ACTIONS } from './activity.mjs';
+import { MigrationSnapshotStore } from './migration-snapshots.mjs';
+import { MigrationError } from '../shared/migration-input.mjs';
+import { SNAPSHOT_ENDPOINT, SNAPSHOT_LIMITS } from '../shared/migration-snapshot.mjs';
 import { GitHubRoutes } from './github/routes.mjs';
 import { GitHubAuditStore } from './github/audit.mjs';
 import {
@@ -504,6 +508,39 @@ async function handleApi(context) {
     return sendJson(res, 200, { ok: true, service: 'citadel-ui' }, correlationId);
   }
 
+  if (url.pathname === SNAPSHOT_ENDPOINT || url.pathname.startsWith(`${SNAPSHOT_ENDPOINT}/`)) {
+    const parts = routeParts(url.pathname).slice(2);
+    const snapshots = context.snapshotStore;
+    try {
+      let result;
+      if (req.method === 'GET' && !parts.length) result = { sources: await snapshots.list() };
+      else if (req.method === 'POST' && !parts.length) {
+        result = await snapshots.begin(await readLimitedBody(req, SNAPSHOT_LIMITS.metadataBytes, true));
+      } else if (req.method === 'GET' && parts.length === 1) result = await snapshots.get(parts[0]);
+      else if (req.method === 'GET' && parts.length === 3 && parts[1] === 'files') {
+        const file = await snapshots.read(parts[0], parts[2]);
+        res.writeHead(200, {
+          ...securityHeaders(correlationId), 'Content-Type': 'application/octet-stream',
+          'Content-Length': file.bytes.length, 'X-Citadel-Content-SHA256': file.hash,
+        });
+        return res.end(file.bytes);
+      } else if (req.method === 'PUT' && parts.length === 3 && parts[1] === 'files') {
+        if (String(req.headers['content-type'] || '').split(';')[0].toLowerCase() !== 'application/octet-stream') {
+          throw transactionError(415, 'BINARY_REQUIRED', 'Source uploads require application/octet-stream.');
+        }
+        result = await snapshots.upload(parts[0], parts[2], req.headers['x-citadel-content-sha256'],
+          await readLimitedBody(req, SNAPSHOT_LIMITS.bytes, false));
+      } else if (req.method === 'POST' && parts.length === 2 && ['complete', 'delete'].includes(parts[1])) {
+        assertBodyKeys(await readLimitedBody(req, context.jsonBodyLimit, true), new Set());
+        result = await snapshots[parts[1]](parts[0]);
+      } else throw transactionError(404, 'ROUTE_NOT_FOUND', 'API route not found.');
+      return sendJson(res, 200, result, correlationId);
+    } catch (error) {
+      if (error instanceof MigrationError) throw transactionError(409, error.code, error.message);
+      throw error;
+    }
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/registry') {
     return sendJson(res, 200, await registryStore.read(), correlationId);
   }
@@ -781,6 +818,7 @@ export async function createCitadelServer(options = {}) {
   const registryStore = options.registryStore || new RegistryStore({ dataRoot });
   const connectionStore = options.connectionStore || new ConnectionProfileStore({ dataRoot });
   const activityStore = options.activityStore || new ActivityStore({ dataRoot });
+  const snapshotStore = options.snapshotStore || new MigrationSnapshotStore({ dataRoot, ...(options.snapshotOptions || {}) });
   // The key is read from a path, never from an environment value: a variable is
   // visible in `docker inspect`, in a process listing, and in a crash report,
   // and would put the master key in all three.
@@ -806,6 +844,7 @@ export async function createCitadelServer(options = {}) {
           ...(options.githubOptions || {}),
         });
   await store.initialize();
+  await snapshotStore.initialize();
   await registryStore.initialize();
   await connectionStore.initialize();
   await credentialVault.initialize();
@@ -882,6 +921,7 @@ export async function createCitadelServer(options = {}) {
         store,
         registryStore,
         activityStore,
+        snapshotStore,
         githubRoutes,
         ownerAccount,
         allowedHost,
@@ -957,6 +997,7 @@ export async function createCitadelServer(options = {}) {
     connectionStore,
     credentialVault,
     activityStore,
+    snapshotStore,
     githubRoutes,
     ownerAccount,
     sessionToken,

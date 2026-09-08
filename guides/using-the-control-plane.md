@@ -107,44 +107,97 @@ form on submission. Reusing a saved connection creates a separate source session
 without replacing or signing out the destination connection.
 
 Select **Connect source** for a PAT, or **Use source connection** for a saved
-connection. Enter the repository root URL, use **Find repository**, and explicitly
-choose a branch, tag, or full commit SHA before **Read GitHub source**. A URL ending
-in `/tree/main` must be entered as the repository root plus the separate `main`
-branch field. The default branch is shown as metadata, not selected automatically.
+connection. Enter the repository root URL and use **Find repository** to load its
+actual branches into **Source branch**. Select one explicitly, then use
+**Prepare source and continue** beside the revision controls to capture the
+offline copy. Finding a repository only loads its branches; it does not capture
+the source or change the target. **Refresh branches** / **Retry branches** handles a changed list
+or failed lookup; the 500-branch listing limit is reported when reached. Tag names
+and full commit SHAs remain manually enterable in their respective ref modes.
+A `/tree/main` URL must be entered as the repository root plus a separate `main`
+selection. The default branch is metadata, not an automatic selection. Changing
+repository, source access, or ref type clears the previous selection.
 Local folder selection reads files already on disk; it does not check out a branch.
+
+Automatic repository discovery distinguishes ordinary JSON (such as
+abbreviations, OpenAPI, package, and workflow data) from ARM parameter envelopes.
+Ordinary JSON is not imported and does not block valid configuration discovery.
+Invalid parameter candidates and unreadable files remain explicit errors; an
+explicitly selected JSON file must still pass the strict ARM parameter format.
 
 ### Files and mapping
 
-In **Files**, choose a migration area, one current destination parameter file,
-and the source parameter files to compare. Deployment, APIM Upgrade, Supporting
-Services Upgrade, LLM Onboarding, and Access Contracts are separate areas.
-Select an existing Access Contract instance explicitly; similarly named contracts
-are never paired automatically.
+Source preparation copies supported configuration and referenced templates once
+into private application storage. A complete copy survives restart and loss of
+the original source. Reuse it from **Prepared sources**; only **Refresh old source**
+downloads/reads again. Failed refresh retains the old copy and all target drafts.
+Copies contain sensitive configuration and are retained until owner deletion,
+within 8 copies / 256 MiB total and 64 MiB / 256 files per copy.
+
+The familiar **Azure Deployment**, **LLM Onboarding**, and **Access Contracts**
+rail now navigates independent drafts without a switch popup. Select source configuration and one
+existing current destination. Filenames are secondary identity, never automatic
+pairing evidence. Loose parameter files with no recognizable layout/signature
+require an explicit area choice.
+Every target, including multiple Access instances, retains its own choices and
+preview. Ordinary navigation does not discard them. Replacing a named target's
+file pairing is explicit and can be cancelled without losing its saved choices.
+For unfamiliar old layouts, choose a new destination and use **Other old parameter
+files** to select a parsed old file by matching new-file names.
+
+Access Contracts lists actual instances, not root/base templates. Upgrade,
+publish-contract, module, policy, and validation/sample files are outside this
+migration. Missing areas and unreadable or unsupported input are reported rather
+than replaced with hypothetical items.
 
 Choose **Inspect mapping**. Names match using Bicep's case-insensitive identifier
-rules, preserving the destination's casing. Only current names can receive values;
-legacy-only parameters are never introduced. Each source/current file pair reports
+rules, preserving the destination's casing. Only assignments already present in
+the new file can receive values; old-only and schema-only parameters are never
+introduced. Each source/current file pair reports
 its old-only names, or **None** when there are none, without exposing unused values.
 Duplicate candidates remain separate for review rather than being resolved by
 file order.
 
-Review each proposed value against the current type, constraints, and feature
-guidance before accepting it. Keeping current values preserves defaults for fields
-not supplied by the source. Expressions, references, sensitive values, unsupported
+**Migration preview** is the main-page typed target form, with the existing
+sections, object tables, feature toggles and backend/model layout. Choose **Use
+source value**, or open **Match source values** to resolve competing candidates
+and model pairings. Only changed selected fields show **Selected import - not
+saved**, with current/source values, exact provenance and **Undo import**.
+Equal and unselected fields have no import highlight. The form never calls normal
+editor save actions or the subscription/environment bridge.
+Resolve competing old sources explicitly. Full values, current
+constraints and provenance are available on demand. Unchecking a prior import
+or choosing **Discard choices for this target** removes only that target's decisions.
+Edited rows remain visible in filtered views until **Refresh view** is chosen.
+Expressions, references, sensitive values, unsupported
 schemas, and incompatible types remain unresolved rather than being evaluated or
 coerced. Matching names do not prove that feature behavior or meaning is unchanged.
+An expression is not a saved environment value: migration does not evaluate
+functions, variables, or environment inputs. Supply resolved source values to
+import those settings; unselected target expressions remain unchanged.
 
 ### Review and apply
 
-Choose **Preview draft & report** to inspect the sanitized diff. **Download report**
+For LLM configuration, confirm each new-to-old backend pairing before comparing
+models within it. Select model fields explicitly; the new backend identity,
+endpoint/auth/routing and all unselected models/fields stay unchanged. Unknown,
+duplicate or incompatible identities are not guessed, and the old backend array
+cannot be imported wholesale.
+
+Choose **Review migration** to review selected values and intentionally keep the
+rest. No-op previews say **Nothing will change**; remote destinations say
+**Preview/export only**. **Download report**
 and **Download sanitized draft** do not write either repository. The draft omits
 sensitive and unresolved expression values; it is a manual handoff, not a
 deployment-ready replacement file.
 
-For a local destination, **Review & apply locally** asks for explicit confirmation
+For a local destination, **Apply selected values** asks for explicit confirmation
 and uses the normal backup, verification, and rollback transaction. Pending editor
-work, changed files or schemas, a moved GitHub source ref, or a switched workspace
-invalidate the plan rather than overwriting newer work. Source repositories are
+work, changed target files/templates or a switched workspace prevent overwriting
+newer work. Original-source changes do not invalidate a complete offline copy.
+Target failures retain source and other drafts. Unrelated retained expressions
+are unverified deployment findings; invalid selected changes and their required
+dependencies still block apply. Source repositories are
 never written. GitHub destinations remain **preview/local-export-only**, even
 when the ordinary workspace connection has write permission.
 

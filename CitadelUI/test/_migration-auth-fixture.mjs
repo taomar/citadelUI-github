@@ -30,7 +30,7 @@ export class AuthenticatedGitHubMock extends PublicGitHubMock {
         await this.beforeIdentity?.();
         return this.json(200, credential.identity);
       }
-      if (!credential.contentsRead && target.pathname.includes('/git/')) {
+      if (!credential.contentsRead && (target.pathname.includes('/git/') || target.pathname.endsWith('/branches'))) {
         return this.json(403, { message: 'SYNTHETIC_UPSTREAM_PRIVATE_DETAIL' });
       }
       const headers = { ...options.headers };

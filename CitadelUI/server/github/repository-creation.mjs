@@ -41,6 +41,7 @@ const STAGES = Object.freeze({
   'default-branch': 'Setting main as the default branch.',
   'bootstrap-cleanup': 'Removing the verified bootstrap branch.',
   'verify-snapshot': 'Verifying imported files and private repository settings.',
+  'verify-settings': 'Confirming private visibility and the final branch.',
   complete: 'Private repository created and verified.',
   pausing: 'Pausing after the current request finishes.',
   paused: 'Paused at a safe checkpoint.',
@@ -233,6 +234,10 @@ export class RepositoryCreationService {
     const running = this.queue.some((job) => job.id === op.id) || this.currentId === op.id;
     return {
       id: op.id, state: op.state, stage: STAGES[op.stage] || 'Preparing the repository import.',
+      stageId: op.stage,
+      startedAt: op.startedAt || op.createdAt,
+      updatedAt: op.updatedAt || op.createdAt,
+      retryAt: op.retryAt || null,
       sourceUrl: op.sourceUrl, running,
       source: op.source ? {
         fullName: op.source.fullName, ref: op.source.ref, commit: op.source.commit,
@@ -349,6 +354,8 @@ export class RepositoryCreationService {
       op.authorized = true;
       op.state = 'creating';
       op.stage = 'queued';
+      op.startedAt = new Date(this.now()).toISOString();
+      op.updatedAt = op.startedAt;
       await this.save();
       this.enqueue(op, session);
       return this.public(op);
@@ -474,7 +481,17 @@ export class RepositoryCreationService {
   async checkpoint(op, patch = {}) {
     await this.serial(async () => {
       Object.assign(op, patch);
+      op.updatedAt = new Date(this.now()).toISOString();
       await this.save();
+    });
+  }
+
+  async reportProgress(op, progress) {
+    // Live counters need not rewrite the recovery journal for every file.
+    // Authority and object hashes still go through durable checkpoints.
+    await this.serial(() => {
+      op.progress = progress;
+      op.updatedAt = new Date(this.now()).toISOString();
     });
   }
 
@@ -658,16 +675,20 @@ export class RepositoryCreationService {
     source.fileCount = manifest.files.length;
     source.totalBytes = manifest.totalBytes;
     source.hasWorkflows = manifest.files.some((file) => /^\.github\/workflows\//i.test(file.path));
-    await this.checkpoint(op, { source, stage: 'blobs', progress: { completed: 0, total: source.fileCount, unit: 'files' } });
+    const sourceProgress = (completed, currentPath = null) => ({
+      completed, total: source.fileCount, unit: 'files', phase: 'source', currentPath,
+    });
+    await this.checkpoint(op, { source, stage: 'blobs', progress: sourceProgress(0) });
     const blobs = new Map();
     let completed = 0;
     for (const entry of manifest.files) {
+      await this.reportProgress(op, sourceProgress(completed, entry.path));
       if (!blobs.has(entry.sha)) {
         const data = await this.read(op, session, `${ep(source.fullName)}/git/blobs/${entry.sha}`, { limit: Math.ceil(this.limits.blobBytes * 1.4) + 4096 });
         blobs.set(entry.sha, decodeBlob(data, entry, this.limits.blobBytes));
       } else if (blobs.get(entry.sha).bytes.length !== entry.size) throw fail('IMPORT_HASH_MISMATCH', 'Inconsistent repeated blob size.', 422);
       completed += 1;
-      await this.checkpoint(op, { progress: { completed, total: source.fileCount, unit: 'files' } });
+      await this.reportProgress(op, sourceProgress(completed));
     }
     // Bound actual wire JSON, including text escaping, before creation. Every
     // exact UTF-8 file is inline; ONLY binary blobs use the base64 write API.
@@ -813,7 +834,10 @@ export class RepositoryCreationService {
   async copy(op, session) {
     const base = ep(`${op.login}/${op.name}`);
     const cache = this.cache;
-    await this.checkpoint(op, { state: 'copying', stage: 'objects', progress: { completed: 0, total: op.source.fileCount, unit: 'files' } });
+    const copyProgress = (completed, currentPath = null) => ({
+      completed, total: op.source.fileCount, unit: 'files', phase: 'copy', currentPath,
+    });
+    await this.checkpoint(op, { state: 'copying', stage: 'objects', progress: copyProgress(0) });
     const uploaded = new Set(op.uploadedBlobs);
     // Complete bottom-up directory trees, never base_tree overlays. All UTF-8
     // content is inline; only binary/NUL/non-UTF8 bytes use base64 blob writes.
@@ -821,11 +845,13 @@ export class RepositoryCreationService {
     let completed = 0;
     for (const dir of directories) {
       const tree = dir.entries.map((entry) => treeEntry(entry, cache.blobs));
+      let inlineFiles = 0;
       for (let i = 0; i < dir.entries.length; i += 1) {
         const entry = dir.entries[i];
         if (entry.type !== 'blob') continue;
         const blob = cache.blobs.get(entry.sha);
         if (blob.text === null) {
+          await this.reportProgress(op, copyProgress(completed, entry.fullPath));
           // Unreferenced objects can be garbage collected between runs. A
           // journal hash is proof of a previous write, not continued existence.
           if (uploaded.has(entry.sha)) {
@@ -837,11 +863,15 @@ export class RepositoryCreationService {
             const created = await this.write(op, session, `${base}/git/blobs`, 'POST', { content: blob.bytes.toString('base64'), encoding: 'base64' });
             if (created?.sha !== entry.sha) throw fail('IMPORT_HASH_MISMATCH', 'Uploaded blob hash differs.');
             uploaded.add(entry.sha);
-            await this.checkpoint(op, { uploadedBlobs: [...uploaded] });
           }
+          completed += 1;
+          await this.checkpoint(op, { uploadedBlobs: [...uploaded], progress: copyProgress(completed) });
+        } else {
+          // Inline text is copied only when its directory tree is confirmed.
+          inlineFiles += 1;
         }
-        completed += 1;
       }
+      await this.reportProgress(op, copyProgress(completed, dir.path ? `${dir.path}/` : '(repository root)'));
       let exists = false;
       if (op.uploadedTrees.includes(dir.sha)) {
         const existing = await this.optional(op, session, `${base}/git/trees/${dir.sha}`, { limit: this.limits.manifestBytes });
@@ -856,8 +886,10 @@ export class RepositoryCreationService {
         if (created?.sha !== dir.sha) throw fail('IMPORT_HASH_MISMATCH', 'Uploaded tree hash differs.');
         await this.checkpoint(op, { uploadedTrees: [...new Set([...op.uploadedTrees, dir.sha])] });
       }
-      await this.checkpoint(op, { progress: { completed, total: op.source.fileCount, unit: 'files' } });
+      completed += inlineFiles;
+      await this.reportProgress(op, copyProgress(completed));
     }
+    await this.checkpoint(op, { stage: 'publishing-main' });
     if (!op.commitSha || !await this.optional(op, session, `${base}/git/commits/${op.commitSha}`)) {
       const commit = await this.write(op, session, `${base}/git/commits`, 'POST', op.commitBody);
       const commitSha = sha(commit?.sha);
@@ -919,7 +951,10 @@ export class RepositoryCreationService {
   }
 
   async verify(op, session) {
-    await this.checkpoint(op, { state: 'verifying', stage: 'verify-snapshot' });
+    const verificationProgress = (completed, currentPath = null) => ({
+      completed, total: op.source.fileCount, unit: 'files', phase: 'verify', currentPath,
+    });
+    await this.checkpoint(op, { state: 'verifying', stage: 'verify-snapshot', progress: verificationProgress(0) });
     await this.verifyCommit(op, session);
     const actual = await this.manifest(op, session, `${op.login}/${op.name}`, op.source.tree);
     const comparable = (entries) => JSON.stringify([...entries].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
@@ -927,12 +962,18 @@ export class RepositoryCreationService {
     // Tree hashes attest all blob hashes; read back every unique blob as well,
     // so mock/API success alone never proves uploaded binary content fidelity.
     const seen = new Set();
+    let completed = 0;
     for (const entry of actual.files) {
-      if (seen.has(entry.sha)) continue;
-      const data = await this.read(op, session, `${ep(`${op.login}/${op.name}`)}/git/blobs/${entry.sha}`, { limit: Math.ceil(this.limits.blobBytes * 1.4) + 4096 });
-      decodeBlob(data, entry, this.limits.blobBytes);
-      seen.add(entry.sha);
+      await this.reportProgress(op, verificationProgress(completed, entry.path));
+      if (!seen.has(entry.sha)) {
+        const data = await this.read(op, session, `${ep(`${op.login}/${op.name}`)}/git/blobs/${entry.sha}`, { limit: Math.ceil(this.limits.blobBytes * 1.4) + 4096 });
+        decodeBlob(data, entry, this.limits.blobBytes);
+        seen.add(entry.sha);
+      }
+      completed += 1;
+      await this.reportProgress(op, verificationProgress(completed));
     }
+    await this.checkpoint(op, { stage: 'verify-settings' });
     await this.requireActionsDisabled(op, session);
     const repo = await this.guard(op, session);
     if (repo.default_branch !== 'main' || await this.branch(op, session, 'main') !== op.commitSha ||

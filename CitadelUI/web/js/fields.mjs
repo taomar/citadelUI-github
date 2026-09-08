@@ -341,7 +341,7 @@ function comboControl(value, allowed, commit, secure, schema) {
  * and provenance appears nowhere in them.
  */
 function scalarControl(value, path, ctx, schema) {
-  schema = withRegionSchema(schema, path);
+  schema = ctx.readOnly ? schema : withRegionSchema(schema, path);
   const commit = (next) => ctx.onChange(path, next);
   const type = schema && schema.type;
   const label = valueLabel(path, schema);
@@ -991,6 +991,11 @@ function objectEditor(value, path, ctx) {
 }
 
 export function renderValue(value, path, ctx, schema, options = null) {
+  const rendered = renderValueContent(value, path, ctx, schema, options);
+  return ctx.decorateValue ? ctx.decorateValue(path, rendered) : rendered;
+}
+
+function renderValueContent(value, path, ctx, schema, options) {
   const kind = typeOf(value);
   if (kind === 'expr') return exprCard(value, path, ctx, schema);
   if (kind === 'array') return arrayEditor(value, path, ctx, schema, options);

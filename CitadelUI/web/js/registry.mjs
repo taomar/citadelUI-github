@@ -528,6 +528,19 @@ export class WorkspaceRegistry {
       requestResult(tx.objectStore(HANDLES).get(id)));
   }
 
+  async rememberMigrationSnapshotTarget(id, handle) {
+    if (!/^[a-f0-9-]{36}$/.test(id) || handle?.kind !== 'directory') throw new Error('Invalid migration target identity.');
+    await this.run([HANDLES], 'readwrite', (tx) => tx.objectStore(HANDLES).put(handle, `migration-source:${id}`));
+  }
+
+  async migrationSnapshotTarget(id) {
+    return this.getHandle(`migration-source:${id}`);
+  }
+
+  async forgetMigrationSnapshotTarget(id) {
+    await this.run([HANDLES], 'readwrite', (tx) => tx.objectStore(HANDLES).delete(`migration-source:${id}`));
+  }
+
   async findSameHandle(handle, exceptId = null) {
     const environments = await this.listEnvironments();
     for (const environment of environments) {

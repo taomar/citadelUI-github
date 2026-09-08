@@ -20,6 +20,7 @@ class StubNode {
     this.inert = false;
     this.disabled = false;
     this.hidden = false;
+    this.checked = false;
     this.value = '';
     this.focused = false;
     const owner = this;
@@ -76,6 +77,10 @@ class StubNode {
     return this.attributes.has(name) ? this.attributes.get(name) : null;
   }
 
+  hasAttribute(name) {
+    return this.attributes.has(name);
+  }
+
   addEventListener(type, handler) {
     if (!this.listeners.has(type)) this.listeners.set(type, []);
     this.listeners.get(type).push(handler);
@@ -102,16 +107,21 @@ class StubNode {
     return null;
   }
 
-  querySelectorAll() {
-    return [];
+  querySelectorAll(selector) {
+    if (!/^[a-z]+(?:,\s*[a-z]+)*$/i.test(selector)) return [];
+    const tags = new Set(selector.split(',').map((tag) => tag.trim().toUpperCase()));
+    const visit = (node) => (node.children || []).flatMap((child) =>
+      [...(tags.has(child.tagName) ? [child] : []), ...visit(child)]);
+    return visit(this);
   }
 
   getBoundingClientRect() {
     return { left: 0, top: 0, right: 100, bottom: 100 };
   }
 
-  focus() {
+  focus(options = {}) {
     this.focused = true;
+    this.focusOptions = options;
     if (globalThis.document) globalThis.document.activeElement = this;
   }
 

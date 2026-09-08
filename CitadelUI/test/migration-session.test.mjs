@@ -7,6 +7,7 @@ import { discoverMigrationTargets, MIGRATION_AREAS, MigrationSession } from '../
 import { MIGRATION_LIMITS } from '../shared/migration-input.mjs';
 import { serializeValue } from '../shared/bicepparam/serialize.mjs';
 import { backendTemplate } from '../web/js/llmschema.mjs';
+import { primaryCapabilities } from '../shared/citadel-core.mjs';
 import {
   acceptCount, CURRENT, deferred, folderFromFiles, LEGACY, MigrationDirectoryHandle,
   MigrationFileHandle, migrationHarness, TARGET, TEMPLATE,
@@ -70,7 +71,7 @@ test('migration donor browsing never gates old folders on current compatibility 
   assert(h.donorTrace.every((entry) => !/readwrite|writable:|write:|create=true/.test(entry)));
 });
 
-test('migration target discovery exposes all five real areas and isolates current Access instances from base contracts', async () => {
+test('migration target discovery exposes only the three supported areas and existing Access instances', async () => {
   const aliases = [
     TARGET, 'bicep/infra/apim-gateway-upgrade/main.bicepparam',
     'bicep/infra/apim-gateway-upgrade/supporting-services.bicepparam',
@@ -88,13 +89,130 @@ test('migration target discovery exposes all five real areas and isolates curren
   }
   const provider = new BrowserDirectoryProvider(folderFromFiles('synthetic-current', files));
   const targets = await discoverMigrationTargets(provider);
-  assert.equal(targets.length, 7);
-  assert.deepEqual(new Set(targets.map((target) => target.area)), new Set(MIGRATION_AREAS.slice(0, 5).map((area) => area.id)));
-  assert.deepEqual(targets.filter((target) => target.kind.includes('Upgrade')).map((target) => target.alias), aliases.slice(1, 3));
+  assert.equal(targets.length, 4);
+  assert.deepEqual(MIGRATION_AREAS.map((area) => area.id), ['deployment', 'llm-onboarding', 'access-contracts']);
+  assert.deepEqual(new Set(targets.map((target) => target.area)), new Set(MIGRATION_AREAS.map((area) => area.id)));
+  assert.equal(targets.filter((target) => target.kind.includes('Upgrade')).length, 0);
   assert(targets.every((target) => target.state === 'available'));
-  assert.equal(targets.find((target) => target.alias === aliases[2]).template, 'bicep/infra/apim-gateway-upgrade/supporting-services.bicep');
   assert.equal(targets.filter((target) => target.kind === 'Access Contracts - existing instance').length, 2);
+  assert(!targets.some((target) => target.alias === `${root}/main.bicepparam`));
   assert(!targets.some((target) => /base-contracts|\/modules\/|\/policies\//.test(target.alias)));
+});
+
+function signatureSource(signature, minimum = signature.length) {
+  const names = [...signature];
+  while (names.length < minimum) names.push(`syntheticField${names.length}`);
+  return names.map((name) => `param ${name} = readEnvironmentVariable('SYNTHETIC_UNEVALUATED')`).join('\n');
+}
+
+test('migration source inventory reads actual three-area configurations and recognizes legacy signatures without basename guessing', async () => {
+  const deployment = signatureSource(primaryCapabilities.mainSignature, primaryCapabilities.mainMinimumParameters);
+  const llm = signatureSource(primaryCapabilities.llmSignature);
+  const access = signatureSource(primaryCapabilities.accessSignature, primaryCapabilities.accessMinimumParameters);
+  const contractRoot = 'older/bicep/infra/citadel-access-contracts';
+  const files = {
+    [`older/${TARGET}`]: deployment,
+    'bicep/infra/resources.bicepparam': deployment,
+    'older-layout/deployment-settings.bicepparam': deployment,
+    'older/bicep/infra/llm-backend-onboarding/main.bicepparam': llm,
+    'older-layout/models.bicepparam': llm,
+    [`${contractRoot}/finance/main.bicepparam`]: access,
+    'relocated/finance.bicepparam': `using '../bicep/infra/citadel-access-contracts/main.bicep'\n${access}`,
+    [`${contractRoot}/main.bicepparam`]: access,
+    [`${contractRoot}/base-contracts/common/main.bicepparam`]: access,
+    [`${contractRoot}/modules/main.bicepparam`]: access,
+    'validation/contract.bicepparam': access,
+    'bicep/infra/apim-gateway-upgrade/main.bicepparam': deployment,
+    'bicep/infra/citadel-publish-contracts/main.bicepparam': access,
+    'bicep/infra/foundry-integration/samples/main.bicepparam': llm,
+    'bicep/infra/app-insights-alert/main.bicepparam': 'param count = 3\n',
+    'main.bicepparam': 'param count = 3\n',
+    'generic/access-template.bicepparam': access,
+  };
+  const h = migrationHarness({ donorFiles: files });
+  const progress = [];
+  const inventory = await h.session.inventory(h.donor, { onProgress: (state) => progress.push(state) });
+  assert.deepEqual(inventory.items.filter((item) => item.area === 'deployment').map((item) => item.alias).sort(),
+    [`older/${TARGET}`, 'bicep/infra/resources.bicepparam', 'older-layout/deployment-settings.bicepparam'].sort());
+  assert.equal(inventory.items.filter((item) => item.area === 'llm-onboarding').length, 2);
+  assert.deepEqual(inventory.items.filter((item) => item.area === 'access-contracts').map((item) => item.alias).sort(),
+    [`${contractRoot}/finance/main.bicepparam`, 'relocated/finance.bicepparam'].sort());
+  assert.equal(inventory.items.length, 7);
+  assert.equal(inventory.unassigned.length, 0);
+  assert.equal(inventory.issues.length, 0);
+  assert.equal(inventory.items.find((item) => item.alias === `${contractRoot}/finance/main.bicepparam`).name, 'finance');
+  assert(inventory.items.every((item) => item.parameters > 0 && item.dynamic === item.parameters));
+  assert.equal(progress.at(-1).completed, progress.at(-1).total);
+  assert.doesNotMatch(JSON.stringify(inventory), /SYNTHETIC_UNEVALUATED|"value":|"text":/);
+  assert.equal(h.api.trace.length, 0);
+  assert(h.donorTrace.every((entry) => !/readwrite|writable:|write:|create=true/.test(entry)));
+});
+
+test('migration source inventory reports no Access instances for a template-only repository', async () => {
+  const text = signatureSource(primaryCapabilities.accessSignature, primaryCapabilities.accessMinimumParameters);
+  const h = migrationHarness({ donorFiles: {
+    'bicep/infra/citadel-access-contracts/main.bicepparam': text,
+    'bicep/infra/citadel-access-contracts/base-contracts/common/main.bicepparam': text,
+  } });
+  const inventory = await h.session.inventory(h.donor);
+  assert.deepEqual(inventory.items, []);
+  assert.deepEqual(inventory.unassigned, []);
+  assert.equal(inventory.ignored, 2);
+  assert(!h.donorTrace.some((entry) => entry.startsWith('read:')));
+});
+
+test('migration recognizes qualified legacy resources inputs without requiring every current parameter name', async () => {
+  const h = migrationHarness({ donorFiles: {
+    'older/bicep/infra/resources.bicepparam': "using './resources.bicep'\nparam environmentName = 'old'\nparam logicAppsSkuName = 'legacy'\n",
+    'another-module/resources.bicepparam': "param environmentName = 'not-a-deployment-proof'\n",
+  } });
+  const inventory = await h.session.inventory(h.donor);
+  assert.deepEqual(inventory.items.map((item) => [item.area, item.alias]), [
+    ['deployment', 'older/bicep/infra/resources.bicepparam'],
+  ]);
+  assert.equal(inventory.otherFiles.length, 1);
+});
+
+test('migration source inventory leaves loose files unassigned and reports malformed input without raw values', async () => {
+  const h = migrationHarness();
+  const donor = new MigrationDonor({ files: [
+    new MigrationFileHandle('main.bicepparam', "param count = 4\nparam label = 'SYNTHETIC_PRIVATE_MARKER'\n"),
+    new MigrationFileHandle('broken.bicepparam', "param label = 'SYNTHETIC_PRIVATE_MARKER\n"),
+  ] });
+  const inventory = await h.session.inventory(donor);
+  assert.deepEqual(inventory.items, []);
+  assert.equal(inventory.unassigned.length, 1);
+  assert.equal(inventory.unassigned[0].id, 'file-1');
+  assert.equal(inventory.unassigned[0].parameters, 2);
+  assert.equal(inventory.issues.length, 1);
+  assert.match(inventory.issues[0].reason, /malformed or uses unsupported/);
+  assert.doesNotMatch(JSON.stringify(inventory), /SYNTHETIC_PRIVATE_MARKER/);
+});
+
+test('migration source inventory proves distinct identity before reading and does not hide read failures as an empty result', async () => {
+  const h = migrationHarness();
+  await assert.rejects(h.session.inventory(new MigrationDonor({ folder: h.root.alias('old-label') })), { code: 'identity' });
+  assert(!h.targetTrace.some((entry) => entry.startsWith('read:')));
+  const denied = new MigrationFileHandle('main.bicepparam', 'param count = 4\n');
+  denied.getFile = async () => { throw new DOMException('SYNTHETIC_PRIVATE_MARKER', 'NotReadableError'); };
+  await assert.rejects(h.session.inventory(new MigrationDonor({ files: [denied] })), { code: 'unavailable' });
+  assert.equal(h.api.trace.length, 0);
+});
+
+test('migration source inventory discards stale asynchronous extraction and preserves pending editor work', async () => {
+  const h = migrationHarness({ donorFiles: { [TARGET]: 'param Count = 4\n' } });
+  const gate = deferred();
+  const entered = deferred();
+  const handle = await h.donor.handle(TARGET);
+  handle.beforeRead = async () => { entered.resolve(); await gate.promise; };
+  const pending = h.session.inventory(h.donor);
+  await entered.promise;
+  h.session.invalidate();
+  gate.resolve();
+  await assert.rejects(pending, { code: 'stale' });
+  h.state.pending = true;
+  await assert.rejects(h.session.inventory(h.donor), { code: 'pending' });
+  assert.equal(h.api.trace.length, 0);
 });
 
 test('migration Access pairing writes only the explicitly chosen existing instance and reports its own old-only names', async () => {
@@ -143,7 +261,8 @@ test('migration missing destination template is a visible unresolved target, not
   h.session.keepRemaining();
   const preview = await h.session.preview();
   assert.equal(preview.canApply, false);
-  assert(preview.report.blockers.some((entry) => entry.code === 'unknown-schema'));
+  assert(preview.report.unverified.some((entry) => entry.code === 'unknown-schema'));
+  assert.equal(preview.canApply, false);
 });
 
 test('migration same folder under another label and overlapping ancestor/descendant roots are rejected by identity', async () => {
@@ -285,13 +404,14 @@ test('migration current LLM provider, auth, model and affinity choices gate real
   const view = await h.plan({ targetAlias: alias });
   const row = view.rows[0];
   assert.equal(view.target.area, 'llm-onboarding');
-  assert.equal(row.candidates[0].eligible, true);
-  h.session.decide(row.id, { kind: 'accept', candidateId: row.candidates[0].id, semanticReviewed: true });
-  const preview = await h.session.preview();
-  assert.equal(preview.canApply, true);
-  await h.session.apply(preview.id, { reviewed: true });
+  assert.equal(row.candidates[0].eligible, false);
+  assert.equal(row.structured.backends.length, 0);
+  assert.throws(() => h.session.decide(row.id, { kind: 'accept', candidateId: row.candidates[0].id, semanticReviewed: true }), { code: 'decision' });
+  const preview = await h.session.previewSelected();
+  assert.equal(preview.canApply, false);
+  assert.equal(preview.changed, false);
   assert.match((await h.provider.read(alias)).text, /preserve current onboarding/);
-  assert.equal(h.targetTrace.filter((entry) => entry.startsWith('write:')).length, 1);
+  assert.equal(h.targetTrace.filter((entry) => entry.startsWith('write:')).length, 0);
   assert(!h.donorTrace.some((entry) => /^(?:write|writable):/.test(entry)));
 });
 

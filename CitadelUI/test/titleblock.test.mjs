@@ -14,6 +14,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const lf = (s) => s.replace(/\r\n/g, '\n');
 const app = lf(readFileSync(new URL('../web/js/app.mjs', import.meta.url), 'utf8'));
@@ -74,4 +76,35 @@ test('startup does not announce a wait while the catalogue is being read', () =>
   // It is announced immediately after, where the work really is.
   const afterEnsure = init.slice(init.indexOf('await ensureWorkspace()'));
   assert.match(afterEnsure.slice(0, 400), /setStatus\('Opening workspace/);
+});
+
+test('header action colors cover interaction states without recoloring light-page buttons', () => {
+  const foundation = lf(readFileSync(new URL('../web/css/app.css', import.meta.url), 'utf8'));
+  assert.match(foundation, /\.btn-ghost\s*\{[^}]*color:\s*var\(--ink-2\)/);
+  assert.match(components, /\.titleblock \.btn\s*\{[^}]*color:\s*var\(--nav-ink\)/);
+  assert.match(components, /\.titleblock \.btn:hover:not\(:disabled\)\s*\{[^}]*background:\s*var\(--nav-hover\)/);
+  assert.match(components, /\.titleblock \.btn\[aria-pressed='true'\]:not\(:disabled\)/);
+  assert.match(components, /\.titleblock \.btn\[aria-expanded='true'\]:not\(:disabled\)/);
+  assert.match(components, /\.titleblock \.btn-primary\s*\{[^}]*background:\s*var\(--header-primary\)/);
+  assert.match(components, /\.titleblock \.btn:disabled\s*\{[^}]*opacity:\s*1;[^}]*color:\s*var\(--header-disabled-ink\)/);
+  assert.match(components, /\.titleblock \.btn-primary\[aria-busy='true'\]\s*\{[^}]*color:\s*var\(--header-primary-ink\)/);
+  assert.match(components, /\.titleblock :is\(a, button\):focus-visible\s*\{[^}]*outline:[^;]*var\(--header-focus\);[^}]*box-shadow:\s*none/);
+});
+
+test('header contrast covers secondary, primary, selected, disabled, focus and status surfaces', () => {
+  const report = JSON.parse(execFileSync(process.execPath, [
+    fileURLToPath(new URL('../tools/contrast.mjs', import.meta.url)), '--json',
+  ], { encoding: 'utf8' }));
+  assert.equal(report.failures, 0);
+  const header = report.results.filter((result) => result.scope === 'header');
+  assert.ok(header.length >= 20);
+  assert.ok(header.every((result) => result.ratio >= result.required));
+  assert.ok(header.some((result) => result.foreground === 'header-disabled-ink'));
+  assert.ok(header.some((result) => result.foreground === 'header-focus'));
+});
+
+test('narrow header commands wrap instead of clipping actions or their focus outlines', () => {
+  assert.match(components, /\.tb-command-set\s*\{[^}]*flex-wrap:\s*wrap;[^}]*overflow:\s*visible/);
+  assert.match(components, /\.tb-command-set > \*\s*\{[^}]*max-width:\s*100%;[^}]*white-space:\s*normal/);
+  assert.match(components, /\.tb-pending,\s*\.tb-clean\s*\{[^}]*white-space:\s*normal/);
 });

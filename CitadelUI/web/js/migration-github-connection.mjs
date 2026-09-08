@@ -1,5 +1,5 @@
 import { localRequest } from './local-api.mjs';
-import { ReadOnlyGitHubMigrationDonor } from './migration-public-donor.mjs';
+import { ReadOnlyGitHubMigrationDonor, validateDonorBranches } from './migration-public-donor.mjs';
 import { MigrationError, safeLabel } from '../../shared/migration-input.mjs';
 import { publicDonorRef, publicRepositoryName } from '../../shared/migration-public-github.mjs';
 import { MIGRATION_ATTEMPT_HEADER, MIGRATION_SOURCE_ENDPOINT, MIGRATION_SOURCE_HEADER, privateDonorFailure } from '../../shared/migration-github-auth.mjs';
@@ -179,6 +179,16 @@ export class MigrationGitHubConnection {
         id: result.id, fullName: result.fullName, visibility: result.visibility,
         defaultBranch: result.defaultBranch || null, archived: result.archived === true,
       };
+    } catch (error) { throw privateDonorFailure(error); }
+  }
+
+  async listBranches(repository) {
+    const generation = this.#generation;
+    try {
+      const result = await this.#signedRead(generation, `${MIGRATION_SOURCE_ENDPOINT}/branches?${new URLSearchParams({
+        repository: publicRepositoryName(repository.fullName), repositoryId: repository.id,
+      })}`);
+      return validateDonorBranches(result, repository);
     } catch (error) { throw privateDonorFailure(error); }
   }
 

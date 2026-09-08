@@ -136,7 +136,7 @@ export function modelCatalogMatch(name, backendTypeId) {
   return match ? { kind: 'catalog', name: match.name } : { kind: 'custom' };
 }
 
-function modelField(descriptor, model, entry, type, write) {
+function modelField(descriptor, model, entry, type, write, readOnly = false) {
   const value = model[descriptor.key];
   const help =
     descriptor.key === 'name' && type && type.nameMeaning
@@ -153,7 +153,7 @@ function modelField(descriptor, model, entry, type, write) {
   if (descriptor.type === 'number') {
     return field(
       descriptor.label,
-      numberField(value ?? descriptor.default, (next) => write(descriptor.key, next), {
+      numberField(readOnly ? value : value ?? descriptor.default, (next) => write(descriptor.key, next), {
         min: descriptor.min,
         max: descriptor.max,
       }),
@@ -164,7 +164,7 @@ function modelField(descriptor, model, entry, type, write) {
     const options = [...new Set([...(descriptor.options || []), value].filter(Boolean))];
     return field(
       descriptor.label,
-      selectField(value || descriptor.default, options, (next) => write(descriptor.key, next)),
+      selectField(readOnly ? value : value || descriptor.default, options, (next) => write(descriptor.key, next)),
       help
     );
   }
@@ -175,7 +175,7 @@ function modelField(descriptor, model, entry, type, write) {
   return field(
     descriptor.label,
     textField(value, (next) => write(descriptor.key, next), {
-      placeholder: descriptor.default || '',
+      placeholder: readOnly ? '' : descriptor.default || '',
       required: descriptor.required,
       multiline: descriptor.key === 'name',
     }),
@@ -229,10 +229,10 @@ function modelRow(model, index, entry, entryIndex, ctx, expanded, toggle) {
           model.name || h('em', {}, 'unnamed')
         )
       ),
-      h('span', { class: 'lm-cell', role: 'cell', dataset: { label: 'Format' } }, model.modelFormat || 'OpenAI'),
-      h('span', { class: 'lm-cell', role: 'cell', dataset: { label: 'Version' } }, model.modelVersion || '1'),
-      h('span', { class: 'lm-cell', role: 'cell', dataset: { label: 'SKU' } }, model.sku || 'Standard'),
-      h('span', { class: 'lm-cell lm-num', role: 'cell', dataset: { label: 'Capacity' } }, model.capacity ?? 100),
+      h('span', { class: 'lm-cell', role: 'cell', dataset: { label: 'Format' } }, model.modelFormat || (ctx.readOnly ? 'Not supplied' : 'OpenAI')),
+      h('span', { class: 'lm-cell', role: 'cell', dataset: { label: 'Version' } }, model.modelVersion || (ctx.readOnly ? 'Not supplied' : '1')),
+      h('span', { class: 'lm-cell', role: 'cell', dataset: { label: 'SKU' } }, model.sku || (ctx.readOnly ? 'Not supplied' : 'Standard')),
+      h('span', { class: 'lm-cell lm-num', role: 'cell', dataset: { label: 'Capacity' } }, model.capacity ?? (ctx.readOnly ? 'Not supplied' : 100)),
       h(
         'span',
         { class: 'lm-flags', role: 'cell', dataset: { label: 'State' } },
@@ -264,7 +264,12 @@ function modelRow(model, index, entry, entryIndex, ctx, expanded, toggle) {
     const sectionFields = group.keys
       .map((key) => fields.get(key))
       .filter(Boolean)
-      .map((descriptor) => modelField(descriptor, model, entry, type, write));
+      .map((descriptor) => {
+        const rendered = ctx.readOnly && !Object.hasOwn(model, descriptor.key)
+          ? field(descriptor.label, h('span', { class: 'hint' }, 'Not supplied in target'))
+          : modelField(descriptor, model, entry, type, write, ctx.readOnly);
+        return ctx.decorateValue ? ctx.decorateValue([...path, descriptor.key], rendered) : rendered;
+      });
     if (!sectionFields.length) return null;
     return h(
       'fieldset',
@@ -588,11 +593,11 @@ function backendCard(entry, index, ctx, findings) {
             { class: 'empty-state' },
             'No models yet. Nothing routes to this backend until you add one.'
           ),
-      addModelRow(entry, index, ctx)
+      ctx.readOnly ? null : addModelRow(entry, index, ctx)
     ),
     // Destructive action lives at the foot of the panel it destroys, never in
     // the header where it sits under the cursor on the way to everything else.
-    h(
+    ctx.readOnly ? null : h(
       'div',
       { class: 'lb-foot' },
       h(
@@ -787,7 +792,7 @@ export function renderLlmBackends(entries, ctx) {
         adding ? 'Cancel' : 'Add backend'
       )
     ),
-    adding
+    adding && !ctx.readOnly
       ? addBackendPanel(ctx, list, () => {
           ctx.setOpen('llm-add', false);
         })
@@ -804,6 +809,6 @@ export function renderLlmBackends(entries, ctx) {
             'This deployment onboards LLM endpoints onto the gateway. Add a provider to begin \u2014 the file already contains commented examples you can read for reference.'
           )
         ),
-    poolPreview(list)
+    ctx.readOnly ? null : poolPreview(list)
   );
 }

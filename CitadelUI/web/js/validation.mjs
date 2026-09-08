@@ -8,6 +8,21 @@ import {
 
 const PLACEHOLDER = /^(?:0{8}-0{4}-0{4}-0{4}-0{12}|(?:rg|apim|kv|foundry)-.*(?:name|group)|.*instance-name|.*account-name|.*project-name)$/i;
 
+// The same rule inputs describe which edits can affect an existing finding.
+// Migration also uses them to distinguish unavailable dependencies from empty
+// values, without invoking the editor's expression/default evaluator.
+export const VALIDATION_INPUTS = Object.freeze({
+  apimCapacity: ['apimSku', 'apimSkuUnits'],
+  apiCenter: ['enableAPICenter', 'apicLocation', 'location'],
+  network: ['vnetAddressPrefix', 'useExistingVnet', 'apimSubnetPrefix', 'privateEndpointSubnetPrefix',
+    'functionAppSubnetPrefix', 'agentSubnetPrefix', 'foundryNetworkInjectionEnabled', 'apimSku', 'apimSkuUnits',
+    'apimNetworkType', 'aiFoundryInstances', 'apimV2UsePrivateEndpoint', 'enableManagedRedis', 'useAzureMonitorPrivateLinkScope'],
+  modelServices: ['aiFoundryModelsConfig', 'aiFoundryInstances'],
+  targetFoundry: ['useTargetFoundry', 'foundry'],
+  targetKeyVault: ['useTargetAzureKeyVault', 'keyVault'],
+  additionalFoundries: ['additionalFoundries', 'foundry', 'additionalApimGateways'],
+});
+
 export function editableValue(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   if (value.__expr !== 'call') return value;
@@ -25,8 +40,8 @@ export function parameterMap(doc) {
   return new Map((doc && doc.params || []).map((param) => [param.name, editableValue(param.value)]));
 }
 
-function finding(param, message, path = [param], severity = 'error') {
-  return { severity, param, path, message };
+function finding(param, message, path = [param], severity = 'error', dependencies = [param]) {
+  return { severity, param, path, message, dependencies };
 }
 
 function incompleteFields(value, fields) {
@@ -325,7 +340,8 @@ export function validateDocument(doc, { values: literalValues = null } = {}) {
   const apimUnits = Number(values.get('apimSkuUnits'));
   if (APIM_SKUS[apimSku] && (!Number.isInteger(apimUnits) || apimUnits < APIM_SKUS[apimSku].min || apimUnits > APIM_SKUS[apimSku].max)) {
     const { min, max } = APIM_SKUS[apimSku];
-    findings.push(finding('apimSkuUnits', `${apimSku} capacity must be ${min === max ? `exactly ${min}` : `${min} to ${max}`}.`));
+    findings.push(finding('apimSkuUnits', `${apimSku} capacity must be ${min === max ? `exactly ${min}` : `${min} to ${max}`}.`,
+      ['apimSkuUnits'], 'error', VALIDATION_INPUTS.apimCapacity));
   }
 
   if (values.has('logicAppsSkuCapacityUnits')) {
@@ -336,17 +352,21 @@ export function validateDocument(doc, { values: literalValues = null } = {}) {
   }
 
   if (values.get('enableAPICenter') === true && values.get('apicLocation') === '' && !API_CENTER_REGIONS.includes(values.get('location'))) {
-    findings.push(finding('location', 'API Center is enabled and inherits this location, which is outside the eight API Center regions. Choose an API Center location explicitly.'));
+    findings.push(finding('location', 'API Center is enabled and inherits this location, which is outside the eight API Center regions. Choose an API Center location explicitly.',
+      ['location'], 'error', VALIDATION_INPUTS.apiCenter));
   }
 
+  const networkStart = findings.length;
   validateNetworkConfiguration(findings, values);
+  for (const entry of findings.slice(networkStart)) entry.dependencies = VALIDATION_INPUTS.network;
 
   const instances = Array.isArray(values.get('aiFoundryInstances')) ? values.get('aiFoundryInstances') : [];
   const models = Array.isArray(values.get('aiFoundryModelsConfig')) ? values.get('aiFoundryModelsConfig') : [];
   models.forEach((model, index) => {
     if (!model || !Object.prototype.hasOwnProperty.call(model, 'aiserviceIndex')) return;
     if (!Number.isInteger(model.aiserviceIndex) || model.aiserviceIndex < 0 || model.aiserviceIndex >= instances.length) {
-      findings.push(finding('aiFoundryModelsConfig', `Model row ${index + 1} references AI service index ${model.aiserviceIndex}, but valid indices are 0 to ${Math.max(0, instances.length - 1)}.`, ['aiFoundryModelsConfig', index, 'aiserviceIndex']));
+      findings.push(finding('aiFoundryModelsConfig', `Model row ${index + 1} references AI service index ${model.aiserviceIndex}, but valid indices are 0 to ${Math.max(0, instances.length - 1)}.`,
+        ['aiFoundryModelsConfig', index, 'aiserviceIndex'], 'error', VALIDATION_INPUTS.modelServices));
     }
   });
 
@@ -395,5 +415,10 @@ export function validateDocument(doc, { values: literalValues = null } = {}) {
     }
   });
 
+  for (const entry of findings) {
+    if (entry.param === 'foundry') entry.dependencies = VALIDATION_INPUTS.targetFoundry;
+    if (entry.param === 'keyVault') entry.dependencies = VALIDATION_INPUTS.targetKeyVault;
+    if (entry.param === 'additionalFoundries') entry.dependencies = VALIDATION_INPUTS.additionalFoundries;
+  }
   return findings;
 }

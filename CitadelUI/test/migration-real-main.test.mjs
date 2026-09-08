@@ -70,7 +70,7 @@ test('migration real-main five explicit same-path name reports preserve actual c
     assert.deepEqual(new Set(report.matchedNames), new Set(pair.oldAssignedNames));
     assert.deepEqual(report.oldOnlyNames, pair.oldOnlyNames);
     assert.deepEqual(report.currentAssignmentsWithoutDonor, pair.currentAssignmentsWithoutDonor);
-    assert.deepEqual(report.inheritedDefaultsWithoutDonor, pair.inheritedDefaultsWithoutDonor);
+    assert.deepEqual(report.inheritedDefaultsWithoutDonor, [], 'schema-only defaults are not editable new-file targets');
     assert.deepEqual(report.currentSchemaOnlyNames, pair.currentSchemaOnlyNames);
     const evaluation = evaluateMigration(plan);
     assert.equal(evaluation.summary.accepted, 0);
@@ -95,7 +95,8 @@ test('migration real-main dynamic instance dependency is unresolved, never an in
   const findings = validateMigrationFeatures(shape());
   assert(findings.some((finding) => finding.code === 'feature-unresolved'));
   assert(!findings.some((finding) => finding.code === 'feature-constraint'));
-  assert.match(findings[0].message, /not treated as an empty list/);
+  assert(findings.some((finding) => /not treated as an empty list/.test(finding.message)));
+  assert(findings.some((finding) => finding.dependencies?.includes('aiFoundryInstances')));
 });
 
 test('migration real-main dependency fix still rejects known empty instances and intrinsically invalid indices', () => {

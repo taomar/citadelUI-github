@@ -16,8 +16,29 @@ import {
   sourceExtension,
   sourceScope,
 } from '../../shared/source-scope.mjs';
+import { publicDonorAlias, PUBLIC_DONOR_LIMITS } from '../../shared/migration-public-github.mjs';
 
 export { sha256, sourceScope };
+
+async function readSource(provider, safe) {
+  const handle = await provider.fileHandle(safe);
+  const file = await handle.getFile();
+  if (Number(file.size) > MAX_SOURCE_BYTES) {
+    throw Object.assign(new Error(`Source exceeds the 8 MiB limit: ${safe}`), { code: 'SOURCE_TOO_LARGE' });
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (bytes.byteLength > MAX_SOURCE_BYTES) {
+    throw Object.assign(new Error(`Source exceeds the 8 MiB limit: ${safe}`), { code: 'SOURCE_TOO_LARGE' });
+  }
+  const result = {
+    alias: safe, bytes, text: new TextDecoder().decode(bytes), size: bytes.byteLength,
+    lastModified: file.lastModified, hash: await sha256(bytes),
+  };
+  result.version = result.hash;
+  result.workspaceHead = null;
+  provider.instrument({ operation: 'read', alias: safe, size: result.size, hash: result.hash });
+  return result;
+}
 
 async function permission(handle, request = false, mode = 'readwrite') {
   const options = { mode };
@@ -34,10 +55,11 @@ async function permission(handle, request = false, mode = 'readwrite') {
  * Old repositories need no current-workspace compatibility scan to be read.
  */
 export class BrowserReadOnlyDirectoryProvider {
-  constructor(handle) {
+  constructor(handle, { parameterJson = false } = {}) {
     if (!handle || handle.kind !== 'directory') throw new Error('Directory handle required.');
     this.root = handle;
     this.instrument = () => {};
+    this.parameterJson = parameterJson;
   }
 
   async permission(options = {}) {
@@ -49,6 +71,7 @@ export class BrowserReadOnlyDirectoryProvider {
   }
 
   safeAlias(alias) {
+    if (this.parameterJson) return publicDonorAlias(alias);
     const safe = normalizeAlias(alias);
     if (safe.split('/').slice(0, -1).some(isSkippedDirectory) ||
         safe.split('/').at(-1).startsWith('.') ||
@@ -65,10 +88,11 @@ export class BrowserReadOnlyDirectoryProvider {
       for await (const [name, handle] of directory.entries()) {
         if (handle.kind === 'directory') {
           if (!isSkippedDirectory(name)) await walk(handle, prefix ? `${prefix}/${name}` : name);
-        } else if (['.bicepparam', '.bicep'].includes(sourceExtension(name))) {
+        } else if (['.bicepparam', '.bicep', ...(this.parameterJson ? ['.json'] : [])].includes(sourceExtension(name))) {
           if (isEnvironmentFile(name) || name.startsWith('.')) continue;
           const alias = this.safeAlias(prefix ? `${prefix}/${name}` : name);
           files.push({ alias, kind: sourceExtension(name).slice(1) });
+          if (files.length > PUBLIC_DONOR_LIMITS.files) throw new Error('Source inventory exceeds its bounded file count.');
         }
       }
     };
@@ -87,7 +111,7 @@ export class BrowserReadOnlyDirectoryProvider {
   async read(alias) {
     await this.assertReadable();
     // Reuse byte limits/hashing, but resolve only through our read-only scope.
-    return BrowserDirectoryProvider.prototype.read.call(this, this.safeAlias(alias));
+    return readSource(this, this.safeAlias(alias));
   }
 }
 
@@ -263,28 +287,7 @@ export class BrowserDirectoryProvider {
   }
 
   async read(alias) {
-    const safe = normalizeAlias(alias);
-    const handle = await this.fileHandle(safe);
-    const file = await handle.getFile();
-    if (Number(file.size) > MAX_SOURCE_BYTES) {
-      throw Object.assign(new Error(`Source exceeds the 8 MiB limit: ${safe}`), { code: 'SOURCE_TOO_LARGE' });
-    }
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    if (bytes.byteLength > MAX_SOURCE_BYTES) {
-      throw Object.assign(new Error(`Source exceeds the 8 MiB limit: ${safe}`), { code: 'SOURCE_TOO_LARGE' });
-    }
-    const result = {
-      alias: safe,
-      bytes,
-      text: new TextDecoder().decode(bytes),
-      size: bytes.byteLength,
-      lastModified: file.lastModified,
-      hash: await sha256(bytes),
-    };
-    result.version = result.hash;
-    result.workspaceHead = null;
-    this.instrument({ operation: 'read', alias: safe, size: result.size, hash: result.hash });
-    return result;
+    return readSource(this, normalizeAlias(alias));
   }
 
   async write(alias, bytes, options = {}) {

@@ -282,6 +282,9 @@ export class GitHubApiClient {
         `${path}${separator}per_page=${perPage}&page=${page}`,
         options
       );
+      if (options.requireArray && !Array.isArray(data)) {
+        throw githubError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an invalid paginated list.');
+      }
       const batch = Array.isArray(data) ? data : [];
       items.push(...batch);
       if (items.length >= maxItems) {

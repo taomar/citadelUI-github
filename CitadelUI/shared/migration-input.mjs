@@ -18,6 +18,17 @@ export const MIGRATION_LIMITS = Object.freeze({
 });
 
 const MESSAGES = Object.freeze({
+  'snapshot-format': 'The prepared-source request is outside the bounded configuration snapshot contract.',
+  'snapshot-limit': 'Prepared-source storage is full or this source exceeds its bounds (8 sources, 256 MiB total; 256 files and 64 MiB per source). Delete an unused prepared source explicitly, or select a smaller configuration scope. No active source was evicted.',
+  'snapshot-empty': 'No usable parameter inputs were captured. Select supported configuration files or supply a literal .bicepparam or ARM parameters file.',
+  'snapshot-incomplete': 'Source preparation did not finish. This incomplete copy cannot be used. Prepare it again; the previous complete source is unchanged.',
+  'snapshot-corrupt': 'The prepared source is missing data or failed its integrity check. It cannot be used; explicitly refresh or choose another source. No original-source fallback was attempted.',
+  'snapshot-unavailable': 'The prepared source could not be accessed in this application. Sign in to the owner account and retry. Existing source selections and drafts are retained.',
+  'snapshot-identity': 'This local source was captured against a different target folder, or its target identity proof is unavailable in this browser. Reacquire the original source against this target to prove separation; no cached bytes were applied.',
+  'snapshot-immutable': 'A completed source is immutable. Use Refresh to prepare a new copy, or explicitly delete the retained source.',
+  'snapshot-credential': 'A selected file contains a recognizable access token or private key and cannot be retained as a migration source. Supply a separate configuration copy without that credential.',
+  'target-unavailable': 'The current target could not be revalidated. Reconnect the target and retry; the prepared old source and other target drafts are retained.',
+  'target-stale': 'The current target or template changed. Its saved choices are retained, but cannot authorize a write. Replan this target against its new bytes; the old source and other target drafts are unchanged.',
   format: 'This file is malformed or uses unsupported parameter syntax. Source contents were withheld.',
   envelope: 'Select a standard ARM deploymentParameters JSON file, not arbitrary JSON.',
   'json-duplicate': 'The JSON envelope has duplicate keys. Resolve them in a separate donor copy before importing.',
@@ -74,6 +85,18 @@ export class MigrationError extends Error {
 
 export function migrationMessage(error) {
   return error instanceof MigrationError ? error.message : MESSAGES.unavailable;
+}
+
+export function sameLiteralValue(left, right) {
+  if (Object.is(left, right)) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length &&
+      left.every((value, index) => sameLiteralValue(value, right[index]));
+  }
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length &&
+    keys.every((key) => Object.hasOwn(right, key) && sameLiteralValue(left[key], right[key]));
 }
 
 export function assertInputSize(text) {
@@ -481,4 +504,28 @@ export function readArmParameters(text) {
   });
   if (parameters.length > MIGRATION_LIMITS.parameters) throw new MigrationError('limit');
   return { using: null, parameters };
+}
+
+/** Automatic repository discovery returns metadata, never arbitrary JSON values. */
+export function inspectArmParameterJson(text) {
+  let root;
+  try { root = jsonTree(text); }
+  catch (error) {
+    if (!(error instanceof MigrationError)) throw error;
+    return { kind: 'invalid', code: error.code };
+  }
+  if (root.kind !== 'object') return { kind: 'unrelated' };
+  const keys = root.items.map((item) => item.key);
+  const parameterSchema = root.items.some((item) => item.key === '$schema' &&
+    typeof item.value.value === 'string' && /deploymentParameters\.json/i.test(item.value.value));
+  const envelopeShape = keys.includes('parameters') && keys.includes('contentVersion') &&
+    keys.every((key) => ['$schema', 'contentVersion', 'parameters'].includes(key));
+  if (!parameterSchema && !envelopeShape) return { kind: 'unrelated' };
+  try {
+    readArmParameters(text);
+    return { kind: 'parameters' };
+  } catch (error) {
+    if (!(error instanceof MigrationError)) throw error;
+    return { kind: 'invalid', code: error.code };
+  }
 }

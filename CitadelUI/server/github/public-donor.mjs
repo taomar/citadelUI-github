@@ -9,11 +9,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { GitHubApiClient } from './api.mjs';
 import {
   BLOB_MODE_FILE, BLOB_MODE_EXECUTABLE, filterSourceTree, MAX_TREE_ENTRIES,
-  validateCommitSha, validateRepositoryId,
+  listRepositoryBranches, validateCommitSha, validateRepositoryId,
 } from './repositories.mjs';
 import { readBlob } from './workspace.mjs';
 import { isSkippedDirectory, MAX_SOURCE_BYTES, sourceExtension } from '../../shared/source-scope.mjs';
-import { MigrationError, readArmParameters, safeLabel } from '../../shared/migration-input.mjs';
+import { inspectArmParameterJson, MigrationError, readArmParameters, safeLabel } from '../../shared/migration-input.mjs';
 import {
   PUBLIC_DONOR_LIMITS, publicDonorAlias, publicDonorFailure, publicDonorRef, publicRepositoryName,
 } from '../../shared/migration-public-github.mjs';
@@ -70,6 +70,9 @@ export class GitHubDonorReader {
         }
         return options.readOnlyRequest(path, { limit: request.limit });
       },
+      paginate(path, request) {
+        return GitHubApiClient.prototype.paginate.call(this, path, request);
+      },
     };
     this.now = options.now || Date.now;
     this.snapshots = new Map();
@@ -93,6 +96,13 @@ export class GitHubDonorReader {
       defaultBranch: data.default_branch ? publicDonorRef('branch', data.default_branch).name : null,
       archived: Boolean(data.archived),
     };
+  }
+
+  async branches(input, expectedId) {
+    const repository = await this.repository(input, expectedId);
+    const result = await listRepositoryBranches(this.client, undefined, repository);
+    for (const branch of result.branches) publicDonorRef('branch', branch.name);
+    return result;
   }
 
   async revision(repository, ref) {
@@ -168,7 +178,7 @@ export class GitHubDonorReader {
     return { repository, ref: snapshot.ref, ...revision, treeSha, selectionId: id };
   }
 
-  async blob(id, input) {
+  async selectedBlob(id, input) {
     const alias = publicDonorAlias(input);
     const snapshot = this.selected(id);
     const entry = snapshot.files.find((file) => file.alias === alias);
@@ -181,6 +191,20 @@ export class GitHubDonorReader {
     const gitHash = createHash(entry.sha.length === 40 ? 'sha1' : 'sha256')
       .update(`blob ${blob.bytes.length}\0`).update(blob.bytes).digest('hex');
     if (blob.size !== entry.size || gitHash !== entry.sha) throw publicError('public-read', 502);
+    return { alias, snapshot, entry, blob };
+  }
+
+  async jsonCandidate(id, input) {
+    const { alias, snapshot, entry, blob } = await this.selectedBlob(id, input);
+    if (entry.kind !== 'json') throw publicError('public-scope');
+    return {
+      alias, repositoryId: snapshot.repository.id, commit: snapshot.commit, treeSha: snapshot.treeSha,
+      sha: entry.sha, size: blob.size, ...inspectArmParameterJson(blob.text),
+    };
+  }
+
+  async blob(id, input) {
+    const { alias, snapshot, entry, blob } = await this.selectedBlob(id, input);
     if (entry.kind === 'json') {
       try { readArmParameters(blob.text); } catch { throw publicError('public-format', 422); }
     }
@@ -195,16 +219,20 @@ export class GitHubDonorReader {
       if (req.method !== 'GET') throw publicError('public-read-only', 405);
       const allowed = {
         repository: ['repository'],
+        branches: ['repository', 'repositoryId'],
         snapshot: ['repository', 'repositoryId', 'refType', 'ref'],
         verify: ['selectionId'],
         blob: ['selectionId', 'alias'],
+        'json-candidate': ['selectionId', 'alias'],
       }[operation];
       if (!allowed || [...url.searchParams.keys()].some((key) => !allowed.includes(key)) ||
           allowed.some((key) => url.searchParams.getAll(key).length > 1)) throw publicError('public-input');
       const input = Object.fromEntries(url.searchParams);
       if (operation === 'repository') return await this.repository(input.repository);
+      if (operation === 'branches') return await this.branches(input.repository, input.repositoryId ?? null);
       if (operation === 'snapshot') return await this.snapshot(input);
       if (operation === 'verify') return await this.verify(input.selectionId);
+      if (operation === 'json-candidate') return await this.jsonCandidate(input.selectionId, input.alias);
       return await this.blob(input.selectionId, input.alias);
     } catch (error) {
       const safe = publicDonorFailure(error);

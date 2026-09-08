@@ -175,12 +175,18 @@ export async function getRepository(client, token, repositoryId) {
 
 export async function listBranches(client, token, repositoryId) {
   const repository = await getRepository(client, token, repositoryId);
+  return listRepositoryBranches(client, token, repository);
+}
+
+export async function listRepositoryBranches(client, token, repository) {
   const { items, truncated } = await client.paginate(
     `/repos/${repository.fullName}/branches`,
-    { token, maxPages: 5, perPage: 100, maxItems: 500 }
+    { token, maxPages: 5, perPage: 100, maxItems: 500, requireArray: true }
   );
+  if (items.some((item) => !item || typeof item.name !== 'string')) {
+    throw githubError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an invalid branch list.');
+  }
   const branches = items
-    .filter((item) => item && typeof item.name === 'string')
     .map(describeBranch);
   branches.sort((left, right) => left.name.localeCompare(right.name));
   return { repository, branches, truncated };

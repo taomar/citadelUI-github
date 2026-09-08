@@ -217,20 +217,35 @@ Source sessions inherit the existing idle/absolute bounds. Disconnect, abandoned
 login attempts, and bounded attempt eviction erase their associated source
 credentials and snapshot caches; unconfirmed erasure is an explicit retry state.
 
-Source repository identity, explicit ref, pinned objects, access, and selected
-file/template fingerprints are revalidated at review and local transaction
-boundaries. Changed source credentials, files, schemas, or workspace identity
-invalidate the plan. There is no fallback to anonymous access or another account.
-Snapshots and decisions are bounded, short-lived state, not persisted donor data.
+Source identity/access and file/template fingerprints are checked during capture.
+The supported configuration corpus and referenced templates are then retained as
+sensitive application data in the protected runtime volume, not the image/repo.
+Private directories/files, bounded binary APIs, hash verification and atomic
+completion protect the copy; interrupted or corrupt copies fail explicitly.
+Connection tokens, headers, `.env`, arbitrary host paths and unrelated files are
+not capture inputs. Arbitrary configuration comments are not guaranteed secret-free.
+There is no new encryption layer; volume protection and owner access still matter.
 
-Only reviewed values for names in the current schema can be written. Dynamic
+Completed copies are owner-gated and independent of source PAT sessions, original
+folder access, or upstream ref changes. Only explicit refresh reacquires the
+source; it creates a new identity and failed acquisition retains existing drafts.
+Upstream revocation does not revoke previously downloaded data. The owner deletes
+copies explicitly; limits are 8 copies / 256 MiB total and 256 files / 64 MiB each.
+Current target freshness, identity, pending-editor and transaction checks remain
+independent and enforced. Local browser target-handle proofs preserve the
+acquisition separation check without retaining or reopening original handles.
+
+Only reviewed values for assignments already in the new target can be written. Dynamic
 expressions are never evaluated, secure/credential-shaped values are withheld,
 and old-only reports contain names and metadata rather than unused source values.
 Sanitized exports are not raw source dumps or deployment-ready files. Explicit
 local apply uses the normal destination backup/authorization/rollback path;
 source bytes are never backed up as destination data. GitHub destinations are
 preview/local-export-only. No migration step runs an upgrade/deployment script,
-copies policy XML, or widens the ordinary editor's write scope.
+copies policy XML, or widens the ordinary editor's write scope. The migration
+target form reuses presentation with read-only, screened projections: it has no
+ordinary editor save callbacks or subscription/environment bridge. Import/undo
+actions change migration decisions only, and highlights are not an apply receipt.
 
 See [the migration reference](README.md#migrate-citadel-configuration) for
 supported inputs, limits, and the boundaries of conservative secret screening.

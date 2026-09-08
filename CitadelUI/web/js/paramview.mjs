@@ -175,6 +175,7 @@ function conditionMatches(rule, ctx) {
 }
 
 export function parameterVisible(name, ctx) {
+  if (ctx.allParameters) return true;
   if (ctx.pendingFor(name)) return true;
   const rules = PARAMETER_VISIBILITY[name];
   return !rules || rules.every((rule) => conditionMatches(rule, ctx));
@@ -756,6 +757,16 @@ function paramRow(param, ctx) {
   if (param.subscription) return subscriptionRow(param, ctx);
   const schema = ctx.schemaFor(param.name);
   const pending = ctx.pendingFor(param.name);
+  if (ctx.readOnly && param.previewStatus && param.previewStatus !== 'literal') {
+    const reason = param.previewStatus === 'sensitive' ? 'Sensitive value retained; not displayed.'
+      : param.previewStatus === 'not-evaluated' ? 'Expression retained; not evaluated. No runtime value is available.'
+        : 'Target value retained; its type or value cannot be verified here.';
+    return h('div', { class: 'prow', id: `param-${param.name}`, dataset: { kind: 'raw' } },
+      h('div', { class: 'pcell pcell-gut' }),
+      h('div', { class: 'pcell pcell-ident' }, h('h3', { class: 'prow-name' }, param.name),
+        h('span', { class: 'ptype' }, schema?.type || param.kind)),
+      h('div', { class: 'pcell pcell-val' }, h('span', { class: 'hint' }, reason), ctx.migrationChoice?.([param.name])));
+  }
 
   // The LLM backend array has a dedicated editor; it needs the full row width.
   if (param.name === 'llmBackendConfig') {
@@ -769,6 +780,7 @@ function paramRow(param, ctx) {
         h('span', { class: 'ptype' }, (schema && schema.type) || param.kind),
         pending ? h('span', { class: 'chip chip-dirty' }, 'edited') : null
       ),
+      ctx.migrationChoice?.([param.name]),
       renderLlmBackends(param.value, ctx, ctx)
     );
   }
@@ -816,6 +828,7 @@ function paramRow(param, ctx) {
       { class: 'pcell pcell-val', dataset: valueCell },
       targetAction(param, ctx),
       renderValue(param.value, [param.name], ctx, schema, recordOptions(param.name, ctx)),
+      ctx.migrationChoice?.([param.name]),
       guidanceFor(param, ctx),
       findings.map((finding) =>
         h(

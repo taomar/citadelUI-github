@@ -6,10 +6,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GitHubApiClient } from '../server/github/api.mjs';
 import { createCitadelServer } from '../server/index.mjs';
-import { PublicGitHubMigrationDonor, inspectPublicDonorRepository } from '../web/js/migration-public-donor.mjs';
+import { PublicGitHubMigrationDonor, inspectPublicDonorRepository, listPublicDonorBranches } from '../web/js/migration-public-donor.mjs';
 import { MigrationSession } from '../web/js/migration-session.mjs';
 import { publicDonorAlias, publicDonorRef, publicRepositoryName, PUBLIC_DONOR_LIMITS } from '../shared/migration-public-github.mjs';
 import { MAX_SOURCE_BYTES } from '../shared/source-scope.mjs';
+import { primaryCapabilities } from '../shared/citadel-core.mjs';
 import { acceptCount, CURRENT, TARGET, deferred } from './_migration-fixture.mjs';
 import {
   armParameters, PUBLIC_FILE, PUBLIC_MAIN_SAMPLE, PUBLIC_REPO, PUBLIC_SCHEMA, PUBLIC_TEMPLATE, PUBLIC_TEXT, PublicGitHubMock, publicHarness,
@@ -55,6 +56,120 @@ test('migration public donor uses only anonymous GETs, bypasses old-source compa
   assert.equal(h.api.trace.length, 0, 'no transaction is prepared by discovery/preview');
 });
 
+test('migration public branches come from the repository API, including slash names, and empty means empty', async () => {
+  const h = publicHarness();
+  h.github.seed('release/older', { [PUBLIC_FILE]: PUBLIC_TEXT });
+  h.github.seed('not-a-branch', { [PUBLIC_FILE]: PUBLIC_TEXT }, { tag: true });
+  const repository = await inspectPublicDonorRepository(PUBLIC_REPO, h.request);
+  const result = await listPublicDonorBranches(repository, h.request);
+  assert.deepEqual(result.branches.map((branch) => branch.name), ['legacy-main', 'release/older']);
+  assert.equal(result.truncated, false);
+  assert(h.github.calls.some((call) => call.path.endsWith('/branches?per_page=100&page=1')));
+  assert(h.github.calls.every((call) => call.method === 'GET'));
+  h.github.refs.clear();
+  assert.deepEqual((await listPublicDonorBranches(repository, h.request)).branches, [],
+    'metadata.defaultBranch must not become a fabricated branch option');
+});
+
+test('migration branch pagination shares the existing five-page / 500-branch bound', async () => {
+  const h = publicHarness();
+  const commit = h.github.refs.get('heads/legacy-main').object.sha;
+  h.github.refs.clear();
+  for (let index = 0; index < 601; index += 1) {
+    const name = `feature/branch-${String(index).padStart(3, '0')}`;
+    h.github.refs.set(`heads/${name}`, { ref: `refs/heads/${name}`, object: { type: 'commit', sha: commit } });
+  }
+  const repository = await inspectPublicDonorRepository(PUBLIC_REPO, h.request);
+  const result = await listPublicDonorBranches(repository, h.request);
+  assert.equal(result.branches.length, 500);
+  assert.equal(result.truncated, true);
+  assert.equal(h.github.calls.filter((call) => call.path.includes('/branches?')).length, 5);
+  assert.equal(new Set(result.branches.map((branch) => branch.name)).size, 500);
+});
+
+test('migration branch read failures and malformed pages are not reported as empty successful lists', async () => {
+  for (const status of [200, 403, 500]) {
+    const h = publicHarness();
+    const repository = await inspectPublicDonorRepository(PUBLIC_REPO, h.request);
+    h.github.overrides.set(`/repos/${PUBLIC_REPO}/branches`, (github) =>
+      github.json(status, { message: 'SYNTHETIC_PRIVATE_MARKER' }));
+    await assert.rejects(listPublicDonorBranches(repository, h.request), (error) =>
+      error.code === 'public-read' && !error.message.includes('SYNTHETIC_PRIVATE_MARKER'));
+  }
+});
+
+test('automatic public discovery skips ordinary JSON, retains valid ARM inputs and reports invalid parameter envelopes', async () => {
+  const h = publicHarness();
+  const validJson = 'bicep/infra/main.json';
+  const duplicate = 'bicep/infra/duplicate-parameters.json';
+  h.github.seed('legacy-main', {
+    [PUBLIC_FILE]: PUBLIC_TEXT, [PUBLIC_TEMPLATE]: PUBLIC_SCHEMA,
+    [validJson]: armParameters({ Count: { value: 6 } }),
+    [duplicate]: armParameters({ Count: { value: 6 } }).replace('"parameters":', '"parameters":{},"parameters":'),
+    'bicep/infra/broken-parameters.json': '{"$schema":"deploymentParameters.json","parameters":',
+    'bicep/infra/abbreviations.json': '{"appService":"app","example":"SYNTHETIC_PRIVATE_MARKER"}',
+    'release.json': '{"version":"1.0","channel":"preview"}',
+    'package.json': '{}',
+    'logic/host.json': '{"version":"2.0"}',
+    'api/openapi.json': '{"openapi":"3.0.0","paths":{}}',
+  });
+  const inventory = await h.session.inventory(h.donor);
+  assert.deepEqual(inventory.items.map((item) => item.alias).sort(), [PUBLIC_FILE, validJson].sort());
+  assert.equal(inventory.ignored, 5);
+  assert.equal(inventory.issues.length, 2);
+  assert(inventory.issues.some((issue) => issue.file === duplicate && /duplicate keys/.test(issue.reason)));
+  assert.doesNotMatch(JSON.stringify(inventory), /SYNTHETIC_PRIVATE_MARKER/);
+  assert.equal((await h.donor.read(PUBLIC_FILE)).text, PUBLIC_TEXT, 'an unrelated JSON result must not poison the donor');
+  const snapshot = h.routes.publicDonor.snapshots.values().next().value;
+  const probe = await h.request(`/api/github/public-donor/json-candidate?${new URLSearchParams({
+    selectionId: snapshot.selectionId, alias: 'bicep/infra/abbreviations.json',
+  })}`);
+  assert.equal(probe.kind, 'unrelated');
+  for (const field of ['content', 'text', 'parameters', 'value']) assert.equal(Object.hasOwn(probe, field), false);
+  assert.equal(h.api.trace.length, 0);
+  await assert.rejects(h.donor.read('bicep/infra/abbreviations.json'), { code: 'public-format' },
+    'explicit blob reads retain the strict ARM boundary');
+});
+
+test('automatic public JSON inspection still propagates unreadable blobs and rejects writes or extra input', async () => {
+  const h = publicHarness();
+  h.github.seed('legacy-main', { [PUBLIC_FILE]: PUBLIC_TEXT, 'ordinary.json': '{}' });
+  await h.donor.entries();
+  const snapshot = h.routes.publicDonor.snapshots.values().next().value;
+  const entry = snapshot.files.find((file) => file.alias === 'ordinary.json');
+  h.github.overrides.set(`/repos/${PUBLIC_REPO}/git/blobs/${entry.sha}`, (github) =>
+    github.json(500, { message: 'SYNTHETIC_PRIVATE_MARKER' }));
+  await assert.rejects(h.session.inventory(h.donor), { code: 'public-read' });
+  const path = `/api/github/public-donor/json-candidate?${new URLSearchParams({ selectionId: snapshot.selectionId, alias: entry.alias })}`;
+  await assert.rejects(h.request(path, { method: 'POST' }), { code: 'public-read-only' });
+  await assert.rejects(h.request(`${path}&raw=true`), { code: 'public-input' });
+  assert.equal(h.api.trace.length, 0);
+});
+
+test('repository discovery excludes known usage tooling before reads but retains relocated ARM configuration', async () => {
+  const h = publicHarness();
+  const parameters = Object.fromEntries(primaryCapabilities.mainSignature.map((name) => [name, { value: 1 }]));
+  while (Object.keys(parameters).length < primaryCapabilities.mainMinimumParameters) {
+    parameters[`synthetic${Object.keys(parameters).length}`] = { value: 1 };
+  }
+  const tooling = [
+    'src/usage-ingestion-logicapp/example/workflow.json',
+    'older/src/usage-reports/model-pricing.json',
+  ];
+  h.github.seed('legacy-main', {
+    [PUBLIC_FILE]: PUBLIC_TEXT, [PUBLIC_TEMPLATE]: PUBLIC_SCHEMA,
+    'old-config/production.json': armParameters(parameters),
+    ...Object.fromEntries(tooling.map((alias) => [alias, '{}'])),
+  });
+  const inventory = await h.session.inventory(h.donor);
+  assert(inventory.items.some((item) => item.alias === 'old-config/production.json' && item.area === 'deployment'));
+  assert.equal(inventory.ignored, 2);
+  const snapshot = h.routes.publicDonor.snapshots.values().next().value;
+  for (const alias of tooling) {
+    const file = snapshot.files.find((entry) => entry.alias === alias);
+    assert(!h.github.calls.some((call) => call.path.endsWith(`/git/blobs/${file.sha}`)), alias);
+  }
+});
 test('migration public supplied-main evidence is replayed at the explicit commit, never the default branch', async () => {
   const github = new PublicGitHubMock();
   github.repository.full_name = PUBLIC_MAIN_SAMPLE.repository;

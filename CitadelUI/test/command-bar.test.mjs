@@ -22,12 +22,12 @@ assert.match(styles, /\.tb-brand-copy\s*\{[\s\S]*?display:\s*grid/);
 // takes the frame's raised surface rather than the paper brand wash.
 assert.match(styles, /\.tb-environment\s*\{[\s\S]*?background:\s*var\(--nav-active\)/);
 assert.match(styles, /\.tb-actions\s*\{[\s\S]*?border-left:\s*1px solid var\(--nav-rule\)/);
-assert.match(styles, /\.tb-pending\.has-errors\s*\{[\s\S]*?var\(--danger-wash\)/);
+assert.match(styles, /\.tb-pending\.has-errors\s*\{[\s\S]*?var\(--header-danger-wash\)/);
 assert.doesNotMatch(styles, /\.tb-local:hover,\s*\.environment-path:hover/);
 assert.match(styles, /@media \(max-width: 48rem\)[\s\S]*?\.tb-brand-copy\s*\{[\s\S]*?display:\s*none/);
 assert.match(
   styles,
-  /@media \(max-width: 48rem\)[\s\S]*?\.tb-command-set > \*\s*\{[\s\S]*?flex:\s*0 0 auto/
+  /@media \(max-width: 48rem\)[\s\S]*?\.tb-command-set > \*\s*\{[\s\S]*?flex:\s*0 1 auto/
 );
 
 console.log('Command bar hierarchy and responsive structure checks passed.');

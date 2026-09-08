@@ -67,6 +67,7 @@ function pullRequestUrl(environment) {
   return `https://github.com/${source.fullName}/compare/${compare}?expand=1`;
 }
 import { createEnvironmentOperation } from './settings-operation.mjs';
+import { createEnvironmentForm, createGitHubConnectionSummary, createWorkspaceSettingsView } from './workspace-settings-view.mjs';
 import { setRawPolicyDraft } from './policy-edit-state.mjs';
 import {
   captureContractEdits,
@@ -1804,7 +1805,7 @@ async function openWorkspaceSettingsContent() {
     )
   );
   const settingsNotice = h('p', {
-    class: 'hint',
+    class: 'operation-status',
     role: 'status',
     'aria-live': 'polite',
   });
@@ -2154,40 +2155,12 @@ async function openWorkspaceSettingsContent() {
   // GitHub source choice for an active workspace. Without this a local user can
   // never add a GitHub environment, and a GitHub user can never attach a second
   // repository, which is what makes GitHub-to-GitHub compare and copy reachable.
-  const githubPanelSlot = h('div', { class: 'setup-source-panel', hidden: true });
-  const localPanelSlot = h(
-    'div',
-    { class: 'setup-source-panel' },
-    h('label', { for: 'new-environment-label' }, 'Environment label', addLabel),
-    h(
-      'label',
-      { for: 'new-environment-path' },
-      'Local path',
-      addLocalPath,
-      h('small', { class: 'hint' }, 'Display only; the selected folder handle remains authoritative.')
-    ),
-    add
-  );
-  let githubPanel = null;
-  const localChoice = h(
-    'button',
-    { class: 'btn btn-sm btn-primary', type: 'button', 'aria-pressed': 'true' },
-    'Local folder'
-  );
-  const githubChoice = h(
-    'button',
-    { class: 'btn btn-sm', type: 'button', 'aria-pressed': 'false' },
-    'GitHub repository'
-  );
-  const chooseSource = (kind) => {
-    localPanelSlot.hidden = kind !== 'local';
-    githubPanelSlot.hidden = kind !== 'github';
-    localChoice.classList.toggle('btn-primary', kind === 'local');
-    githubChoice.classList.toggle('btn-primary', kind === 'github');
-    localChoice.setAttribute('aria-pressed', String(kind === 'local'));
-    githubChoice.setAttribute('aria-pressed', String(kind === 'github'));
-    if (kind === 'github' && !githubPanel) {
-      githubPanel = createGitHubPanel({
+  const { root: addForm, chooseSource } = createEnvironmentForm({
+    labelInput: addLabel,
+    pathInput: addLocalPath,
+    addButton: add,
+    createGitHubPanel: () => {
+      const githubPanel = createGitHubPanel({
         onMessage: (text) => {
           settingsNotice.className = 'operation-status';
           settingsNotice.textContent = text;
@@ -2206,17 +2179,12 @@ async function openWorkspaceSettingsContent() {
           await refresh();
         }),
       });
-      githubPanelSlot.append(
-        h('label', { for: 'new-environment-label' }, 'Environment label', addLabel),
-        githubPanel.root
-      );
       // Delegated to the shared manager, so a session another panel already
       // restored is adopted here rather than fetched again.
       githubPanel.restore().catch(() => {});
-    }
-  };
-  localChoice.addEventListener('click', () => chooseSource('local'));
-  githubChoice.addEventListener('click', () => chooseSource('github'));
+      return githubPanel.root;
+    },
+  });
 
   /**
    * GitHub connection state, reachable while a workspace is active.
@@ -2225,33 +2193,15 @@ async function openWorkspaceSettingsContent() {
    * attached environment still needs to end the credential session, and a
    * failed disconnect must be visible rather than silently assumed.
    */
-  const githubConnection = h('div', { class: 'environment-actions' });
+  const githubConnection = h('div');
   const renderGitHubConnection = async () => {
-    let status = { connected: false };
-    try {
-      // Through the manager, so a server session that has gone away also clears
-      // the manager's cached account. Calling `githubStatus()` directly here
-      // forgot the durable session id while leaving the manager still handing
-      // that account to every panel, which rendered a connected panel whose
-      // Connect button was disabled and could never recover.
-      const restored = await githubSessions.restore().catch(() => null);
-      status = restored || { connected: false };
-    } catch {
-      // Treated as disconnected for display; the controls below still work.
-    }
+    // Profile-backed accounts do not carry the legacy status route's
+    // `connected` flag. A restored account is the manager's connection contract.
+    const account = await githubSessions.restore();
     githubConnection.replaceChildren(
-      h(
-        'span',
-        { class: `chip chip-${status.connected ? 'success' : 'warning'}` },
-        status.connected ? `GitHub connected as ${status.login}` : 'GitHub not connected'
-      ),
-      status.connected
-        ? h('small', { class: 'hint' }, `Session ends ${status.idleExpiresAt || 'on restart'}.`)
-        : h('small', { class: 'hint' }, 'Tokens are memory-only and never stored, so a container restart requires reconnecting.'),
-      status.connected
-        ? h('button', {
-            class: 'btn btn-sm',
-            onclick: environmentOperation('Disconnecting GitHub\u2026', async () => {
+      createGitHubConnectionSummary(account, {
+        connect: () => chooseSource('github'),
+        disconnect: environmentOperation('Disconnecting GitHub\u2026', async () => {
               // Through the shared manager, so a connect still in flight is
               // superseded and revokes itself rather than quietly becoming the
               // active credential after the user signed out.
@@ -2262,23 +2212,13 @@ async function openWorkspaceSettingsContent() {
                 : 'Disconnected from GitHub. The token was erased from server memory.';
               await renderGitHubConnection();
             }),
-          }, 'Disconnect GitHub')
-        : h('button', {
-            class: 'btn btn-sm',
-            onclick: () => chooseSource('github'),
-          }, 'Connect GitHub')
+      })
     );
   };
   await renderGitHubConnection();
-  showModal(
-    'Projects and environments',
-    h(
-      'div',
-      {},
-      h(
+  const projectActions = h(
         'div',
         { class: 'project-actions' },
-        h('strong', {}, project?.label || 'Project'),
         h('button', {
           class: 'btn btn-sm',
           onclick: environmentOperation('Renaming project\u2026', async () => {
@@ -2430,26 +2370,22 @@ async function openWorkspaceSettingsContent() {
             location.reload();
           }),
         }, 'Remove project')
-      ),
-      settingsNotice,
-      h('p', { class: 'hint' }, 'Labels and Local path are durable display metadata. A local folder grants file access only through the selected browser handle; a GitHub repository is reached with a memory-only token that must be reconnected after a restart.'),
-      githubConnection,
-      list,
-      h(
-        'div',
-        { class: 'environment-actions' },
-        h(
-          'div',
-          { class: 'setup-source-choice', role: 'group', 'aria-label': 'New environment source' },
-          localChoice,
-          githubChoice
-        ),
-        localPanelSlot,
-        githubPanelSlot,
+  );
+  showModal(
+    'Projects and environments',
+    createWorkspaceSettingsView({
+      projectLabel: project?.label || 'Project',
+      projectActions,
+      notice: settingsNotice,
+      connection: githubConnection,
+      environments: list,
+      environmentCount: environments.length,
+      addForm,
+      tools: [
         h('button', { class: 'btn', onclick: () => openEnvironmentCompare(environments) }, 'Compare & copy'),
-        h('button', { class: 'btn', onclick: openHistory }, 'History')
-      )
-    ),
+        h('button', { class: 'btn', onclick: openHistory }, 'History'),
+      ],
+    }),
     [h('button', { class: 'btn', onclick: closeModal }, 'Close')]
   );
 }
@@ -2467,6 +2403,11 @@ async function openParameterMigration() {
   }
   const context = activeWorkspace();
   await openMigrationWizard({
+    surface: {
+      shell: els.shell, workspace: els.workspace, areas: els.sidebar, actions: els.tbActions,
+      rail: els.contextRail, breadcrumb: els.repoPath,
+    },
+    onExit: () => render(),
     session: api.createMigrationSession({
       projectLabel: state.projectLabel,
       pendingEdits: () => pendingCount() > 0,
@@ -3236,6 +3177,7 @@ function renderContractsArea(area) {
  * remains correct.
  */
 function render() {
+  if (els.shell.dataset.workspace === 'migration') return;
   if (els.shell.dataset.workspace !== 'active') {
     updateHeaderContext();
     return;

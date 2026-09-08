@@ -6,13 +6,14 @@
  * Raw destination bytes remain private to the short-lived session for surgical
  * editing. Public views are projections; donor raw text is never part of them.
  */
-import { previewDocumentText } from './citadel-core.mjs';
+import { previewDocumentText, documentFromText } from './citadel-core.mjs';
 import { quote, serializeValue } from './bicepparam/serialize.mjs';
 import {
   MigrationError, migrationParameterKey, readArmParameters, readBicepParameters, safeLabel,
-  sensitiveName, sensitiveValue,
+  sensitiveName, sensitiveValue, sameLiteralValue,
 } from './migration-input.mjs';
 import { checkMigrationValue, placeholderValue, readMigrationSchema, schemaGuidance, typeMatches } from './migration-schema.mjs';
+import { buildLlmValueReview, decideLlmValue, evaluateLlmValues, keepLlmValues, llmValueReviewView } from './llm-value-migration.mjs';
 
 export const MIGRATION_CATEGORIES = Object.freeze({
   'exact-match': 'Compatible exact-name proposal',
@@ -67,7 +68,15 @@ function display(candidate, definition, name) {
   return value.length > 1600 ? `${value.slice(0, 1600)}… [display truncated; review the selected source locally]` : value;
 }
 
-export function buildMigrationPlan({ target, donors, validateCandidate = () => [] }) {
+function valueStatus(candidate, definition, name) {
+  if (!candidate || candidate.status === 'absent') return 'missing';
+  if ((definition && !definition.known) || (candidate.origin && !definition?.known)) return 'unknown-schema';
+  if (withheld(candidate, definition, name)) return 'sensitive';
+  return candidate.status === 'literal' ? 'readable'
+    : candidate.status === 'dynamic' ? 'not-evaluated' : 'unresolved';
+}
+
+export function buildMigrationPlan({ target, donors, validateCandidate = () => [], llmPolicy = null }) {
   const current = readBicepParameters(target.text, { target: true });
   const schema = readMigrationSchema(target.schemaText);
   const definitions = group(schema.definitions);
@@ -107,7 +116,7 @@ export function buildMigrationPlan({ target, donors, validateCandidate = () => [
     });
   }
   const sources = group(candidates);
-  const names = new Set([...assignments.keys(), ...definitions.keys()]);
+  const names = new Set(assignments.keys());
   const rows = [];
   for (const key of names) {
     const declared = assignments.get(key) || [];
@@ -143,10 +152,14 @@ export function buildMigrationPlan({ target, donors, validateCandidate = () => [
     if (duplicate || choices.length > 1) categories.add('ambiguous');
     if (!definition?.known) categories.add('unknown-schema');
     if (choices.length) categories.add('semantic-review');
-    rows.push({
+    const row = {
       id: `target-${rows.length + 1}`, name, current: declared, definition, duplicate,
       candidates: choices, categories: [...categories], removed: false,
-    });
+    };
+    if (key === 'llmbackendconfig') {
+      row.llm = buildLlmValueReview({ current: currentFor(row), candidates: choices, definition, policy: llmPolicy });
+    }
+    rows.push(row);
   }
   for (const candidate of candidates.filter((entry) => !names.has(migrationParameterKey(entry.name)))) {
     rows.push({
@@ -192,29 +205,52 @@ export function decideMigration(plan, rowId, decision) {
   if (!row || row.removed) throw new MigrationError('decision');
   if (!decision || decision.kind === 'pending') {
     plan.decisions.delete(rowId);
+    if (row.llm) { keepLlmValues(row.llm, true); row.llm.keepRest = false; }
     return;
   }
   if (decision.kind === 'keep') {
     plan.decisions.set(rowId, { kind: 'keep' });
+    if (row.llm) keepLlmValues(row.llm, true);
     return;
   }
   const candidate = row.candidates.find((entry) => entry.id === decision.candidateId);
-  if (decision.kind !== 'accept' || !candidate?.eligible || decision.semanticReviewed !== true) {
+  if (migrationParameterKey(row.name) === 'llmbackendconfig' || row.current.length !== 1 ||
+      decision.kind !== 'accept' || !candidate?.eligible || decision.semanticReviewed !== true) {
     throw new MigrationError('decision');
   }
   plan.decisions.set(rowId, { kind: 'accept', candidateId: candidate.id, semanticReviewed: true });
 }
 
+export function decideMigrationModel(plan, rowId, decision) {
+  const row = plan.rows.find((entry) => entry.id === rowId);
+  if (!row?.llm || row.current.length !== 1 || row.duplicate) throw new MigrationError('decision');
+  decideLlmValue(row.llm, decision);
+  plan.decisions.set(rowId, { kind: 'models' });
+}
+
+export function keepMigrationRemaining(plan) {
+  for (const row of plan.rows) {
+    if (row.removed) continue;
+    if (row.llm && plan.decisions.get(row.id)?.kind === 'models') keepLlmValues(row.llm);
+    else if (!plan.decisions.has(row.id)) decideMigration(plan, row.id, { kind: 'keep' });
+  }
+}
+
 function effective(row, decision) {
+  if (decision?.kind === 'models') {
+    if (!row.llm?.available) throw new MigrationError('decision');
+    return { status: 'literal', value: evaluateLlmValues(row.llm, row.name).value, origin: 'reviewed-models' };
+  }
   if (decision?.kind === 'accept') return { ...row.candidates.find((entry) => entry.id === decision.candidateId), origin: 'donor' };
   return currentFor(row);
 }
 
 function replacementNeeded(row, decision) {
+  if (decision?.kind === 'models') return evaluateLlmValues(row.llm, row.name).operations.length > 0;
   if (decision?.kind !== 'accept') return false;
   const candidate = row.candidates.find((entry) => entry.id === decision.candidateId);
   return !row.current.length || row.current[0].status !== 'literal' ||
-    JSON.stringify(row.current[0].value) !== JSON.stringify(candidate.value);
+    !sameLiteralValue(row.current[0].value, candidate.value);
 }
 
 /** Value-free, overlapping category counts for reports and sample evidence. */
@@ -246,28 +282,105 @@ export function migrationRows(plan) {
     const decision = plan.decisions.get(row.id);
     const current = currentFor(row);
     const final = effective(row, decision);
+    const structured = row.llm ? llmValueReviewView(row.llm) : null;
+    const modelSelection = decision?.kind === 'models' && structured?.summary?.selectedFields > 0;
     const status = row.removed ? 'not-copied'
+      : modelSelection ? replacementNeeded(row, decision) ? 'copy' : 'accepted-unchanged'
+        : decision?.kind === 'models' && row.llm.keepRest ? 'keep'
       : decision?.kind === 'accept' ? replacementNeeded(row, decision) ? 'copy' : 'accepted-unchanged'
         : decision?.kind === 'keep' ? 'keep'
           : row.candidates.length ? 'unreviewed-retain' : 'retain-current';
     return {
       id: row.id, name: row.name, removed: row.removed,
       categories: [...row.categories],
-      current: display(current, row.definition, row.name),
+      current: structured?.available ? `${structured.summary.backends} new backends, ${structured.summary.models} models` : display(current, row.definition, row.name),
+      currentFull: fullDisplay(current, row.definition, row.name),
       currentOrigin: current.origin,
-      final: display(final, row.definition, row.name),
+      currentValueStatus: valueStatus(current, row.definition, row.name),
+      final: structured?.available ? `${structured.summary.changedFields} model fields selected to change` : display(final, row.definition, row.name),
       status, decision: decision ? { ...decision } : { kind: 'pending' },
+      structured,
       guidance: schemaGuidance(row.definition),
+      comparison: row.removed ? 'source-only' : !row.candidates.length ? 'target-only' : 'matched',
       candidates: row.candidates.map((candidate) => ({
         id: candidate.id, name: candidate.name, source: { ...candidate.source },
-        category: candidate.category, eligible: candidate.eligible,
+        category: candidate.category, eligible: !row.llm && candidate.eligible,
         type: candidate.type,
         value: row.removed ? '[withheld: old-only field; name reported only]' : display(candidate, row.definition, row.name),
+        fullValue: row.removed ? '[withheld: old-only field; name reported only]' : fullDisplay(candidate, row.definition, row.name),
+        valueStatus: row.removed ? 'unresolved' : valueStatus(candidate, row.definition, row.name),
+        matchesCurrent: !row.removed && candidate.eligible && current.status === 'literal' &&
+          !withheld(current, row.definition, row.name) &&
+          !withheld(candidate, row.definition, row.name) && sameLiteralValue(current.value, candidate.value),
+        comparison: row.removed ? 'source-only'
+          : valueStatus(candidate, row.definition, row.name) !== 'readable' || valueStatus(current, row.definition, row.name) !== 'readable' ? 'unresolved'
+            : !candidate.eligible ? 'incompatible'
+              : sameLiteralValue(current.value, candidate.value) ? 'same' : 'different',
         donorSchema: candidate.donorSchema,
         problems: candidate.problems || [],
       })),
     };
   });
+}
+
+function fullDisplay(value, definition, name) {
+  return value?.status === 'literal' && definition?.known && !withheld(value, definition, name)
+    ? JSON.stringify(value.value, null, 2) : display(value, definition, name);
+}
+
+/** A bounded presentation projection, not a source document or editor draft. */
+export function migrationTargetProjection(plan) {
+  const outline = documentFromText(plan.target.alias, plan.target.text).outline;
+  const params = [];
+  const changes = [];
+  const schemas = {};
+  for (const row of plan.rows.filter((row) => !row.removed)) {
+    const decision = plan.decisions.get(row.id);
+    const current = currentFor(row);
+    const value = effective(row, decision);
+    const readable = value.status === 'literal' && row.definition?.known &&
+      !checkMigrationValue(value.value, row.definition).length && !withheld(value, row.definition, row.name);
+    params.push({
+      name: row.name, kind: row.definition?.type || 'unknown',
+      value: readable ? structuredClone(value.value) : undefined,
+      previewStatus: readable ? 'literal' : valueStatus(value, row.definition, row.name) === 'readable'
+        ? 'unresolved' : valueStatus(value, row.definition, row.name),
+    });
+    schemas[row.name] = {
+      name: row.name, type: row.definition?.type || 'unknown', secure: Boolean(row.definition?.secure),
+      ...(row.definition?.allowedValues && !sensitiveValue(row.definition.allowedValues)
+        ? { allowedValues: structuredClone(row.definition.allowedValues) } : {}),
+    };
+    if (!replacementNeeded(row, decision)) continue;
+    if (decision?.kind === 'models') {
+      changes.push(...evaluateLlmValues(row.llm, row.name).changes.map((change) => ({ ...change, rowId: row.id, kind: 'model' })));
+    } else {
+      const candidate = row.candidates.find((candidate) => candidate.id === decision.candidateId);
+      changes.push({
+        rowId: row.id, kind: 'parameter', path: [row.name], label: row.name,
+        before: fullDisplay(current, row.definition, row.name), after: fullDisplay(value, row.definition, row.name),
+        source: { file: candidate.source.file, parameter: candidate.name },
+      });
+    }
+  }
+  return {
+    document: {
+      path: plan.target.alias, params, schema: { available: plan.schema.complete, parameters: schemas },
+      // Raw comments, descriptions and expression/default arguments do not
+      // cross into the normal editor renderer. Keep only its section layout.
+      outline: { intro: null, sections: (outline?.sections || []).map((section) => ({
+        id: section.id,
+        // This exact editor heading is not an HTTP Basic credential.
+        title: /^basic parameters$/i.test(section.title.trim()) ? 'Basic Parameters' : safeLabel(section.title),
+        blocks: [], params: [...section.params],
+        groups: (section.groups || []).map((group) => ({
+          label: group.label ? safeLabel(group.label) : null, blocks: [], params: [...group.params],
+        })),
+      })) },
+    },
+    changes,
+    draft: projectedDraft(plan, true),
+  };
 }
 
 /**
@@ -303,10 +416,17 @@ function projectedDraft(plan, after) {
 }
 
 function diffProjection(plan, after) {
-  return plan.rows.filter((row) => !row.removed).map((row) => {
+  return plan.rows.filter((row) => !row.removed).flatMap((row) => {
     const decision = after ? plan.decisions.get(row.id) : null;
+    if (row.llm) {
+      const chosen = plan.decisions.get(row.id);
+      const result = chosen?.kind === 'models' ? evaluateLlmValues(row.llm, row.name) : null;
+      return result?.changes.length
+        ? result.changes.map((change) => `${row.name} / ${change.backendId} / ${change.model} / ${change.field} = ${after ? change.after : change.before}`)
+        : [`${row.name}: new backend/model values retained`];
+    }
     const candidate = effective(row, replacementNeeded(row, decision) ? decision : null);
-    return `${row.name} = ${display(candidate, row.definition, row.name).replaceAll('\n', ' ').slice(0, 1600)} (${candidate.origin})`;
+    return `${row.name} = ${fullDisplay(candidate, row.definition, row.name).replaceAll('\n', ' ')} (${candidate.origin})`;
   }).join('\n');
 }
 
@@ -315,23 +435,54 @@ export function evaluateMigration(plan, validateFeatures = () => []) {
   const blockers = [];
   const unresolved = [];
   const literals = [];
-  if (!plan.schema.complete) blockers.push({ name: null, code: 'unknown-schema', message: 'The current Bicep template is missing or could not be understood.' });
+  const baselineLiterals = [];
+  const unverified = [];
+  const retainFinding = (finding) => {
+    const retained = { ...finding, scope: 'retained-destination', severity: 'warning', readiness: 'unverified' };
+    unverified.push(retained);
+    unresolved.push(retained);
+  };
+  if (!plan.schema.complete) retainFinding({ name: null, code: 'unknown-schema', message: 'The current Bicep template is missing or could not be understood. Unknown selected values cannot be applied.' });
+  const assigned = new Set(plan.rows.filter((row) => !row.removed).map((row) => migrationParameterKey(row.name)));
+  for (const definition of plan.schema.definitions) {
+    if (definition.required && !assigned.has(migrationParameterKey(definition.name))) {
+      retainFinding({
+        name: definition.name, rowId: null, code: 'required', scope: 'retained-destination',
+        message: 'The new file omits a required current-template parameter. Configure it outside value import; migration will not add it.',
+      });
+    }
+  }
   for (const row of plan.rows.filter((entry) => !entry.removed)) {
     const decision = plan.decisions.get(row.id);
     const value = effective(row, decision);
-    const add = (code, message) => blockers.push({ name: row.name, code, message });
-    if (row.duplicate) add('ambiguous', 'Duplicate destination/schema declarations must be resolved outside migration.');
+    const changed = replacementNeeded(row, decision);
+    const current = currentFor(row);
+    if (current.status === 'literal' && row.definition?.known && !withheld(current, row.definition, row.name) &&
+        !checkMigrationValue(current.value, row.definition).length) baselineLiterals.push({ name: row.name, value: current.value });
+    const add = (code, message, hard = changed || decision?.kind === 'accept') => {
+      const finding = { name: row.name, rowId: row.id, code, message, scope: hard ? 'selected-value' : 'retained-destination' };
+      if (hard) blockers.push(finding);
+      else retainFinding(finding);
+    };
+    if (row.duplicate) add('ambiguous', 'Duplicate destination/schema declarations must be resolved outside migration.', true);
+    if (row.llm?.targets.some((backend) => /Duplicate/.test(backend.issue || '') ||
+        backend.models.some((model) => /Duplicate/.test(model.issue || '')))) {
+      add('ambiguous', 'Duplicate target backend/model identities must be resolved in the current editor before a patch can be authorized.', true);
+    }
     if (row.candidates.length && !decision) {
-      add('decision', 'Choose a donor replacement or deliberately keep the destination.');
+      add('decision', 'Choose a donor replacement or deliberately keep the destination.', true);
     }
     if (decision?.kind === 'accept') {
       const candidate = row.candidates.find((entry) => entry.id === decision.candidateId);
-      if (!candidate?.eligible || !decision.semanticReviewed) throw new MigrationError('decision');
+      if (migrationParameterKey(row.name) === 'llmbackendconfig' || row.current.length !== 1 || !candidate?.eligible || !decision.semanticReviewed) throw new MigrationError('decision');
       if (replacementNeeded(row, decision)) {
-        operations.push(row.current.length
-          ? { op: 'set', path: [row.name], value: candidate.value, preserveComments: true }
-          : { op: 'addParam', name: row.name, value: candidate.value });
+        operations.push({ op: 'set', path: [row.name], value: candidate.value, preserveComments: true });
       }
+    }
+    if (decision?.kind === 'models') {
+      if (!row.llm?.available) throw new MigrationError('decision');
+      operations.push(...evaluateLlmValues(row.llm, row.name).operations);
+      if (!row.llm.keepRest) add('decision', 'Preview selected values to confirm that all remaining new model values are kept.', true);
     }
     if (value.status === 'literal' && row.definition?.known) {
       const problems = checkMigrationValue(value.value, row.definition);
@@ -345,7 +496,7 @@ export function evaluateMigration(plan, validateFeatures = () => []) {
         literals.push({ name: row.name, value: value.value });
       }
     } else {
-      if (row.definition?.required) add('required', 'A required field has no verifiably valid literal/current/default value. Configure it outside migration or accept a valid literal.');
+      if (row.definition?.required) add('required', 'This retained required field is not a verified literal. Its expression is preserved, not evaluated or certified for deployment.');
       unresolved.push({ name: row.name, code: value.status === 'dynamic' ? 'dynamic' : 'unknown-schema' });
     }
     if (withheld(value, row.definition, row.name) && row.definition?.known) {
@@ -359,10 +510,27 @@ export function evaluateMigration(plan, validateFeatures = () => []) {
       if (issues.length) unresolved.push({ name: row.name, code: issues.join(', ') });
     }
   }
+  for (const definition of plan.schema.definitions) {
+    if (!assigned.has(migrationParameterKey(definition.name)) && definition.known &&
+        definition.default?.status === 'literal' && !withheld(definition.default, definition, definition.name) &&
+        !checkMigrationValue(definition.default.value, definition).length) {
+      const inherited = { name: definition.name, value: definition.default.value };
+      literals.push(inherited);
+      baselineLiterals.push(inherited);
+    }
+  }
+  const selectedNames = new Set(operations.map((operation) => migrationParameterKey(operation.path[0])));
+  const findingKey = (finding) => JSON.stringify([finding.name, finding.code, finding.rule || null, finding.message]);
+  const baselineFindings = new Set(validateFeatures(baselineLiterals, plan).map(findingKey));
   const featureFindings = validateFeatures(literals, plan);
   for (const finding of featureFindings) {
-    if (finding.severity === 'error') blockers.push(finding);
-    else unresolved.push(finding);
+    const affected = (finding.dependencies || [finding.name]).filter(Boolean)
+      .find((name) => selectedNames.has(migrationParameterKey(name)));
+    if (finding.severity === 'error' && (affected || operations.length &&
+        (!finding.name || !baselineFindings.has(findingKey(finding))))) {
+      const row = plan.rows.find((row) => migrationParameterKey(row.name) === migrationParameterKey(affected || finding.name || ''));
+      blockers.push({ ...finding, rowId: row?.id || null, scope: affected ? 'selected-dependency' : 'configuration' });
+    } else retainFinding(finding);
   }
   unresolved.push(...blockers.map(({ name, code }) => ({ name, code })));
   let after;
@@ -370,17 +538,23 @@ export function evaluateMigration(plan, validateFeatures = () => []) {
   catch { throw new MigrationError('format'); }
   const rows = migrationRows(plan);
   const summary = {
-    accepted: rows.filter((row) => row.decision.kind === 'accept').length,
+    accepted: rows.filter((row) => row.decision.kind === 'accept' ||
+      row.decision.kind === 'models' && row.structured?.summary?.selectedFields > 0).length,
     unchanged: rows.filter((row) => row.status === 'accepted-unchanged').length,
     copied: rows.filter((row) => row.status === 'copy').length,
     retained: rows.filter((row) => !row.removed && row.status !== 'copy').length,
     removed: rows.filter((row) => row.removed).length,
     unresolved: new Set(unresolved.map((entry) => entry.name)).size,
-    unreviewed: rows.filter((row) => row.status === 'unreviewed-retain').length,
+    unreviewed: rows.filter((row) => row.status === 'unreviewed-retain' ||
+      row.decision.kind === 'models' && !row.structured?.keepRest).length,
     blockers: blockers.length,
+    changeCount: operations.length,
+    modelFieldChanges: rows.reduce((sum, row) => sum + (row.structured?.summary?.changedFields || 0), 0),
+    alreadyCurrentValues: rows.reduce((sum, row) => sum + (row.structured
+      ? row.structured.summary?.alreadyCurrent || 0 : Number(row.status === 'accepted-unchanged')), 0),
   };
   return {
-    operations, after, rows, blockers, unresolved, summary, classification: migrationClassification(plan),
+    operations, after, rows, blockers, unresolved, unverified, summary, classification: migrationClassification(plan),
     changed: after !== plan.target.text,
     canApply: !blockers.length && after !== plan.target.text,
     beforeProjection: diffProjection(plan, false),

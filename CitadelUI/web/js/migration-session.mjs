@@ -1,34 +1,104 @@
 import { environmentSourceOf } from './registry.mjs';
 import { migrationTargetAlias, migrationTemplateAlias } from './migration-donor.mjs';
-import { validateMigrationCandidate, validateMigrationFeatures } from './migration-validation.mjs';
-import { buildMigrationPlan, decideMigration, evaluateMigration, migrationNameReports, migrationRows } from '../../shared/parameter-migration.mjs';
-import { MigrationError, MIGRATION_LIMITS, readArmParameters, readBicepParameters, safeLabel } from '../../shared/migration-input.mjs';
+import { llmMigrationPolicy, validateMigrationCandidate, validateMigrationFeatures } from './migration-validation.mjs';
+import { buildMigrationPlan, decideMigration, decideMigrationModel, evaluateMigration, keepMigrationRemaining, migrationNameReports, migrationRows, migrationTargetProjection } from '../../shared/parameter-migration.mjs';
+import { MigrationError, MIGRATION_LIMITS, migrationMessage, readArmParameters, readBicepParameters, safeLabel } from '../../shared/migration-input.mjs';
 import { sha256, sourceExtension } from '../../shared/source-scope.mjs';
 import { MAIN_PATH, LLM_PATH, contractRootOf, isContractAlias } from '../../shared/source-plan.mjs';
+import { excludedMigrationSource as excludedSource } from '../../shared/migration-source-scope.mjs';
+import { documentFromText, primaryCapabilities } from '../../shared/citadel-core.mjs';
+import { deploymentPresentation, sectionNavTitle } from './paramview.mjs';
+import { MigrationSnapshots } from './migration-snapshot.mjs';
+import { SNAPSHOT_LIMITS } from '../../shared/migration-snapshot.mjs';
 
 export const MIGRATION_AREAS = Object.freeze([
-  { id: 'deployment', label: 'Deployment' },
-  { id: 'apim-upgrade', label: 'APIM Upgrade' },
-  { id: 'supporting-services', label: 'Supporting Services Upgrade' },
+  { id: 'deployment', label: 'Deployments' },
   { id: 'llm-onboarding', label: 'LLM Onboarding' },
   { id: 'access-contracts', label: 'Access Contracts' },
-  { id: 'other', label: 'Other parameter files' },
 ]);
 
 function targetArea(alias) {
   if (alias === MAIN_PATH) return { area: 'deployment', kind: 'Deployment' };
-  if (alias === 'bicep/infra/apim-gateway-upgrade/main.bicepparam') return { area: 'apim-upgrade', kind: 'APIM Upgrade' };
-  if (alias === 'bicep/infra/apim-gateway-upgrade/supporting-services.bicepparam') return { area: 'supporting-services', kind: 'Supporting Services Upgrade' };
   if (alias === LLM_PATH) return { area: 'llm-onboarding', kind: 'LLM Onboarding' };
   const root = contractRootOf(alias);
   if (root) {
-    if (!isContractAlias(alias)) return null;
+    if (!isContractAlias(alias) || alias.slice(0, alias.lastIndexOf('/')) === root) return null;
     return {
       area: 'access-contracts',
-      kind: alias === `${root}/main.bicepparam` ? 'Access Contracts - root template' : 'Access Contracts - existing instance',
+      kind: 'Access Contracts - existing instance',
     };
   }
-  return { area: 'other', kind: 'Other parameter file' };
+  return null;
+}
+
+const SOURCE_SIGNATURES = [
+  { area: 'deployment', names: primaryCapabilities.mainSignature, minimum: primaryCapabilities.mainMinimumParameters },
+  { area: 'llm-onboarding', names: primaryCapabilities.llmSignature, minimum: primaryCapabilities.llmSignature.length },
+  { area: 'access-contracts', names: primaryCapabilities.accessSignature, minimum: primaryCapabilities.accessMinimumParameters },
+];
+const LEGACY_DEPLOYMENT_PATH = 'bicep/infra/resources.bicepparam';
+
+function sourcePathArea(alias, using) {
+  const path = alias.toLowerCase().replace(/\.json$/, '.bicepparam');
+  const known = targetArea(path);
+  if (known) return known.area;
+  // An older checkout may be nested inside the folder the operator selected.
+  if (path.endsWith(`/${MAIN_PATH}`)) return 'deployment';
+  if (path.endsWith(`/${LLM_PATH}`)) return 'llm-onboarding';
+  // This recognized old layout can predate names in today's capability signature.
+  if (path === LEGACY_DEPLOYMENT_PATH || path.endsWith(`/${LEGACY_DEPLOYMENT_PATH}`)) return 'deployment';
+  const template = migrationTemplateAlias(alias, using)?.toLowerCase();
+  const root = contractRootOf(template);
+  if (root && template === `${root}/main.bicep`) return 'access-contracts';
+  return null;
+}
+
+function signatureAreas(parameters) {
+  const names = new Set(parameters.map((parameter) => parameter.name.toLowerCase()));
+  return SOURCE_SIGNATURES.filter((signature) => parameters.length >= signature.minimum &&
+    signature.names.every((name) => names.has(name.toLowerCase()))).map((signature) => signature.area);
+}
+
+function configurationName(alias, area) {
+  const leaf = alias.split('/').at(-1).replace(/\.(?:bicepparam|json)$/i, '');
+  if (area === 'access-contracts') {
+    const root = contractRootOf(alias.toLowerCase());
+    const relative = root ? alias.slice(root.length + 1).split('/') : [];
+    if (relative.length > 1) return relative.slice(0, -1).join(' / ');
+    return `Access contract: ${leaf}`;
+  }
+  if (area === 'llm-onboarding') return leaf.toLowerCase() === 'main' ? 'LLM backend onboarding' : `LLM onboarding: ${leaf}`;
+  return leaf.toLowerCase() === 'main' ? 'Main deployment' : `Deployment: ${leaf}`;
+}
+
+function parameterSections(target, model) {
+  const doc = documentFromText(target.alias, target.text);
+  // Share editor grouping, but never hide migration choices behind feature flags.
+  const sections = deploymentPresentation(doc, { pendingFor: () => false, paramValue: () => undefined });
+  const remaining = new Map(model.rows.filter((row) => !row.removed).map((row) => [row.name.toLowerCase(), row]));
+  const take = (names) => names.flatMap((name) => {
+    const key = name.toLowerCase();
+    const row = remaining.get(key);
+    if (!row) return [];
+    remaining.delete(key);
+    return [row.id];
+  });
+  const result = sections.flatMap((section, index) => {
+    const groups = (section.groups?.length ? section.groups : [{ label: null, params: section.params }])
+      .map((group) => ({ label: group.label ? safeLabel(group.label) : null, rowIds: take(group.params) }))
+      .filter((group) => group.rowIds.length);
+    const rest = take(section.params);
+    if (rest.length) groups.push({ label: null, rowIds: rest });
+    const label = safeLabel(sectionNavTitle(section.title));
+    return groups.length ? [{
+      id: `target-section-${index}`, title: label, label, groups,
+    }] : [];
+  });
+  if (remaining.size) result.push({
+    id: 'other-parameters', title: 'Other parameters', label: 'Other',
+    groups: [{ label: null, rowIds: [...remaining.values()].map((row) => row.id) }],
+  });
+  return result;
 }
 
 const identities = new WeakMap();
@@ -78,16 +148,18 @@ export async function discoverMigrationTargets(provider) {
     if (!area) continue;
     let template = null;
     let state = 'unresolved';
+    let parameterNames = [];
     try {
       const source = await provider.read(alias);
       if (source.size > MIGRATION_LIMITS.bytes) throw new MigrationError('limit');
       const parsed = readBicepParameters(source.text, { target: true });
+      parameterNames = parsed.parameters.map((parameter) => parameter.name);
       template = migrationTemplateAlias(alias, parsed.using);
       state = template && entries.some((file) => file.alias === template) ? 'available' : 'unresolved';
     } catch {
       // A malformed file is visible, without disclosing its contents in errors.
     }
-    targets.push({ alias, label: safeLabel(alias), ...area, template, state });
+    targets.push({ alias, label: safeLabel(alias), name: configurationName(alias, area.area), ...area, template, state, parameterNames });
   }
   return targets.sort((left, right) => left.alias.localeCompare(right.alias));
 }
@@ -109,8 +181,9 @@ export class MigrationSession {
   #plan = null;
   #review = null;
   #applyPromise = null;
+  #snapshots;
 
-  constructor({ contextProvider, registry, coordinator, pendingEdits = () => false, validateFeatures = validateMigrationFeatures, projectLabel = 'Project' }) {
+  constructor({ contextProvider, registry, coordinator, pendingEdits = () => false, validateFeatures = validateMigrationFeatures, projectLabel = 'Project', snapshotRequest }) {
     this.#getContext = contextProvider;
     this.#context = contextProvider();
     this.#key = contextKey(this.#context);
@@ -118,6 +191,7 @@ export class MigrationSession {
     this.#pending = pendingEdits;
     this.#coordinator = coordinator;
     this.#features = validateFeatures;
+    this.#snapshots = new MigrationSnapshots({ registry, request: snapshotRequest });
     const source = environmentSourceOf(this.#context.environment);
     const remote = this.#context.provider.remote === true;
     if (!['local', 'github'].includes(source.kind) || remote !== (source.kind === 'github')) {
@@ -148,6 +222,35 @@ export class MigrationSession {
       this.invalidate();
       throw new MigrationError('stale');
     }
+  }
+
+  forkReview() {
+    this.assertContext();
+    if (this.#applyPromise) throw new MigrationError('review');
+    return new MigrationSession({
+      contextProvider: () => { this.assertContext(); return this.#getContext(); },
+      registry: this.#registry,
+      coordinator: this.#coordinator,
+      pendingEdits: this.#pending,
+      validateFeatures: this.#features,
+      projectLabel: this.destination.project,
+      snapshotRequest: this.#snapshots.request,
+    });
+  }
+
+  preparedSources() { this.assertContext(); return this.#snapshots.list(); }
+  deletePreparedSource(id) { this.assertContext(); return this.#snapshots.delete(id); }
+  openPreparedSource(id) { this.assertContext(); return this.#snapshots.open(id, this.#context); }
+
+  async prepareSource(donor, { onProgress = () => {} } = {}) {
+    this.assertContext();
+    const prepared = await this.#snapshots.capture(donor, {
+      destination: this.#context,
+      discover: (reader, options) => this.inventory(reader, options),
+      onProgress,
+    });
+    this.assertContext();
+    return prepared;
   }
 
   async #assertEditor(alias) {
@@ -208,7 +311,7 @@ export class MigrationSession {
       if (optional && error?.name === 'NotFoundError') return null;
       if (error instanceof MigrationError) throw error;
       if (error?.code === 'SOURCE_TOO_LARGE') throw new MigrationError('limit');
-      throw new MigrationError('unavailable');
+      throw new MigrationError('target-unavailable');
     }
   }
 
@@ -219,6 +322,86 @@ export class MigrationSession {
     const targets = await discoverMigrationTargets(this.#context.provider);
     this.#assertGeneration(generation);
     return targets;
+  }
+
+  async inventory(donor, { onProgress = () => {}, maxBytes = donor.snapshot ? SNAPSHOT_LIMITS.snapshotBytes : MIGRATION_LIMITS.totalBytes } = {}) {
+    const generation = this.#generation;
+    await this.#assertEditor();
+    const entries = await donor.entries();
+    const candidates = entries.filter((entry) => ['bicepparam', 'json'].includes(entry.format) && !excludedSource(entry.alias));
+    // Discovery now reads source values, so prove separation before the first read.
+    await donor.assertDistinct(this.#context, candidates.map((entry) => entry.id));
+    this.#assertGeneration(generation);
+    const items = [];
+    const unassigned = [];
+    const otherFiles = [];
+    const issues = [];
+    let ignored = entries.filter((entry) => ['bicepparam', 'json'].includes(entry.format)).length - candidates.length;
+    let bytes = 0;
+    let completed = 0;
+    for (const entry of candidates) {
+      if (entry.format === 'json' && typeof donor.inspectJsonCandidate === 'function') {
+        const inspection = await donor.inspectJsonCandidate(entry.id);
+        this.#assertGeneration(generation);
+        if (inspection.kind !== 'parameters') {
+          if (inspection.kind === 'invalid') {
+            issues.push({ file: safeLabel(entry.alias), reason: migrationMessage(new MigrationError(inspection.code)) });
+          } else {
+            ignored += 1;
+          }
+          completed += 1;
+          onProgress({ completed, total: candidates.length });
+          this.#assertGeneration(generation);
+          continue;
+        }
+      }
+      const source = await donor.read(entry.id);
+      bytes += source.size;
+      if (bytes > maxBytes) throw new MigrationError('limit');
+      this.#assertGeneration(generation);
+      let parsed;
+      try {
+        parsed = entry.format === 'json' ? readArmParameters(source.text) : readBicepParameters(source.text);
+      } catch (error) {
+        if (!(error instanceof MigrationError) || !['format', 'envelope', 'json-duplicate'].includes(error.code)) throw error;
+        issues.push({ file: safeLabel(entry.alias), reason: migrationMessage(error) });
+      }
+      if (parsed) {
+        const pathArea = sourcePathArea(entry.alias, parsed.using);
+        const signatures = signatureAreas(parsed.parameters);
+        // Access signatures also describe reusable templates. An instance needs
+        // its contract layout or a reference to the known contract template.
+        const area = pathArea || (signatures.length === 1 && signatures[0] !== 'access-contracts' ? signatures[0] : null);
+        if (!parsed.parameters.length) {
+          issues.push({ file: safeLabel(entry.alias), reason: 'No parameter assignments were found.' });
+        } else if (signatures.length > 1 || pathArea && signatures.length && !signatures.includes(pathArea)) {
+          issues.push({ file: safeLabel(entry.alias), reason: 'The configuration area is ambiguous. Check the source path and parameter declarations.' });
+        } else if (area) {
+          items.push({
+            ...entry, area, name: configurationName(entry.alias, area),
+            parameters: parsed.parameters.length,
+            dynamic: parsed.parameters.filter((parameter) => parameter.status === 'dynamic').length,
+          });
+        } else if (donor.kind === 'local-files') {
+          // A loose selected file has no repository path. Its area is an explicit
+          // operator choice, never guessed from a common name such as "main".
+          unassigned.push({ ...entry, name: safeLabel(entry.alias), parameters: parsed.parameters.length,
+            names: parsed.parameters.map((parameter) => parameter.name) });
+        } else {
+          otherFiles.push({ ...entry, name: safeLabel(entry.alias), parameters: parsed.parameters.length,
+            names: parsed.parameters.map((parameter) => parameter.name) });
+        }
+      }
+      completed += 1;
+      onProgress({ completed, total: candidates.length });
+      this.#assertGeneration(generation);
+    }
+    const captured = donor.acquisitionFacts?.();
+    return {
+      items, unassigned, otherFiles,
+      issues: [...issues, ...(captured?.issues || [])],
+      ignored: ignored + (captured?.ignored || 0),
+    };
   }
 
   async plan({ donor, sourceIds, targetAlias }) {
@@ -275,10 +458,12 @@ export class MigrationSession {
       target: { alias: targetAlias, text: target.text, schemaText: template?.text ?? null },
       donors: sources,
       validateCandidate: validateMigrationCandidate,
+      llmPolicy: llmMigrationPolicy,
     });
     this.#plan = {
       generation, model, donor, sourceIds: [...sourceIds], sourceHandles,
       inputs: inputFingerprints, target, template, schemaAlias, remote, donorRevision,
+      sections: parameterSections(target, model),
     };
     // Recheck at the end as well: a long read must not publish an already stale
     // review when the folder/file/template changed during planning.
@@ -300,8 +485,11 @@ export class MigrationSession {
       target: { alias: plan.target.alias, ...targetArea(plan.target.alias), template: plan.schemaAlias, resolved: Boolean(plan.template) },
       pairs: this.#pairReports(plan),
       rows: migrationRows(plan.model),
+      sections: structuredClone(plan.sections),
     };
   }
+
+  targetProjection() { return migrationTargetProjection(this.#requirePlan().model); }
 
   decide(rowId, decision) {
     if (this.#applyPromise) throw new MigrationError('review');
@@ -310,12 +498,25 @@ export class MigrationSession {
     return this.view();
   }
 
+  decideModel(rowId, decision) {
+    if (this.#applyPromise) throw new MigrationError('review');
+    decideMigrationModel(this.#requirePlan().model, rowId, decision);
+    this.#review = null;
+    return this.view();
+  }
+
   keepRemaining() {
     if (this.#applyPromise) throw new MigrationError('review');
     const plan = this.#requirePlan();
-    for (const row of plan.model.rows) {
-      if (!row.removed && !plan.model.decisions.has(row.id)) decideMigration(plan.model, row.id, { kind: 'keep' });
-    }
+    keepMigrationRemaining(plan.model);
+    this.#review = null;
+    return this.view();
+  }
+
+  discardChanges() {
+    if (this.#applyPromise) throw new MigrationError('review');
+    const plan = this.#requirePlan();
+    for (const row of plan.model.rows) if (!row.removed) decideMigration(plan.model, row.id, { kind: 'keep' });
     this.#review = null;
     return this.view();
   }
@@ -348,7 +549,15 @@ export class MigrationSession {
       }
       this.#assertGeneration(plan.generation);
     } catch (error) {
-      // Any failed freshness check consumes decisions and review tokens.
+      if (plan.donor.snapshot) {
+        // A target/network failure revokes this preview's authority, not the
+        // immutable old source or the operator's recorded choices.
+        this.#review = null;
+        if (error instanceof MigrationError && (error.code.startsWith('snapshot-') ||
+            ['pending', 'closed'].includes(error.code))) throw error;
+        throw new MigrationError(error.code === 'stale' ? 'target-stale' : 'target-unavailable');
+      }
+      // Uncaptured readers retain their original short-lived safety contract.
       this.invalidate();
       if (error instanceof MigrationError && (['pending', 'closed'].includes(error.code) ||
           error.code.startsWith('public-') || error.code.startsWith('private-'))) throw error;
@@ -394,6 +603,7 @@ export class MigrationSession {
       rows: evaluation.rows,
       blockers: evaluation.blockers,
       unresolved: evaluation.unresolved,
+      unverified: evaluation.unverified,
       localApplyEligible: !this.destination.remote && evaluation.canApply,
       limits: [
         'Sample-based parsing/mapping checks do not establish legacy semantic equivalence or validate transformations.',
@@ -416,6 +626,11 @@ export class MigrationSession {
       canApply: evaluation.canApply && !this.destination.remote,
       changed: evaluation.changed,
     };
+  }
+
+  async previewSelected() {
+    this.keepRemaining();
+    return this.preview();
   }
 
   #requireReview(id) {
@@ -469,6 +684,7 @@ export class MigrationSession {
         destination: this.destination,
         target: plan.target.alias,
         copied: evaluation.summary.copied,
+        changes: evaluation.summary.changeCount,
       };
     } catch (error) {
       this.invalidate();

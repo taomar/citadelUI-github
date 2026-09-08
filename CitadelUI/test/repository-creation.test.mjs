@@ -104,6 +104,81 @@ test('repository creation: read-only prepare pins citadel-v1 and full snapshot p
   assert.equal(cx.notes.at(-1).outcome, 'ok');
 });
 
+test('repository creation: binary files advance copy progress before their containing folder finishes', async (t) => {
+  const cx = await context(t, { files: citadelRepositoryFiles({
+    'assets/progress/first.bin': Buffer.from([0, 1, 2]),
+    'assets/progress/second.bin': Buffer.from([0, 3, 4]),
+    'assets/progress/label.txt': 'Inline text waits for the tree.\n',
+  }) });
+  const op = await ready(cx);
+  const gate = barrier();
+  let blobWrites = 0;
+  let beforeFirst = null;
+  cx.mock.before = async (call) => {
+    if (call.method !== 'POST' || !call.path.endsWith('/git/blobs')) return;
+    blobWrites += 1;
+    if (blobWrites === 1) beforeFirst = (await cx.service.status(cx.session, op.id)).progress.completed;
+    if (blobWrites === 2) await gate.block();
+  };
+  await cx.service.start(cx.session, op.id);
+  await gate.reached;
+  try {
+    const partial = await cx.service.status(cx.session, op.id);
+    assert.equal(partial.stageId, 'objects');
+    assert.equal(partial.progress.phase, 'copy');
+    assert.equal(partial.progress.completed, beforeFirst + 1);
+    assert.equal(partial.progress.currentPath, 'assets/progress/second.bin');
+    assert.equal(partial.progress.total, op.source.fileCount);
+    assert.equal(partial.state, 'copying');
+  } finally {
+    gate.release();
+  }
+  await cx.service.settled();
+  assert.equal((await cx.service.status(cx.session, op.id)).state, 'complete');
+});
+
+test('repository creation: verification resets the counter and reports confirmed file reads including duplicate content', async (t) => {
+  const cx = await context(t, { files: citadelRepositoryFiles({
+    'same-a.txt': 'Repeated verified content\n',
+    'same-b.txt': 'Repeated verified content\n',
+  }) });
+  const op = await ready(cx);
+  const gate = barrier();
+  let reads = 0;
+  let initial;
+  cx.mock.before = async (call) => {
+    if (!call.path.startsWith('/repos/fixture-owner/private-copy/git/blobs/')) return;
+    const current = await cx.service.status(cx.session, op.id);
+    if (current.state !== 'verifying') return;
+    reads += 1;
+    if (reads === 1) initial = current;
+    cx.advance(1000);
+    if (reads === 2) await gate.block();
+  };
+  await cx.service.start(cx.session, op.id);
+  await gate.reached;
+  try {
+    assert.equal(initial.progress.phase, 'verify');
+    assert.equal(initial.progress.completed, 0, 'a completed copy cannot masquerade as verification progress');
+    const partial = await cx.service.status(cx.session, op.id);
+    assert.equal(partial.stageId, 'verify-snapshot');
+    assert.equal(partial.progress.phase, 'verify');
+    assert.ok(partial.progress.completed > 0 && partial.progress.completed < partial.progress.total);
+    assert.ok(partial.progress.currentPath);
+    assert.ok(Date.parse(partial.updatedAt) > Date.parse(partial.startedAt));
+  } finally {
+    gate.release();
+  }
+  await cx.service.settled();
+  const final = await cx.service.status(cx.session, op.id);
+  assert.equal(final.state, 'complete');
+  assert.equal(final.stageId, 'complete');
+  assert.equal(final.progress.completed, op.source.fileCount);
+  assert.equal(final.progress.total, op.source.fileCount);
+  assert.equal(final.progress.phase, 'verify');
+  assert.equal(final.progress.currentPath, null);
+});
+
 test('repository creation: root URL visibly resolves actual default branch, slash refs are never treated as folders', async (t) => {
   const cx = await context(t, { defaultBranch: 'citadel-v1' });
   const root = await ready(cx, creation('root-copy', { sourceUrl: 'https://github.com/fixture-upstream/source' }));

@@ -170,6 +170,9 @@ export const CURRENT = "using './main.bicep'\n// current documentation\nparam Co
 export const SCHEMA = "@minValue(1)\n@maxValue(8)\nparam Count int\nparam newDefault bool = true\n";
 export const LEGACY = "using './legacy.bicep'\nparam count = 4\nparam removed = 'legacy-only'\n";
 
+let snapshotTestRequest;
+export function useSnapshotTestRequest(request) { snapshotTestRequest = request; }
+
 export function migrationHarness(options = {}) {
   const targetTrace = [];
   const donorTrace = [];
@@ -190,7 +193,13 @@ export function migrationHarness(options = {}) {
     provider,
   };
   const state = { context, pending: false, draft: null };
-  const registry = { getDraft: async () => state.draft };
+  const snapshotTargets = new Map();
+  const registry = {
+    getDraft: async () => state.draft,
+    rememberMigrationSnapshotTarget: async (id, handle) => { snapshotTargets.set(id, handle); },
+    migrationSnapshotTarget: async (id) => snapshotTargets.get(id),
+    forgetMigrationSnapshotTarget: async (id) => { snapshotTargets.delete(id); },
+  };
   const api = migrationTransactionApi(options.hooks || {});
   const coordinator = new LocalTransactionCoordinator({
     request: api.request, commitFiles: createTransactionCommit(api.request),
@@ -200,6 +209,7 @@ export function migrationHarness(options = {}) {
     registry, coordinator,
     pendingEdits: () => state.pending,
     projectLabel: 'Synthetic project',
+    snapshotRequest: options.snapshotRequest || snapshotTestRequest,
   });
   const donor = new MigrationDonor({ folder: donorRoot });
   return {

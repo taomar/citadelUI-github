@@ -38,6 +38,7 @@ import { activityLabel, activityReason } from './activity.mjs';
 import { isRepositorySelectable, repositoryBlockedReason } from './github-selection.mjs';
 import { ATTACH_STAGES, RESUME_STAGES, StageTracker, createStageRegion } from './stage-progress.mjs';
 import { DEFAULT_REPOSITORY_SOURCE, parseRepositorySource, validateNewRepositoryName } from '../../shared/repository-source.mjs';
+import { createRepositoryProgress } from './repository-progress.mjs';
 
 function newRepositoryCreationState(accountId = null) {
   return {
@@ -217,6 +218,7 @@ function field(id, labelText, control, hint = null) {
 
 function githubTokenField(id, labelText, control, hint = null, purpose = 'existing') {
   const creating = purpose === 'create';
+  const tokenPage = 'https://github.com/settings/personal-access-tokens/new';
   const help = h(
     'div',
     {
@@ -229,23 +231,30 @@ function githubTokenField(id, labelText, control, hint = null, purpose = 'existi
     h(
       'a',
       {
-        href: 'https://github.com/settings/personal-access-tokens/new',
+        href: creating
+          ? `${tokenPage}?name=Citadel%20repository%20creation&administration=write&contents=write&expires_in=1`
+          : tokenPage,
         target: '_blank',
         rel: 'noopener noreferrer',
       },
-      'Create a fine-grained token on GitHub'
+      creating
+        ? 'Open prefilled GitHub token form (Administration + Contents)'
+        : 'Create a fine-grained token on GitHub'
     ),
+    creating
+      ? h('p', {}, 'This link only prefills a fine-grained token form; it does not create a token or grant permissions automatically. Review the settings on GitHub before generating the token.')
+      : null,
     h(
       'ol',
       {},
       h('li', {}, creating
-        ? 'Create a temporary token with a short expiration. Set Resource owner to your connected personal account; the new repository will belong to that account.'
+        ? 'Use a temporary token with a 1-day expiration. Verify Resource owner is your connected personal account; the new repository will belong to that account.'
         : 'Give the token a name and a short expiration. Set Resource owner to the user or organization that owns the repositories.'),
       h('li', {}, creating
         ? 'Under Repository access, choose All repositories for this creation flow. The new repository does not exist yet, so it cannot be selected beforehand.'
         : 'Under Repository access, choose Only select repositories and select only the repositories you will use.'),
       creating
-        ? h('li', {}, 'Under Repository permissions, grant ', h('strong', {}, 'Administration: Read and write'), ' to create the private repository, and ', h('strong', {}, 'Contents: Read and write'), ' to populate it.')
+        ? h('li', {}, 'Under Repository permissions, grant ', h('strong', {}, 'Administration: Read and write'), ' to create the private repository, and ', h('strong', {}, 'Contents: Read and write'), ' to read branches and import files (write includes read). Administration alone cannot read branches or populate the repository.')
         : h('li', {}, 'Under Repository permissions, set ', h('strong', {}, 'Contents: Read and write'), ' for Citadel editing.'),
       h('li', {}, 'Generate the token, copy it once, and paste it into the GitHub token field.')
     ),
@@ -1708,7 +1717,7 @@ export function runAddWorkspace(options) {
   function creationStep() {
     const form = state.creation;
     const error = alertLine();
-    const progress = statusLine();
+    const progress = createRepositoryProgress();
     const preview = h('div');
     const previous = h('div', { class: 'catalog-form' });
     let operation = form.operation;
@@ -1717,6 +1726,9 @@ export function runAddWorkspace(options) {
     let busy = false;
     let disposed = false;
     let timer = null;
+    let ticker = null;
+    let lastStatusAt = null;
+    let statusFailed = false;
     let revision = 0;
     const active = () => operation && (operation.running === true || ['preparing', 'creating', 'copying', 'verifying'].includes(operation.state));
     const name = h('input', {
@@ -1730,9 +1742,11 @@ export function runAddWorkspace(options) {
       oninput: () => { form.sourceUrl = source.value; },
     });
     const stopPolling = () => { if (timer) clearTimeout(timer); timer = null; };
-    disposeStep = () => { disposed = true; stopPolling(); };
+    disposeStep = () => { disposed = true; stopPolling(); clearInterval(ticker); };
 
     function accept(result) {
+      lastStatusAt = Date.now();
+      statusFailed = false;
       operation = result;
       form.operation = result;
       form.uncertain = false;
@@ -1746,9 +1760,9 @@ export function runAddWorkspace(options) {
       say(error, result.error?.message || '');
     }
 
-    function schedule() {
+    function schedule(delay = 1000) {
       stopPolling();
-      if (!disposed && (active() || form.uncertain)) timer = setTimeout(() => poll(), 1000);
+      if (!disposed && (active() || form.uncertain || statusFailed)) timer = setTimeout(() => poll(), delay);
     }
 
     async function poll() {
@@ -1763,11 +1777,10 @@ export function runAddWorkspace(options) {
         schedule();
       } catch (failure) {
         if (disposed || busy || generation !== revision || id !== operation?.id) return;
-        state.working = false;
-        say(error, `Setup status could not be confirmed: ${failure.message} The private repository may already exist; refresh this attempt rather than creating another.`);
-        check.disabled = false;
-        back.disabled = false;
-        changeToken.disabled = false;
+        statusFailed = true;
+        say(error, `Setup status could not be confirmed: ${failure.message} Retrying automatically. The private repository may already exist; refresh this attempt rather than creating another.`);
+        paint();
+        schedule(3000);
       }
     }
 
@@ -1884,15 +1897,15 @@ export function runAddWorkspace(options) {
     const refresh = h('button', { class: 'btn btn-sm', type: 'button', onclick: refreshPrevious }, 'Refresh attempts');
 
     function paint() {
-      state.working = busy || Boolean(active());
+      state.working = busy || (Boolean(active()) && !statusFailed);
       name.disabled = busy || Boolean(operation);
       source.disabled = busy || Boolean(operation);
       prepare.hidden = Boolean(operation);
       prepare.disabled = busy || !listed || form.uncertain;
       create.hidden = form.uncertain || !operation?.canStart;
-      create.disabled = busy;
+      create.disabled = busy || statusFailed;
       resume.hidden = form.uncertain || !operation?.canResume;
-      resume.disabled = busy;
+      resume.disabled = busy || statusFailed || operation?.retryAt > Date.now();
       pause.hidden = !operation || (!operation.canPause && !form.uncertain);
       pause.disabled = busy;
       check.hidden = !operation;
@@ -1904,13 +1917,7 @@ export function runAddWorkspace(options) {
       back.disabled = state.working;
       changeToken.disabled = state.working;
       refresh.disabled = busy;
-      const count = operation?.progress;
-      const detail = count?.total > 0 ? ` ${count.completed} of ${count.total} ${count.unit}.` : '';
-      const stage = operation?.stage || operation?.state || '';
-      say(progress, busy
-        ? 'Contacting GitHub\u2026'
-        : form.uncertain ? 'Confirming the previous GitHub request on this same attempt\u2026'
-          : operation ? `${stage}${stage.endsWith('.') ? '' : '.'}${detail}` : '');
+      progress.update({ operation, busy, uncertain: form.uncertain, lastStatusAt, statusFailed });
       for (const button of [prepare, create, resume, pause, next]) button.setAttribute('aria-busy', String(busy && !button.hidden));
       const row = (label, value) => h('div', { class: 'catalog-summary-row' }, h('dt', {}, label), h('dd', {}, value));
       mount(preview, operation ? h('div', { class: 'catalog-form' },
@@ -1949,17 +1956,21 @@ export function runAddWorkspace(options) {
       'Create a private GitHub repository',
       h('div', { class: 'catalog-form' },
         h('p', { class: 'hint' }, `The repository will be created in your personal account @${state.account.login}. New repositories are always private. Existing repositories are never overwritten.`),
+        progress.root,
         field('catalog-create-repository-name', 'Repository name', name),
         field('catalog-create-repository-source', 'Source repository URL', source, 'Use a GitHub repository or branch URL. The checked-out source files, including binary assets and licenses, are copied into a fresh snapshot.'),
         h('div', { class: 'catalog-form-actions' }, changeToken, refresh),
         previous,
-        progress,
         preview,
         error
       ),
       [back, edit, prepare, create, resume, pause, check, next],
       name
     );
+    ticker = setInterval(() => {
+      progress.tick();
+      if (operation?.retryAt) resume.disabled = busy || statusFailed || operation.retryAt > Date.now();
+    }, 1000);
     paint();
     refreshPrevious();
     if (operation) poll();

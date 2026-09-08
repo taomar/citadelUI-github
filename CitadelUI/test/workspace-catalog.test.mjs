@@ -640,6 +640,13 @@ test('saved-connection reconnect also offers inline GitHub token help', async (t
   token.value = TEST_TOKEN;
   await clickDialogButton('Token help');
   assert.equal(help.hidden, false);
+  const links = descendants(help).filter((node) => node.tagName === 'A');
+  assert.equal(links.length, 1);
+  assert.equal(links[0].getAttribute('href'), 'https://github.com/settings/personal-access-tokens/new');
+  assert.equal(links[0].getAttribute('target'), '_blank');
+  assert.equal(links[0].getAttribute('rel'), 'noopener noreferrer');
+  assert.match(readText(help), /Only select repositories/);
+  assert.doesNotMatch(readText(help), /All repositories|Administration: Read and write|prefill|1-day/);
   await clickDialogButton('Token help');
   assert.equal(help.hidden, true);
   assert.equal(connectionControl('catalog-reconnect-token'), token);
@@ -848,7 +855,7 @@ test('the catalogue survives a breakpoint change', () => {
   assert.match(app, /COMPACT_NAV\.addEventListener\('change', \(\) => render\(\)\)/);
   assert.match(
     app,
-    /function render\(\) \{\s*\n\s*if \(els\.shell\.dataset\.workspace !== 'active'\) \{\s*\n\s*updateHeaderContext\(\);\s*\n\s*return;/
+    /function render\(\) \{\s*if \(els\.shell\.dataset\.workspace === 'migration'\) return;\s*if \(els\.shell\.dataset\.workspace !== 'active'\) \{\s*updateHeaderContext\(\);\s*return;/
   );
 });
 test('the catalogue is reachable and announced without sight', () => {

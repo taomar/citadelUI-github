@@ -28,6 +28,30 @@ export async function inspectPublicDonorRepository(input, request = localRequest
   return repository;
 }
 
+export function validateDonorBranches(result, repository) {
+  if (result?.repository?.id !== repository.id ||
+      typeof result.repository.fullName !== 'string' ||
+      result.repository.fullName.toLowerCase() !== repository.fullName.toLowerCase() ||
+      !Array.isArray(result.branches) || result.branches.length > 500 || typeof result.truncated !== 'boolean') {
+    throw new MigrationError('public-read');
+  }
+  const names = new Set();
+  const branches = result.branches.map((branch) => {
+    const name = publicDonorRef('branch', branch?.name).name;
+    if (names.has(name) || (branch.commit !== null && !validSha(branch.commit))) throw new MigrationError('public-read');
+    names.add(name);
+    return { name, commit: branch.commit, protected: branch.protected === true };
+  });
+  return { repository: result.repository, branches, truncated: result.truncated };
+}
+
+export async function listPublicDonorBranches(repository, request = localRequest) {
+  const result = await publicRead(request, 'branches', {
+    repository: publicRepositoryName(repository.fullName), repositoryId: repository.id,
+  });
+  return validateDonorBranches(result, repository);
+}
+
 /**
  * Shared read-only GitHub donor. Pinned blobs can be reused in memory; the
  * selected ref and access/visibility are re-resolved before each review,
@@ -148,6 +172,25 @@ export class ReadOnlyGitHubMigrationDonor {
     try { await this.#authorize(); } catch (error) { throw this.#fail(error); }
     const snapshot = await this.#load();
     return snapshot.files.map((file) => ({ id: file.alias, alias: file.alias, format: file.kind }));
+  }
+
+  async inspectJsonCandidate(input) {
+    try {
+      await this.#authorize();
+      const alias = publicDonorAlias(input);
+      const snapshot = await this.#load();
+      const entry = snapshot.files.find((file) => file.alias === alias && file.kind === 'json');
+      if (!entry) throw new MigrationError('public-scope');
+      const result = await this.#read('json-candidate', { selectionId: snapshot.selectionId, alias });
+      if (result.alias !== alias || result.repositoryId !== snapshot.repository.id ||
+          result.commit !== snapshot.commit || result.treeSha !== snapshot.treeSha ||
+          result.sha !== entry.sha || result.size !== entry.size ||
+          !['parameters', 'unrelated', 'invalid'].includes(result.kind) ||
+          (result.kind === 'invalid' && !['format', 'envelope', 'json-duplicate', 'limit'].includes(result.code))) {
+        throw new MigrationError('public-read');
+      }
+      return { kind: result.kind, code: result.code };
+    } catch (error) { throw this.#fail(error); }
   }
 
   async assertFresh(expected) {
