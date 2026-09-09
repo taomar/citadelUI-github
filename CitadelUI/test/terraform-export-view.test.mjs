@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { installDom, readText } from './_dom-stub.mjs';
-import { exportFixture, fixtureChoices, FIXTURE_ACCESS_PATH } from './_terraform-export-fixture.mjs';
+import { exportFixture, fixtureChoices, fixtureFiles, laterBackendFixtureValues, FIXTURE_ACCESS_PATH } from './_terraform-export-fixture.mjs';
 import { TerraformExportSession } from '../web/js/terraform-export-session.mjs';
 import { openTerraformExport } from '../web/js/terraform-export-view.mjs';
 
-function setup() {
+function setup(files) {
   const dom = installDom();
   globalThis.window = dom.node();
   window.innerWidth = 1600; window.innerHeight = 1000;
@@ -15,7 +15,7 @@ function setup() {
   surface.shell.dataset.workspace = 'parameters'; surface.shell.dataset.rail = 'on';
   const normal = dom.node('input'); normal.value = 'original saved editor state';
   surface.workspace.append(normal);
-  const fixture = exportFixture();
+  const fixture = exportFixture(files);
   const session = new TerraformExportSession({ contextProvider: () => fixture.context, registry: fixture.registry, activePath: FIXTURE_ACCESS_PATH });
   return { ...dom, surface, normal, ...fixture, session };
 }
@@ -99,4 +99,33 @@ test('review/back/approval are real handlers with source scopes, exact label and
   assert.equal(downloads, 1);
   assert.match(readText(ui.body), /Download setup failed/);
   assert(!readText(ui.body).includes('ZIP download requested'));
+});
+
+test('TF1: the real typed model surface exposes loss reasons and disables review without touching source', async () => {
+  const values = laterBackendFixtureValues({ apiVersion: '2099-01-01', timeout: 347, inferenceApiVersion: '2099-02-02' });
+  const fixture = setup(fixtureFiles(values));
+  const before = fixture.root.allFiles();
+  let downloads = 0;
+  const ui = await openTerraformExport({
+    session: fixture.session, surface: fixture.surface, download: async () => { downloads++; },
+  });
+  await fixture.session.select('deployment', { included: false });
+  await fixture.session.select('access', { included: false });
+  fixture.session.setInput('llm', 'target:managed_identity_client_id', fixtureChoices().llm['target:managed_identity_client_id']);
+  findControl(fixture.surface.areas, 'area:llm').click();
+  findButton(ui.footer, 'Reload saved source').click();
+  await ui.whenIdle();
+  assert.match(readText(ui.body), /Requires Terraform change/);
+  assert.match(readText(ui.body), /qa-west-model.*independent-west/);
+  const model = ui.body.querySelectorAll('.lm-name').find((entry) => readText(entry).includes('qa-west-model'));
+  assert(model);
+  model.click();
+  const fields = ui.body.querySelectorAll('.tf-model-field').filter((entry) => entry.querySelector('.field-error'));
+  assert.equal(fields.length, 3);
+  assert(fields.every((entry) => readText(entry).includes('[0][0]')));
+  assert.equal(findButton(ui.footer, 'Review ZIP').disabled, true);
+  findButton(ui.footer, 'Review ZIP').click();
+  assert(!findButton(ui.footer, 'Approve & export ZIP'));
+  assert.equal(downloads, 0);
+  assert.deepEqual(fixture.root.allFiles(), before);
 });

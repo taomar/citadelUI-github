@@ -96,6 +96,16 @@ export function fixtureValues() {
   };
 }
 
+export function laterBackendFixtureValues(metadata = {}) {
+  const values = fixtureValues();
+  const first = values.llm.llmBackendConfig[0];
+  values.llm.llmBackendConfig.push({
+    ...structuredClone(first), backendId: 'independent-west', endpoint: 'https://independent-west.example.invalid',
+    supportedModels: [{ ...structuredClone(first.supportedModels[0]), name: 'qa-west-model', ...metadata }],
+  });
+  return values;
+}
+
 export function fixtureChoices(values = fixtureValues()) {
   const deployment = {
     ...acceptedTerraformDefaults(),

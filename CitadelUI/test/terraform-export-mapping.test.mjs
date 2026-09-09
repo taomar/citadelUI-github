@@ -9,7 +9,7 @@ import { projectTerraformExport } from '../shared/terraform-export.mjs';
 import { readBicepParameters } from '../shared/migration-input.mjs';
 import { readMigrationSchema } from '../shared/migration-schema.mjs';
 import { readTerraformSource } from '../web/js/terraform-export-session.mjs';
-import { exportFixture, fixtureFiles, fixtureValues, fixtureChoices, FIXTURE_ACCESS_PATH, FIXTURE_POLICY, FIXTURE_POLICY_PATH } from './_terraform-export-fixture.mjs';
+import { exportFixture, fixtureFiles, fixtureValues, fixtureChoices, laterBackendFixtureValues, FIXTURE_ACCESS_PATH, FIXTURE_POLICY, FIXTURE_POLICY_PATH } from './_terraform-export-fixture.mjs';
 
 async function project(area, mutate = () => {}, choicesMutate = () => {}) {
   const values = fixtureValues();
@@ -212,6 +212,121 @@ test('LLM identity/model casing, auth consumer and equal breaker defaults surviv
   assert(!Object.hasOwn(backend.supported_models[0], 'model_format'));
   assert.equal(result.rows.find((row) => row.source === 'circuitBreakerDefaults').status, 'transformed');
   assert.equal(result.rows.find((row) => row.source === 'configureSessionAffinity').status, 'transformed');
+});
+
+const metadataSentinels = { apiVersion: '2099-01-01', timeout: 347, inferenceApiVersion: '2099-02-02' };
+const metadataDefaults = { apiVersion: '2024-02-15-preview', timeout: 120, inferenceApiVersion: '' };
+const metadataFields = (result, index) => result.rows.find((row) => row.source === 'llmBackendConfig').nested
+  .filter((entry) => entry.path[1] === index && entry.path[2] === 'supportedModels' &&
+    Object.hasOwn(metadataDefaults, entry.path.at(-1)));
+const laterProject = (metadata = {}, mutate = () => {}) => project('llm', (values) => {
+  values.llmBackendConfig = laterBackendFixtureValues(metadata).llm.llmBackendConfig;
+  mutate(values);
+});
+
+for (const [field, sentinel] of Object.entries(metadataSentinels)) {
+  test(`TF1: a unique later-backend ${field} mismatch blocks effective metadata, not just serialization`, async () => {
+    const result = await laterProject({ [field]: sentinel });
+    const row = result.rows.find((entry) => entry.source === 'llmBackendConfig');
+    assert.equal(row.status, 'change');
+    assert.equal(result.text, null);
+    const lost = metadataFields(result, 1).filter((entry) => entry.status === 'change');
+    assert.deepEqual(lost.map((entry) => entry.path.at(-1)), [field]);
+    assert.match(lost[0].reason, /qa-west-model.*independent-west/);
+    assert(lost[0].reason.includes(JSON.stringify(sentinel)));
+    assert(lost[0].reason.includes(JSON.stringify(metadataDefaults[field])));
+    assert.match(lost[0].reason, /\[0\]\[0\]/);
+    assert.deepEqual(result.output.llm_backend_config.map((entry) => entry.backend_id), ['synthetic-east', 'independent-west']);
+    assert.equal(result.output.llm_backend_config[1].supported_models[0][field], sentinel, 'Never manufacture fallback values to make the source appear faithful');
+  });
+}
+
+test('TF1: the exact independent counterexample identifies all three loss-bearing model fields', async () => {
+  const result = await laterProject(metadataSentinels);
+  assert.equal(result.text, null);
+  assert.deepEqual(metadataFields(result, 1).filter((entry) => entry.status === 'change').map((entry) => entry.path.at(-1)).sort(),
+    Object.keys(metadataSentinels).sort());
+});
+
+for (const mode of ['absent', 'equal-defaults', 'null-defaults']) {
+  test(`TF1: later-backend ${mode} metadata remains faithful and exportable`, async () => {
+    const result = await laterProject({}, (values) => {
+      const model = values.llmBackendConfig[1].supportedModels[0];
+      for (const field of Object.keys(metadataDefaults)) {
+        if (mode === 'absent') delete model[field];
+        else if (mode === 'null-defaults') model[field] = null;
+      }
+    });
+    assert.equal(result.blockers.length, 0);
+    assert.equal(typeof result.text, 'string');
+    assert(metadataFields(result, 1).every((entry) => entry.status === 'transformed' && /fallback.*agrees/.test(entry.reason)));
+    for (const [field, value] of Object.entries(metadataDefaults)) assert.equal(result.output.llm_backend_config[1].supported_models[0][field], value);
+  });
+}
+
+test('TF1: matching a custom model anywhere in backend zero preserves its metadata', async () => {
+  const result = await laterProject(metadataSentinels, (values) => {
+    values.llmBackendConfig[0].supportedModels.push(values.llmBackendConfig[1].supportedModels[0]);
+    values.llmBackendConfig.pop();
+  });
+  assert.equal(result.blockers.length, 0);
+  const model = result.output.llm_backend_config[0].supported_models[1];
+  for (const [field, value] of Object.entries(metadataSentinels)) assert.equal(model[field], value);
+  assert.equal(model.name, 'qa-west-model');
+});
+
+test('TF1: a duplicate in a later backend cannot replace the first actual metadata occurrence', async () => {
+  const result = await laterProject({ name: 'gpt-4.1', ...metadataSentinels }, (values) => {
+    values.llmBackendConfig[0].supportedModels[0].timeout = 246;
+  });
+  assert.equal(result.blockers.length, 0);
+  assert.equal(result.output.llm_backend_config[0].supported_models[0].timeout, 246);
+  assert.equal(result.output.llm_backend_config[1].supported_models[0].timeout, 347);
+  assert(metadataFields(result, 1).every((entry) => entry.status === 'transformed' && /first occurrence.*synthetic-east/.test(entry.reason)));
+});
+
+test('TF1: default first occurrence outside backend zero permits later ignored custom metadata', async () => {
+  const result = await laterProject({}, (values) => {
+    const later = structuredClone(values.llmBackendConfig[1]);
+    later.backendId = 'third-backend';
+    Object.assign(later.supportedModels[0], metadataSentinels);
+    values.llmBackendConfig.push(later);
+  });
+  assert.equal(result.blockers.length, 0);
+  assert(metadataFields(result, 2).every((entry) => entry.status === 'transformed' && /first occurrence.*independent-west/.test(entry.reason)));
+});
+
+test('TF1: a later duplicate with defaults does not hide the first actual custom metadata loss', async () => {
+  const result = await laterProject(metadataSentinels, (values) => {
+    const later = structuredClone(values.llmBackendConfig[1]);
+    later.backendId = 'third-backend';
+    Object.assign(later.supportedModels[0], metadataDefaults);
+    values.llmBackendConfig.push(later);
+  });
+  assert.equal(result.text, null);
+  assert.equal(metadataFields(result, 1).filter((entry) => entry.status === 'change').length, 3);
+});
+
+test('TF1: case-distinct model names use case-sensitive first-occurrence lookup', async () => {
+  const result = await laterProject({ name: 'GPT-4.1', timeout: 347 });
+  assert.equal(result.text, null);
+  const lost = metadataFields(result, 1).find((entry) => entry.status === 'change');
+  assert.match(lost.reason, /GPT-4\.1/);
+  assert.equal(result.output.llm_backend_config[0].supported_models[0].name, 'gpt-4.1');
+  assert.equal(result.output.llm_backend_config[1].supported_models[0].name, 'GPT-4.1');
+});
+
+test('TF1: a model first occurring in a third backend also uses the pinned target fallback', async () => {
+  const result = await laterProject({}, (values) => {
+    const third = structuredClone(values.llmBackendConfig[1]);
+    third.backendId = 'third-backend';
+    third.supportedModels[0].name = 'third-model';
+    third.supportedModels[0].timeout = 347;
+    values.llmBackendConfig.push(third);
+  });
+  assert.equal(result.text, null);
+  assert.equal(metadataFields(result, 1).filter((entry) => entry.status === 'change').length, 0);
+  assert.equal(metadataFields(result, 2).filter((entry) => entry.status === 'change').length, 1);
 });
 
 for (const [name, mutate] of [

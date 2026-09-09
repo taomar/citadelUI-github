@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import { TerraformExportSession, readTerraformSource } from '../web/js/terraform-export-session.mjs';
 import { sha256 } from '../shared/source-scope.mjs';
 import { GitHubRepositoryProvider } from '../web/js/github-provider.mjs';
-import { exportFixture, fixtureFiles, fixtureChoices, FIXTURE_ACCESS_PATH, FIXTURE_SECOND_ACCESS_PATH, FIXTURE_POLICY_PATH } from './_terraform-export-fixture.mjs';
+import { exportFixture, fixtureFiles, fixtureChoices, laterBackendFixtureValues, FIXTURE_ACCESS_PATH, FIXTURE_SECOND_ACCESS_PATH, FIXTURE_POLICY_PATH } from './_terraform-export-fixture.mjs';
 
-async function ready() {
-  const fixture = exportFixture();
+async function ready(files = fixtureFiles(), extraLlmInputs = {}) {
+  const fixture = exportFixture(files);
   const session = new TerraformExportSession({ contextProvider: () => fixture.context, registry: fixture.registry, activePath: FIXTURE_ACCESS_PATH });
   await session.initialize();
   for (const [area, choices] of Object.entries(fixtureChoices())) for (const [key, value] of Object.entries(choices)) session.setInput(area, key, value);
+  for (const [key, value] of Object.entries(extraLlmInputs)) session.setInput('llm', key, value);
   assert.equal(session.view().ready, true);
   return { ...fixture, session };
 }
@@ -55,10 +56,51 @@ test('area inclusion is explicit and keeps independent choices/configurations, n
   await assert.rejects(session.review(), /Resolve/);
 });
 
+test('TF1: a saved later-model metadata change revokes approval and remains blocked after reload', async () => {
+  const values = laterBackendFixtureValues();
+  const fixture = await ready(fixtureFiles(values));
+  const review = await fixture.session.review();
+  Object.assign(values.llm.llmBackendConfig[1].supportedModels[0],
+    { apiVersion: '2099-01-01', timeout: 347, inferenceApiVersion: '2099-02-02' });
+  const path = 'bicep/infra/llm-backend-onboarding/main.bicepparam';
+  fixture.root.put(path, fixtureFiles(values)[path]);
+  const beforeExport = fixture.root.allFiles();
+  let downloads = 0;
+  await assert.rejects(fixture.session.approveAndExport(review.id, async () => { downloads++; }), /changed/);
+  assert.equal(fixture.session.view().review, null);
+  await fixture.session.reload();
+  const llm = fixture.session.view().areas.find((area) => area.id === 'llm');
+  assert.equal(llm.projection.rows.find((row) => row.source === 'llmBackendConfig').status, 'change');
+  assert.equal(llm.projection.text, null);
+  await assert.rejects(fixture.session.review(), /Resolve every included area blocker/);
+  await assert.rejects(fixture.session.approveAndExport(review.id, async () => { downloads++; }), /fresh ZIP review/);
+  assert.equal(downloads, 0);
+  assert.deepEqual(fixture.root.allFiles(), beforeExport);
+});
+
+test('TF1: an explicit later-model metadata choice invalidates review before semantic reapproval', async () => {
+  const values = laterBackendFixtureValues({ timeout: { __expr: 'call', raw: "readEnvironmentVariable('LATER_MODEL_TIMEOUT')" } });
+  const key = 'source:["llmBackendConfig",1,"supportedModels",0,"timeout"]';
+  const fixture = await ready(fixtureFiles(values), { [key]: 120 });
+  const before = fixture.root.allFiles();
+  const review = await fixture.session.review();
+  fixture.session.setInput('llm', key, 347);
+  assert.equal(fixture.session.view().ready, false);
+  assert.equal(fixture.session.view().review, null);
+  await assert.rejects(fixture.session.approveAndExport(review.id, async () => assert.fail('download')), /fresh ZIP review/);
+  await assert.rejects(fixture.session.review(), /Resolve every included area blocker/);
+  fixture.session.setInput('llm', key, 120);
+  const restored = await fixture.session.review();
+  assert.equal(restored.zipHash, review.zipHash);
+  assert.deepEqual(fixture.root.allFiles(), before);
+});
+
 test('approval downloads the exact reviewed ZIP bytes and repeated clicks share one in-flight attempt', async () => {
   const { session, root } = await ready();
   const before = root.allFiles().map((entry) => [entry.path, Buffer.from(entry.bytes).toString('base64')]);
   const review = await session.review();
+  assert.equal(review.zipHash, '0e367a7f6e0cfc3282bde906173679c55d6697307373c4da121688b0c26b5480');
+  assert.equal(review.size, 6120);
   let calls = 0;
   let release;
   const gate = new Promise((resolve) => { release = resolve; });

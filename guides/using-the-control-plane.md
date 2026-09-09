@@ -379,6 +379,13 @@ is a deliberate scope choice; it cannot waive a blocked setting in an included
 area. Empty generated-name overrides require an explicit naming decision and
 do not imply that Terraform will address the existing Bicep-created resources.
 
+LLM runtime metadata follows the first exact-case model occurrence in Bicep.
+The pinned Terraform root looks only in backend zero, then falls back to
+`apiVersion = "2024-02-15-preview"`, `timeout = 120` and an empty
+`inferenceApiVersion`. A model first present in a later backend is blocked when
+those effective values differ; absent/default-equivalent metadata still exports.
+Later duplicate occurrences cannot override the first occurrence's metadata.
+
 ![The existing typed backend/model surface beside actual Terraform backend properties](../docs/images/51-terraform-models.png)
 
 The ZIP has no wrapper and contains only the selected files:

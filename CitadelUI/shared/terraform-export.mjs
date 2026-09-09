@@ -260,6 +260,11 @@ function mapBackends(row, values) {
   const list = values.llmBackendConfig;
   if (!checkList(row, list, true)) return [];
   const ids = new Set();
+  // Source llm-policy-fragments.bicep:199-205 reduces all backends, first exact
+  // model name wins. Pinned llm-backend-onboarding/main.tf:247-272 instead reads
+  // the first backend's matching-model list via [0][0], or its fixed defaults.
+  const firstMetadata = new Map();
+  const metadataProperties = ['apiVersion', 'timeout', 'inferenceApiVersion'];
   return list.map((backend, index) => {
     const path = [row.source, index];
     const root = `llm_backend_config[${index}]`;
@@ -332,7 +337,29 @@ function mapBackends(row, values) {
         }
         const result = { name: model.name };
         for (const key of Object.keys(MODEL_DEFAULTS)) result[key] = model[key] ?? MODEL_DEFAULTS[key];
-        for (const [key, value] of Object.entries(result)) nested(row, [...modelPath, key], [`${target}.${key}`], value);
+        const earlier = firstMetadata.get(model.name);
+        if (!earlier && identity(model.name)) firstMetadata.set(model.name, { backendId: backend.backendId, index });
+        for (const [key, value] of Object.entries(result)) {
+          let status = 'mapped';
+          let reason = '';
+          if (metadataProperties.includes(key) && identity(model.name)) {
+            if (earlier) {
+              status = 'transformed';
+              reason = `Runtime ${key} follows the first occurrence of model "${model.name}" in backend "${earlier.backendId}" [${earlier.index}]. ` +
+                'This later occurrence does not replace its metadata. Any source/target metadata loss is reported on that first occurrence.';
+            } else if (index > 0) {
+              const fallback = MODEL_DEFAULTS[key];
+              const matches = Object.is(value, fallback);
+              status = matches ? 'transformed' : 'change';
+              reason = `Model "${model.name}" first occurs in backend "${backend.backendId}" [${index}]. ` +
+                `Bicep uses ${key} = ${JSON.stringify(value)}. Pinned Terraform metadata_models [0][0] only searches backend zero "${list[0]?.backendId}" for this exact-case name. ` +
+                (matches
+                  ? `Its fallback ${JSON.stringify(fallback)} agrees with the effective Bicep value.`
+                  : `It falls back to ${JSON.stringify(fallback)}, so the target metadata lookup requires a Terraform change; emitting the supplied value cannot preserve this behavior.`);
+            }
+          }
+          nested(row, [...modelPath, key], [`${target}.${key}`], value, status, reason);
+        }
         if (!Number.isSafeInteger(result.capacity) || result.capacity < 1 || !Number.isSafeInteger(result.timeout) || result.timeout < 1) {
           issue(row, 'input', 'Model capacity and timeout must be positive integers.', modelPath);
         }
