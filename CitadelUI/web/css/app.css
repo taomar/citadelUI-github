@@ -321,14 +321,21 @@ textarea {
 }
 
 .shell[data-workspace='setup'] {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-areas:
-    'title'
-    'sheet';
+  --ctx-track: 0px;
 }
 
-.shell[data-workspace='setup'] .rail {
+.shell .catalog-rail,
+.shell[data-workspace='setup'] .rail:not(.catalog-rail) {
   display: none;
+}
+
+.shell[data-workspace='setup'] .catalog-rail {
+  display: flex;
+}
+
+.catalog-rail .area,
+.gate-rail .area {
+  cursor: default;
 }
 
 /* Under ~1100px the two rails cannot both hold their labels at full width, so

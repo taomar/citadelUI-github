@@ -21,6 +21,23 @@ const lf = (s) => s.replace(/\r\n/g, '\n');
 const app = lf(readFileSync(new URL('../web/js/app.mjs', import.meta.url), 'utf8'));
 const html = lf(readFileSync(new URL('../web/index.html', import.meta.url), 'utf8'));
 const components = lf(readFileSync(new URL('../web/css/components.css', import.meta.url), 'utf8'));
+const foundation = lf(readFileSync(new URL('../web/css/app.css', import.meta.url), 'utf8'));
+
+test('the catalog retains the area frame without showing stale editor navigation', () => {
+  assert.match(html, /class="rail rail-areas catalog-rail" aria-label="Workspace overview"/);
+  assert.match(foundation, /\.shell \.catalog-rail,\s*\.shell\[data-workspace='setup'\] \.rail:not\(\.catalog-rail\)\s*\{[^}]*display:\s*none/);
+  assert.match(foundation, /\.shell\[data-workspace='setup'\] \.rail:not\(\.catalog-rail\)\s*\{[^}]*display:\s*none/);
+  assert.match(foundation, /\.shell\[data-workspace='setup'\] \.catalog-rail\s*\{[^}]*display:\s*flex/);
+  assert.match(foundation, /\.shell\[data-workspace='setup'\]\s*\{[^}]*--ctx-track:\s*0px/);
+  assert.match(html, /id="workspace" class="sheet" tabindex="-1"/);
+});
+
+test('the owner gate shares the workspace tracks and avoids a separate floating card', () => {
+  const gate = components.slice(components.indexOf('\n.gate {'));
+  assert.match(gate, /grid-template-columns:\s*var\(--rail-areas\) minmax\(0, 1fr\)/);
+  assert.match(gate, /\.gate-panel\s*\{[^}]*overflow-y:\s*auto/);
+  assert.doesNotMatch(gate, /box-shadow:|place-items:\s*center|text-transform:\s*uppercase/);
+});
 
 test('the source line is suppressed when it only repeats the path above it', () => {
   const fn = app.slice(app.indexOf('function setSourceLine'));
@@ -55,6 +72,10 @@ test('the frame is sized for the row it actually has', () => {
   // dead space above a single 22px row.
   assert.match(components, /\.titleblock\s*\{[^}]*min-height:\s*3rem/);
   assert.doesNotMatch(components, /\.titleblock\s*\{[^}]*min-height:\s*3\.5rem/);
+});
+
+test('long context labels yield to desktop commands instead of painting underneath them', () => {
+  assert.match(components, /\.tb-crumb\s*\{[^}]*flex:\s*0 1 auto;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis/);
 });
 
 test('the brand divider is drawn from the frame ramp, not the sheet ramp', () => {

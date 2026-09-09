@@ -98,7 +98,7 @@ function field(form, { id, label, type, autocomplete, hint }) {
   input.type = type;
   input.required = true;
   input.autocomplete = autocomplete;
-  input.className = 'gate-input';
+  input.className = 'ctl gate-input';
   wrap.append(caption, input);
   if (hint) {
     const note = document.createElement('span');
@@ -119,6 +119,9 @@ function field(form, { id, label, type, autocomplete, hint }) {
 export function requireOwnerSession() {
   return new Promise((resolve) => {
     const state = authState();
+    const appShell = document.querySelector('.shell');
+    const shellWasInert = appShell?.inert;
+    if (appShell) appShell.inert = true;
 
     const overlay = document.createElement('div');
     overlay.className = 'gate';
@@ -126,16 +129,34 @@ export function requireOwnerSession() {
     overlay.setAttribute('aria-modal', 'true');
     overlay.setAttribute('aria-labelledby', 'gate-title');
 
-    const panel = document.createElement('section');
-    panel.className = 'gate-panel';
-
+    const masthead = document.createElement('header');
+    masthead.className = 'titleblock gate-masthead';
     const brand = document.createElement('div');
-    brand.className = 'gate-brand';
-    brand.innerHTML = '<span class="gate-mark" aria-hidden="true"></span>';
-    const brandName = document.createElement('span');
-    brandName.className = 'gate-brand-name';
-    brandName.textContent = 'Citadel Control Panel';
-    brand.append(brandName);
+    brand.className = 'tb-brand';
+    brand.innerHTML = '<span class="tb-mark" aria-hidden="true"></span><span class="tb-brand-copy"><span class="tb-name">Citadel</span><span class="tb-mode">Control Panel</span></span>';
+    const context = document.createElement('span');
+    context.className = 'tb-crumb';
+    context.textContent = 'Owner account';
+    masthead.append(brand, context);
+
+    const rail = document.createElement('aside');
+    rail.className = 'rail rail-areas gate-rail';
+    rail.setAttribute('aria-label', 'Account access');
+    const current = document.createElement('div');
+    current.className = 'area active';
+    const areaTitle = document.createElement('span');
+    areaTitle.className = 'area-title';
+    areaTitle.textContent = state === 'unclaimed' ? 'Create owner' : 'Sign in';
+    const areaHint = document.createElement('span');
+    areaHint.className = 'area-sub';
+    areaHint.textContent = 'Account access';
+    current.append(areaTitle, areaHint);
+    rail.append(current);
+
+    const panel = document.createElement('main');
+    panel.className = 'gate-panel';
+    const introduction = document.createElement('header');
+    introduction.className = 'gate-introduction';
 
     const title = document.createElement('h1');
     title.className = 'gate-title';
@@ -154,8 +175,9 @@ export function requireOwnerSession() {
     error.setAttribute('role', 'alert');
     error.hidden = true;
 
-    panel.append(brand, title, blurb, form);
-    overlay.append(panel);
+    introduction.append(title, blurb);
+    panel.append(introduction, form);
+    overlay.append(masthead, rail, panel);
 
     /**
      * A container whose owner record cannot be read is not a container anyone
@@ -163,6 +185,7 @@ export function requireOwnerSession() {
      * so plainly is the whole recovery instruction: redeploy.
      */
     if (state === 'unavailable') {
+      areaTitle.textContent = 'Unavailable';
       title.textContent = 'This container cannot be opened';
       blurb.textContent =
         'The owner record on the data volume is missing or unreadable, so this container cannot verify who owns it. Redeploy with fresh state to claim it again.';
@@ -192,18 +215,20 @@ export function requireOwnerSession() {
 
     const submit = document.createElement('button');
     submit.type = 'submit';
-    submit.className = 'gate-submit';
+    submit.className = 'btn btn-primary gate-submit';
     submit.textContent = claiming ? 'Create owner and continue' : 'Sign in';
     form.append(error, submit);
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
+      if (submit.disabled) return;
       error.hidden = true;
       for (const control of [username, password, submit]) {
         control.removeAttribute('aria-invalid');
         control.removeAttribute('aria-describedby');
       }
       submit.disabled = true;
+      submit.setAttribute('aria-busy', 'true');
       submit.textContent = claiming ? 'Creating\u2026' : 'Signing in\u2026';
       try {
         const body = await post(
@@ -212,6 +237,7 @@ export function requireOwnerSession() {
         );
         keepToken(body.sessionToken);
         overlay.remove();
+        if (appShell) appShell.inert = shellWasInert;
         resolve(body.sessionToken);
       } catch (failure) {
         // A claim that lost the race is not an error the user caused: someone
@@ -223,6 +249,7 @@ export function requireOwnerSession() {
         error.textContent = failure.message;
         error.hidden = false;
         submit.disabled = false;
+        submit.removeAttribute('aria-busy');
         submit.textContent = claiming ? 'Create owner and continue' : 'Sign in';
         const invalid = failure.code === 'INVALID_USERNAME' ? username
           : ['INVALID_PASSWORD', 'INVALID_CREDENTIALS'].includes(failure.code) ? password : null;
