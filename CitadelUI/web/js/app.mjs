@@ -771,9 +771,24 @@ function openCreateContract() {
             const result = await withStatus('Creating\u2026', () => api.createContract({ name }));
             if (!result) return;
             closeModal();
-            state.contracts = await withStatus('Refreshing contracts\u2026', () => api.contracts());
-            await selectContract(result.id);
-            setStatus(`Created ${result.dir}`, 'ok');
+            const refreshed = await withStatus('Refreshing contracts\u2026', async () => {
+              try {
+                // Contracts refreshes the invalidated discovery; deployments reuses it.
+                const contracts = await api.contracts();
+                const catalog = await api.deployments();
+                return { contracts, catalog };
+              } catch (err) {
+                throw new Error(
+                  `Created ${result.dir}, but could not refresh the workspace catalog. ${err.message} Reopen this workspace to refresh the lists; do not create this contract again.`,
+                  { cause: err }
+                );
+              }
+            });
+            if (!refreshed) return;
+            state.contracts = refreshed.contracts;
+            state.catalog = refreshed.catalog;
+            render();
+            if (await selectContract(result.id)) setStatus(`Created ${result.dir}`, 'ok');
           },
         },
         'Create'
@@ -838,9 +853,9 @@ async function selectContract(id, options = {}) {
     const choice = await choosePendingNavigation({
       destination: `opening contract ${id}`,
     });
-    if (!(await applyPendingNavigation(choice))) return;
+    if (!(await applyPendingNavigation(choice))) return false;
   }
-  await loadContract(id, options.preserved, options.preserveOptions);
+  return loadContract(id, options.preserved, options.preserveOptions);
 }
 
 /* ------------------------------------------------------------------- policy */
