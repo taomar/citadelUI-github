@@ -2399,7 +2399,7 @@ async function openParameterMigration() {
   // Migration is separate from editor drafts. Do not discard or silently stash
   // either tab's edits just because the operator opened a wizard.
   if (pendingCount()) {
-    setStatus('Save or discard existing editor changes before opening Migrate Citadel Configuration. Your edits have been kept.', 'error');
+    setStatus('Save or discard existing editor changes before opening Migrate Citadel Configuration (Experimental). Your edits have been kept.', 'error');
     return;
   }
   const context = activeWorkspace();
@@ -2459,7 +2459,7 @@ function renderActions() {
     ? h('button', {
       class: 'btn btn-ghost', type: 'button',
       onclick: guardedHandler(openParameterMigration, { key: 'open-parameter-migration' }),
-    }, 'Migrate Citadel Configuration')
+    }, 'Migrate Citadel Configuration (Experimental)')
     : null;
   if (!state.current) {
     mount(

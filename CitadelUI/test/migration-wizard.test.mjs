@@ -109,7 +109,7 @@ async function review(wizard) {
 test('migration wizard is usable end-to-end through synthetic folder handles and the existing dialog stack', async () => {
   const { wizard, harness, dialog, downloads, applied } = await open({ realConfirm: true });
   assert.equal(dialog.modal.open, true);
-  assert.match(readText(dialog.modal), /Migrate Citadel Configuration/);
+  assert.match(readText(dialog.modal), /Migrate Citadel Configuration \(Experimental\)/);
   assert.doesNotMatch(readText(dialog.modal), /Migrate a repo|Migrate repo/);
   assert.match(readText(wizard.body), /Current workspace|Currently checked-out files/);
   assert.match(readText(wizard.body), /No host path is sent to the server/);
@@ -500,12 +500,21 @@ test('migration command is gated on an active workspace and protects the existin
   const actions = app.slice(app.indexOf('function renderActions()'), app.indexOf('let setupContext'));
   assert.match(actions, /activeWorkspace\(\)/);
   assert.match(actions, /const migration = workspace/);
-  assert.match(actions, /Migrate Citadel Configuration/);
+  assert.match(actions, /'Migrate Citadel Configuration \(Experimental\)'/);
   assert.doesNotMatch(actions, /Migrate a repo|Migrate repo/);
   const launch = app.slice(app.indexOf('async function openParameterMigration'), app.indexOf('function renderActions()'));
   assert.match(launch, /if \(pendingCount\(\)\)/);
+  assert.match(launch, /opening Migrate Citadel Configuration \(Experimental\)\. Your edits have been kept/);
   assert.doesNotMatch(launch, /discardAllPending|removeDraft|stashCurrentPending/);
   assert.match(launch, /current !== context \|\| pendingCount\(\)/);
+});
+
+test('migration documentation uses the Experimental designation without changing section anchors', async () => {
+  for (const file of ['../../README.md', '../README.md', '../../guides/using-the-control-plane.md']) {
+    const text = await readFile(new URL(file, import.meta.url), 'utf8');
+    assert.match(text, /Migrate Citadel\s+Configuration \(Experimental\)/);
+    if (file !== '../../README.md') assert.match(text, /^## Migrate Citadel Configuration$/m);
+  }
 });
 
 function input(wizard, label, value) {

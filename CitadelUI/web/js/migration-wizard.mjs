@@ -615,7 +615,7 @@ export async function openMigrationWizard({
       ? h('div', { class: 'migration-area-layout' }, renderAreaNavigation(), panel) : panel);
     if (surface) {
       mount(surface.areas, renderAreaNavigation());
-      if (surface.breadcrumb) surface.breadcrumb.textContent = selectedTarget?.alias || 'Migration preview';
+      if (surface.breadcrumb) surface.breadcrumb.textContent = selectedTarget?.alias || 'Migration preview (Experimental)';
     }
     const actions = [
       action(surface ? 'Exit migration' : step === 'done' ? 'Close' : 'Cancel', requestClose, { key: 'close' }),
@@ -696,7 +696,7 @@ export async function openMigrationWizard({
     }
     if (step === 'donor' && sourceReturn) actions.push(action('Return to prepared source', returnToSource, { key: 'return-source' }));
     const selection = view && ['map', 'review'].includes(step) ? migrationSelectionSummary(view.rows) : null;
-    mount(footer, surface ? h('strong', { class: 'chip chip-warn' }, 'Migration preview') : null,
+    mount(footer, surface ? h('strong', { class: 'chip chip-warn' }, 'Migration preview (Experimental)') : null,
       selection ? h('p', { class: 'migration-footer-summary', role: 'status' },
       `${quantity(selection.selected, 'value')} selected · ${quantity(selection.changes, 'change')}${selection.alreadyCurrent ? ` · ${selection.alreadyCurrent} already same` : ''}`) : null, actions);
     if (focusRow) (decisionControls.get(focusRow) || pairingControls.get(focusRow) || actionControls.get(focusRow) || sourceControls.get(focusRow))?.focus({ preventScroll: true });
@@ -1616,7 +1616,7 @@ export async function openMigrationWizard({
       if (surface.breadcrumb) surface.breadcrumb.textContent = path;
       onExit();
     };
-  } else show('Migrate Citadel Configuration', body, [footer], {
+  } else show('Migrate Citadel Configuration (Experimental)', body, [footer], {
     preventDismiss: () => {
       if (allowDismiss) return false;
       if (busy) return true;

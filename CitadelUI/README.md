@@ -156,12 +156,12 @@ Bicep/XML editor's read/write scope or access any local source folder.
 
 ## Migrate Citadel Configuration
 
-Open the **current destination workspace** first, then choose **Migrate Citadel Configuration**
+Open the **current destination workspace** first, then choose **Migrate Citadel Configuration (Experimental)**
 in its command bar. Migration is separate from workspace attachment: an older
 donor does not have to pass the current Citadel compatibility signatures and
 never becomes an editable workspace.
 
-**Migration preview** uses the normal workspace shell, area rail, parameter
+**Migration preview (Experimental)** uses the normal workspace shell, area rail, parameter
 sections, typed fields, object tables and backend/model forms. It has its own
 review/apply/export actions, not the editor's save or subscription bridge.
 For a short walkthrough, see the

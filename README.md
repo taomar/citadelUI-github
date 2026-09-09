@@ -112,7 +112,7 @@ snapshot (or an overridden GitHub source), then continue through the same
 repository and branch selection. Its temporary creation token requires more
 access than the normal editor token; the inline help explains that distinction.
 
-After opening a destination workspace, **Migrate Citadel Configuration** can
+After opening a destination workspace, **Migrate Citadel Configuration (Experimental)** can
 compare older local, public GitHub, or private GitHub parameters against its
 current templates. It proposes values only for current parameter names, reports
 unmatched names per file pair, and requires review before applying changes to a

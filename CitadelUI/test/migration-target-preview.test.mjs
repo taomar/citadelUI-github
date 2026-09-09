@@ -31,6 +31,8 @@ async function fixture(alias = JOURNEY_MAIN) {
 test('target form uses actual parameter sections, typed controls and objects without a subscription or live editor callback', async () => {
   const h = await fixture();
   let form = h.render();
+  assert.equal(readText(all(form, (node) => node.tagName === 'H2' && node.classList?.contains('strip-title'))[0]),
+    'Migration preview (Experimental)');
   assert(all(form, (node) => node.classList?.contains('sec-features')).length);
   assert(all(form, (node) => node.classList?.contains('outline-tabs')).length);
   assert(all(form, (node) => node.tagName === 'INPUT' && (node.type || node.getAttribute('type')) === 'checkbox').length);
@@ -105,15 +107,20 @@ test('the full workspace migration surface renders, selects, undoes and exits wi
   shell.dataset.workspace = 'active';
   shell.dataset.rail = 'off';
   const workspace = dom.node('main'), areas = dom.node('nav'), actions = dom.node('div'), rail = dom.node('aside');
-  shell.append(workspace, areas, actions, rail);
+  const breadcrumb = dom.node('code');
+  breadcrumb.textContent = JOURNEY_MAIN;
+  shell.append(workspace, areas, actions, rail, breadcrumb);
   const original = dom.node('button');
   original.textContent = 'Review & save';
   actions.append(original);
   let exited = false;
   const wizard = await openMigrationWizard({
     session: h.session, chooseDirectory: async () => h.donorRoot,
-    surface: { shell, workspace, areas, actions, rail }, onExit: () => { exited = true; },
+    surface: { shell, workspace, areas, actions, rail, breadcrumb }, onExit: () => { exited = true; },
   });
+  assert.equal(readText(breadcrumb), 'Migration preview (Experimental)');
+  assert.equal(readText(all(actions, (node) => node.tagName === 'STRONG' && node.classList?.contains('chip'))[0]),
+    'Migration preview (Experimental)');
   const action = async (key) => {
     const control = all(shell, (node) => node.dataset?.action === key)[0];
     assert(control && !control.disabled, key);
@@ -130,6 +137,9 @@ test('the full workspace migration surface renders, selects, undoes and exits wi
   await action('map');
   assert.equal(shell.dataset.workspace, 'migration');
   assert.equal(dom.modal.open, false, 'the parameter form is not a modal wizard');
+  assert.equal(readText(breadcrumb), JOURNEY_MAIN, 'the target path remains the breadcrumb once a file is paired');
+  assert.equal(readText(all(actions, (node) => node.tagName === 'STRONG' && node.classList?.contains('chip'))[0]),
+    'Migration preview (Experimental)');
   assert.doesNotMatch(readText(actions), /Review & save/);
   assert.match(readText(actions), /Review migration/);
   all(workspace, (node) => node.getAttribute?.('aria-label') === 'Use source value for environmentName')[0].click();
@@ -142,6 +152,7 @@ test('the full workspace migration surface renders, selects, undoes and exits wi
   assert(exited);
   assert.equal(shell.dataset.workspace, 'active');
   assert.equal(actions.children[0], original);
+  assert.equal(readText(breadcrumb), JOURNEY_MAIN);
   assert.equal(h.api.trace.length, 0);
 });
 

@@ -130,7 +130,7 @@ export function renderMigrationTargetPreview({ projection, rows, expanded, heldR
     h('div', { class: 'sheet-sticky' },
       h('header', { class: 'sheet-strip' },
         h('div', { class: 'strip-top' },
-          h('h2', { class: 'strip-title' }, 'Migration preview'),
+          h('h2', { class: 'strip-title' }, 'Migration preview (Experimental)'),
           h('code', { class: 'strip-path' }, doc.path),
           h('span', { class: 'chip chip-warn' }, `${projection.changes.length} selected imports \u00b7 not saved`)),
         h('div', { class: 'strip-tabs' }, h('nav', { class: 'tabs', 'aria-label': 'Migration target preview' },

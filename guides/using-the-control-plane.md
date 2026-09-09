@@ -126,7 +126,7 @@ for migration needs only Contents read access, as described below.
 ## Migrate Citadel Configuration
 
 Open the **current destination workspace**, then choose **Migrate Citadel
-Configuration** in its command bar. The older repository is a read-only source:
+Configuration (Experimental)** in its command bar. The older repository is a read-only source:
 it does not need to pass current workspace compatibility checks and is not
 attached as another editable workspace. The destination's current parameter
 names and templates remain authoritative.
@@ -201,7 +201,7 @@ its old-only names, or **None** when there are none, without exposing unused val
 Duplicate candidates remain separate for review rather than being resolved by
 file order.
 
-**Migration preview** is the main-page typed target form, with the existing
+**Migration preview (Experimental)** is the main-page typed target form, with the existing
 sections, object tables, feature toggles and backend/model layout. Choose **Use
 source value**, or open **Match source values** to resolve competing candidates
 and model pairings. Only changed selected fields show **Selected import - not
