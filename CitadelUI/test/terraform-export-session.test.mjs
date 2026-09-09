@@ -41,6 +41,23 @@ test('one Access configuration must be chosen explicitly when multiple exist; ne
   assert.equal(review.files.length, 3);
 });
 
+test('saved source options use the browser inventory parameter kinds, excluding contract XML and templates', async () => {
+  const files = fixtureFiles();
+  const sibling = 'bicep/infra/citadel-access-contracts/contracts/finance-policy.xml';
+  files[sibling] = '<policies><inbound><base /></inbound></policies>';
+  files['bicep/infra/citadel-access-contracts/contracts/template.bicep'] = "param label string = 'synthetic'";
+  const fixture = exportFixture(files);
+  const session = new TerraformExportSession({ contextProvider: () => fixture.context, registry: fixture.registry });
+  const view = await session.initialize();
+  assert.deepEqual(view.areas.find((area) => area.id === 'deployment').configurations, ['bicep/infra/main.bicepparam']);
+  assert.deepEqual(view.areas.find((area) => area.id === 'llm').configurations, ['bicep/infra/llm-backend-onboarding/main.bicepparam']);
+  assert.deepEqual(view.areas.find((area) => area.id === 'access').configurations, [
+    FIXTURE_ACCESS_PATH, FIXTURE_SECOND_ACCESS_PATH, 'bicep/infra/citadel-access-contracts/main.bicepparam',
+  ]);
+  await assert.rejects(session.select('access', { path: sibling }), /configuration|inventory|scope/i);
+  assert(!fixture.root.owner.trace.some((entry) => entry.operation === 'getFile' && entry.path === sibling));
+});
+
 test('area inclusion is explicit and keeps independent choices/configurations, not partial settings', async () => {
   const { session } = await ready();
   const before = session.view().areas[0].choices;
@@ -210,6 +227,11 @@ test('mocked GitHub freshness refreshes an isolated provider without repinning t
   };
   const session = new TerraformExportSession({ contextProvider: () => context, registry: { countDrafts: async () => 0 }, activePath: FIXTURE_ACCESS_PATH });
   await session.initialize();
+  const areas = session.view().areas;
+  assert.deepEqual(areas.find((area) => area.id === 'deployment').configurations, ['bicep/infra/main.bicepparam']);
+  assert.deepEqual(areas.find((area) => area.id === 'access').configurations, [
+    FIXTURE_ACCESS_PATH, FIXTURE_SECOND_ACCESS_PATH, 'bicep/infra/citadel-access-contracts/main.bicepparam',
+  ], 'The same classified GitHub inventory excludes .bicep and XML without source acquisition');
   for (const [area, choices] of Object.entries(fixtureChoices())) for (const [key, value] of Object.entries(choices)) session.setInput(area, key, value);
   const review = await session.review();
   head = 'b'.repeat(40);

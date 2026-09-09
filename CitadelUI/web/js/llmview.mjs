@@ -189,7 +189,7 @@ function modelField(descriptor, model, entry, type, write, readOnly = false) {
           { class: 'lf-match' },
           'Matches the Foundry catalogue name ',
           h('code', {}, match.name),
-          '. Change it if your deployment uses a different name.'
+          readOnly ? '.' : '. Change it if your deployment uses a different name.'
         )
       : match
         ? h(
@@ -210,6 +210,8 @@ function modelRow(model, index, entry, entryIndex, ctx, expanded, toggle) {
   const write = (key, value) => writeField(ctx, path, model, key, value);
   const detailId = `lm-editor-${entryIndex}-${index}`;
   const modelName = model.name || 'unnamed model';
+  const inspectLabel = ctx.readOnly ? 'Inspect model details' : 'Edit model details';
+  const focusAddress = ctx.readOnly ? { editorFocus: `inspect:${JSON.stringify(path)}` } : {};
 
   if (!expanded) {
     return h(
@@ -223,8 +225,9 @@ function modelRow(model, index, entry, entryIndex, ctx, expanded, toggle) {
           {
             class: 'lm-name',
             onclick: toggle,
-            title: 'Edit model details',
-            'aria-label': `Edit model details: ${modelName}`,
+            title: inspectLabel,
+            'aria-label': `${inspectLabel}: ${modelName}`,
+            dataset: focusAddress,
             'aria-expanded': 'false',
             'aria-controls': detailId,
           },
@@ -240,6 +243,7 @@ function modelRow(model, index, entry, entryIndex, ctx, expanded, toggle) {
         'span',
         { class: 'lm-flags', role: 'cell', dataset: { label: 'State' } },
         model.sessionAwareModel === true ? h('span', { class: 'chip chip-note' }, 'stateful') : null,
+        ctx.modelStatus?.(path),
         missingPath ? h('span', { class: 'chip chip-bad' }, 'needs path') : null
       ),
       h(
@@ -292,6 +296,7 @@ function modelRow(model, index, entry, entryIndex, ctx, expanded, toggle) {
                 'aria-label': 'Close model details',
                 'aria-expanded': 'true',
                 'aria-controls': detailId,
+                dataset: focusAddress,
               },
               h('span', { class: 'lm-caret open' }, '\u203a'),
               h('span', {}, 'Close model details')
@@ -411,10 +416,17 @@ function backendCard(entry, index, ctx, findings) {
 
   const open = ctx.isOpen(`llm-${index}`, index === 0);
   const write = (key, value) => writeField(ctx, path, entry, key, value);
+  const mappedField = (keys, ...args) => {
+    const rendered = field(...args);
+    return ctx.decorateBackendValue ? ctx.decorateBackendValue([...path, ...keys], rendered) : rendered;
+  };
+  const inspectOptions = (options, value) => ctx.readOnly && value &&
+    !options.some((option) => (typeof option === 'string' ? option : option.value) === value)
+    ? [...options, { value, label: value }] : options;
 
   const head = h(
     'summary',
-    { class: 'lb-head' },
+    { class: 'lb-head', dataset: ctx.readOnly ? { editorFocus: `inspect:${JSON.stringify(path)}` } : {} },
     h('span', { class: 'lb-caret' }, '\u203a'),
     h('span', { class: 'lb-id' }, entry.backendId || h('em', {}, 'unnamed backend')),
     h('span', { class: 'chip chip-provider' }, type ? type.label : entry.backendType || '\u2014'),
@@ -424,11 +436,12 @@ function backendCard(entry, index, ctx, findings) {
     entry.priority != null || entry.weight != null
       ? h('span', { class: 'lb-routing' }, `p${entry.priority ?? 1} \u00b7 w${entry.weight ?? 100}`)
       : null,
-    errors.length ? h('span', { class: 'chip chip-bad' }, `${errors.length}`) : null
+    errors.length ? h('span', { class: 'chip chip-bad' }, `${errors.length}`) : null,
+    ctx.backendStatus?.(path)
   );
 
   const authFields =
-    authInfo && authInfo.needsAuthConfig
+    (authInfo && authInfo.needsAuthConfig) || (ctx.readOnly && entry.authConfig)
       ? h(
           'div',
           { class: 'lb-sub' },
@@ -436,7 +449,7 @@ function backendCard(entry, index, ctx, findings) {
           h(
             'div',
             { class: 'lf-grid' },
-            field(
+            mappedField(['authConfig', 'namedValueKey'],
               'Named value key',
               textField(
                 entry.authConfig && entry.authConfig.namedValueKey,
@@ -448,7 +461,7 @@ function backendCard(entry, index, ctx, findings) {
               ),
               'APIM named value that holds the key. It is created for you at deploy time.'
             ),
-            field(
+            mappedField(['authConfig', 'keyVaultSecretUri'],
               'Key Vault secret URI',
               textField(
                 entry.authConfig && entry.authConfig.keyVaultSecretUri,
@@ -487,22 +500,23 @@ function backendCard(entry, index, ctx, findings) {
     h(
       'div',
       { class: 'lf-grid' },
-      field(
+      mappedField(['backendId'],
         'Backend ID',
         textField(entry.backendId, (v) => write('backendId', v), { placeholder: 'aif-primary', path: [...path, 'backendId'] }),
         'Unique across the deployment.'
       ),
-      field(
+      mappedField(['backendType'],
         'Provider',
         selectField(
           entry.backendType,
-          BACKEND_TYPES.map((b) => ({ value: b.id, label: b.label })),
+          inspectOptions(BACKEND_TYPES.filter((b) => !ctx.backendTypes || ctx.backendTypes.includes(b.id) || b.id === entry.backendType)
+            .map((b) => ({ value: b.id, label: b.label })), entry.backendType),
           (v) => write('backendType', v),
           { path: [...path, 'backendType'] }
         ),
         type ? `Endpoint looks like ${type.endpointFormat}` : null
       ),
-      field(
+      mappedField(['endpoint'],
         'Endpoint',
         textField(entry.endpoint, (v) => write('endpoint', v), {
           placeholder: type ? type.endpointExample : 'https://\u2026',
@@ -512,20 +526,20 @@ function backendCard(entry, index, ctx, findings) {
         null,
         true
       ),
-      field(
+      mappedField(['authType'],
         'Authentication',
         selectField(
           entry.authType || '',
-          [
+          inspectOptions([
             {
               value: '',
               label: `Provider default \u2014 ${authInfo ? authInfo.label : auth}`,
             },
-            ...(type ? type.authTypes : AUTH_TYPES.map((a) => a.id)).map((id) => {
+            ...(ctx.authTypes || (type ? type.authTypes : AUTH_TYPES.map((a) => a.id))).map((id) => {
               const info = authTypeInfo(id);
               return { value: id, label: info ? info.label : id };
             }),
-          ],
+          ], entry.authType),
           (v) => {
             if (v === '' && explicitAuth) ctx.onRemove([...path, 'authType']);
             else if (v !== '') write('authType', v);
@@ -534,12 +548,12 @@ function backendCard(entry, index, ctx, findings) {
         ),
         authInfo ? authInfo.summary : null
       ),
-      field(
+      mappedField(['priority'],
         'Priority',
         numberField(entry.priority ?? 1, (v) => write('priority', v), { min: 1, max: 5, path: [...path, 'priority'] }),
         'Lower wins. Ties share traffic by weight.'
       ),
-      field(
+      mappedField(['weight'],
         'Weight',
         numberField(entry.weight ?? 100, (v) => write('weight', v), { min: 1, max: 1000, path: [...path, 'weight'] }),
         'Share within a priority tier.'
@@ -559,7 +573,7 @@ function backendCard(entry, index, ctx, findings) {
           'span',
           { class: 'lb-sub-note' },
           models.length
-          ? 'Expand a model to edit its deployment, serving, request, and lifecycle settings.'
+          ? `Expand a model to ${ctx.readOnly ? 'inspect' : 'edit'} its deployment, serving, request, and lifecycle settings.`
             : 'Nothing routes here until a model is added.'
         )
       ),

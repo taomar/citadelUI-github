@@ -373,7 +373,7 @@ function endpointSourceControl({ value, hasValue, index, path, ctx }) {
   );
 }
 
-function recordOptions(name, ctx) {
+export function recordOptions(name, ctx) {
   const options = {
     aiFoundryModelsConfig: {
     record: {
@@ -637,13 +637,13 @@ function paramExplainer(param, schema, variable, type) {
 }
 
 /** Column header. Stated once per run of rows, sticky under the section band. */
-function headRow() {
+function headRow(ctx) {
   return h(
     'div',
     { class: 'prow prow-head' },
     h('div', { class: 'pcell pcell-gut' }),
     h('div', { class: 'pcell pcell-ident' }, 'Parameter'),
-    h('div', { class: 'pcell pcell-val' }, 'Value in this file')
+    h('div', { class: 'pcell pcell-val' }, ctx.valueHeading || 'Value in this file')
   );
 }
 
@@ -759,6 +759,12 @@ function paramRow(param, ctx) {
   return ctx.decorateParameter ? ctx.decorateParameter(param, rendered) : rendered;
 }
 
+export function renderParameterValue(param, ctx, options = recordOptions(param.name, ctx)) {
+  return param.name === 'llmBackendConfig'
+    ? renderLlmBackends(param.value, ctx)
+    : renderValue(param.value, [param.name], ctx, ctx.schemaFor(param.name), options);
+}
+
 function paramRowContent(param, ctx) {
   if (param.subscription) return subscriptionRow(param, ctx);
   const schema = ctx.schemaFor(param.name);
@@ -787,7 +793,7 @@ function paramRowContent(param, ctx) {
         pending ? h('span', { class: 'chip chip-dirty' }, 'edited') : null
       ),
       ctx.migrationChoice?.([param.name]),
-      renderLlmBackends(param.value, ctx, ctx)
+      ctx.renderParameterValue ? ctx.renderParameterValue(param) : renderParameterValue(param, ctx)
     );
   }
 
@@ -833,7 +839,7 @@ function paramRowContent(param, ctx) {
       'div',
       { class: 'pcell pcell-val', dataset: valueCell },
       targetAction(param, ctx),
-      renderValue(param.value, [param.name], ctx, schema, recordOptions(param.name, ctx)),
+      ctx.renderParameterValue ? ctx.renderParameterValue(param) : renderParameterValue(param, ctx),
       ctx.migrationChoice?.([param.name]),
       guidanceFor(param, ctx),
       findings.map((finding) =>
@@ -1019,7 +1025,7 @@ function sectionNode(section, byName, ctx) {  const params = section.params.map(
     isNote
       ? null
       : [
-          headRow(),
+          headRow(ctx),
           ...(section.groups || [{ label: null, blocks: [], params: section.params }])
             .map((g) => groupNode(g, byName, ctx))
             .filter(Boolean)
@@ -1178,7 +1184,7 @@ export function renderParamDocument(doc, ctx) {
             h(
               'div',
               { class: 'sec-body' },
-              headRow(),
+              headRow(ctx),
               h(
                 'div',
                 { class: 'prows', style: `--stacks: ${stacksFor(orphans.length)}` },

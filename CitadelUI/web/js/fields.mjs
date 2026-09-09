@@ -545,7 +545,7 @@ function chipList(value, path, ctx) {
       'span',
       { class: 'listchip' },
       h('span', { class: 'listchip-text' }, String(item)),
-      h('button', {
+      ctx.readOnly ? null : h('button', {
         type: 'button',
         class: 'listchip-x',
         'aria-label': `Remove ${item}`,
@@ -554,6 +554,8 @@ function chipList(value, path, ctx) {
       })
     )
   );
+
+  if (ctx.readOnly) return h('div', { class: 'chiplist' }, h('div', { class: 'chiplist-set' }, chips));
 
   const input = h('input', {
     class: 'ctl ctl-sm',
@@ -667,9 +669,13 @@ function recordCell(row, key, index, path, ctx, schema, config) {
   const hasValue = Object.prototype.hasOwnProperty.call(row, key);
   const pickerConfig = config && config.picker;
   const custom = config && config.controls && config.controls[key];
-  const control = custom
+  let control = custom
     ? custom({ value: row[key], hasValue, row, index, path, ctx, schema: columnSchema(schema, key) })
     : null;
+  if (!control && hasValue && pickerConfig && key === pickerConfig.key) {
+    control = recordPickerControl(row[key], row, index, path, ctx, config);
+  }
+  if (control && ctx.decorateRecordValue) control = ctx.decorateRecordValue([...path, index, key], control);
   return h(
     'div',
     {
@@ -677,9 +683,7 @@ function recordCell(row, key, index, path, ctx, schema, config) {
       dataset: { kind: typeOf(row[key]), label: recordHeader(key) },
     },
     control || (hasValue
-      ? pickerConfig && key === pickerConfig.key
-      ? recordPickerControl(row[key], row, index, path, ctx, config)
-      : renderValue(row[key], [...path, index, key], ctx, columnSchema(schema, key))
+      ? renderValue(row[key], [...path, index, key], ctx, columnSchema(schema, key))
       : h(
         'button',
         {
@@ -778,6 +782,7 @@ function recordTable(value, path, ctx, schema, config = null) {
           type: 'button',
           'aria-expanded': String(expanded),
           'aria-controls': detailId,
+          dataset: ctx.readOnly ? { editorFocus: `inspect:${stateKey}` } : {},
           title: `Show ${split.hidden.length} additional fields`,
           onclick: (event) => {
             expanded = !expanded;
@@ -972,10 +977,10 @@ function pathTable(value, path, ctx) {
  * definitions, not a document. Key at one fixed measure, control beside it, no
  * indent and no container.
  */
-function objectEditor(value, path, ctx) {
+function objectEditor(value, path, ctx, options) {
   const keys = Object.entries(value);
   if (!keys.length) return h('p', { class: 'empty' }, 'No properties.');
-  if (depthOf(value) > 1) return pathTable(value, path, ctx);
+  if (depthOf(value) > 1 && options?.object !== 'fields') return pathTable(value, path, ctx);
 
   return h(
     'div',
@@ -992,6 +997,7 @@ function objectEditor(value, path, ctx) {
 }
 
 export function renderValue(value, path, ctx, schema, options = null) {
+  if (ctx.schemaForValue) schema = ctx.schemaForValue(path, schema);
   const rendered = renderValueContent(value, path, ctx, schema, options);
   return ctx.decorateValue ? ctx.decorateValue(path, rendered) : rendered;
 }
@@ -1000,7 +1006,7 @@ function renderValueContent(value, path, ctx, schema, options) {
   const kind = typeOf(value);
   if (kind === 'expr') return exprCard(value, path, ctx, schema);
   if (kind === 'array') return arrayEditor(value, path, ctx, schema, options);
-  if (kind === 'object') return objectEditor(value, path, ctx);
+  if (kind === 'object') return objectEditor(value, path, ctx, options);
   // `null` and "no value" are the same fact to the reader, so they get the
   // same row state rather than a second vocabulary for absence.
   if (kind === 'null') {

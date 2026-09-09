@@ -1,6 +1,6 @@
 import { documentFromText, resolveAlias } from '../../shared/citadel-core.mjs';
 import { literalBicep, readBicepParameters, scanBicep } from '../../shared/migration-input.mjs';
-import { MAIN_PATH, LLM_PATH, isContractAlias } from '../../shared/source-plan.mjs';
+import { MAIN_PATH, LLM_PATH, isContractAlias, citadelSourcePlan } from '../../shared/source-plan.mjs';
 import { normalizeAlias, isSkippedDirectory, sha256 } from '../../shared/source-scope.mjs';
 import { EXPORT_AREAS, TERRAFORM_CONTRACT } from '../../shared/terraform-contract.mjs';
 import { exportPathKey, projectTerraformExport } from '../../shared/terraform-export.mjs';
@@ -179,8 +179,9 @@ export class TerraformExportSession {
     await this.#assertCurrent();
     if (this.#provider.remote) this.#remote = remoteIdentity(await this.#provider.tree({ refresh: true }));
     const entries = await this.#provider.entries();
-    this.#inventory = entries.filter(({ alias }) => alias === MAIN_PATH || alias === LLM_PATH || isContractAlias(alias))
-      .map(({ alias }) => ({ path: alias, area: alias === MAIN_PATH ? 'deployment' : alias === LLM_PATH ? 'llm' : 'access' }));
+    const plan = citadelSourcePlan(entries);
+    this.#inventory = [plan.main, plan.llm, ...plan.contracts].filter(Boolean)
+      .map((alias) => ({ path: alias, area: alias === MAIN_PATH ? 'deployment' : alias === LLM_PATH ? 'llm' : 'access' }));
     for (const area of EXPORT_AREAS) {
       const selected = this.#selection.get(area.id);
       const available = this.#inventory.filter((entry) => entry.area === area.id);

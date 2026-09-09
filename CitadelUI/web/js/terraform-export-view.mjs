@@ -1,9 +1,9 @@
 import { h, mount } from './dom.mjs';
 import { confirmDialog } from './dialog.mjs';
 import { renderParamDocument, renderOutlineNav } from './paramview.mjs';
-import { renderValue } from './fields.mjs';
+import { exportControlContext } from './terraform-export-controls.mjs';
 import { editorField, preserveEditorFocus } from './editor-focus.mjs';
-import { EXPORT_STATUS, exportPathKey } from '../../shared/terraform-export.mjs';
+import { EXPORT_STATUS } from '../../shared/terraform-export.mjs';
 import { hclLiteral, TerraformExportError } from '../../shared/terraform-literals.mjs';
 
 export async function downloadTerraformZip(file) {
@@ -43,7 +43,7 @@ function lockSource(root, includingTargets = false) {
   }
   for (const button of root.querySelectorAll('button')) {
     if (!includingTargets && button.closest('.tf-target')) continue;
-    if (['lm-name', 'lm-editor-toggle', 'rec-toggle'].some((name) => button.classList.contains(name))) continue;
+    if (['lm-name', 'lm-editor-toggle', 'rec-toggle', 'explain-trigger'].some((name) => button.classList.contains(name))) continue;
     button.disabled = true;
     button.hidden = true;
   }
@@ -204,20 +204,6 @@ export async function openTerraformExport({
       errors.has(key) ? h('p', { class: 'field-error', role: 'alert' }, errors.get(key)) : null);
   }
 
-  function proposedValues(row) {
-    const entries = Object.entries(row.proposed || {});
-    if (!entries.length) return null;
-    const ctx = readOnlyContext(expanded(), () => renderKeepingFocus());
-    const values = h('div', { class: 'tf-proposed-values' }, entries.map(([name, value]) => {
-      if (value === undefined) return null;
-      const rendered = renderValue(value, ['terraform-output', name], ctx,
-        { name, type: typeof value === 'boolean' ? 'bool' : typeof value === 'number' ? 'int' : Array.isArray(value) ? 'array' : typeof value });
-      lockSource(rendered, true);
-      return h('div', { class: 'tf-proposed-value' }, entries.length > 1 ? code(name) : null, rendered);
-    }));
-    return values;
-  }
-
   function rowNotes(row, { nested = true } = {}) {
     const notes = row.notes || [];
     const blockers = notes.filter((entry) => ['input', 'change'].includes(entry.status));
@@ -226,12 +212,12 @@ export async function openTerraformExport({
       h('div', { class: 'tf-mapping-head' }, badge(row.status),
         h('span', { class: 'hint' }, row.origin || 'Saved source')),
       h('div', { class: 'tf-target-names' }, row.targets?.length ? row.targets.map(code) : h('span', { class: 'hint' }, 'No compatible target')),
-      h('small', { class: 'tf-output-path' }, row.outputPath),
+      !Object.values(row.proposed).some((value) => value !== undefined)
+        ? h('p', { class: 'hint' }, 'No value emitted; saved Bicep is shown for inspection.') : null,
       row.sources?.length > 1 ? h('p', { class: 'hint' }, 'Together with: ', row.sources.map(code)) : null,
       blockers.map((entry) => h('p', { class: entry.status === 'change' ? 'field-error' : 'field-warning' },
-        entry.path?.length > 1 ? `${entry.path.join('.')}: ` : '', entry.reason)),
+        entry.reason)),
       row.inputs?.map((spec) => inputField(spec, row)),
-      proposedValues(row),
       other.length || (nested && row.nested?.length) || row.evidence ? h('details', { class: 'tf-mapping-details' },
         h('summary', {}, 'Property mapping and reasons'),
         other.map((entry) => h('p', { class: 'hint' }, entry.reason)),
@@ -257,8 +243,7 @@ export async function openTerraformExport({
       extras.map((row) => h('div', { class: 'tf-extra' },
         h('div', { class: 'tf-mapping-head' }, badge(row.status), code(row.source)),
         row.inputs.length ? row.inputs.map((spec) => inputField(spec, row)) : row.notes.map((entry) => h('p', { class: 'hint' }, entry.reason)),
-        row.notes.filter((entry) => entry.status === 'change').map((entry) => h('p', { class: 'field-error' }, entry.reason)),
-        row.status !== 'input' ? proposedValues(row) : null)));
+        row.notes.filter((entry) => entry.status === 'change').map((entry) => h('p', { class: 'field-error' }, entry.reason)))));
     box.addEventListener('toggle', () => disclosureState.set(`extra:${service}`, box.open));
     return box;
   }
@@ -267,10 +252,9 @@ export async function openTerraformExport({
     const projection = area.projection;
     const rows = new Map(projection.rows.map((row) => [row.source, row]));
     const attachedServices = new Set();
-    const ctx = {
+    const ctx = exportControlContext(area.id, projection, {
       ...readOnlyContext(expanded(), () => renderKeepingFocus()),
       schemaFor: (name) => projection.document.schema.parameters[name],
-      paramValue: (name) => projection.document.params.find((entry) => entry.name === name)?.value,
       decorateParameter: (param, element) => {
         const row = rows.get(param.name);
         if (!row) return element;
@@ -280,33 +264,14 @@ export async function openTerraformExport({
         if (showExtras) attachedServices.add(row.service);
         element.classList.add('tf-source-row');
         element.dataset.exportStatus = row.status;
-        const note = h('div', { class: 'tf-target' }, rowNotes(row, { nested: param.name !== 'llmBackendConfig' }),
-          showExtras ? serviceInputs(row.service, extra) : null);
-        // Backends keep their full-width incumbent typed model view. Scalar and
-        // object rows gain a fourth datasheet cell instead of a separate report.
-        element.append(note);
+        const note = h('div', { class: 'tf-target tf-row-notes' }, rowNotes(row));
+        const ident = element.querySelector('.pcell-ident') || element.querySelector('.prow-fullhead');
+        if (ident) ident.append(note);
+        else element.append(note);
+        if (showExtras) element.append(h('div', { class: 'tf-target tf-row-choices' }, serviceInputs(row.service, extra)));
         return element;
       },
-      decorateBackend: (path, element) => {
-        const row = rows.get('llmBackendConfig');
-        const notes = row.nested.filter((entry) => entry.path[1] === path[1] && entry.path.length === 3);
-        const item = h('aside', { class: 'tf-target tf-backend-target', 'aria-label': 'Terraform backend properties' },
-          h('h4', {}, 'Terraform backend'),
-          notes.map((entry) => h('div', { class: 'tf-property' }, code(entry.targets.join(', ')),
-            entry.value === undefined ? h('div', {}, 'Needs input') :
-              proposedValues({ proposed: { [entry.targets.join(', ')]: entry.value } }))));
-        return h('div', { class: 'tf-backend' }, element, item);
-      },
-      decorateValue: (path, rendered) => {
-        if (path[0] !== 'llmBackendConfig' || path.length < 5) return rendered;
-        const row = rows.get(path[0]);
-        const entry = row.nested.find((candidate) => exportPathKey(candidate.path) === exportPathKey(path));
-        if (!entry) return rendered;
-        return h('div', { class: 'tf-model-field' }, rendered,
-          h('div', { class: 'tf-property' }, code(entry.targets.join(', ')),
-            entry.status === 'change' ? h('span', { class: 'field-error' }, entry.reason) : null));
-      },
-    };
+    });
     const form = renderParamDocument(projection.document, ctx);
     lockSource(form);
     const unattached = projection.extras.filter((entry) => !attachedServices.has(entry.service));
@@ -325,14 +290,20 @@ export async function openTerraformExport({
   }
 
   function mappingScreen(area) {
+    const sourceCount = area.configurations.length;
+    const sourceHint = !sourceCount
+      ? `No saved ${area.label} parameter configuration is available in this source. Save a .bicepparam configuration in the ${area.id === 'deployment' ? 'main deployment' : area.id === 'llm' ? 'LLM onboarding' : 'Access Contracts'} source area, then reopen export.`
+      : !area.path
+        ? `Choose one of ${sourceCount} saved ${area.label} configuration${sourceCount === 1 ? '' : 's'}${area.id === 'access' ? '; contracts are not merged' : ''}.`
+        : `${sourceCount} saved ${area.label} configuration${sourceCount === 1 ? '' : 's'} available.`;
     const selector = h('select', {
-      class: 'ctl tf-source-selector', disabled: busy,
+      class: 'ctl tf-source-selector', disabled: busy || !sourceCount,
       'aria-label': `${area.label} source configuration`,
       onchange: (event) => run(`source:${area.id}`, async () => {
         review = null;
         await session.select(area.id, { path: event.target.value || null });
       }),
-    }, h('option', { value: '' }, 'Choose one saved configuration'),
+    }, h('option', { value: '' }, sourceCount ? `Choose one saved ${area.label} configuration` : 'No saved parameter configurations'),
     area.configurations.map((path) => h('option', { value: path }, path)));
     selector.value = area.path || '';
     remember(`source:${area.id}`, selector);
@@ -342,17 +313,17 @@ export async function openTerraformExport({
         h('header', { class: 'sheet-strip' },
           h('div', { class: 'strip-top' }, h('h2', { class: 'strip-title', tabindex: -1, id: 'tf-export-heading' }, `${area.label} - Terraform export`),
             h('span', { class: 'chip chip-note' }, 'Experimental / saved source')),
-          h('p', { class: 'hint tf-caption' }, 'Bicep remains the authoring source. Review mapped values beside the original settings; only explicit export-only inputs are editable.')),
+          h('p', { class: 'hint tf-caption' }, 'The Bicepparam controls show proposed Terraform values, with exact target names and mapping status at each setting. Differences from saved Bicep are noted locally. Only explicit export-only inputs are editable.')),
         nav),
       h('div', { class: 'tf-source-selection' }, h('label', {}, 'Saved source', selector),
+        h('p', { class: sourceCount ? 'hint tf-source-hint' : 'field-warning tf-source-hint' }, sourceHint),
         area.path ? h('p', { class: 'hint tf-output-path tf-selected-source' }, 'Source file: ', code(area.path)) : null,
         h('p', { class: 'hint' }, area.included
           ? `Included: ${area.projection?.path || 'one target-relative variable file'}. One configuration per root; contracts are never merged.`
           : 'Excluded from this ZIP by your area selection. Its inputs are retained while you navigate.')),
       area.error ? h('p', { class: 'field-error tf-notice', role: 'alert' }, area.error) : null,
-      !area.path ? h('p', { class: 'tf-notice field-warning' }, 'Choose exactly one configuration. Other contracts will not be merged into it or exported under invented names.') : null,
       area.projection ? h('div', { class: 'sheet-body' },
-        h('div', { class: 'tf-column-head', 'aria-hidden': 'true' }, h('span', {}, 'Saved Bicep setting / value'), h('span', {}, 'Terraform property / proposed value / output')),
+        h('div', { class: 'tf-column-head', 'aria-hidden': 'true' }, h('span', {}, 'Saved Bicep setting'), h('span', {}, 'Terraform proposed values / same Bicepparam controls')),
         form,
         area.projection.unusedTargets.length ? h('details', { class: 'tf-unused' },
           h('summary', {}, 'Declared but unconsumed Terraform inputs'),
@@ -442,7 +413,8 @@ export async function openTerraformExport({
             areaId = area.id; review = null; renderKeepingFocus(`area:${area.id}`);
           },
         }, h('span', { class: 'area-title' }, area.label),
-        h('span', { class: 'area-sub' }, !area.included ? 'Excluded' : area.error || !area.path ? 'Needs source' :
+        h('span', { class: 'area-sub' }, !area.included ? 'Excluded' : area.error ? 'Source unavailable' :
+          !area.configurations.length ? 'No saved configuration' : !area.path ? 'Choose saved configuration' :
           area.projection?.blockers.length ? `${area.projection.blockers.length} to resolve` : 'Ready'))));
     })),
     h('div', { class: 'tf-rail-note' }, h('strong', {}, `${view.included} area${view.included === 1 ? '' : 's'} included`),
@@ -461,7 +433,7 @@ export async function openTerraformExport({
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
       event.preventDefault(); event.stopImmediatePropagation();
       message = 'Export has no Save action. Use Review ZIP, then Approve & export ZIP.'; tone = 'info'; render();
-    } else if (event.key === 'Escape' && !document.getElementById('modal')?.open) {
+    } else if (event.key === 'Escape' && !document.getElementById('modal')?.open && !document.querySelector('.explain-open')) {
       event.preventDefault(); event.stopPropagation(); requestExit();
     }
   };

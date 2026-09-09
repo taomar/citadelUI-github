@@ -233,6 +233,22 @@ function renameObject(row, value, path, fields, root, required = [], types = {})
   return output;
 }
 
+// Presentation metadata follows the final emitted value, including defaults
+// and global overrides. It never supplies values back to the export.
+function describeFinalProperties(row, source, path, fields, root, output) {
+  for (const [key, target] of Object.entries(fields)) {
+    if (!Object.hasOwn(output, target)) continue;
+    const fieldPath = [...path, key];
+    const entry = row.nested.find((item) => exportPathKey(item.path) === exportPathKey(fieldPath));
+    if (entry) {
+      entry.value = output[target];
+      if (!sameLiteralValue(source[key], output[target]) && entry.status === 'mapped') entry.status = 'transformed';
+    } else {
+      nested(row, fieldPath, [`${root}.${target}`], output[target], 'transformed', 'Pinned target default; not added to the saved Bicep source.');
+    }
+  }
+}
+
 function checkIdentity(row, value, path) {
   if (!identity(value)) issue(row, 'input', `${path.join('.')} needs a nonempty portable identity (letters, numbers, dots, underscores or hyphens).`, path);
 }
@@ -393,6 +409,7 @@ function mapFoundries(row, value, values, choices) {
     if (globalInjection === true && instance.networkInjectionEnabled === false) issue(row, 'change',
       'The root accepts network_injection_enabled but the child Foundry type drops it and falls back to true. Per-instance opt-out requires a Terraform module change.', [...path, 'networkInjectionEnabled']);
     if (globalInjection === false) transform(row, 'Global network injection is false; the dropped per-instance field cannot activate it.');
+    describeFinalProperties(row, instance, path, fields, `ai_foundry_instances[${index}]`, output);
     return output;
   });
 }
@@ -418,6 +435,7 @@ function mapFoundryModels(row, value, values) {
     if (seen.has(id)) issue(row, 'change', 'Duplicate model deployment identity on the same Foundry.', path);
     seen.add(id);
     output.publisher ??= 'OpenAI'; output.sku ??= 'GlobalStandard'; output.capacity ??= 100;
+    describeFinalProperties(row, model, path, fields, `ai_foundry_models[${index}]`, output);
     if (output.publisher !== 'OpenAI') issue(row, 'change', 'Root auto-backend metadata hard-codes modelFormat = OpenAI, losing this publisher.', [...path, 'publisher']);
     const fixed = { retirementDate: '', apiVersion: '2024-02-15-preview', timeout: 120, inferenceApiVersion: '' };
     for (const [key, defaultValue] of Object.entries(fixed)) {
@@ -675,6 +693,7 @@ function applyMapping(area, result, source, choices) {
       case 'foundry-config':
         output.foundry_config = renameObject(row, value, [row.source], FOUNDRY_CONFIG_FIELDS, 'foundry_config');
         output.foundry_config.connection_category ??= 'ApiManagement';
+        describeFinalProperties(row, value, [row.source], FOUNDRY_CONFIG_FIELDS, 'foundry_config', output.foundry_config);
         if (!['ApiManagement', 'ModelGateway'].includes(output.foundry_config.connection_category) ||
             (value.deploymentInPath !== undefined && !['true', 'false'].includes(value.deploymentInPath)) ||
             (value.deploymentProvider !== undefined && !['', 'AzureOpenAI', 'OpenAI'].includes(value.deploymentProvider))) issue(row, 'input', 'Foundry category, string deploymentInPath or provider is outside the target enums.');

@@ -349,11 +349,17 @@ save actions remain the source of truth.
 2. Use **Include in ZIP** on the area rail and choose one **Saved source** per
    included root. Select one Access contract explicitly when several are available.
    A contract may contain multiple services, but separate contracts are never
-   merged or assigned invented filenames.
-3. Review the original service/setting beside its Terraform property names,
-   proposed values, output path and reason. Enter explicit export-only values
-   such as `subscription_id` and `managed_identity_client_id`, and inspect the
-   service's displayed defaults before accepting them.
+   merged or assigned invented filenames. Only saved `.bicepparam` inputs appear;
+   XML policies and `.bicep` templates are not configuration choices. No saved
+   configuration and several available choices have distinct messages. Reopen
+   export after creating a new saved configuration.
+3. Review proposed Terraform values in the same Bicepparam switches, selects,
+   number/text fields and grouped records used by the ordinary editor. The
+   corresponding Terraform name and status appear locally; changed saved values
+   are noted separately. One-to-many mappings show each target value, not a
+   duplicated whole-object report. Enter explicit export-only values such as
+   `subscription_id` and `managed_identity_client_id`, and inspect the service's
+   displayed defaults before accepting them.
 4. Resolve every blocker in each included configuration. **Review ZIP** shows
    the exact variable files and hashes. **Back to mapping** permits revision;
    area navigation retains separate inputs and selections.
@@ -362,7 +368,7 @@ save actions remain the source of truth.
    and review again. Cancel in the exit confirmation keeps export open; **Exit export**
    clears only its in-memory choices and restores the ordinary editor.
 
-![Synthetic saved-source Main mapping with explicit per-service Terraform choices](../docs/images/50-terraform-main.png)
+![Shared Foundry instance controls with separate export-only choices](../docs/images/50-terraform-main.png)
 
 | State | Meaning |
 | --- | --- |
@@ -385,8 +391,19 @@ The pinned Terraform root looks only in backend zero, then falls back to
 `inferenceApiVersion`. A model first present in a later backend is blocked when
 those effective values differ; absent/default-equivalent metadata still exports.
 Later duplicate occurrences cannot override the first occurrence's metadata.
+Blocked backends and models carry an indication even while collapsed. Expand a
+model to **Inspect model details** in the usual Identity, Serving profile,
+Request contract and Lifecycle & routing groups. Field-level reasons remain
+visible, and full indexed paths are secondary mapping details. Inspection and
+help do not grant permission to edit the saved source.
 
-![The existing typed backend/model surface beside actual Terraform backend properties](../docs/images/51-terraform-models.png)
+![The shared backend/model controls show target values and compact local mappings](../docs/images/51-terraform-models.png)
+
+Access uses the same use-case fields and service records. A service's **More**
+control opens the shared XML view for its exact proposed policy; no policy or
+model array is duplicated as a flattened output dump.
+
+![Access use-case and service controls with read-only policy inspection](../docs/images/53-terraform-access.png)
 
 The ZIP has no wrapper and contains only the selected files:
 `environments/<environmentName>.tfvars`,
