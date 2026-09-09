@@ -34,6 +34,8 @@ import {
 } from './github-connections.mjs';
 import { listActivity, note } from './activity.mjs';
 import { presentWorkspaceCatalog } from './workspace-catalog.mjs';
+import { validateLocalPath, localPathMatchesHandle } from '../../shared/local-path.mjs';
+export { validateLocalPath, localPathMatchesHandle } from '../../shared/local-path.mjs';
 
 const bootstrapNamespace =
   typeof document !== 'undefined'
@@ -51,6 +53,7 @@ const registry = new WorkspaceRegistry({
   testMode: testRuntime,
 });
 let active = null;
+let localImportRegistrationRecovery = null;
 
 /**
  * The masthead's view of a setup in progress.
@@ -69,7 +72,7 @@ function publishSetupContext(context) {
 }
 let registryAuthority = null;
 
-export async function syncRegistryMetadata(removals = {}) {
+export async function syncRegistryMetadata(removals = {}, scope = null) {
   if (!registryAuthority) throw new Error('Registry metadata has not been reconciled.');
   const snapshot = await registry.metadataSnapshot();
   const removedProjectIds = removals.removedProjectIds || [];
@@ -81,9 +84,11 @@ export async function syncRegistryMetadata(removals = {}) {
   // and the caller would then clear the tombstone believing it had succeeded.
   const removedProjects = new Set(removedProjectIds);
   const removedEnvironments = new Set(removedEnvironmentIds);
-  const projects = snapshot.projects.filter((item) => !removedProjects.has(item.id));
+  const projects = snapshot.projects.filter((item) =>
+    !removedProjects.has(item.id) && (!scope || scope.projectIds.includes(item.id)));
   const environments = snapshot.environments.filter(
-    (item) => !removedEnvironments.has(item.id) && !removedProjects.has(item.projectId)
+    (item) => !removedEnvironments.has(item.id) && !removedProjects.has(item.projectId) &&
+      (!scope || scope.environmentIds.includes(item.id))
   );
   const remote = await localRequest('/api/registry', {
     method: 'PUT',
@@ -267,21 +272,6 @@ export function assertSupportedScan(scan) {
   );
 }
 
-export function validateLocalPath(value) {
-  const path = String(value || '').trim();
-  if (!path) throw new Error('Local path is required.');
-  if (!/^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+|\/)/.test(path)) {
-    throw new Error('Local path must be an absolute Windows, UNC, or POSIX path.');
-  }
-  return path;
-}
-
-export function localPathMatchesHandle(localPath, handleName) {
-  const parts = String(localPath).replace(/[\\/]+$/, '').split(/[\\/]/);
-  const leaf = parts.at(-1) || '';
-  return leaf.localeCompare(String(handleName || ''), undefined, { sensitivity: 'accent' }) === 0;
-}
-
 export async function attachEnvironment(options) {
   const {
     project: existingProject,
@@ -295,10 +285,14 @@ export async function attachEnvironment(options) {
     mirror = syncRegistryMetadata,
     allowDuplicate = false,
     activate = true,
+    recoverMirror = false,
+    onRecovery = () => {},
   } = options;
   let project = existingProject;
   let environment = null;
   const createdProject = !project;
+  const previousSelection = recoverMirror && activate ? targetRegistry.active() : null;
+  let activationAttempted = false;
   try {
     project ||= await targetRegistry.createProject(projectLabel);
     environment = await targetRegistry.addEnvironment(
@@ -315,14 +309,95 @@ export async function attachEnvironment(options) {
       lastOpenedAt: new Date().toISOString(),
       lastScannedAt: scan.lastScannedAt,
     });
-    await mirror();
-    if (activate) targetRegistry.setActive(project.id, updated.id);
+    await mirror(recoverMirror ? {
+      createdProjectIds: createdProject ? [project.id] : [],
+      createdEnvironmentIds: [updated.id],
+    } : undefined);
+    if (activate) {
+      activationAttempted = true;
+      targetRegistry.setActive(project.id, updated.id);
+    }
     return { projectId: project.id, environment: updated, handle, provider, catalog: scan.catalog };
   } catch (error) {
+    if (recoverMirror) {
+      const removedEnvironmentIds = environment ? [environment.id] : [];
+      const removedProjectIds = createdProject && project ? [project.id] : [];
+      const pending = { projectIds: removedProjectIds, environmentIds: removedEnvironmentIds };
+      const failures = [];
+      if (removedEnvironmentIds.length || removedProjectIds.length) {
+        onRecovery(pending);
+        let recordFailure = null;
+        try { targetRegistry.addTombstones(pending); }
+        catch (failure) { recordFailure = failure; }
+        for (const [id, remove] of [
+          [environment?.id, (value) => targetRegistry.removeEnvironment(value)],
+          [createdProject && project?.id, (value) => targetRegistry.removeProject(value)],
+        ]) {
+          if (!id) continue;
+          try { await remove(id); }
+          catch (failure) { failures.push(`Local registry rollback: ${failure.message}`); }
+        }
+        try {
+          await mirror({ removedEnvironmentIds, removedProjectIds });
+        } catch (failure) { failures.push(`Server registry rollback: ${failure.message}`); }
+        if (!failures.length) {
+          try {
+            if (targetRegistry.removeTombstones(pending) === false) throw new Error('The browser could not retire the registration recovery record.');
+          } catch (failure) { failures.push(failure.message); }
+        }
+        if (failures.length && recordFailure) {
+          failures.push(`Recovery record: ${recordFailure.message} Keep this dialog open until recovery succeeds.`);
+        }
+        if (!failures.length) onRecovery(null);
+      }
+      if (activationAttempted) {
+        try {
+          const selected = targetRegistry.active();
+          if (selected?.projectId !== previousSelection?.projectId || selected?.environmentId !== previousSelection?.environmentId) {
+            if (previousSelection) targetRegistry.setActive(previousSelection.projectId, previousSelection.environmentId);
+            else targetRegistry.clearRetainedSelection();
+          }
+        } catch (failure) { failures.push(`Previous workspace selection: ${failure.message}`); }
+      }
+      if (failures.length) {
+        throw Object.assign(new Error(`${error.message} Workspace registration was not confirmed. ${failures.join(' ')} Retry after restoring registry access; the copied folder is retained.`),
+          { code: 'LOCAL_IMPORT_REGISTRY_PENDING', cause: error });
+      }
+      throw error;
+    }
     if (environment) await targetRegistry.removeEnvironment(environment.id);
     if (createdProject && project) await targetRegistry.removeProject(project.id);
     throw error;
   }
+}
+
+/** The import has already verified every byte and scanned this exact handle. */
+export async function attachLocalSourceEnvironment(options) {
+  const mirrorScoped = (changes = {}) => syncRegistryMetadata(changes, {
+    projectIds: changes.createdProjectIds || [],
+    environmentIds: changes.createdEnvironmentIds || [],
+  });
+  const pending = await resolvePendingRemovals({
+    removeLocal: true, pending: localImportRegistrationRecovery, mirror: mirrorScoped,
+  });
+  if (!pending.resolved) throw Object.assign(new Error(`Registry recovery is still pending: ${pending.message}`), { code: 'LOCAL_IMPORT_REGISTRY_PENDING' });
+  localImportRegistrationRecovery = null;
+  const project = options.projectId
+    ? (await registry.listProjects()).find((item) => item.id === options.projectId)
+    : null;
+  if (options.projectId && !project) throw new Error('The selected project no longer exists. Choose another project.');
+  const result = await attachEnvironment({
+    ...options, project, localPath: validateLocalPath(options.localPath), recoverMirror: true,
+    onRecovery: (value) => { localImportRegistrationRecovery = value; },
+    mirror: async (removals) => {
+      // Only this import's new records or compensating removals are sent. A
+      // fresh revision must never authorize replaying unrelated stale metadata.
+      await establishRegistryAuthority();
+      return mirrorScoped(removals);
+    },
+  });
+  active = result;
+  return result;
 }
 
 /**
@@ -606,19 +681,32 @@ export async function resolvePendingRemovals(options = {}) {
   const targetRegistry = options.registry || registry;
   const mirror = options.mirror || syncRegistryMetadata;
   const establish = options.establishAuthority || establishRegistryAuthority;
-  const pending = targetRegistry.tombstones?.() || { projectIds: [], environmentIds: [] };
+  const stored = targetRegistry.tombstones?.() || { projectIds: [], environmentIds: [] };
+  const pending = {
+    projectIds: [...new Set([...stored.projectIds, ...(options.pending?.projectIds || [])])],
+    environmentIds: [...new Set([...stored.environmentIds, ...(options.pending?.environmentIds || [])])],
+  };
   if (!pending.projectIds.length && !pending.environmentIds.length) return { resolved: true };
   try {
+    if (options.removeLocal) {
+      // A failed IndexedDB removal must not be mirrored back on an in-dialog
+      // retry. Startup normally removes these through full reconciliation.
+      for (const id of pending.environmentIds) await targetRegistry.removeEnvironment(id);
+      for (const id of pending.projectIds) await targetRegistry.removeProject(id);
+    }
     await establish();
     await mirror({
       removedEnvironmentIds: pending.environmentIds,
       removedProjectIds: pending.projectIds,
     });
+    if (options.removeLocal && targetRegistry.removeTombstones(pending) === false) {
+      throw new Error('The browser could not retire the registration recovery record.');
+    }
   } catch (error) {
     // Kept for the next attempt, and surfaced rather than swallowed.
     return { resolved: false, pending, message: error.message };
   }
-  targetRegistry.clearTombstones?.();
+  if (!options.removeLocal) targetRegistry.clearTombstones?.();
   return { resolved: true, pending };
 }
 
@@ -736,6 +824,8 @@ function catalogActions() {
     startRepositoryCreation: startGitHubRepositoryCreation,
     resumeRepositoryCreation: resumeGitHubRepositoryCreation,
     pauseRepositoryCreation: pauseGitHubRepositoryCreation,
+    scanLocalSource: scanProvider,
+    attachLocalSource: attachLocalSourceEnvironment,
 
     createSelection: () =>
       new RepositorySelection({

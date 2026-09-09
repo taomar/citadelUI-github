@@ -18,6 +18,7 @@ const PROFILE_DRAFT_FIELDS = Object.freeze({
   projectLabel: 160,
   environmentLabel: 160,
   localPath: 1024,
+  folderName: 1024,
 });
 
 function profileDraftScope(value) {

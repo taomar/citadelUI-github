@@ -139,6 +139,9 @@ export function showDialog(title, body, actions = [], options = {}) {
     dialog.showModal();
   } else if (options.stack) {
     stack.push(frame);
+  } else if (options.replaceTop) {
+    frame.opener = stack.at(-1).opener;
+    stack[stack.length - 1] = frame;
   } else {
     stack = [frame];
   }

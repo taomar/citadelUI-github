@@ -39,6 +39,7 @@ import { isRepositorySelectable, repositoryBlockedReason } from './github-select
 import { ATTACH_STAGES, LOCAL_ATTACH_STAGES, RESUME_STAGES, StageTracker, createStageRegion } from './stage-progress.mjs';
 import { DEFAULT_REPOSITORY_SOURCE, parseRepositorySource, validateNewRepositoryName } from '../../shared/repository-source.mjs';
 import { createRepositoryProgress } from './repository-progress.mjs';
+import { openLocalSourceImport } from './local-source-import.mjs';
 
 function newRepositoryCreationState(accountId = null) {
   return {
@@ -1379,6 +1380,23 @@ export function runAddWorkspace(options) {
       state.githubIntent = intent;
       go(kind === 'local' ? 'details' : 'connection');
     };
+    const importLocal = async () => {
+      if (state.working) return;
+      state.working = true;
+      state.kind = 'local';
+      try {
+        const workspace = await openLocalSourceImport({
+          projects: actions.projects || [], projectId: state.projectId,
+          projectLabel: state.projectLabel, environmentLabel: state.environmentLabel || 'Development',
+          folderName: state.folderName || '',
+          localPath: state.localPath, scan: actions.scanLocalSource, attach: actions.attachLocalSource,
+          pickFolder: actions.pickFolder, client: actions.localSourceClient, onContext,
+          onDraft: (values) => Object.assign(state, values),
+        });
+        if (workspace) finish(workspace);
+        else if (!closed) go('source');
+      } finally { state.working = false; }
+    };
     present(
       'Add workspace',
       h(
@@ -1399,6 +1417,12 @@ export function runAddWorkspace(options) {
           { class: 'btn catalog-choice-option', type: 'button', onclick: () => choose('github', 'new') },
           h('strong', {}, 'New GitHub Repo'),
           h('span', { class: 'hint' }, 'Create a private repository in your personal account from a Citadel source, then choose its workspace and branch as usual.')
+        ),
+        h(
+          'button',
+          { class: 'btn catalog-choice-option', type: 'button', onclick: importLocal },
+          h('strong', {}, 'Create local from Citadel source'),
+          h('span', { class: 'hint' }, 'Copy the complete public citadel-v1 source into a new local project folder, then open it. No GitHub token or Git history.')
         ),
         h(
           'button',

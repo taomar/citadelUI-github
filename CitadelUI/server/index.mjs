@@ -988,7 +988,10 @@ export async function createCitadelServer(options = {}) {
   server.headersTimeout = options.headersTimeout ?? 10_000;
   server.requestTimeout = options.requestTimeout ?? 30_000;
   server.keepAliveTimeout = options.keepAliveTimeout ?? 5_000;
-  server.once('close', () => githubRoutes?.creations?.shutdown());
+  server.once('close', () => {
+    githubRoutes?.creations?.shutdown();
+    githubRoutes?.localImports?.shutdown();
+  });
 
   return {
     server,

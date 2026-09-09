@@ -16,14 +16,13 @@ import { join } from 'node:path';
 import { atomicJson } from '../atomic-json.mjs';
 import { githubError } from './api.mjs';
 import { inspectRepositoryCompatibility } from './compatibility.mjs';
-import { isLfsPointer } from './repositories.mjs';
+import { decodeSnapshotBlob as decodeBlob, objectSha as sha, readRepositoryManifest, treeHash } from './repository-snapshot.mjs';
 import { refNameProblem } from '../../shared/git-refs.mjs';
 import { DEFAULT_REPOSITORY_SOURCE, parseRepositorySource, validateNewRepositoryName } from '../../shared/repository-source.mjs';
+import { REPOSITORY_SNAPSHOT_LIMITS } from '../../shared/repository-snapshot.mjs';
 
 const DEFAULT_LIMITS = Object.freeze({
-  totalBytes: 64 * 1024 * 1024, blobBytes: 8 * 1024 * 1024,
-  files: 10_000, entries: 20_000, directories: 2000,
-  treeBytes: 16 * 1024 * 1024, manifestBytes: 8 * 1024 * 1024,
+  ...REPOSITORY_SNAPSHOT_LIMITS, treeBytes: 16 * 1024 * 1024,
   operations: 100, writeIntervalMs: 1100, writesPerMinute: 60, writesPerHour: 450,
 });
 const ACTIVE = new Set(['preparing', 'creating', 'copying', 'verifying']);
@@ -54,57 +53,10 @@ const LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 const UUID = /^[0-9a-f-]{36}$/;
 const fail = (code, message, status = 409) => githubError(status, code, message);
 const hash = (text) => createHash('sha256').update(text).digest('hex');
-const objectHash = (type, bytes) =>
-  createHash('sha1').update(`${type} ${bytes.length}\0`).update(bytes).digest('hex');
-const sha = (value) => {
-  if (!SHA.test(value || '')) throw fail('IMPORT_INVALID_OBJECT', 'GitHub returned an invalid Git object.', 502);
-  return value;
-};
 const validId = (value) => Number.isSafeInteger(value) && value > 0;
 const ep = (name) => `/repos/${name}`;
 const refPath = (name, branch) => `${ep(name)}/git/ref/heads/${encodeURIComponent(branch)}`;
 const sameName = (a, b) => typeof a === 'string' && a.toLowerCase() === b.toLowerCase();
-
-function safePath(value, single = false) {
-  if (typeof value !== 'string' || !value || Buffer.byteLength(value) > 1024 ||
-      /[\u0000-\u001f\u007f\\]/u.test(value) || Buffer.from(value).toString('utf8') !== value ||
-      (single && value.includes('/')) || value.split('/').length > 64 ||
-      value.split('/').some((part) => !part || part === '.' || part === '..' || part.toLowerCase() === '.git')) {
-    throw fail('IMPORT_UNSAFE_PATH', 'The source contains an unsafe Git path.', 422);
-  }
-  return value;
-}
-
-function treeHash(entries) {
-  const sorted = [...entries].sort((a, b) => Buffer.compare(
-    Buffer.from(a.path + (a.type === 'tree' ? '/' : '')),
-    Buffer.from(b.path + (b.type === 'tree' ? '/' : ''))
-  ));
-  return objectHash('tree', Buffer.concat(sorted.map((entry) => Buffer.concat([
-    Buffer.from(`${entry.type === 'tree' ? '40000' : entry.mode} ${entry.path}\0`),
-    Buffer.from(entry.sha, 'hex'),
-  ]))));
-}
-
-function decodeBlob(data, entry, limit) {
-  if (data?.encoding !== 'base64' || data.sha !== entry.sha ||
-      !Number.isSafeInteger(data.size) || data.size < 0 || data.size > limit ||
-      data.size !== entry.size || typeof data.content !== 'string') {
-    throw fail('IMPORT_INVALID_BLOB', 'The source blob encoding or declared size is invalid.', 422);
-  }
-  const encoded = data.content.replace(/[\r\n]/g, '');
-  if (encoded.length > Math.ceil(limit / 3) * 4 || encoded.length % 4 !== 0 ||
-      !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
-    throw fail('IMPORT_INVALID_BLOB', 'The source blob has invalid base64 content.', 422);
-  }
-  const bytes = Buffer.from(encoded, 'base64');
-  if (bytes.length !== data.size || bytes.toString('base64') !== encoded || objectHash('blob', bytes) !== entry.sha) {
-    throw fail('IMPORT_HASH_MISMATCH', 'The source blob does not match its Git object hash.', 422);
-  }
-  const text = bytes.toString('utf8');
-  if (isLfsPointer(text)) throw fail('IMPORT_LFS_UNSUPPORTED', 'Git LFS pointers cannot be imported as complete source files.', 422);
-  return { bytes, text: !bytes.includes(0) && Buffer.from(text, 'utf8').equals(bytes) ? text : null };
-}
 
 function treeEntry(entry, blobs) {
   const base = { path: entry.path, type: entry.type, mode: entry.mode };
@@ -591,62 +543,7 @@ export class RepositoryCreationService {
   }
 
   async manifest(op, session, name, root) {
-    const limit = this.limits.manifestBytes;
-    const recursive = await this.read(op, session, `${ep(name)}/git/trees/${root}?recursive=1`, { limit });
-    if (recursive?.sha !== root || !Array.isArray(recursive.tree)) throw fail('IMPORT_INVALID_OBJECT', 'Invalid tree.', 502);
-    let entries;
-    if (recursive.truncated === false) entries = recursive.tree;
-    else if (recursive.truncated === true) {
-      entries = [];
-      const queue = [{ tree: root, prefix: '' }];
-      let directories = 0;
-      while (queue.length) {
-        if (++directories > this.limits.directories) throw fail('IMPORT_LIMIT', 'Too many directories.', 413);
-        const current = queue.shift();
-        const node = await this.read(op, session, `${ep(name)}/git/trees/${current.tree}`, { limit });
-        if (node?.sha !== current.tree || node.truncated !== false || !Array.isArray(node.tree)) throw fail('IMPORT_TRUNCATED', 'Incomplete source tree.', 422);
-        for (const entry of node.tree) {
-          safePath(entry.path, true);
-          const path = current.prefix + entry.path;
-          entries.push({ ...entry, path });
-          if (entries.length > this.limits.entries) throw fail('IMPORT_LIMIT', 'Too many entries.', 413);
-          if (entry.type === 'tree') queue.push({ tree: sha(entry.sha), prefix: `${path}/` });
-        }
-      }
-    } else throw fail('IMPORT_TRUNCATED', 'Missing tree completeness flag.', 422);
-    if (entries.length > this.limits.entries) throw fail('IMPORT_LIMIT', 'Too many entries.', 413);
-    const byPath = new Map();
-    const directories = new Map([['', { path: '', sha: root, entries: [] }]]);
-    const files = [];
-    let totalBytes = 0;
-    for (const raw of entries) {
-      const path = safePath(raw.path);
-      sha(raw.sha);
-      if (byPath.has(path)) throw fail('IMPORT_UNSAFE_PATH', 'Duplicate Git path.', 422);
-      const entry = { path, type: raw.type, mode: raw.mode, sha: raw.sha };
-      if (entry.type === 'tree' && entry.mode === '040000') {
-        directories.set(path, { path, sha: entry.sha, entries: [] });
-      } else if (entry.type === 'blob' && ['100644', '100755'].includes(entry.mode)) {
-        if (!Number.isSafeInteger(raw.size) || raw.size < 0 || raw.size > this.limits.blobBytes) throw fail('IMPORT_LIMIT', 'Invalid or excessive blob size.', 413);
-        entry.size = raw.size;
-        totalBytes += entry.size;
-        files.push(entry);
-      } else throw fail('IMPORT_UNSUPPORTED_MODE', 'Unsupported Git mode.', 422);
-      byPath.set(path, entry);
-    }
-    if (files.length > this.limits.files || totalBytes > this.limits.totalBytes || directories.size > this.limits.directories) {
-      throw fail('IMPORT_LIMIT', 'Source limits exceeded.', 413);
-    }
-    for (const entry of byPath.values()) {
-      const index = entry.path.lastIndexOf('/');
-      const parent = directories.get(index < 0 ? '' : entry.path.slice(0, index));
-      if (!parent) throw fail('IMPORT_UNSAFE_PATH', 'Missing Git directory.', 422);
-      parent.entries.push({ ...entry, path: entry.path.slice(index + 1), fullPath: entry.path });
-    }
-    for (const dir of directories.values()) {
-      if (treeHash(dir.entries) !== dir.sha) throw fail('IMPORT_HASH_MISMATCH', 'Source tree hash mismatch.', 422);
-    }
-    return { files, directories, totalBytes, entries: [...byPath.values()] };
+    return readRepositoryManifest((path, options) => this.read(op, session, path, options), name, root, this.limits);
   }
 
   async preflight(op, session) {

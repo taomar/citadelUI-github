@@ -104,7 +104,16 @@ container will ever have.
 If two people open a brand-new container at the same moment, exactly one becomes
 the owner; the other is asked to sign in.
 
-On first use, create a project, enter an environment label and display-only
+On first use, **Create local from Citadel source** can prepare the public
+upstream `citadel-v1` snapshot without a GitHub token. Choose an empty parent
+folder, enter the new project subfolder name, and review the exact destination
+and pinned commit before copying. The named child becomes the workspace only
+after full content verification and registration. This is not a Git clone and
+does not run scripts. The same flow is in **Settings > New project**.
+See the [local source walkthrough](../guides/using-the-control-plane.md#create-a-local-project-from-citadel-source)
+for limits, concurrency guarantees, and partial-folder recovery.
+
+To attach existing files instead, create a project, enter an environment label and display-only
 **Local path**, and choose the exact Citadel repository through the in-app folder
 picker. Repeat from **Settings** for Development, Test, Production, or any other
 labels. Labels, folder names, and Local paths are informational. Normal attachment
@@ -131,7 +140,7 @@ Direct `node server/index.mjs` execution is developer-only.
 ## What it can access
 
 The browser traverses only a directory explicitly selected by the user. The
-source scope is:
+normal configuration editor's source scope is:
 
 - `.bicepparam` files.
 - Bicep templates referenced by those parameter files for editor schema.
@@ -153,6 +162,18 @@ The **New GitHub Repo** setup path is a separate, explicitly requested full-repo
 copy. It reads the checked-in snapshot of a GitHub source and writes only to the
 new private repository created for that operation. It does not widen the
 Bicep/XML editor's read/write scope or access any local source folder.
+
+**Create local from Citadel source** is also a separate, explicitly confirmed
+full-snapshot copy. The server only reads public GitHub data, pins one commit,
+and verifies the complete bounded source; it receives no destination path or
+directory handle. Only the browser writes the named child of the granted empty
+parent, including ordinary licenses, dotfiles and binary assets. Existing
+children are not adopted and detected conflicts are never overwritten.
+File System Access cannot provide OS-level concurrent-write exclusion or an
+atomic no-replace directory operation: keep the destination untouched.
+Partial folders are retained for explicit retry or manual handling, not deleted.
+Preparation and retry ownership are memory-only, unlike migration's durable
+**Prepared sources**. Neither full-copy workflow changes the editor scope.
 
 ## Migrate Citadel Configuration
 

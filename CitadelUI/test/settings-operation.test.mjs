@@ -3,6 +3,16 @@ import test from 'node:test';
 
 import { createEnvironmentOperation } from '../web/js/settings-operation.mjs';
 
+test('cancelled environment setup is not reported as successful completion', async () => {
+  const statuses = [];
+  const operation = createEnvironmentOperation({
+    setInlineStatus: (message, tone) => statuses.push({ message, tone }),
+    setGlobalStatus: () => {},
+  })('Creating project', async () => false);
+  assert.equal(await operation(), false);
+  assert.deepEqual(statuses.at(-1), { message: 'Operation cancelled.', tone: 'info' });
+});
+
 for (const message of [
   'Folder permission was denied. Reconnect the environment and grant read/write access.',
   'The saved folder handle is missing. Reconnect this environment.',

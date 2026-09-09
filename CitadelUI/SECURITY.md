@@ -163,8 +163,11 @@ separated by hardware.
 
 ## GitHub network boundary
 
-- Egress is fixed to `https://api.github.com`. No API base URL is accepted from
-  the user and no host is taken from a GitHub response.
+- API egress is fixed to `https://api.github.com`. Local source creation also has
+  a separate anonymous GET-only transport fixed to `https://raw.githubusercontent.com`,
+  using a validated repository, full commit SHA, and encoded source path. It
+  sends no API credential, cookie, or request body to that host. No API base URL
+  is accepted from the user and no host is taken from a GitHub response.
 - Request paths must be origin-relative; absolute URLs, protocol-relative paths,
   traversal, and control characters are rejected.
 - Redirects are never followed.
@@ -199,6 +202,46 @@ separated by hardware.
   values or file contents.
 - Because the parent commit holds immutable originals, no GitHub source bytes are
   copied into `/data`.
+
+## New local source creation
+
+**Create local from Citadel source** is independent of GitHub repository creation
+and configuration migration. Its owner/session/origin-protected routes accept
+only a source selector and operation identifier, never a host path, directory
+handle, or PAT. Public metadata must identify the selected repository as public.
+The source ref is pinned once; verified Git tree/blob identities bind all bytes
+to that commit. Binary files are copied as bytes, not decoded and reconstructed.
+Normal preparation uses metadata, commit and tree API reads plus bounded raw-host
+file reads, rather than one anonymous REST request per blob.
+
+The complete source is capped at 64 MiB, 8 MiB per blob, 10,000 files, 20,000
+entries and 2,000 directories, with bounded manifests, request timeouts, a
+preparation deadline, and at most four active file reads. Truncated responses,
+invalid identities or sizes, LFS pointers, symlinks, submodules, unsupported
+modes, traversal, `.git`, Windows-unsafe names, and normalized/case collisions
+are errors, not omissions. One ephemeral server operation expires after
+30 minutes; restart drops it. Source bytes are not persisted in `/data`.
+
+Before choosing a folder, the browser downloads and independently verifies the
+entire manifest and file hashes. It accepts only an empty granted parent and a
+validated, explicitly reviewed child name, rejecting an existing child even if
+empty when detected. Only that browser handle grants filesystem authority.
+Display paths are inert registry metadata, not source-import inputs.
+Permission, parent/ancestor/file handle identity, empty baselines and content
+are rechecked before publication; complete enumeration and hash verification
+plus the usual Citadel scan precede registration.
+
+File System Access has no portable exclusive-create or no-replace directory
+publication primitive. Unpublished writable streams and repeated checks reduce
+race windows but do not exclude OS writers, including the final check-to-close
+gap. The UI states that limitation and requires the destination stay untouched.
+No automatic deletion, replacement, or staging promotion is used. Recovery
+resumes only operation-attributed unchanged entries, retaining foreign or
+conflicting data; losing the browser's in-memory ledger requires a fresh
+destination. Registration failures use explicit compensating metadata removals,
+with retained recovery records when confirmation fails. Imported scripts remain
+untrusted data: no execution, deployment, Git history, or executable-mode
+restoration is part of this operation.
 
 ## Configuration migration
 

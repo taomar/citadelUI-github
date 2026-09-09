@@ -106,7 +106,15 @@ configuration of a Citadel AI Hub Gateway deployment. It presents Bicep paramete
 files and their associated API Management policy documents as explained forms, and
 writes surgical changes that leave unrelated comments and formatting untouched.
 
-Workspace setup offers **Existing GitHub Repo**, **New GitHub Repo**, and **Local**.
+Workspace setup offers **Existing GitHub Repo**, **New GitHub Repo**,
+**Create local from Citadel source**, and **Local** for existing-folder attachment.
+Local source creation defaults to the upstream `citadel-v1` snapshot, needs no
+GitHub token, and copies the complete pinned source into a user-named new child
+of an empty browser-selected folder. It verifies the copy before opening it,
+without Git history or running scripts. The same flow is available from
+**Settings > New project**; see the
+[local source walkthrough](./guides/using-the-control-plane.md#create-a-local-project-from-citadel-source).
+
 New GitHub Repo can initialize a private repository from the upstream `citadel-v1`
 snapshot (or an overridden GitHub source), then continue through the same
 repository and branch selection. Its temporary creation token requires more

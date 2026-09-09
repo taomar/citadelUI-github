@@ -4,7 +4,8 @@
  * The browser never calls GitHub. Every route here runs after the existing host,
  * origin, fetch-site, session-token, body-size, and concurrency checks, and then
  * additionally requires an opaque GitHub credential session id, except for the
- * explicit anonymous, GET-only public-donor route.
+ * explicit public-donor and local-source preparation routes. Local-source
+ * preparation changes only its bounded in-memory cache, never GitHub or files.
  *
  * Editable workspace repository/branch identity comes from the authoritative
  * registry, never the request body. Public donors are separate ephemeral
@@ -58,6 +59,7 @@ import {
 import { profileName as profileNameOf } from '../connections.mjs';
 import { sameAccount } from '../credentials.mjs';
 import { RepositoryCreationService } from './repository-creation.mjs';
+import { LocalSourceImportService } from './local-import.mjs';
 
 const SESSION_HEADER = 'x-citadel-github-session';
 
@@ -122,6 +124,7 @@ export class GitHubRoutes {
     // Same fixed-host client, but no credential store or session is passed to
     // the public donor. Its separate facade permits anonymous GETs only.
     this.publicDonor = new PublicGitHubDonorRoutes({ client: this.client, ...(options.publicDonorOptions || {}) });
+    this.localImports = new LocalSourceImportService({ client: this.client, ...(options.localImportOptions || {}) });
     this.registryStore = options.registryStore;
     this.audit = options.audit || null;
     this.profiles = options.profiles || null;
@@ -752,7 +755,10 @@ export class GitHubRoutes {
     }
 
     // The normal owner/browser transport guard still runs in server/index.mjs.
-    // This is the sole source-reading path that does NOT resolve a PAT/session.
+    // Public source readers do not resolve or borrow an editable PAT/session.
+    if (tail[0] === 'local-imports') {
+      return this.localImports.handle({ req, url, tail, readBody });
+    }
     if (tail[0] === 'public-donor' && tail.length === 2) {
       return this.publicDonor.handle({ req, url, operation: tail[1] });
     }

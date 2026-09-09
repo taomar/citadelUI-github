@@ -33,7 +33,7 @@ export function createEnvironmentOperation({
           const result = await action((candidate) => {
             rollback = candidate;
           });
-          setInlineStatus('Operation completed.', 'success');
+          setInlineStatus(result === false ? 'Operation cancelled.' : 'Operation completed.', result === false ? 'info' : 'success');
           return result;
         } catch (error) {
           let detail = error?.message || 'The environment operation failed.';

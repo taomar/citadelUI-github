@@ -2,12 +2,17 @@
  * Fixed-host GitHub API client.
  *
  * This module is the only place in Citadel UI that performs outbound network
- * I/O. The host is a constant, request paths are validated as relative API
- * paths, redirects are never followed, and response bodies are bounded before
+ * I/O. Hosts are constants, API paths are validated as relative paths, and the
+ * public snapshot transport accepts only a commit-pinned raw file. Redirects
+ * are never followed, and response bodies are bounded before
  * they are parsed. A credential is supplied per call by the session store and is
  * never stored, echoed, or included in an error.
  */
+import { parseRepositorySource } from '../../shared/repository-source.mjs';
+import { REPOSITORY_SNAPSHOT_LIMITS, validateLocalSnapshotPaths } from '../../shared/repository-snapshot.mjs';
+
 export const GITHUB_API_ORIGIN = 'https://api.github.com';
+export const GITHUB_RAW_ORIGIN = 'https://raw.githubusercontent.com';
 export const GITHUB_API_VERSION = '2022-11-28';
 const USER_AGENT = 'CitadelUI/1.0 (+local)';
 
@@ -180,7 +185,7 @@ export class GitHubApiClient {
         headers,
         body,
         redirect: 'manual',
-        signal: controller.signal,
+        signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal,
         cache: 'no-store',
       });
       if (response.status >= 300 && response.status < 400) {
@@ -191,11 +196,17 @@ export class GitHubApiClient {
         // general client supports authenticated writes for repository creation.
         const limited = response.status === 429 || (response.status === 403 &&
           (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after')));
+        const reset = Number(response.headers.get('x-ratelimit-reset'));
+        const retry = response.headers.get('retry-after');
         if (typeof response.body?.cancel === 'function') await response.body.cancel().catch(() => {});
         throw githubError(
           limited ? 429 : response.status < 500 ? response.status : 502,
           limited ? 'PUBLIC_DONOR_RATE_LIMIT' : 'PUBLIC_DONOR_READ_FAILED',
-          limited ? 'GitHub donor rate limit reached.' : 'The GitHub donor read failed.'
+          limited ? 'GitHub donor rate limit reached.' : 'The GitHub donor read failed.',
+          limited ? {
+            retryAfterSeconds: retry && /^\d+$/.test(retry) ? Math.min(Number(retry), 86_400) : null,
+            rateResetAt: Number.isFinite(reset) && reset > 0 && reset < 8_640_000_000 ? new Date(reset * 1000).toISOString() : null,
+          } : null
         );
       }
       // Keep the deadline active through streaming, not just response headers.
@@ -205,6 +216,7 @@ export class GitHubApiClient {
         controller.abort();
         throw error;
       }
+      if (options.signal?.aborted) throw githubError(409, 'GITHUB_CANCELLED', 'The GitHub read was cancelled.');
       if (controller.signal.aborted || error?.name === 'AbortError') {
         throw githubError(504, 'GITHUB_TIMEOUT', 'GitHub did not respond in time.');
       }
@@ -264,6 +276,48 @@ export class GitHubApiClient {
       );
     }
     return { status: response.status, data, link, rate };
+  }
+
+  /**
+   * Public full-snapshot bytes do not spend one REST request per file. This
+   * separate transport cannot receive a token, a moving ref, or an arbitrary URL.
+   * The caller must still verify the manifest's blob hash before using bytes.
+   */
+  async publicFile(fullName, commit, path, { signal, limit = REPOSITORY_SNAPSHOT_LIMITS.blobBytes } = {}) {
+    const parsed = parseRepositorySource(`https://github.com/${fullName}`);
+    validateLocalSnapshotPaths([{ path }]);
+    if (parsed.fullName !== fullName || !/^[0-9a-f]{40}$/.test(commit) ||
+        !Number.isSafeInteger(limit) || limit < 0 || limit > REPOSITORY_SNAPSHOT_LIMITS.blobBytes) {
+      throw githubError(400, 'LOCAL_IMPORT_INVALID_SOURCE', 'A bounded, commit-pinned public source is required.');
+    }
+    const target = `${GITHUB_RAW_ORIGIN}/${fullName}/${commit}/${path.split('/').map(encodeURIComponent).join('/')}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await this.fetch(target, {
+        method: 'GET', headers: { 'User-Agent': USER_AGENT }, redirect: 'manual', cache: 'no-store',
+        signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
+      });
+      if (response.status >= 300 && response.status < 400) {
+        throw githubError(502, 'GITHUB_REDIRECT', 'The public source redirected a file request; it was refused.');
+      }
+      if (!response.ok) {
+        rejectRateLimit(response, {
+          remaining: response.headers.get('x-ratelimit-remaining') === '0' ? 0 : null,
+          reset: Number(response.headers.get('x-ratelimit-reset')),
+        });
+        throw githubError(502, 'LOCAL_IMPORT_READ_FAILED', 'A pinned public source file could not be read. No alternate source was used.');
+      }
+      return await readBounded(response, limit);
+    } catch (error) {
+      controller.abort();
+      if (error?.github) throw error;
+      if (signal?.aborted) throw githubError(409, 'GITHUB_CANCELLED', 'The GitHub read was cancelled.');
+      if (error?.name === 'AbortError') throw githubError(504, 'GITHUB_TIMEOUT', 'The public source file read timed out.');
+      throw githubError(502, 'GITHUB_UNREACHABLE', 'Citadel UI could not read the public source file.');
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**

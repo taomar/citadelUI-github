@@ -150,10 +150,10 @@ function assertCreationTokenHelp() {
   ]) assert.ok(text.includes(term), term);
 }
 
-test('repository creation UI: three choices preserve existing and local paths', async (t) => {
+test('repository creation UI: local source choice preserves existing GitHub and folder paths', async (t) => {
   const { calls } = harness(t);
   assert.deepEqual(nodes().filter((node) => node.tagName === 'STRONG').map((node) => readText(node)),
-    ['Existing GitHub Repo', 'New GitHub Repo', 'Local']);
+    ['Existing GitHub Repo', 'New GitHub Repo', 'Create local from Citadel source', 'Local']);
   await click('Existing GitHub Repo');
   await click('Continue');
   assert.match(readText(document.getElementById('modal')), /Choose a repository/);

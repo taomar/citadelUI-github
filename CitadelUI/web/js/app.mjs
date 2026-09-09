@@ -31,6 +31,7 @@ import { APIM_SKUS, LOGIC_APPS_TEMPLATE } from './azuremeta.mjs';
 import {
   activeWorkspace,
   attachEnvironment,
+  attachLocalSourceEnvironment,
   attachGitHubEnvironment,
   assertSupportedScan,
   clearActiveWorkspace,
@@ -53,6 +54,7 @@ import { createProvider } from './source-factory.mjs';
 import { historyEntry } from './history-entry.mjs';
 import { createCompareSession } from './compare-session.mjs';
 import { openMigrationWizard } from './migration-wizard.mjs';
+import { openLocalSourceImport } from './local-source-import.mjs';
 import { describeCreatedBranch, saveStatusLine } from './save-resolution.mjs';
 import { refNameProblem } from '../../shared/git-refs.mjs';
 
@@ -1692,16 +1694,15 @@ async function openEnvironmentCompare(environments) {
 /**
  * Ask which source a new environment comes from.
  *
- * Both entry points — a new project and an added environment — offer the same
- * two sources, so a local user can adopt GitHub later and a GitHub user can
- * attach a second repository.
+ * A new local project can start from a source snapshot or existing files.
  */
 async function chooseSourceKind({ title, message }) {
   const kind = await choiceDialog({
     title,
     message,
     choices: [
-      { value: 'local', label: 'Local folder', primary: true },
+      { value: 'local-source', label: 'Create local from Citadel source', primary: true },
+      { value: 'local', label: 'Attach existing local folder' },
       { value: 'github', label: 'GitHub repository' },
       { value: null, label: 'Cancel' },
     ],
@@ -2242,15 +2243,35 @@ async function openWorkspaceSettingsContent() {
           onclick: environmentOperation('Creating project\u2026', async () => {
             const draftScope = 'new-project';
             const draft = workspaceRegistry.profileDraft(draftScope) || {};
-            // A new project's first environment has the same two sources as any
-            // other. Forcing the folder picker here left a GitHub user unable to
-            // create a GitHub project from an active workspace.
             const kind = await chooseSourceKind({
               title: 'New project source',
               message:
-                'Where does this project\u2019s first environment live? A GitHub project needs an active credential session.',
+                'Start a new local project from the public Citadel source, attach an existing local folder, or choose a GitHub repository. Local options do not need a GitHub token.',
             });
             if (!kind) return false;
+            if (kind === 'local-source') {
+              if (!(await confirmPendingNavigation({
+                destination: 'opening the new local project', leavesPage: true,
+              }))) return false;
+              const imported = await openLocalSourceImport({
+                stack: true,
+                projectLabel: draft.projectLabel || '',
+                environmentLabel: draft.environmentLabel || 'Development',
+                localPath: draft.localPath || '',
+                folderName: draft.folderName || '',
+                environmentFieldLabel: 'First environment label',
+                scan: scanProvider,
+                attach: attachLocalSourceEnvironment,
+                onDraft: ({ projectLabel, environmentLabel, localPath, folderName }) =>
+                  workspaceRegistry.saveProfileDraft(draftScope, { projectLabel, environmentLabel, localPath, folderName }),
+              });
+              if (!imported) return false;
+              if (!workspaceRegistry.clearProfileDraft(draftScope)) {
+                setStatus('Project saved, but its pending form cache could not be cleared.', 'error');
+              }
+              location.reload();
+              return;
+            }
             const fields = [
               { name: 'label', label: 'Project label', value: draft.projectLabel || '' },
               {
@@ -2276,7 +2297,9 @@ async function openWorkspaceSettingsContent() {
                   : 'Create the project and its first environment, then choose the repository and branch.',
               fields,
               submitLabel: kind === 'local' ? 'Choose folder' : 'Choose repository',
-              context: writeContextNode({ file: 'New project profile' }),
+              context: kind === 'local'
+                ? h('p', { class: 'hint' }, 'New local project. Only the folder you choose will be attached; the current workspace and GitHub repository are not changed.')
+                : writeContextNode({ file: 'New project profile' }),
             });
             if (!values) return false;
             const label = values.label.trim();
@@ -2304,7 +2327,7 @@ async function openWorkspaceSettingsContent() {
                 title: 'Local path differs from folder',
                 message: `The Local path leaf does not match the selected folder "${handle.name}". The browser cannot verify this display-only path.`,
                 confirmLabel: 'Use this folder',
-                context: writeContextNode({ file: 'New project profile' }),
+                context: h('p', { class: 'hint' }, `New local project: ${label} / ${environmentLabel}. Selected folder: ${handle.name}.`),
               }))
             ) return false;
             const provider = new BrowserDirectoryProvider(handle);

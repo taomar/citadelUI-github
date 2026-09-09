@@ -35,7 +35,9 @@ when their credential key remains available.
 Keep the same `http://127.0.0.1:4173` origin and browser profile for local folder
 access. Completed **Prepared sources** survive in the preserved data directory,
 but unsaved editor or migration choices are not a restart/reload recovery
-mechanism. If the app unexpectedly shows the first-owner form, stop and have the
+mechanism. New local source imports are memory-only and do not appear in
+**Prepared sources**. Keep their dialog open while copying or retrying.
+If the app unexpectedly shows the first-owner form, stop and have the
 operator check the existing data mount rather than creating a new owner.
 
 ---
@@ -48,11 +50,12 @@ in one click.
 
 ![Workspace catalog with a named local sample and session-only connection status](../docs/images/03-workspaces.png)
 
-Adding one is a guided sequence. Choose **Existing GitHub Repo**, **New GitHub Repo**, or
-**Local**. The repository is checked for the capabilities the editors need before
+Adding one is a guided sequence. Choose **Existing GitHub Repo**, **New GitHub Repo**,
+**Create local from Citadel source**, or **Local** to attach an existing folder.
+The repository is checked for the capabilities the editors need before
 it is attached; an incomplete tree is rejected rather than half-opened.
 
-![Add workspace source choices: Existing GitHub Repo, New GitHub Repo and Local](../docs/images/04-add-workspace.png)
+![Add workspace offers GitHub creation and attachment, local source creation, and existing local attachment](../docs/images/04-add-workspace.png)
 
 A **local folder** is granted through the browser's folder picker; the handle stays
 in the browser profile, because it cannot be moved into a container. **Existing
@@ -63,6 +66,62 @@ Local attachment reports folder checks, configuration reading and metadata
 saving, not GitHub branch creation. If the display path is invalid, its error
 appears in the attachment dialog. Choose **Back**, correct **Local path**, then
 continue and retry **Attach workspace**.
+
+### Create a local project from Citadel source
+
+Choose **Settings > New project > Create local from Citadel source**, or the
+same option in **Add workspace** / **Add your first workspace**. To use files
+already on disk instead, choose **Attach existing local folder** in Settings
+or **Local** in the catalog. Neither local path requires a GitHub token.
+
+1. Review **GitHub source URL**. The default is
+   `mohamedsaif/ai-hub-gateway-solution-accelerator` at **`citadel-v1`**, not
+   `main`. **Prepare source and continue** resolves the revision once to a
+   commit, validates the complete tree, and transfers every file to this browser.
+   A public repository root, `/tree/ref`, or the published `/blob/ref/` root
+   link can override the default. A slash in a ref is not guessed to be a subfolder.
+2. Enter the project and workspace labels, the display-only parent **Local path**,
+   and **New project folder name**. The suggested folder name can be edited.
+   Choose an **empty parent folder** through the browser picker. Hidden files
+   and `.git` also make it nonempty. Names must be single Windows-safe names;
+   the workspace registry permits at most 160 characters and reserves
+   `.azure`/`.env` names. Invalid names are rejected, never silently truncated,
+   sanitized or suffixed. The complete display path must fit within 1024 characters.
+3. Review the source, revision, full resolved commit, selected parent, and exact
+   new child destination. Confirm the checkbox and select **Import and open
+   workspace**. Keep the destination untouched until the operation finishes.
+   Citadel creates that named child, copies and verifies every byte, checks
+   Citadel compatibility, and only then registers and opens it. The child is
+   the workspace root, not the selected parent.
+
+![Example review with a synthetic pinned commit and an explicitly named local destination](../docs/images/04b-local-source-review.png)
+
+This is a complete source snapshot, including ordinary licenses, dotfiles,
+scripts, and binary assets. It is **not a Git clone**: there is no `.git` history,
+remote, executable-mode restoration, script execution, deployment, or old-value
+migration. Existing local projects and GitHub repositories are not modified.
+Public reads are anonymous; existing editable GitHub credentials are not borrowed.
+Preparation is bounded to 64 MiB total, 8 MiB per file, 10,000 files, 20,000 tree
+entries, and 2,000 directories. Symlinks, submodules, Git LFS pointers, unsafe or
+case/Unicode-colliding paths, incomplete trees, and incompatible layouts stop it.
+
+**Pause** stops at a safe checkpoint. A source failure or rate limit is explicit;
+retry keeps the same resolved commit, and a rate-limit message gives the retry
+time. Source preparations expire after 30 minutes or a server restart. Once
+transferred, the verified browser bytes support local retries without reading
+GitHub again. Changing the source explicitly starts a new preparation.
+
+The browser rechecks folder permission, entry identity, and content around each
+write, but cannot exclude another program's writes or promise atomic directory
+creation. An existing child, even an empty one, is rejected when detected.
+Detected conflicts stop without overwriting the conflicting data. Write,
+permission, or registration failures retain the partial folder and show recovery
+actions; no automatic cleanup deletes files. **Retry verified import** resumes
+only attributable, unchanged entries. **Choose another destination** retains the
+old folder. **Keep folder and close**, a reload, or closing the tab loses the
+in-memory retry record, so a later import must use a fresh empty destination.
+A completed but unregistered folder can instead use ordinary existing-folder
+attachment after any reported registry recovery is resolved.
 
 ![Named GitHub connection form with a blank token and an explanation of unavailable encrypted storage](../docs/images/05-github-connection.png)
 
