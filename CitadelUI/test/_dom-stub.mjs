@@ -153,6 +153,7 @@ class StubNode {
       const value = part.trim();
       if (/^[a-z]+$/i.test(value)) return this.tagName === value.toUpperCase();
       if (value === '[data-editor-focus]') return this.dataset.editorFocus !== undefined;
+      if (value === '[data-terraform-export-entry]') return this.dataset.terraformExportEntry !== undefined;
       if (value === '[inert]') return this.inert;
       if (value === '.mp-item:not(:disabled)') return this.classList.contains('mp-item') && !this.disabled;
       if (/^\.[\w-]+$/.test(value)) return this.classList.contains(value.slice(1));

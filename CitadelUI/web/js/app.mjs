@@ -55,6 +55,7 @@ import { historyEntry } from './history-entry.mjs';
 import { createCompareSession } from './compare-session.mjs';
 import { openMigrationWizard } from './migration-wizard.mjs';
 import { openLocalSourceImport } from './local-source-import.mjs';
+import { openTerraformExport } from './terraform-export-view.mjs';
 import { describeCreatedBranch, saveStatusLine } from './save-resolution.mjs';
 import { refNameProblem } from '../../shared/git-refs.mjs';
 
@@ -2418,6 +2419,27 @@ async function openWorkspaceSettings() {
   await withStatus('Loading settings\u2026', openWorkspaceSettingsContent);
 }
 
+async function openTerraformExportReview() {
+  if (pendingCount() || await workspaceRegistry.countDrafts(activeWorkspace().environment.id)) {
+    setStatus('Save or discard existing parameter and policy drafts before Export to Terraform. Your edits have been kept.', 'error');
+    return;
+  }
+  if (COMPACT_NAV.matches) {
+    setStatus('Terraform export is a desktop experiment. Use a wider desktop window; your editor is unchanged.', 'info');
+    return;
+  }
+  await openTerraformExport({
+    session: api.createTerraformExportSession({
+      pendingEdits: () => pendingCount() > 0, activePath: state.current?.path,
+    }),
+    surface: {
+      shell: els.shell, workspace: els.workspace, areas: els.sidebar, actions: els.tbActions,
+      rail: els.contextRail, breadcrumb: els.repoPath,
+    },
+    onExit: () => render(),
+  });
+}
+
 async function openParameterMigration() {
   // Migration is separate from editor drafts. Do not discard or silently stash
   // either tab's edits just because the operator opened a wizard.
@@ -2484,6 +2506,10 @@ function renderActions() {
       onclick: guardedHandler(openParameterMigration, { key: 'open-parameter-migration' }),
     }, 'Migrate Citadel Configuration (Experimental)')
     : null;
+  const terraformExport = workspace ? h('button', {
+    class: 'btn btn-ghost', type: 'button', dataset: { terraformExportEntry: 'true' },
+    onclick: guardedHandler(openTerraformExportReview, { key: 'open-terraform-export' }),
+  }, 'Export to Terraform (Experimental)') : null;
   if (!state.current) {
     mount(
       els.tbActions,
@@ -2491,6 +2517,7 @@ function renderActions() {
         'div',
         { class: 'tb-command-set' },
         migration,
+        terraformExport,
         h('button', { class: 'btn', onclick: openWorkspaceSettings }, 'Settings')
       )
     );
@@ -2589,7 +2616,7 @@ function renderActions() {
         validationLabel ? `${pendingLabel} · ${validationLabel}` : pendingLabel
       )
     ),
-    h('div', { class: 'tb-command-set' }, migration, settings, discard, primary)
+    h('div', { class: 'tb-command-set' }, migration, terraformExport, settings, discard, primary)
   );
 }
 
@@ -3202,6 +3229,7 @@ function renderContractsArea(area) {
  */
 function render() {
   if (els.shell.dataset.workspace === 'migration') return;
+  if (els.shell.dataset.workspace === 'terraform-export') return;
   if (els.shell.dataset.workspace !== 'active') {
     updateHeaderContext();
     return;

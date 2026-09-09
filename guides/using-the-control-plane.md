@@ -336,6 +336,74 @@ paths, supported formats, limits, and the pinned older `main` sample, see the
 
 ---
 
+## Export to Terraform
+
+**Export to Terraform (Experimental)** generates fresh Terraform variable files
+from the saved Bicep configuration. It is a desktop experiment, not a Terraform
+editor, deployment, or state migration. The current Bicep/XML editor and its normal
+save actions remain the source of truth.
+
+1. Save or deliberately discard ordinary parameter/policy drafts, then choose
+   **Export to Terraform (Experimental)**. An attempted entry with drafts keeps
+   them and explains why export cannot start.
+2. Use **Include in ZIP** on the area rail and choose one **Saved source** per
+   included root. Select one Access contract explicitly when several are available.
+   A contract may contain multiple services, but separate contracts are never
+   merged or assigned invented filenames.
+3. Review the original service/setting beside its Terraform property names,
+   proposed values, output path and reason. Enter explicit export-only values
+   such as `subscription_id` and `managed_identity_client_id`, and inspect the
+   service's displayed defaults before accepting them.
+4. Resolve every blocker in each included configuration. **Review ZIP** shows
+   the exact variable files and hashes. **Back to mapping** permits revision;
+   area navigation retains separate inputs and selections.
+5. Choose **Approve & export ZIP**. Changed source, template, policy or workspace
+   invalidates approval. Use **Reload saved source**, inspect the revised values
+   and review again. Cancel in the exit confirmation keeps export open; **Exit export**
+   clears only its in-memory choices and restores the ordinary editor.
+
+![Synthetic saved-source Main mapping with explicit per-service Terraform choices](../docs/images/50-terraform-main.png)
+
+| State | Meaning |
+| --- | --- |
+| Mapped | A consumed target input preserves the setting. |
+| Transformed | Explicit property conversion, equivalent fixed behavior, or a proven inactive setting is explained. |
+| Needs input | A nonsecret literal or deliberate target-only choice is missing or invalid. No environment fallback is guessed. |
+| Requires Terraform change | Active source behavior has no faithful mapping to the pinned target wiring. |
+
+Custom unwired names, rich logging differences, Redis HA wiring, Foundry
+injection/model losses, active session-aware routing and extended Access
+gateway/rotation capabilities can block export. These are target wiring
+limitations, not claims that Azure lacks the capability. Excluding a whole area
+is a deliberate scope choice; it cannot waive a blocked setting in an included
+area. Empty generated-name overrides require an explicit naming decision and
+do not imply that Terraform will address the existing Bicep-created resources.
+
+![The existing typed backend/model surface beside actual Terraform backend properties](../docs/images/51-terraform-models.png)
+
+The ZIP has no wrapper and contains only the selected files:
+`environments/<environmentName>.tfvars`,
+`llm-backend-onboarding/terraform.tfvars`, and
+`citadel-access-contracts/terraform.tfvars`. The environment identity must be
+3-24 lowercase letters, numbers or hyphens, with no reserved
+device name; invalid identities are rejected, not renamed.
+Source XML is embedded literally as `policy_xml`, preserving APIM expressions
+and named-value references while escaping Terraform template markers. There are
+no XML extras, reports, modules, providers, credentials or state in the archive.
+
+![Three target-relative files in byte review, with the exact approval action](../docs/images/52-terraform-zip.png)
+
+**Mapping contract** in the rail identifies version `citadel-terraform-export-v1`
+and target commit `b54f121b7df912da61cb0302a63b9f870841ac2c` of
+`Azure/terraform-ai-gateway-landing-zone`. The experiment checks known shapes,
+literal types and locally available policy dependencies, not cloud permissions,
+external runtime dependencies or deployment parity. Keep source files stable
+while approving; the browser cannot lock an entire repository. Limits are three
+files, 8 MiB per file, 24 MiB total, and 64 source dependencies. Export inputs
+remain in memory and are never written back to Bicep or the workspace registry.
+
+---
+
 ## Create a new private GitHub repository
 
 **New GitHub Repo** creates a repository in the connected token's personal account.

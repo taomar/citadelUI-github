@@ -1,0 +1,3 @@
+# Canonical exported bytes use LF on every platform.
+*.tfvars text eol=lf
+*.json text eol=lf

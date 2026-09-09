@@ -192,6 +192,7 @@ function resourceNamesSection(section) {
 export function deploymentPresentation(doc, ctx) {
   const source = doc.outline?.sections || [];
   if (doc.path !== MAIN_DEPLOYMENT_PATH) return source;
+  if (ctx.completeProjection && !source.some(featureSection)) return source;
   const sourceNames = new Set(source.flatMap((section) => section.params));
   const visible = (name) => parameterVisible(name, ctx);
   const sections = source
@@ -754,6 +755,11 @@ function subscriptionRow(param, ctx) {
 }
 
 function paramRow(param, ctx) {
+  const rendered = paramRowContent(param, ctx);
+  return ctx.decorateParameter ? ctx.decorateParameter(param, rendered) : rendered;
+}
+
+function paramRowContent(param, ctx) {
   if (param.subscription) return subscriptionRow(param, ctx);
   const schema = ctx.schemaFor(param.name);
   const pending = ctx.pendingFor(param.name);
@@ -1134,10 +1140,8 @@ export function renderParamDocument(doc, ctx) {
 
   // Anything the outline missed still has to be editable -- presentation must
   // never be able to hide a parameter.
-  const covered = new Set([
-    ...(outline.sections || []).flatMap((section) => section.params),
-    ...sections.flatMap((section) => section.params),
-  ]);
+  const covered = new Set((ctx.completeProjection ? sections : [...(outline.sections || []), ...sections])
+    .flatMap((section) => section.params));
   const orphans = parameters.filter((p) => !covered.has(p.name));
 
   return h(

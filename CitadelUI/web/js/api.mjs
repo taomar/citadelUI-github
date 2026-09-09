@@ -4,6 +4,7 @@ import { localRequest as request } from './local-api.mjs';
 import { SourceMutationCoordinator } from './source-factory.mjs';
 import { activeWorkspace, workspaceRegistry } from './workspace-context.mjs';
 import { MigrationSession } from './migration-session.mjs';
+import { TerraformExportSession } from './terraform-export-session.mjs';
 
 // Composition root: the coordinator dispatches on the attached source kind, so
 // every editor operation below stays source-agnostic.
@@ -16,6 +17,9 @@ const coordinator = new SourceMutationCoordinator({
 const workspace = new WorkspaceService({ request, coordinator });
 
 export const api = {
+  createTerraformExportSession: (options = {}) => new TerraformExportSession({
+    ...options, contextProvider: activeWorkspace, registry: workspaceRegistry,
+  }),
   createMigrationSession: (options = {}) => new MigrationSession({
     ...options,
     contextProvider: activeWorkspace,

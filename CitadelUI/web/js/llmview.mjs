@@ -628,7 +628,7 @@ function backendCard(entry, index, ctx, findings) {
 
   const el = h('details', { class: 'lb', open }, head, body);
   el.addEventListener('toggle', () => ctx.setOpen(`llm-${index}`, el.open));
-  return el;
+  return ctx.decorateBackend ? ctx.decorateBackend(path, el) : el;
 }
 
 /* ----------------------------------------------------------- provider picker */

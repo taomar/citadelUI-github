@@ -1,0 +1,204 @@
+{
+  "contract": {
+    "version": "citadel-terraform-export-v1",
+    "repository": "Azure/terraform-ai-gateway-landing-zone",
+    "revision": "b54f121b7df912da61cb0302a63b9f870841ac2c",
+    "sourceRevision": "03f4d4293550fcef3ec852eeeacd67355fc66557"
+  },
+  "areas": {
+    "deployment": {
+      "path": "environments/export-demo.tfvars",
+      "values": {
+        "subscription_id": "11111111-1111-4111-8111-111111111111",
+        "purge_soft_delete_on_destroy": false,
+        "use_existing_resource_group": true,
+        "soft_delete_retention_days": 7,
+        "purge_protection_enabled": true,
+        "rbac_authorization_enabled": true,
+        "kv_deployer_ip_rules": [],
+        "kv_auto_detect_deployer_ip": false,
+        "create_apim_gateway_key_secret": false,
+        "apim_publisher_email": "operator@example.invalid",
+        "apim_publisher_name": "Synthetic export",
+        "eventhub_partition_count": 4,
+        "eventhub_disaster_recovery_config": null,
+        "logic_app_sku_tier": "WorkflowStandard",
+        "enable_pii_redaction": true,
+        "enable_content_safety": true,
+        "llm_backend_config": [],
+        "extra_llm_backends": [],
+        "apim_log_verbosity": "information",
+        "apim_log_body_bytes": 8192,
+        "inference_api_type": "OpenAIV1",
+        "is_mcp_sample_deployed": false,
+        "enable_logic_app_code_deploy": false,
+        "logic_app_code_source_path": "",
+        "configure_circuit_breaker": true,
+        "ms_learn_mcp_backend_url": "https://learn.microsoft.com/api/mcp",
+        "enable_jwt_auth": false,
+        "jwt_tenant_id": "",
+        "jwt_app_registration_id": "",
+        "azure_login_endpoint": "https://login.microsoftonline.com/",
+        "enable_entra_id_setup": false,
+        "entra_app_display_name_prefix": "ai-citadel-gateway",
+        "entra_client_secret_name": "ENTRA-APP-CLIENT-SECRET",
+        "entra_client_secret_rotation_days": 730,
+        "enable_api_center_onboarding": false,
+        "enable_foundry_apim_connection": false,
+        "environment_name": "export-demo",
+        "location": "eastus2",
+        "tags": {
+          "purpose": "synthetic-export",
+          "owner": "example"
+        },
+        "resource_group_name": "rg-export-demo",
+        "apim_service_name": "apim-export-demo",
+        "log_analytics_name": "law-export-demo",
+        "eventhub_namespace_name": "eh-export-demo",
+        "cosmos_db_account_name": "cosmos-export-demo",
+        "key_vault_name": "kv-export-demo",
+        "use_existing_log_analytics": false,
+        "vnet_name": "vnet-export-demo",
+        "use_existing_vnet": true,
+        "existing_vnet_rg": "rg-export-network",
+        "apim_subnet_name": "snet-apim",
+        "private_endpoint_subnet_name": "snet-pe",
+        "logic_app_subnet_name": "snet-logic",
+        "dns_zone_rg": "",
+        "dns_subscription_id": "",
+        "existing_private_dns_zones": {},
+        "apim_network_type": "Internal",
+        "cosmos_db_public_access": "Disabled",
+        "eventhub_network_access": "Disabled",
+        "ai_foundry_external_access": false,
+        "kv_public_network_access_enabled": false,
+        "network_acl_default_action": "Deny",
+        "use_azure_monitor_private_link_scope": true,
+        "create_app_insights_dashboards": false,
+        "enable_ai_model_inference": true,
+        "enable_document_intelligence": false,
+        "enable_azure_ai_search": false,
+        "enable_pii_anonymization": false,
+        "enable_openai_realtime": false,
+        "entra_auth_enabled": false,
+        "enable_api_center": false,
+        "enable_redis_cache": false,
+        "enable_embeddings_backend": false,
+        "enable_unified_ai_api": true,
+        "apim_sku": "Developer",
+        "apim_sku_units": 1,
+        "eventhub_capacity_units": 1,
+        "cosmos_db_rus": 400,
+        "logic_app_sku_size": "WS1",
+        "key_vault_sku": "standard",
+        "logic_content_share_name": "synthetic-content",
+        "ai_foundry_instances": [
+          {
+            "name": "foundry-export-demo",
+            "location": "eastus2",
+            "custom_subdomain": "foundry-export-demo",
+            "default_project_name": "export-project",
+            "network_injection_enabled": false
+          }
+        ],
+        "ai_foundry_models": [
+          {
+            "name": "gpt-4.1",
+            "publisher": "OpenAI",
+            "version": "2025-04-14",
+            "sku": "GlobalStandard",
+            "capacity": 100,
+            "ai_service_index": 0
+          }
+        ],
+        "foundry_network_injection_enabled": false,
+        "enable_agent_subnet": false
+      }
+    },
+    "llm": {
+      "path": "llm-backend-onboarding/terraform.tfvars",
+      "values": {
+        "subscription_id": "11111111-1111-4111-8111-111111111111",
+        "resource_group_name": "rg-export-demo",
+        "apim_name": "apim-export-demo",
+        "managed_identity_client_id": "22222222-2222-4222-8222-222222222222",
+        "llm_backend_config": [
+          {
+            "backend_id": "synthetic-east",
+            "backend_type": "azure-openai",
+            "endpoint": "https://synthetic-east.openai.azure.com",
+            "auth_scheme": "managedIdentity",
+            "auth_type": "managed-identity",
+            "priority": 1,
+            "weight": 100,
+            "supported_models": [
+              {
+                "name": "gpt-4.1",
+                "sku": "GlobalStandard",
+                "capacity": 100,
+                "modelFormat": "OpenAI",
+                "modelVersion": "2025-04-14",
+                "apiVersion": "2024-02-15-preview",
+                "timeout": 120,
+                "inferenceApiVersion": "",
+                "retirementDate": ""
+              }
+            ]
+          }
+        ],
+        "configure_circuit_breaker": true,
+        "model_aliases": [
+          {
+            "name": "assistant",
+            "models": [
+              "gpt-4.1"
+            ],
+            "strategy": "priority",
+            "weights": []
+          }
+        ],
+        "aws_region": "us-east-1"
+      }
+    },
+    "access": {
+      "path": "citadel-access-contracts/terraform.tfvars",
+      "values": {
+        "apim": {
+          "subscription_id": "11111111-1111-4111-8111-111111111111",
+          "resource_group_name": "rg-export-demo",
+          "name": "apim-export-demo"
+        },
+        "use_target_key_vault": true,
+        "key_vault": {
+          "subscription_id": "11111111-1111-4111-8111-111111111111",
+          "resource_group_name": "rg-export-demo",
+          "name": "kv-export-demo"
+        },
+        "use_case": {
+          "business_unit": "finance",
+          "use_case_name": "assistant",
+          "environment": "demo"
+        },
+        "api_name_mapping": {
+          "LLM": [
+            "universal-llm-api",
+            "azure-openai-api"
+          ],
+          "SEARCH": [
+            "ai-search-api"
+          ]
+        },
+        "services": [
+          {
+            "code": "LLM",
+            "endpoint_secret_name": "FINANCE-LLM-ENDPOINT",
+            "api_key_secret_name": "FINANCE-LLM-KEY",
+            "policy_xml": "<policies>\n  <inbound>\n    <base />\n    <set-variable name=\"allowed-models\" value=\"gpt-4.1,gpt-5.4-mini\" />\n    <set-variable name=\"literal-data\" value=\"${not_a_terraform_expression} %{not_a_directive} {{named-value}}\" />\n    <set-header name=\"x-synthetic-label\" exists-action=\"override\"><value>Café export</value></set-header>\n  </inbound>\n  <backend><base /></backend>\n  <outbound><base /></outbound>\n  <on-error><base /></on-error>\n</policies>\n"
+          }
+        ],
+        "product_terms": "Synthetic example only. Not deployed.",
+        "use_target_foundry": false
+      }
+    }
+  }
+}
