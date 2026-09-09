@@ -18,7 +18,9 @@ function setBackgroundInert(value) {
 }
 
 function focusFrame(frame) {
+  const shownAt = sequence;
   requestAnimationFrame(() => {
+    if (sequence !== shownAt || !host().open || stack.at(-1) !== frame) return;
     const target =
       (frame.initialFocus instanceof Element && frame.initialFocus) ||
       frame.body.querySelector('[autofocus], input:not(:disabled), select:not(:disabled), textarea:not(:disabled)') ||
@@ -56,13 +58,16 @@ function renderFrame(frame) {
 
 function closeHost() {
   const dialog = host();
+  const closedAt = sequence;
+  const target = restoreFocus;
   stack = [];
+  restoreFocus = null;
   setBackgroundInert(false);
   if (dialog.open) dialog.close();
   else dialog.replaceChildren();
-  const target = restoreFocus;
-  restoreFocus = null;
-  requestAnimationFrame(() => target?.isConnected && target.focus());
+  requestAnimationFrame(() => {
+    if (sequence === closedAt && !dialog.open && target?.isConnected) target.focus();
+  });
 }
 
 function installListeners() {
@@ -80,7 +85,8 @@ function installListeners() {
     dismissDialog();
   });
   dialog.addEventListener('close', () => {
-    dialog.replaceChildren();
+    // Native close events are queued; a successor may already own this host.
+    if (!dialog.open) dialog.replaceChildren();
   });
   dialog.addEventListener('click', (event) => {
     if (event.target !== dialog) return;
@@ -154,15 +160,20 @@ export function dismissDialog(result) {
   // as cancelled.
   const current = stack.at(-1);
   if (current?.preventDismiss?.()) return false;
+  const dismissedAt = sequence;
   const frame = stack.pop();
+  const previous = stack.at(-1);
   frame?.onDismiss?.(result);
+  // A dismissal callback can synchronously transfer ownership to a new frame.
+  if (sequence !== dismissedAt || stack.at(-1) !== previous) return true;
   if (!stack.length) {
     closeHost();
     return true;
   }
-  const previous = stack.at(-1);
   renderFrame(previous);
-  requestAnimationFrame(() => frame?.opener?.isConnected && frame.opener.focus());
+  requestAnimationFrame(() => {
+    if (sequence === dismissedAt && host().open && stack.at(-1) === previous && frame?.opener?.isConnected) frame.opener.focus();
+  });
   return true;
 }
 

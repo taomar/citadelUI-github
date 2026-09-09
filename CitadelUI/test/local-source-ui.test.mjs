@@ -292,6 +292,47 @@ test('local import UI: catalog entry reaches the same importer, independent of G
   assert.equal((await result).environment.id, 'created-workspace');
 });
 
+test('local import UI: catalog Cancel retains usable source choices after the queued native close event', async (t) => {
+  const fixture = harness(t);
+  const modal = document.getElementById('modal');
+  const immediateClose = modal.close;
+  modal.close = () => {
+    if (!modal.open) return;
+    modal.open = false;
+    setImmediate(() => modal.dispatch('close'));
+  };
+  t.after(async () => { await drain(); modal.close = immediateClose; });
+  let completions = 0;
+  const panel = runAddWorkspace({
+    connections: [], vault: { available: false }, rows: [], onDone: () => { completions++; },
+    actions: {
+      projects: [],
+      createSelection: () => new RepositorySelection({ listRepositories: async () => { throw new Error('GitHub must not be consulted'); } }),
+      localSourceClient: fixture.options.client, pickFolder: fixture.options.pickFolder,
+      scanLocalSource: scanProvider, attachLocalSource: fixture.options.attach,
+    },
+  });
+  t.after(() => panel.dispose());
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const entry = nodes().find((node) => node.tagName === 'BUTTON' && readText(node).startsWith('Create local from Citadel source'));
+    assert(entry);
+    entry.click();
+    assert.equal(control('local-import-source').value, DEFAULT_REPOSITORY_SOURCE);
+    await click('Cancel');
+    await drain();
+    assert.equal(modal.open, true);
+    assert.match(readText(modal), /Existing GitHub Repo/);
+    assert(modal.contains(document.activeElement), 'the returned dialog must own keyboard focus');
+    assert.equal(button('Cancel').disabled, false);
+  }
+  assert.deepEqual(fixture.fixture.calls, [], 'Cancel before preparation needs no source API call');
+  assert.deepEqual(fixture.calls, [], 'no picker or registration is involved');
+  assert.equal(completions, 0);
+  await click('Cancel');
+  await drain();
+  assert.equal(modal.open, false);
+});
+
 test('local import UI: Settings New project wires the shared flow and removes current-GitHub context only for local setup', async () => {
   const app = await readFile(new URL('../web/js/app.mjs', import.meta.url), 'utf8');
   const flow = app.slice(app.indexOf("'Creating project\\u2026'"), app.indexOf("}, 'New project')"));
