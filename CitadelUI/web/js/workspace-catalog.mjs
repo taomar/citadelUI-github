@@ -31,6 +31,7 @@
  * any of them.
  */
 import { h, mount } from './dom.mjs';
+import { reportClientError } from './diagnostics-client.mjs';
 import { showDialog, dismissDialog, confirmDialog } from './dialog.mjs';
 import { environmentSourceOf } from './registry.mjs';
 import { CONNECTION_PERSISTENCE_LABEL, connectionStorageDescription, connectionStatusLabel, isConnectionLive, isConnectionResumable } from './github-connections.mjs';
@@ -309,6 +310,7 @@ function statusLine() {
 }
 
 function say(node, text) {
+  if (text && node.classList.contains('catalog-error')) reportClientError(null, 'app.workspace', { module: '/js/workspace-catalog.mjs' });
   node.textContent = text || '';
   node.hidden = !text;
 }
@@ -400,6 +402,7 @@ export function presentWorkspaceCatalog(options) {
       try {
         return await work();
       } catch (error) {
+        reportClientError(error, 'app.workspace', { module: '/js/workspace-catalog.mjs' });
         say(banner, error?.message || String(error));
         return null;
       } finally {
@@ -436,6 +439,7 @@ export function presentWorkspaceCatalog(options) {
         );
         loadError = null;
       } catch (error) {
+        reportClientError(error, 'app.workspace', { module: '/js/workspace-catalog.mjs' });
         loadError = error?.message || String(error);
       }
       publishContext();

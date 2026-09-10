@@ -10,8 +10,9 @@ One container manages any number of user-labeled environments. Microsoft Edge
 or Google Chrome grants repository access through the File System Access API;
 the container never receives a source mount, Docker socket, operator cloud
 credential, or broad host filesystem access. Citadel UI does not deploy the
-gateway or send telemetry. An Azure-hosted instance uses its managed identity
-only to read the optional credential-encryption key from Key Vault.
+gateway or send telemetry to external services. An Azure-hosted instance uses
+its managed identity only to read the optional credential-encryption key from
+Key Vault.
 
 ---
 
@@ -134,6 +135,23 @@ operation in PowerShell. In Bash, use `docker compose --env-file container.env p
 `docker compose --env-file container.env logs --tail 200 --follow app`, and
 `docker compose --env-file container.env down` from `CitadelUI/`.
 Direct `node server/index.mjs` execution is developer-only.
+
+## Troubleshooting with a timed debug report
+
+Open `/debug` on the same instance and sign in as the owner. There is no link in
+the normal menus. **Instance-wide debugging** is off by default; enabling it
+starts a fixed 30-minute capture of safe server/API and connected browser error
+metadata. Closing the page does not stop or extend that window. Already-open
+browser profiles normally discover it within the 5-second polling interval.
+
+Reproduce the problem, stop capture if needed, and select **Download debug
+report**. Known codes, request templates and bundled locations have explanations
+and suggested next steps; raw errors, source values, private paths and credentials
+are excluded. Nothing is uploaded automatically. The latest report remains in
+memory after stop/expiry until cleared, replaced or lost on server restart.
+Downloads during capture are snapshots; missing/offline browser errors cannot
+be recovered retrospectively. See [Timed diagnostic capture](DIAGNOSTICS.md) for
+the exact schema, limits, coverage and privacy contract.
 
 ---
 
@@ -998,5 +1016,6 @@ CitadelUI/
 
 The production image has no package install or build step. It contains only the
 application runtime and serves ES modules directly. It has no Azure CLI, Bicep
-CLI, `azd`, Git, deployment tooling, or telemetry. Its only outbound network
-dependency is `https://api.github.com`, used exclusively by GitHub environments.
+CLI, `azd`, Git, deployment tooling, or external telemetry exporters. Its only
+outbound network dependency is `https://api.github.com`, used exclusively by
+GitHub environments.

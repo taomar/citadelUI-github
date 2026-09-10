@@ -1,4 +1,5 @@
 import { h, mount } from './dom.mjs';
+import { reportClientError } from './diagnostics-client.mjs';
 import { confirmDialog } from './dialog.mjs';
 import { renderParamDocument, renderOutlineNav } from './paramview.mjs';
 import { exportControlContext } from './terraform-export-controls.mjs';
@@ -117,6 +118,7 @@ export async function openTerraformExport({
       try {
         await task();
       } catch (error) {
+        reportClientError(error, 'app.terraform-export', { module: '/js/terraform-export-view.mjs' });
         tone = 'error';
         message = error instanceof TerraformExportError ? error.message :
           `Export did not complete: ${error.message || 'Source or download setup failed. Retry after correcting it.'}`;
@@ -149,6 +151,7 @@ export async function openTerraformExport({
         view = session.view();
         renderKeepingFocus(key);
       } catch (error) {
+        reportClientError(error, 'app.terraform-export', { module: '/js/terraform-export-view.mjs' });
         errors.set(key, error.message);
         renderKeepingFocus(key);
       }

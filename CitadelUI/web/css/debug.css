@@ -1,0 +1,200 @@
+.debug-content {
+  max-width: 96rem;
+  padding-block: var(--sp-7) var(--sp-8);
+  gap: var(--sp-7);
+}
+
+.debug-heading,
+.debug-section {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.debug-content h1,
+.debug-content h2,
+.debug-content p {
+  margin: 0;
+}
+
+.debug-content h1 {
+  font-size: var(--t-h1);
+}
+
+.debug-content h2 {
+  font-size: var(--t-h2);
+}
+
+.debug-heading p,
+.debug-help p {
+  max-width: 75ch;
+  color: var(--ink-2);
+}
+
+.debug-capture-bar,
+.debug-actions,
+.debug-report-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-5) var(--sp-6);
+}
+
+.debug-capture-bar {
+  padding: var(--sp-6);
+  background: var(--band);
+  border-block: 1px solid var(--rule);
+}
+
+.debug-toggle .toggle-label {
+  font: 600 var(--t-body) var(--sans);
+  color: var(--ink-1);
+}
+
+.debug-status {
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.debug-status[data-active='true'] {
+  color: var(--brand);
+}
+
+.debug-countdown {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+
+.debug-timing {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--sp-4) var(--sp-6);
+  margin: 0;
+  font-size: var(--t-body);
+}
+
+.debug-timing dt {
+  color: var(--ink-3);
+}
+
+.debug-timing dd {
+  margin: 0;
+  color: var(--ink-1);
+}
+
+.debug-notice {
+  padding: var(--sp-5) var(--sp-6);
+  color: var(--warning);
+  background: var(--warning-wash);
+}
+
+.debug-error {
+  padding: var(--sp-5) var(--sp-6);
+  color: var(--danger-ink);
+  background: var(--danger-wash);
+}
+
+.debug-report-heading {
+  justify-content: space-between;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: var(--sp-5);
+}
+
+.debug-counts,
+.debug-report-kind,
+.debug-hint {
+  color: var(--ink-3);
+  font-size: var(--t-small);
+}
+
+.debug-table-wrap {
+  overflow-x: auto;
+}
+
+.debug-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: var(--t-body);
+}
+
+.debug-table th,
+.debug-table td {
+  padding: var(--sp-5);
+  border-bottom: 1px solid var(--rule-soft);
+  vertical-align: top;
+}
+
+.debug-table caption {
+  text-align: left;
+  padding-bottom: var(--sp-4);
+}
+
+.debug-table th {
+  background: var(--band);
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.debug-table th:first-child,
+.debug-table td:first-child {
+  padding-inline-start: 0;
+  white-space: nowrap;
+}
+
+.debug-table th:last-child,
+.debug-table td:last-child {
+  text-align: right;
+}
+
+.debug-table tbody tr:nth-child(even) {
+  background: var(--zebra);
+}
+
+.debug-event-detail {
+  display: block;
+  margin-top: var(--sp-2);
+  color: var(--ink-3);
+  font-size: var(--t-small);
+  overflow-wrap: anywhere;
+}
+
+.debug-event-summary {
+  font-weight: 600;
+}
+
+.debug-table .debug-event-meaning,
+.debug-event-help {
+  margin-top: var(--sp-4);
+  max-width: 75ch;
+  color: var(--ink-2);
+}
+
+.debug-event-help summary {
+  cursor: pointer;
+  color: var(--brand);
+}
+
+.debug-event-help p {
+  margin-top: var(--sp-4);
+}
+
+.debug-empty {
+  padding-block: var(--sp-7);
+  color: var(--ink-2);
+}
+
+.debug-help {
+  padding-top: var(--sp-6);
+  border-top: 1px solid var(--rule);
+}
+
+.debug-help summary {
+  cursor: pointer;
+  color: var(--brand);
+  font-weight: 600;
+}
+
+.debug-help p {
+  margin-top: var(--sp-5);
+}

@@ -21,6 +21,9 @@ import { RegistryStore } from './registry-store.mjs';
 import { ConnectionProfileStore } from './connections.mjs';
 import { CredentialVault } from './credentials.mjs';
 import { OwnerAccount } from './owner.mjs';
+import { DiagnosticCapture } from './diagnostics.mjs';
+import { handleDiagnostics } from './diagnostics-routes.mjs';
+import { diagnosticException, diagnosticResource, diagnosticRoute, isDiagnosticPath, safeDiagnosticCode, safeDiagnosticMethod } from '../shared/diagnostics.mjs';
 import { ActivityStore, ACTIVITY_ACTIONS } from './activity.mjs';
 import { MigrationSnapshotStore } from './migration-snapshots.mjs';
 import { MigrationError } from '../shared/migration-input.mjs';
@@ -130,10 +133,10 @@ function sendEmpty(res, status, correlationId, extraHeaders = {}) {
   res.end();
 }
 
-function safeCorrelationId(value) {
+function safeCorrelationId(value, fallback) {
   return typeof value === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(value)
     ? value
-    : randomUUID();
+    : fallback;
 }
 
 function sameToken(left, right) {
@@ -459,7 +462,25 @@ async function handleApi(context) {
     return await handleOwnerApi(context);
   }
 
-  assertBrowserRequest(req, allowedHost, allowedOrigin, sessionToken, stateChanging);
+  assertBrowserRequest(req, allowedHost, allowedOrigin, sessionToken,
+    stateChanging || (isDiagnosticPath(url.pathname) && req.headers.origin !== undefined));
+
+  if (isDiagnosticPath(url.pathname)) {
+    return await handleDiagnostics({
+      req, url, diagnostics: context.diagnostics,
+      readBody: (limit) => readLimitedBody(req, limit, true),
+      sendJson: (status, body, headers) => sendJson(res, status, body, correlationId, headers),
+      sendDownload: (payload, filename) => {
+        res.writeHead(200, {
+          ...securityHeaders(correlationId),
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${filename}"`,
+          'Content-Length': Buffer.byteLength(payload, 'utf8'),
+        });
+        return res.end(payload);
+      },
+    });
+  }
 
   // GitHub routes own their own method set (they need DELETE to disconnect), so
   // they are dispatched before the method allow-list that governs every other
@@ -742,6 +763,13 @@ async function handleApi(context) {
   return sendJson(res, 200, result, correlationId);
 }
 
+function excludedFromDiagnostics(pathname) {
+  return !pathname.startsWith('/') || isDiagnosticPath(pathname) || pathname === '/debug' ||
+    pathname === '/debug.html' || pathname === '/healthz' ||
+    /^\/(?:js|shared)\/(?:debug|diagnostics)(?:[-.]|\/)/.test(pathname) ||
+    pathname === '/css/debug.css';
+}
+
 async function serveStatic(context) {
   const { req, res, url, correlationId, webRoot, sharedRoot, bootstrapFor } = context;
   if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -752,7 +780,8 @@ async function serveStatic(context) {
     throw transactionError(404, 'STATIC_NOT_FOUND', 'Static asset not found.');
   }
   const root = sharedRequest ? sharedRoot : webRoot;
-  const pathname = sharedRequest ? url.pathname.slice('/shared'.length) : url.pathname;
+  const pathname = sharedRequest ? url.pathname.slice('/shared'.length)
+    : url.pathname === '/debug' ? '/debug.html' : url.pathname;
   const target = staticPath(root, pathname);
   let body;
   try {
@@ -761,6 +790,8 @@ async function serveStatic(context) {
     body =
       !sharedRequest && target === resolve(webRoot, 'index.html')
         ? await bootstrapFor()
+        : !sharedRequest && target === resolve(webRoot, 'debug.html')
+        ? await bootstrapFor(await readFile(target, 'utf8'))
         : await readFile(target);
   } catch (error) {
     if (error.code === 'ENOENT') {
@@ -813,6 +844,7 @@ export async function createCitadelServer(options = {}) {
     throw new Error('QA requires an isolated origin and registry namespace.');
   }
   const sessionToken = options.sessionToken || randomBytes(32).toString('base64url');
+  const diagnostics = new DiagnosticCapture(options.diagnosticOptions);
   const maxConcurrency = options.maxConcurrency ?? 32;
   const store = options.store || new TransactionStore({ dataRoot, ...(options.transactionOptions || {}) });
   const registryStore = options.registryStore || new RegistryStore({ dataRoot });
@@ -868,18 +900,44 @@ export async function createCitadelServer(options = {}) {
     claimed: injectBootstrapMetadata(indexHtml, 'claimed', registryNamespace, testRuntime),
     unavailable: injectBootstrapMetadata(indexHtml, 'unavailable', registryNamespace, testRuntime),
   };
-  const bootstrapFor = async () => {
+  const bootstrapFor = async (html) => {
+    let state = 'unavailable';
     try {
-      return bootstraps[(await ownerAccount.read()).state] || bootstraps.unavailable;
+      const readState = (await ownerAccount.read()).state;
+      if (Object.hasOwn(bootstraps, readState)) state = readState;
     } catch {
-      return bootstraps.unavailable;
+      // A failed owner read must not reopen the claim on either entry page.
     }
+    return html ? injectBootstrapMetadata(html, state, registryNamespace, testRuntime) : bootstraps[state];
   };
   let active = 0;
 
   const server = createServer(async (req, res) => {
-    const correlationId = safeCorrelationId(req.headers['x-correlation-id']);
+    // Keep the existing response correlation contract, but never retain or log
+    // a caller-supplied correlation (it may itself contain a secret).
+    const diagnosticCorrelationId = randomUUID();
+    const correlationId = safeCorrelationId(req.headers['x-correlation-id'], diagnosticCorrelationId);
+    let diagnosticOperation = 'api.other';
+    let diagnosticExcluded = true;
+    let diagnosticCode = 'HTTP_ERROR';
+    let diagnosticErrorType = 'UnknownError';
+    const diagnosticContext = { method: safeDiagnosticMethod(req.method), resource: null };
+    let responseFinished = false;
+    res.once('finish', () => {
+      responseFinished = true;
+      if (!diagnosticExcluded && res.statusCode >= 400) {
+        diagnostics.recordRequest(diagnosticOperation, res.statusCode, diagnosticCode, diagnosticErrorType, diagnosticCorrelationId, diagnosticContext);
+      }
+    });
+    res.once('close', () => {
+      if (!responseFinished && !diagnosticExcluded) {
+        diagnostics.recordRequest(diagnosticOperation, 500, 'REQUEST_ABORTED', diagnosticErrorType, diagnosticCorrelationId, diagnosticContext);
+      }
+    });
     if (active >= maxConcurrency) {
+      if (!excludedFromDiagnostics((req.url || '/').split(/[?#]/, 1)[0])) {
+        diagnostics.recordRequest('api.other', 503, 'SERVER_BUSY', 'Error', diagnosticCorrelationId, diagnosticContext);
+      }
       return sendJson(
         res,
         503,
@@ -901,9 +959,13 @@ export async function createCitadelServer(options = {}) {
 
     try {
       if (req.headers.host !== allowedHost) {
+        diagnosticExcluded = excludedFromDiagnostics((req.url || '/').split(/[?#]/, 1)[0]);
         throw transactionError(421, 'INVALID_HOST', 'Request host is not allowed.');
       }
       const url = new URL(req.url || '/', allowedOrigin);
+      diagnosticOperation = diagnosticRoute(url.pathname);
+      diagnosticContext.resource = diagnosticResource(url.pathname);
+      diagnosticExcluded = excludedFromDiagnostics(url.pathname);
       if (url.pathname === '/healthz') {
         if (req.method !== 'GET' && req.method !== 'HEAD') {
           return sendEmpty(res, 405, correlationId, { Allow: 'GET, HEAD' });
@@ -915,6 +977,7 @@ export async function createCitadelServer(options = {}) {
         res,
         url,
         correlationId,
+        diagnostics,
         webRoot,
         sharedRoot,
         bootstrapFor,
@@ -936,6 +999,8 @@ export async function createCitadelServer(options = {}) {
       }
       return await serveStatic(context);
     } catch (error) {
+      diagnosticCode = safeDiagnosticCode(error.code);
+      diagnosticErrorType = diagnosticException(error);
       if (res.headersSent) {
         res.destroy();
         return;
@@ -970,9 +1035,9 @@ export async function createCitadelServer(options = {}) {
         console.error(
           JSON.stringify({
             event: 'request_error',
-            correlationId,
+            correlationId: diagnosticCorrelationId,
             status,
-            errorType: error?.constructor?.name || 'Error',
+            errorType: diagnosticErrorType,
           })
         );
       }
@@ -989,6 +1054,7 @@ export async function createCitadelServer(options = {}) {
   server.requestTimeout = options.requestTimeout ?? 30_000;
   server.keepAliveTimeout = options.keepAliveTimeout ?? 5_000;
   server.once('close', () => {
+    diagnostics.shutdown();
     githubRoutes?.creations?.shutdown();
     githubRoutes?.localImports?.shutdown();
   });
@@ -1004,6 +1070,7 @@ export async function createCitadelServer(options = {}) {
     githubRoutes,
     ownerAccount,
     sessionToken,
+    diagnostics,
   };
 }
 
@@ -1028,7 +1095,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       JSON.stringify({
         event: 'citadel_ui_start_failed',
         status: 'failed',
-        errorType: error?.constructor?.name || 'Error',
+        errorType: diagnosticException(error),
       })
     );
     process.exitCode = 1;
