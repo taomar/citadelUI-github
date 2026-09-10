@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "packages": {
+    "@tree-sitter-grammars/tree-sitter-hcl": "1.2.0",
+    "tree-sitter-json": "0.24.8",
+    "web-tree-sitter": "0.25.10"
+  },
+  "build": "npm ci --ignore-scripts; npm run build (CitadelUI/tools/native-parser)",
+  "licenses": {
+    "web-tree-sitter": "MIT",
+    "@tree-sitter-grammars/tree-sitter-hcl": "Apache-2.0",
+    "tree-sitter-json": "MIT"
+  },
+  "packageProvenance": {
+    "@tree-sitter-grammars/tree-sitter-hcl": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/@tree-sitter-grammars/tree-sitter-hcl/-/tree-sitter-hcl-1.2.0.tgz",
+      "integrity": "sha512-2bVnOojkkdMLevp0G4v3ksbNoOQFc/Pt9GAdWX4i3aykVyI+CkktE1hsF/XAeUQFjwgGrVZnEyeCll5oD7Ibfg=="
+    },
+    "tree-sitter-json": {
+      "version": "0.24.8",
+      "resolved": "https://registry.npmjs.org/tree-sitter-json/-/tree-sitter-json-0.24.8.tgz",
+      "integrity": "sha512-Tc9ZZYwHyWZ3Tt1VEw7Pa2scu1YO7/d2BCBbKTx5hXwig3UfdQjsOPkPyLpDJOn/m1UBEWYAtSdGAwCSyagBqQ=="
+    },
+    "web-tree-sitter": {
+      "version": "0.25.10",
+      "resolved": "https://registry.npmjs.org/web-tree-sitter/-/web-tree-sitter-0.25.10.tgz",
+      "integrity": "sha512-Y09sF44/13XvgVKgO2cNDw5rGk6s26MgoZPXLESvMXeefBf7i6/73eFurre0IsTW6E14Y0ArIzhUMmjoc7xyzA=="
+    }
+  },
+  "assetProvenance": {
+    "tree-sitter.mjs": {
+      "package": "web-tree-sitter",
+      "path": "tree-sitter.js",
+      "processing": "Copied byte-for-byte from the locked published npm archive; WASM is upstream prebuilt, not locally compiled."
+    },
+    "tree-sitter.wasm": {
+      "package": "web-tree-sitter",
+      "path": "tree-sitter.wasm",
+      "processing": "Copied byte-for-byte from the locked published npm archive; WASM is upstream prebuilt, not locally compiled."
+    },
+    "tree-sitter-LICENSE.txt": {
+      "package": "web-tree-sitter",
+      "path": "LICENSE",
+      "processing": "Copied byte-for-byte from the locked published npm archive; WASM is upstream prebuilt, not locally compiled."
+    },
+    "hcl.wasm": {
+      "package": "@tree-sitter-grammars/tree-sitter-hcl",
+      "path": "tree-sitter-hcl.wasm",
+      "processing": "Copied byte-for-byte from the locked published npm archive; WASM is upstream prebuilt, not locally compiled."
+    },
+    "hcl-LICENSE.txt": {
+      "package": "@tree-sitter-grammars/tree-sitter-hcl",
+      "path": "LICENSE",
+      "processing": "Copied byte-for-byte from the locked published npm archive; WASM is upstream prebuilt, not locally compiled."
+    },
+    "json.wasm": {
+      "package": "tree-sitter-json",
+      "path": "tree-sitter-json.wasm",
+      "processing": "Copied byte-for-byte from the locked published npm archive; WASM is upstream prebuilt, not locally compiled."
+    },
+    "json-LICENSE.txt": {
+      "package": "tree-sitter-json",
+      "path": "LICENSE",
+      "processing": "Copied byte-for-byte from the locked published npm archive; WASM is upstream prebuilt, not locally compiled."
+    }
+  },
+  "sha256": {
+    "tree-sitter.mjs": "d4fc466df6358055253bc4cdaab23cdf84fe00741fa5a4ff56506c06c533da42",
+    "tree-sitter.wasm": "f38dcc4b43b818f9a0785bc1c6d5611a75ac4cdd428ff3f02757c34ca4e46d7f",
+    "tree-sitter-LICENSE.txt": "5f9cf9fb6acb1972b35ae29119ce563bb60ec097656bc4b69b9bac2d04c7a147",
+    "hcl.wasm": "86bb80cd151bd3ab1e44ed431a9c1874978db31519c62055efb50f028a1d0118",
+    "hcl-LICENSE.txt": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "json.wasm": "d2119fb98d5912719b13f9458574f8608d2d29dfbe45f6be1f860ea1fe2a2405",
+    "json-LICENSE.txt": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+  }
+}

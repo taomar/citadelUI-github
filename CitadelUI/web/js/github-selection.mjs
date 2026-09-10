@@ -10,6 +10,7 @@
  * from what the connected credential can reach.
  */
 import { resolveWriteTarget, suggestedBranchName } from './branch-target.mjs';
+import { bindingKey } from '../../shared/workspace-configuration.mjs';
 
 /**
  * The exact settings the token needs, stated identically inline, in the token
@@ -69,6 +70,8 @@ export class RepositorySelection {
     // The credential itself is owned application-wide, not per panel: a per
     // panel lock cannot stop two panels from overwriting one browser session.
     this.sessions = options.sessions || null;
+    this.configuration = options.configuration;
+    this.format = options.configuration?.format || 'bicep';
     this.requestId = 0;
     // Bumped whenever the credential changes, so responses belonging to a
     // superseded connection can be recognised and discarded.
@@ -322,6 +325,11 @@ export class RepositorySelection {
    * decides whether Attach may be offered, and which capabilities to name.
    */
   async validate() {
+    if (this.format === 'terraform' && !this.configuration) {
+      this.validation = null;
+      this.validationError = 'Choose native root/value-file units in the next step, then validate them.';
+      return null;
+    }
     if (!this.checkCompatibility || !this.repository || !this.branch) return null;
     const generation = (this.validationId += 1);
     const connection = this.connectionId;
@@ -337,11 +345,11 @@ export class RepositorySelection {
     this.validationError = null;
     this.onChange(this);
     try {
-      const result = await this.checkCompatibility(repositoryId, branch);
+      const result = await this.checkCompatibility(repositoryId, branch, this.configuration);
       // A verdict that arrived after the user moved on, or under a credential
       // that has since been replaced, is discarded rather than shown.
       if (generation !== this.validationId || connection !== this.connectionId) return null;
-      this.validation = { ...result, repositoryId, branch };
+      this.validation = { ...result, repositoryId, branch, binding: bindingKey(this.configuration) };
       if (!result.supported) {
         this.validationError = `${
           this.repository.fullName
@@ -363,6 +371,13 @@ export class RepositorySelection {
         this.onChange(this);
       }
     }
+  }
+
+  setConfiguration(configuration, format = configuration?.format || 'bicep') {
+    this.configuration = configuration;
+    this.format = format;
+    this.invalidateValidation();
+    this.onChange(this);
   }
 
   setWriteMode(mode) {
@@ -428,6 +443,7 @@ export class RepositorySelection {
         this.validation?.supported === true &&
         this.validation.branch === this.branch &&
         this.validation.repositoryId === this.repository.id &&
+        this.validation.binding === bindingKey(this.configuration) &&
         // A typed name that is invalid, or one that already exists and has not
         // been deliberately adopted, is not a target. Attach stays closed rather
         // than quietly falling back to a name the user did not choose.
@@ -461,6 +477,7 @@ export class RepositorySelection {
       // the attach if the branch has moved since, so a race cannot slip an
       // unvalidated tree past the gate.
       expectedHead: this.validation?.head || null,
+      ...(this.configuration ? { configuration: this.configuration } : {}),
     };
   }
 

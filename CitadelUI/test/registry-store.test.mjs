@@ -15,6 +15,8 @@ import {
   validateLocalPath,
 } from '../web/js/workspace-context.mjs';
 import { createEnvironmentOperation } from '../web/js/settings-operation.mjs';
+import { createConfiguration } from '../shared/workspace-configuration.mjs';
+import { nativeConfiguration, nativeDirectory } from './_native-fixture.mjs';
 
 const timestamp = '2026-08-31T10:00:00.000Z';
 const project = {
@@ -97,6 +99,12 @@ function memoryRegistry() {
           delete: (key) => values.delete(key),
           get: (key) => request(values.get(key)),
           getAll: () => request([...values.values()]),
+          index: (field) => ({ getAll: (key) => request([...values.values()].filter((value) => value[field] === key)) }),
+          add(value, key) {
+            const id = key ?? value.id ?? value.key;
+            if (values.has(id)) throw new Error('Duplicate fixture identity.');
+            values.set(id, value);
+          },
           put(value, key) {
             values.set(key ?? value.id ?? value.key, value);
           },
@@ -131,6 +139,117 @@ test('browser registry namespace is injectable for QA isolation', () => {
     }),
     /production Citadel origin/
   );
+});
+
+test('browser draft lookup resolves the owning stored environment without rewriting legacy identity', async () => {
+  const { registry, records } = memoryRegistry();
+  assert.equal((await registry.getEnvironment(environment.id)).id, environment.id);
+  assert.equal(await registry.getEnvironment('missing'), null);
+  await registry.saveDraft(environment.id, 'bicep/infra/main.bicepparam', 'a'.repeat(64),
+    [{ op: 'set', path: ['environmentName'], value: 'draft' }]);
+  assert.equal((await registry.getDraft(environment.id, 'bicep/infra/main.bicepparam')).operations[0].value, 'draft');
+  assert.equal(records.environments.get(environment.id).configuration, undefined);
+});
+
+test('native registry admits distinct Local folders, refuses same/overlapping folders and restores only owning handles', async () => {
+  const { registry, records } = memoryRegistry();
+  records.environments.clear(); records.handles.clear(); records.drafts.clear();
+  const folder = nativeDirectory(), child = await folder.getDirectoryHandle('environments');
+  const native = await registry.addEnvironment(project.id, 'Native', folder, null, {
+    localPath: 'C:\\synthetic\\synthetic-native', configuration: nativeConfiguration(['deployment']),
+  });
+  await assert.rejects(registry.addEnvironment(project.id, 'Same', folder, null, {
+    localPath: 'C:\\display-is-not-authority\\synthetic-native', configuration: createConfiguration('bicep'),
+  }), /overlap/);
+  await assert.rejects(registry.addEnvironment(project.id, 'Child', child, null, {
+    localPath: 'C:\\synthetic\\environments', configuration: createConfiguration('bicep'),
+  }), /overlap/);
+  const otherFolder = nativeDirectory();
+  const other = await registry.addEnvironment(project.id, 'Other', otherFolder, null, {
+    localPath: 'C:\\synthetic\\synthetic-native', configuration: nativeConfiguration(['deployment']),
+  });
+  assert.notEqual(other.id, native.id);
+  await assert.rejects(registry.reconnectEnvironment(native.id, otherFolder), /already attached/);
+  await registry.reconnectEnvironment(native.id, folder);
+  const snapshot = await registry.environmentSnapshot(native.id);
+  await assert.rejects(registry.restoreEnvironmentSnapshot({ ...snapshot, handle: otherFolder }), /original owning/);
+  const retargeted = structuredClone(snapshot.environment);
+  retargeted.configuration.units[0].valueAlias = 'environments/retargeted.tfvars';
+  await assert.rejects(registry.restoreEnvironmentSnapshot({ environment: retargeted, handle: folder }), { code: 'CONFIGURATION_RETARGET' });
+  records.handles.delete(native.id);
+  await assert.rejects(registry.reconnectEnvironment(native.id, folder), /unproven folder/);
+
+  records.environments.clear(); records.handles.clear();
+  await registry.addEnvironment(project.id, 'Child first', child, null, {
+    localPath: 'C:\\synthetic\\environments', configuration: createConfiguration('bicep'),
+  });
+  await assert.rejects(registry.addEnvironment(project.id, 'Parent later', folder, null, {
+    localPath: 'C:\\synthetic\\synthetic-native', configuration: nativeConfiguration(['deployment']),
+  }), /overlap/);
+});
+
+test('pending native attachments retain exact identities across restart and distinguish formats, files, branches and adoption', () => {
+  const { registry } = memoryRegistry();
+  const base = { repositoryId: 99, sourceBranch: 'main', workingBranch: 'work', writeMode: 'working-branch',
+    projectId: project.id, connectionProfileId: 'shared-connection', adoptExisting: false };
+  const entries = [
+    { ...base, configuration: nativeConfiguration(['deployment']) },
+    { ...base, configuration: createConfiguration('bicep') },
+    { ...base, configuration: nativeConfiguration(['llm']) },
+    { ...base, workingBranch: 'another', configuration: nativeConfiguration(['deployment']) },
+    { ...base, adoptExisting: true, configuration: nativeConfiguration(['deployment']) },
+  ].map((entry, index) => ({ ...entry, operationKey: `attempt-${index}`, environmentId: `pending-${index}` }));
+  for (const entry of entries) registry.savePendingAttachment(entry);
+  const original = registry.storage.getItem(registry.pendingAttachmentKey);
+  for (const change of [{ environmentId: 'foreign' }, { repositoryId: 100 }, { projectId: 'foreign' },
+    { workingBranch: 'foreign' }, { adoptExisting: true }, { connectionProfileId: 'foreign' },
+    { configuration: nativeConfiguration(['llm']) }, { operationKey: 'foreign' }]) {
+    assert.throws(() => registry.savePendingAttachment({ ...entries[0], ...change }));
+    assert.equal(registry.storage.getItem(registry.pendingAttachmentKey), original);
+  }
+  const restarted = new WorkspaceRegistry({ indexedDB: {}, storage: registry.storage, dbName: registry.dbName });
+  for (const entry of entries) {
+    const pending = restarted.pendingAttachment({ ...entry,
+      configuration: entry.configuration.format === 'terraform'
+        ? nativeConfiguration(entry.configuration.units.map(({ id, ...unit }) => unit))
+        : createConfiguration('bicep') });
+    assert.equal(pending.operationKey, entry.operationKey);
+    assert.deepEqual(pending.configuration, entry.configuration);
+  }
+  restarted.clearPendingAttachment(entries[0].operationKey);
+  assert.equal(restarted.pendingAttachments().length, 4);
+  const future = JSON.stringify([{ ...entries[0], configuration: { ...entries[0].configuration, version: 2 } }]);
+  registry.storage.setItem(registry.pendingAttachmentKey, future);
+  assert.throws(() => restarted.pendingAttachments(), { code: 'CONFIGURATION_VERSION' });
+  assert.equal(registry.storage.getItem(registry.pendingAttachmentKey), future);
+  registry.storage.setItem(registry.pendingAttachmentKey, '{damaged');
+  assert.throws(() => restarted.pendingAttachments(), /retry data was retained/);
+  assert.equal(registry.storage.getItem(registry.pendingAttachmentKey), '{damaged');
+  const overlap = JSON.stringify([entries[0], { ...entries[0], operationKey: 'duplicate-environment' }]);
+  registry.storage.setItem(registry.pendingAttachmentKey, overlap);
+  assert.throws(() => restarted.pendingAttachments(), /identities overlap/);
+  assert.equal(registry.storage.getItem(registry.pendingAttachmentKey), overlap);
+});
+
+test('server native metadata preserves descriptors across restart and rejects future versions, retargeting and copied identities', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'citadel-native-registry-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = new RegistryStore({ dataRoot: root });
+  await store.initialize();
+  const native = { ...migrated(environment), id: 'native-metadata', configuration: nativeConfiguration(['deployment']) };
+  await store.reconcile({ ...await authority(store), projects: [project], environments: [native] });
+  const restarted = new RegistryStore({ dataRoot: root });
+  await restarted.initialize();
+  assert.deepEqual((await restarted.getEnvironment(native.id)).configuration, native.configuration);
+  const path = join(root, 'settings', 'registry.json'), before = await readFile(path);
+  await assert.rejects(restarted.reconcile({ ...await authority(restarted), projects: [project],
+    environments: [{ ...native, configuration: { ...native.configuration, version: 2 } }] }), { code: 'CONFIGURATION_VERSION' });
+  const changed = structuredClone(native);
+  changed.configuration.units[0].valueAlias = 'environments/other.tfvars';
+  await assert.rejects(restarted.reconcile({ ...await authority(restarted), projects: [project], environments: [changed] }), { code: 'CONFIGURATION_RETARGET' });
+  await assert.rejects(restarted.reconcile({ ...await authority(restarted), projects: [project],
+    environments: [native, { ...native, id: 'copied-identity', label: 'Another workspace' }] }), { code: 'NATIVE_IDENTITY_OVERLAP' });
+  assert.deepEqual(await readFile(path), before);
 });
 
 test('profile fields survive reload until the completed profile clears them', () => {

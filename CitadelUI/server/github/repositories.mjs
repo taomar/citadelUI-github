@@ -6,6 +6,7 @@
  * repository cannot silently redirect a selection.
  */
 import { githubError } from './api.mjs';
+import { nativeInventoryAlias, workspaceScope } from '../../shared/workspace-configuration.mjs';
 import { refNameProblem } from '../../shared/git-refs.mjs';
 import {
   isSkippedDirectory,
@@ -199,7 +200,8 @@ export async function listRepositoryBranches(client, token, repository) {
  * rather than skipped when they fall inside the scope, because silently ignoring
  * them would let a repository hide a file the editor believes it enumerated.
  */
-export function filterSourceTree(entries) {
+export function filterSourceTree(entries, configuration = undefined, { nativeInventory = false } = {}) {
+  const scope = workspaceScope(configuration);
   const files = [];
   const rejected = [];
   for (const entry of entries || []) {
@@ -223,7 +225,9 @@ export function filterSourceTree(entries) {
     }
     if (parts.slice(0, -1).some(isSkippedDirectory)) continue;
     const leaf = parts.at(-1);
-    if (!isSourceExtension(leaf)) continue;
+    if (nativeInventory || scope.native) {
+      if (!(nativeInventory ? nativeInventoryAlias(path) : scope.includes(path))) continue;
+    } else if (!isSourceExtension(leaf)) continue;
     if (entry.mode === SYMLINK_MODE) {
       rejected.push({ path, reason: 'symlink' });
       continue;

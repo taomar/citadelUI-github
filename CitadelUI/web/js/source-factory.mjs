@@ -29,11 +29,13 @@ export async function createProvider(environment, deps = {}) {
     return new GitHubRepositoryProvider({
       request: deps.githubRequest || githubRequest,
       environmentId: environment.id,
+      configuration: environment.configuration,
+      source,
     });
   }
   const handle = await deps.getHandle(environment.id);
   if (!handle) throw new Error('Reconnect the folder for this environment.');
-  return new BrowserDirectoryProvider(handle);
+  return new BrowserDirectoryProvider(handle, { configuration: environment.configuration });
 }
 
 /**
@@ -92,5 +94,11 @@ export class SourceMutationCoordinator extends MutationCoordinator {
   async recover(changeId, action, options = {}) {
     const { coordinator, context } = this.select(options);
     return coordinator.recover(changeId, action, { ...options, context });
+  }
+
+  async createCommitBranch(commit, branch, options = {}) {
+    const { coordinator, context } = this.select(options);
+    if (typeof coordinator.createCommitBranch !== 'function') throw new Error('This workspace does not use Git branches.');
+    return coordinator.createCommitBranch(commit, branch, { ...options, context });
   }
 }

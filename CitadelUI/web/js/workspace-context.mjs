@@ -1,6 +1,7 @@
 import { BrowserDirectoryProvider, sha256 } from './directory-provider.mjs';
 import { WorkspaceRegistry, browserCapabilities, environmentSourceOf } from './registry.mjs';
-import { discoverWorkspace } from '../../shared/citadel-core.mjs';
+import { discoverConfiguredWorkspace } from '../../shared/terraform/workspace.mjs';
+import { createConfiguration } from '../../shared/workspace-configuration.mjs';
 import { localRequest } from './local-api.mjs';
 import { confirmDialog, promptDialog } from './dialog.mjs';
 import { createProvider } from './source-factory.mjs';
@@ -15,6 +16,7 @@ import {
   isSessionError,
   listGitHubBranches,
   listGitHubRepositories,
+  nativeGitHubInventory,
   listGitHubRepositoryCreations,
   pauseGitHubRepositoryCreation,
   prepareGitHubRepository,
@@ -33,7 +35,7 @@ import {
   setConnectionPersistence,
 } from './github-connections.mjs';
 import { listActivity, note } from './activity.mjs';
-import { presentWorkspaceCatalog } from './workspace-catalog.mjs';
+import { presentWorkspaceCatalog, runAddWorkspace, workspaceRow } from './workspace-catalog.mjs';
 import { validateLocalPath, localPathMatchesHandle } from '../../shared/local-path.mjs';
 export { validateLocalPath, localPathMatchesHandle } from '../../shared/local-path.mjs';
 
@@ -53,6 +55,7 @@ const registry = new WorkspaceRegistry({
   testMode: testRuntime,
 });
 let active = null;
+let activationGeneration = 0;
 let localImportRegistrationRecovery = null;
 
 /**
@@ -155,7 +158,7 @@ async function retainedWorkspace() {
   if (source.kind === 'local') {
     handle = await registry.getHandle(environment.id);
     if (!handle) return null;
-    provider = new BrowserDirectoryProvider(handle);
+    provider = new BrowserDirectoryProvider(handle, { configuration: environment.configuration });
   } else {
     // A GitHub environment has no durable credential. Without a live in-memory
     // server session it stays listed but must be reconnected.
@@ -252,7 +255,7 @@ function compatibilityMessage(capabilities) {
  * something narrower.
  */
 export async function scanProvider(provider, options = {}) {
-  const catalog = await discoverWorkspace(provider, {
+  const catalog = await discoverConfiguredWorkspace(provider, null, {
     ...(options.scope ? { scope: options.scope } : {}),
     ...(options.purpose ? { purpose: options.purpose } : {}),
     ...(options.onProgress ? { onProgress: options.onProgress } : {}),
@@ -291,6 +294,8 @@ export async function attachEnvironment(options) {
   let project = existingProject;
   let environment = null;
   const createdProject = !project;
+  const configuration = options.configuration ||
+    (provider?.configuration?.format === 'terraform' ? provider.configuration : createConfiguration('bicep'));
   const previousSelection = recoverMirror && activate ? targetRegistry.active() : null;
   let activationAttempted = false;
   try {
@@ -300,7 +305,7 @@ export async function attachEnvironment(options) {
       environmentLabel,
       handle,
       null,
-      { allowDuplicate, localPath }
+      { allowDuplicate, localPath, configuration }
     );
     const updated = await targetRegistry.updateEnvironment(environment.id, {
       permission: 'granted',
@@ -426,6 +431,9 @@ export async function attachGitHubEnvironment(options) {
     repositoryId,
     sourceBranch,
     writeMode = 'working-branch',
+    workingBranch,
+    adoptExisting,
+    configuration: requestedConfiguration,
     expectedHead = null,
     registry: targetRegistry = registry,
     mirror = syncRegistryMetadata,
@@ -446,11 +454,14 @@ export async function attachGitHubEnvironment(options) {
   // the branch the previous attempt may already have created. Attempts for other
   // selections are left untouched: overwriting one would discard the only
   // handles that could clean its branch up.
-  const selection = { repositoryId, sourceBranch, writeMode };
+  const selection = { repositoryId, sourceBranch, writeMode, workingBranch,
+    adoptExisting: Boolean(adoptExisting), projectId: existingProject?.id || null,
+    connectionProfileId: options.connectionProfileId || null, configuration: requestedConfiguration };
   const previous = targetRegistry.pendingAttachment?.(selection);
+  const configuration = previous ? previous.configuration : requestedConfiguration;
   const environmentId = previous?.environmentId || globalThis.crypto.randomUUID();
   const operationKey = previous?.operationKey || globalThis.crypto.randomUUID();
-  targetRegistry.savePendingAttachment?.({ ...selection, environmentId, operationKey });
+  targetRegistry.savePendingAttachment?.({ ...selection, configuration, environmentId, operationKey });
 
   const request = {
     repositoryId,
@@ -458,6 +469,9 @@ export async function attachGitHubEnvironment(options) {
     environmentId,
     writeMode,
     operationKey,
+    ...(workingBranch !== undefined ? { workingBranch } : {}),
+    ...(adoptExisting !== undefined ? { adoptExisting } : {}),
+    ...(configuration ? { configuration } : {}),
     // The head the structure check passed against, so the server can refuse an
     // attach whose branch moved after validation.
     ...(expectedHead ? { expectedHead } : {}),
@@ -541,7 +555,7 @@ export async function attachGitHubEnvironment(options) {
       project.id,
       environmentLabel,
       attachment.source,
-      { id: environmentId }
+      { id: environmentId, configuration }
     );
     await mirror();
     enter('open');
@@ -787,6 +801,25 @@ export async function ensureWorkspace() {
  * the dependency pointing one way and lets the whole flow be driven in a test
  * without IndexedDB or a network.
  */
+export async function openRegisteredWorkspace(environmentId) {
+  const environment = await registry.getEnvironment(environmentId);
+  if (!environment) throw new Error('This workspace no longer exists in the registry.');
+  return catalogActions().openEnvironment(environment);
+}
+
+export async function addRegisteredWorkspace({ projectId = null, onOpenExisting = () => {} } = {}) {
+  const actions = catalogActions();
+  const [projects, environments, connectionState] = await Promise.all([
+    actions.listProjects(), actions.listEnvironments(), actions.listConnections(),
+  ]);
+  const connections = connectionState.profiles || [];
+  const rows = environments.map((environment) => workspaceRow(environment, {
+    project: projects.find((project) => project.id === environment.projectId), connections,
+  }));
+  return new Promise((resolve) => runAddWorkspace({ actions, connections, vault: connectionState.vault,
+    rows, projectId, onDone: resolve, onOpenExisting }));
+}
+
 function catalogActions() {
   const state = { projects: [] };
   const actions = {
@@ -825,6 +858,17 @@ function catalogActions() {
     resumeRepositoryCreation: resumeGitHubRepositoryCreation,
     pauseRepositoryCreation: pauseGitHubRepositoryCreation,
     scanLocalSource: scanProvider,
+    async nativeInventory({ handle, repositoryId, branch }) {
+      if (handle) return { files: await new BrowserDirectoryProvider(handle, { nativeInventory: true }).entries() };
+      return nativeGitHubInventory(repositoryId, branch);
+    },
+    async validateNativeLocal(handle, configuration) {
+      const provider = new BrowserDirectoryProvider(handle, { configuration });
+      await provider.assertWritable({ request: true });
+      const scan = await scanProvider(provider);
+      assertSupportedScan(scan);
+      return scan;
+    },
     attachLocalSource: attachLocalSourceEnvironment,
 
     createSelection: () =>
@@ -896,6 +940,7 @@ function catalogActions() {
      * detour through the connections table.
      */
     async openEnvironment(environment) {
+      const generation = ++activationGeneration;
       const source = environmentSourceOf(environment);
       if (source.kind === 'github') await ensureGitHubSessionFor(source);
       const provider = await createProvider(environment, {
@@ -914,6 +959,7 @@ function catalogActions() {
         lastScannedAt: scan.lastScannedAt,
       });
       await syncRegistryMetadata();
+      if (generation !== activationGeneration) throw new Error('Workspace opening was superseded by a newer selection.');
       registry.setActive(environment.projectId, environment.id);
       note({ action: 'environment.open', target: updated.label });
       active = {
@@ -998,7 +1044,7 @@ function catalogActions() {
       note({ action: 'repository.detach', target: snapshot.label });
     },
 
-    async attachLocal({ projectId, projectLabel, environmentLabel, localPath, handle, onProgress, stage = () => {} }) {
+    async attachLocal({ projectId, projectLabel, environmentLabel, localPath, handle, configuration, onProgress, stage = () => {} }) {
       stage('revalidate');
       const path = validateLocalPath(localPath);
       if (
@@ -1013,7 +1059,7 @@ function catalogActions() {
       }
       onProgress?.('Reading the Citadel folder\u2026');
       stage('read');
-      const provider = new BrowserDirectoryProvider(handle);
+      const provider = new BrowserDirectoryProvider(handle, { configuration });
       await provider.assertWritable({ request: true });
       const scan = await scanProvider(provider);
       assertSupportedScan(scan);
@@ -1027,6 +1073,8 @@ function catalogActions() {
         handle,
         scan,
         provider,
+        configuration,
+        recoverMirror: true,
       });
       stage('ready');
       return active;
@@ -1039,6 +1087,10 @@ function catalogActions() {
       repositoryId,
       sourceBranch,
       writeMode,
+      workingBranch,
+      adoptExisting,
+      configuration,
+      connectionProfileId,
       expectedHead,
       stage = () => {},
     }) {
@@ -1049,6 +1101,10 @@ function catalogActions() {
         repositoryId,
         sourceBranch,
         writeMode,
+        workingBranch,
+        adoptExisting,
+        configuration,
+        connectionProfileId,
         expectedHead,
         stage,
       });
@@ -1108,6 +1164,7 @@ export function activeWorkspace() {
  * just left.
  */
 export function clearActiveWorkspace() {
+  activationGeneration += 1;
   active = null;
   registry.clearRetainedSelection?.();
 }

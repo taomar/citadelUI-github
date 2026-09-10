@@ -60,6 +60,9 @@ import { profileName as profileNameOf } from '../connections.mjs';
 import { sameAccount } from '../credentials.mjs';
 import { RepositoryCreationService } from './repository-creation.mjs';
 import { LocalSourceImportService } from './local-import.mjs';
+import { assertNoWritableOverlap, configurationKey, configurationOf, nativeInventoryAlias, unitForAlias, validateConfiguration, workspaceScope } from '../../shared/workspace-configuration.mjs';
+import { assertNativeDependencySafe, assertNativeFileSafe, decodeNativeBytes, readUnitSchema } from '../../shared/terraform/workspace.mjs';
+import { githubScanProvider } from './compatibility.mjs';
 
 const SESSION_HEADER = 'x-citadel-github-session';
 
@@ -180,10 +183,10 @@ export class GitHubRoutes {
     return id;
   }
 
-  async tree(token, fullName, commitSha) {
-    const key = `${fullName}:${commitSha}`;
+  async tree(token, fullName, commitSha, configuration) {
+    const key = `${fullName}:${commitSha}:${configurationKey(configuration)}`;
     if (!this.treeCache.has(key)) {
-      const snapshot = await loadTree(this.client, token, fullName, commitSha);
+      const snapshot = await loadTree(this.client, token, fullName, commitSha, configuration);
       this.treeCache.set(key, snapshot);
       while (this.treeCache.size > this.treeCacheLimit) {
         this.treeCache.delete(this.treeCache.keys().next().value);
@@ -205,13 +208,17 @@ export class GitHubRoutes {
    * scan, and the whole scan ran again on reopen. The bytes live only in this
    * process and are never written to `/data`.
    */
-  async blob(token, fullName, head, alias, sha, snapshot, repositoryId) {
+  async blob(token, fullName, head, alias, sha, snapshot, repositoryId, configuration) {
+    workspaceScope(configuration).read(alias);
     const entry = snapshot?.files?.find((file) => file.alias === alias) || null;
+    if (entry && sha && entry.sha !== validateCommitSha(sha, 'blob')) {
+      throw githubError(409, 'STALE_SOURCE', 'File changed outside Citadel UI. Reload before saving.');
+    }
     // Only an entry the alias resolves to in this exact tree may be served from
     // cache. Anything else falls through to the authoritative read, which
     // performs the scope and precondition checks.
     const key = entry ? `${repositoryId}:${entry.sha}` : null;
-    if (key && this.blobCache.has(key)) {
+    if (key && this.blobCache.has(key) && configuration?.format !== 'terraform') {
       const hit = this.blobCache.get(key);
       // Refresh recency: a Map preserves insertion order, so re-inserting is
       // what makes the bounded eviction least-recently-used rather than
@@ -220,8 +227,18 @@ export class GitHubRoutes {
       this.blobCache.set(key, hit);
       return hit;
     }
-    const blob = await readSourceBlob(this.client, token, fullName, head, alias, sha, snapshot);
-    if (key && blob?.sha === entry.sha) {
+    const blob = await readSourceBlob(this.client, token, fullName, head, alias, sha, snapshot, configuration);
+    if (configuration?.format === 'terraform') {
+      blob.text = decodeNativeBytes(blob.bytes);
+      await assertNativeDependencySafe(blob.text, alias);
+      const unit = unitForAlias(configuration, alias);
+      if (unit) {
+        const provider = githubScanProvider(this.client, token, fullName, snapshot, configuration);
+        const { parameters } = await readUnitSchema(provider, unit);
+        await assertNativeFileSafe(blob.text, unit, parameters);
+      }
+    }
+    if (key && blob?.sha === entry.sha && configuration?.format !== 'terraform') {
       this.blobCache.set(key, blob);
       while (this.blobCache.size > this.blobCacheLimit) {
         this.blobCache.delete(this.blobCache.keys().next().value);
@@ -250,7 +267,7 @@ export class GitHubRoutes {
     if (environment.source?.kind !== 'github') {
       throw githubError(400, 'NOT_GITHUB_ENVIRONMENT', 'That environment is not a GitHub repository.');
     }
-    return { environmentId: id, ...environment.source };
+    return { environmentId: id, ...environment.source, configuration: configurationOf(environment) };
   }
 
   /**
@@ -835,19 +852,31 @@ export class GitHubRoutes {
     // Read-only Citadel structure check for one repository and branch. Creates
     // nothing: the browser uses it to decide whether Attach may be enabled, and
     // attachment re-runs it against the head it is about to branch from.
-    if (method === 'GET' && tail[0] === 'repos' && tail[2] === 'compatibility' && tail.length === 3) {
+    if (method === 'GET' && tail[0] === 'repos' && tail[2] === 'native-inventory' && tail.length === 3) {
+      const session = this.session(req);
+      const repository = await getRepository(this.client, session.token, validateRepositoryId(tail[1]));
+      const branch = validateBranchName(url.searchParams.get('branch'));
+      const head = await requireBranchHead(this.client, session.token, repository.fullName, branch);
+      const tree = await loadTree(this.client, session.token, repository.fullName, head, undefined, { nativeInventory: true });
+      return { head, files: tree.files.filter((entry) => nativeInventoryAlias(entry.alias)).map(({ alias, kind }) => ({ alias, kind })) };
+    }
+    if (['GET', 'POST'].includes(method) && tail[0] === 'repos' && tail[2] === 'compatibility' && tail.length === 3) {
       const session = this.session(req);
       const repository = await getRepository(
         this.client,
         session.token,
         validateRepositoryId(tail[1])
       );
-      const branch = validateBranchName(url.searchParams.get('branch'));
+      const input = method === 'POST' ? await readBody() : null;
+      if (input) assertKeys(input, new Set(['branch', 'configuration']));
+      const configuration = input?.configuration === undefined ? undefined : validateConfiguration(input.configuration);
+      const branch = validateBranchName(input?.branch || url.searchParams.get('branch'));
       const verdict = await inspectBranchCompatibility(
         this.client,
         session.token,
         repository.fullName,
-        branch
+        branch,
+        configuration
       );
       this.note({
         action: verdict.supported ? 'repository.validate' : 'validation.failure',
@@ -907,6 +936,7 @@ export class GitHubRoutes {
         'adoptExisting',
         'operationKey',
         'expectedHead',
+        'configuration',
       ])
     );
     const session = this.session(req);
@@ -916,6 +946,12 @@ export class GitHubRoutes {
     // cannot both create a branch and both claim to own it.
     return this.attachments.serialize(sessionFingerprint, clientKey, async () => {
       const existing = this.attachments.findByKey(sessionFingerprint, clientKey);
+      const configuration = body.configuration === undefined ? undefined : validateConfiguration(body.configuration);
+      const selectionIdentity = JSON.stringify([body.repositoryId, body.sourceBranch, body.environmentId,
+        body.writeMode, body.workingBranch || null, body.adoptExisting === true, configurationKey(configuration)]);
+      if (existing?.selectionIdentity && existing.selectionIdentity !== selectionIdentity) {
+        throw githubError(409, 'ATTACH_SELECTION_CHANGED', 'This attachment attempt belongs to a different repository, branch or native binding. Resume the original attempt or start a new one.');
+      }
       if (existing?.result) return existing.result;
 
       const environmentId = environmentIdOf(body.environmentId);
@@ -953,7 +989,8 @@ export class GitHubRoutes {
         session.token,
         repository.fullName,
         sourceBranch,
-        body.expectedHead ? validateCommitSha(body.expectedHead, 'head') : null
+        body.expectedHead ? validateCommitSha(body.expectedHead, 'head') : null,
+        configuration
       );
       const head = validated.head;
       // The branch is the user's to name. `citadel-ui/<environmentId>` remains
@@ -975,6 +1012,10 @@ export class GitHubRoutes {
           `${sourceBranch} is the branch you selected. Attach it directly instead of asking Citadel to create it.`
         );
       }
+      if (configuration?.format === 'terraform') {
+        assertNoWritableOverlap([...(await this.registryStore.read()).environments,
+          { id: environmentId, source: { kind: 'github', repositoryId: repository.id, workingBranch }, configuration }]);
+      }
 
       // Provenance first. A create whose response is lost has still happened on
       // GitHub, and without a record written beforehand nothing could name the
@@ -991,6 +1032,7 @@ export class GitHubRoutes {
           sourceBranch,
           workingBranch,
           writeMode,
+          selectionIdentity,
         });
 
       let working;
@@ -1078,9 +1120,13 @@ export class GitHubRoutes {
       // repository it is, and only the moment of attaching knows which happened.
       const branchChoice =
         writeMode === 'direct' ? 'selected' : working.created ? 'created' : 'adopted';
+      if (working.head !== head) {
+        await assertAttachableRepository(this.client, session.token, repository.fullName, working.branch, working.head, configuration);
+      }
 
       const result = {
         repository,
+        ...(configuration ? { configuration } : {}),
         source: {
           kind: 'github',
           // Ownership comes from the credential that performed the attach, never
@@ -1242,7 +1288,7 @@ export class GitHubRoutes {
 
     if (req.method === 'GET' && operation === 'tree') {
       const head = await requireBranchHead(this.client, token, fullName, branch);
-      const tree = await this.tree(token, fullName, head);
+      const tree = await this.tree(token, fullName, head, source.configuration);
       return {
         repository,
         branch,
@@ -1258,7 +1304,8 @@ export class GitHubRoutes {
     if (req.method === 'GET' && operation === 'blob') {
       const head = await requireBranchHead(this.client, token, fullName, branch);
       const alias = url.searchParams.get('alias');
-      const snapshot = await this.tree(token, fullName, head);
+      workspaceScope(source.configuration).read(alias);
+      const snapshot = await this.tree(token, fullName, head, source.configuration);
       const blob = await this.blob(
         token,
         fullName,
@@ -1266,7 +1313,8 @@ export class GitHubRoutes {
         alias,
         url.searchParams.get('sha'),
         snapshot,
-        repository.id
+        repository.id,
+        source.configuration
       );
       return {
         alias,
@@ -1281,6 +1329,7 @@ export class GitHubRoutes {
       return {
         transactions: await loadHistory(this.client, token, fullName, branch, environmentId, {
           audit: this.audit,
+          configuration: source.configuration,
         }),
       };
     }
@@ -1296,11 +1345,12 @@ export class GitHubRoutes {
           })
         : null;
       return {
-        transaction: await inspectCommit(this.client, token, fullName, branch, sha, { record }),
+        transaction: await inspectCommit(this.client, token, fullName, branch, sha, { record, configuration: source.configuration }),
       };
     }
 
     if (req.method === 'GET' && operation === 'subscription') {
+      if (source.configuration.format === 'terraform') throw githubError(400, 'NATIVE_NO_SUBSCRIPTION_BRIDGE', 'The azd bridge is not a native Terraform editor.');
       const head = await requireBranchHead(this.client, token, fullName, branch);
       return readSubscriptionId(
         this.client,
@@ -1314,7 +1364,7 @@ export class GitHubRoutes {
 
     if (req.method === 'POST' && operation === 'commits') {
       const body = await readBody();
-      assertKeys(body, new Set(['action', 'expectedHead', 'transactionId', 'files']));
+      assertKeys(body, new Set(['action', 'expectedHead', 'transactionId', 'files', 'nativeProof', 'nativeIdentity']));
       return commitChangeSet(this.client, token, {
         fullName,
         branch,
@@ -1325,6 +1375,9 @@ export class GitHubRoutes {
         environmentId,
         transactionId: transactionIdOf(body.transactionId),
         audit: this.audit,
+        configuration: source.configuration,
+        nativeProof: body.nativeProof,
+        nativeIdentity: body.nativeIdentity,
         // Deliberately omitted: the public endpoint never grants the
         // subscription capability, so no request can reach `.azure/**/.env`.
       });
@@ -1344,6 +1397,7 @@ export class GitHubRoutes {
         // written against it, so it is how the commit is proven to belong to
         // this workspace.
         intendedBranch: branch,
+        configuration: source.configuration,
         environmentId,
         repositoryId: repository.id,
         audit: this.audit,
@@ -1351,6 +1405,7 @@ export class GitHubRoutes {
     }
 
     if (req.method === 'POST' && operation === 'subscription') {
+      if (source.configuration.format === 'terraform') throw githubError(400, 'NATIVE_NO_SUBSCRIPTION_BRIDGE', 'The azd bridge is not a native Terraform editor.');
       const body = await readBody();
       assertKeys(
         body,
@@ -1377,6 +1432,7 @@ export class GitHubRoutes {
         environmentId,
         transactionId: transactionIdOf(body.transactionId),
         audit: this.audit,
+        configuration: source.configuration,
       });
     }
 

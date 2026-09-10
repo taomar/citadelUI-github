@@ -33,6 +33,7 @@ import {
 } from './llmschema.mjs';
 
 const ROOT = 'llmBackendConfig';
+const DEFAULT_BINDING = Object.freeze({ root: ROOT, id: 'backendId', type: 'backendType', models: 'supportedModels' });
 
 /* ------------------------------------------------------------------ writing */
 
@@ -203,8 +204,9 @@ function modelField(descriptor, model, entry, type, write, readOnly = false) {
 
 /** One row of the model table. */
 function modelRow(model, index, entry, entryIndex, ctx, expanded, toggle) {
-  const path = [ROOT, entryIndex, 'supportedModels', index];
-  const type = backendType(entry.backendType);
+  const binding = ctx.llmBinding || DEFAULT_BINDING;
+  const path = [binding.root, entryIndex, binding.models, index];
+  const type = ctx.native ? null : backendType(entry[binding.type]);
   const needsPath = Boolean(type && type.requiresModelPath);
   const missingPath = needsPath && !model.modelPath;
   const write = (key, value) => writeField(ctx, path, model, key, value);
@@ -235,10 +237,10 @@ function modelRow(model, index, entry, entryIndex, ctx, expanded, toggle) {
           model.name || h('em', {}, 'unnamed')
         )
       ),
-      h('span', { class: 'lm-cell', role: 'cell', dataset: { label: 'Format' } }, model.modelFormat || (ctx.readOnly ? 'Not supplied' : 'OpenAI')),
-      h('span', { class: 'lm-cell', role: 'cell', dataset: { label: 'Version' } }, model.modelVersion || (ctx.readOnly ? 'Not supplied' : '1')),
-      h('span', { class: 'lm-cell', role: 'cell', dataset: { label: 'SKU' } }, model.sku || (ctx.readOnly ? 'Not supplied' : 'Standard')),
-      h('span', { class: 'lm-cell lm-num', role: 'cell', dataset: { label: 'Capacity' } }, model.capacity ?? (ctx.readOnly ? 'Not supplied' : 100)),
+      h('span', { class: 'lm-cell', role: 'cell', dataset: { label: 'Format' } }, ctx.native ? ctx.nativeDisplay(model.modelFormat) : model.modelFormat || (ctx.readOnly ? 'Not supplied' : 'OpenAI')),
+      h('span', { class: 'lm-cell', role: 'cell', dataset: { label: 'Version' } }, ctx.native ? ctx.nativeDisplay(model.modelVersion) : model.modelVersion || (ctx.readOnly ? 'Not supplied' : '1')),
+      h('span', { class: 'lm-cell', role: 'cell', dataset: { label: 'SKU' } }, ctx.native ? ctx.nativeDisplay(model.sku) : model.sku || (ctx.readOnly ? 'Not supplied' : 'Standard')),
+      h('span', { class: 'lm-cell lm-num', role: 'cell', dataset: { label: 'Capacity' } }, ctx.native ? ctx.nativeDisplay(model.capacity) : model.capacity ?? (ctx.readOnly ? 'Not supplied' : 100)),
       h(
         'span',
         { class: 'lm-flags', role: 'cell', dataset: { label: 'State' } },
@@ -263,16 +265,23 @@ function modelRow(model, index, entry, entryIndex, ctx, expanded, toggle) {
     );
   }
 
-  const shown = MODEL_FIELDS.filter(
-    (f) => !f.appliesTo || f.appliesTo.includes(entry.backendType)
+  const shown = (ctx.nativeModelFields || MODEL_FIELDS).filter(
+    (f) => !f.appliesTo || f.appliesTo.includes(entry[binding.type])
   );
   const fields = new Map(shown.map((descriptor) => [descriptor.key, descriptor]));
+  const groups = MODEL_GROUPS.map((group) => ({ ...group, keys: [...group.keys] }));
+  if (ctx.native) {
+    const grouped = new Set(groups.flatMap((group) => group.keys));
+    const remaining = shown.filter((field) => !grouped.has(field.key)).map((field) => field.key);
+    if (remaining.length) groups.push({ id: 'native', label: 'Additional native inputs', keys: remaining });
+  }
   const section = (group) => {
     const sectionFields = group.keys
       .map((key) => fields.get(key))
       .filter(Boolean)
       .map((descriptor) => {
-        const rendered = ctx.readOnly && !Object.hasOwn(model, descriptor.key)
+        const rendered = ctx.renderModelField ? ctx.renderModelField(descriptor, model[descriptor.key], [...path, descriptor.key])
+          : ctx.readOnly && !Object.hasOwn(model, descriptor.key)
           ? field(descriptor.label, h('span', { class: 'hint' }, 'Not supplied in target'))
           : modelField(descriptor, model, entry, type, write, ctx.readOnly);
         editorField(rendered, [...path, descriptor.key]);
@@ -313,8 +322,8 @@ function modelRow(model, index, entry, entryIndex, ctx, expanded, toggle) {
     h(
       'div',
       { class: 'lm-editor', id: detailId, role: 'cell', 'aria-colspan': '7' },
-      section(MODEL_GROUPS[0]),
-      h('div', { class: 'lm-sections' }, MODEL_GROUPS.slice(1).map(section)),
+      section(groups[0]),
+      h('div', { class: 'lm-sections' }, groups.slice(1).map(section)),
       h(
         'div',
         { class: 'lm-editor-foot' },
@@ -343,14 +352,15 @@ function modelRow(model, index, entry, entryIndex, ctx, expanded, toggle) {
  * faster than this file does.
  */
 function addModelRow(entry, entryIndex, ctx) {
-  const catalog = catalogFor(entry.backendType);
-  const type = backendType(entry.backendType);
-  const existing = new Set((entry.supportedModels || []).map((m) => m && m.name));
+  const binding = ctx.llmBinding || DEFAULT_BINDING;
+  const catalog = ctx.native ? [] : catalogFor(entry[binding.type]);
+  const type = ctx.native ? null : backendType(entry[binding.type]);
+  const existing = new Set((entry[binding.models] || []).map((m) => m && m.name));
 
   const add = (name) => {
     const id = name.trim();
     if (!id || existing.has(id)) return;
-    ctx.onAppend([ROOT, entryIndex, 'supportedModels'], modelTemplate(id, entry.backendType));
+    ctx.onAppend([binding.root, entryIndex, binding.models], ctx.newModel ? ctx.newModel(id) : modelTemplate(id, entry[binding.type]));
   };
 
   // The gateway routes chat, embeddings and image only, so the catalogue holds
@@ -405,12 +415,13 @@ function addModelRow(entry, entryIndex, ctx) {
 /* ---------------------------------------------------------------- backends */
 
 function backendCard(entry, index, ctx, findings) {
-  const path = [ROOT, index];
-  const type = backendType(entry.backendType);
-  const auth = effectiveAuthType(entry);
+  const binding = ctx.llmBinding || DEFAULT_BINDING;
+  const path = [binding.root, index];
+  const type = ctx.native ? null : backendType(entry[binding.type]);
+  const auth = ctx.native ? entry.auth_type || entry.auth_scheme || 'Not supplied' : effectiveAuthType(entry);
   const authInfo = authTypeInfo(auth);
   const explicitAuth = Boolean(entry.authType);
-  const models = Array.isArray(entry.supportedModels) ? entry.supportedModels : [];
+  const models = Array.isArray(entry[binding.models]) ? entry[binding.models] : [];
   const mine = findings.filter((f) => f.index === index);
   const errors = mine.filter((f) => f.level === 'error');
 
@@ -428,13 +439,13 @@ function backendCard(entry, index, ctx, findings) {
     'summary',
     { class: 'lb-head', dataset: ctx.readOnly ? { editorFocus: `inspect:${JSON.stringify(path)}` } : {} },
     h('span', { class: 'lb-caret' }, '\u203a'),
-    h('span', { class: 'lb-id' }, entry.backendId || h('em', {}, 'unnamed backend')),
-    h('span', { class: 'chip chip-provider' }, type ? type.label : entry.backendType || '\u2014'),
+    h('span', { class: 'lb-id' }, entry[binding.id] || h('em', {}, 'unnamed backend')),
+    h('span', { class: 'chip chip-provider' }, type ? type.label : entry[binding.type] || '\u2014'),
     h('span', { class: 'chip chip-muted' }, authInfo ? authInfo.label : auth),
     h('span', { class: 'chip chip-count' }, `${models.length} model${models.length === 1 ? '' : 's'}`),
     h('span', { class: 'lb-spacer' }),
     entry.priority != null || entry.weight != null
-      ? h('span', { class: 'lb-routing' }, `p${entry.priority ?? 1} \u00b7 w${entry.weight ?? 100}`)
+      ? h('span', { class: 'lb-routing' }, ctx.native ? `p${ctx.nativeDisplay(entry.priority)} / w${ctx.nativeDisplay(entry.weight)}` : `p${entry.priority ?? 1} \u00b7 w${entry.weight ?? 100}`)
       : null,
     errors.length ? h('span', { class: 'chip chip-bad' }, `${errors.length}`) : null,
     ctx.backendStatus?.(path)
@@ -497,7 +508,7 @@ function backendCard(entry, index, ctx, findings) {
           )
         )
       : null,
-    h(
+    ctx.nativeBackendFields ? ctx.nativeBackendFields(entry, path) : h(
       'div',
       { class: 'lf-grid' },
       mappedField(['backendId'],
@@ -559,9 +570,9 @@ function backendCard(entry, index, ctx, findings) {
         'Share within a priority tier.'
       )
     ),
-    authInfo && authInfo.note ? h('p', { class: 'lb-note' }, authInfo.note) : null,
+    !ctx.native && authInfo && authInfo.note ? h('p', { class: 'lb-note' }, authInfo.note) : null,
     type && type.notes ? type.notes.map((n) => h('p', { class: 'lb-note' }, n)) : null,
-    authFields,
+    ctx.native ? null : authFields,
     h(
       'div',
       { class: 'lb-sub lb-models' },
@@ -574,7 +585,7 @@ function backendCard(entry, index, ctx, findings) {
           { class: 'lb-sub-note' },
           models.length
           ? `Expand a model to ${ctx.readOnly ? 'inspect' : 'edit'} its deployment, serving, request, and lifecycle settings.`
-            : 'Nothing routes here until a model is added.'
+            : ctx.native ? 'No models supplied in this operator file.' : 'Nothing routes here until a model is added.'
         )
       ),
       models.length
@@ -626,14 +637,14 @@ function backendCard(entry, index, ctx, findings) {
         { class: 'lb-foot-note' },
         'Removing this backend also removes its ',
         `${models.length} model${models.length === 1 ? '' : 's'}`,
-        ' from the gateway.'
+        ctx.native ? ' from this native input file.' : ' from the gateway.'
       ),
       h(
         'button',
         {
           class: 'btn btn-sm btn-danger-ghost',
           onclick: () => ctx.onRemove(path),
-          title: `Remove ${entry.backendId || 'this backend'}`,
+          title: `Remove ${entry[binding.id] || 'this backend'}`,
         },
         'Remove backend'
       )
@@ -774,12 +785,13 @@ function poolPreview(entries) {
 /* ------------------------------------------------------------------ export */
 
 export function renderLlmBackends(entries, ctx) {
+  const binding = ctx.llmBinding || DEFAULT_BINDING;
   const list = Array.isArray(entries) ? entries : [];
-  const findings = validateBackends(list);
+  const findings = ctx.native ? [] : validateBackends(list);
   const errors = findings.filter((f) => f.level === 'error').length;
   const warns = findings.filter((f) => f.level === 'warn').length;
   const models = list.reduce(
-    (n, e) => n + (Array.isArray(e.supportedModels) ? e.supportedModels.length : 0),
+    (n, e) => n + (Array.isArray(e[binding.models]) ? e[binding.models].length : 0),
     0
   );
 
@@ -798,7 +810,7 @@ export function renderLlmBackends(entries, ctx) {
         h('span', { class: 'stat' }, h('b', {}, models), ' models'),
         errors
           ? h('span', { class: 'stat stat-bad' }, h('b', {}, errors), ' to fix')
-          : h('span', { class: 'stat stat-ok' }, 'valid'),
+          : h('span', { class: ctx.native ? 'stat' : 'stat stat-ok' }, ctx.native ? 'Native inputs; not runtime validation' : 'valid'),
         warns ? h('span', { class: 'stat stat-warn' }, h('b', {}, warns), ' advisories') : null
       ),
       h(
@@ -806,6 +818,7 @@ export function renderLlmBackends(entries, ctx) {
         {
           class: `btn btn-primary${adding ? ' active' : ''}`,
           onclick: () => {
+            if (ctx.native) { ctx.onAppend([binding.root], ctx.newBackend()); return; }
             ctx.setOpen('llm-add', !adding);
             ctx.rerender();
           },
@@ -830,6 +843,6 @@ export function renderLlmBackends(entries, ctx) {
             'This deployment onboards LLM endpoints onto the gateway. Add a provider to begin \u2014 the file already contains commented examples you can read for reference.'
           )
         ),
-    ctx.readOnly ? null : poolPreview(list)
+    ctx.readOnly || ctx.native ? null : poolPreview(list)
   );
 }

@@ -4,6 +4,8 @@ import { runInNewContext } from 'node:vm';
 import test from 'node:test';
 import { loadDialogModule, readText } from './_dom-stub.mjs';
 import { h, mount } from '../web/js/dom.mjs';
+import { guardedHandler } from '../web/js/single-flight.mjs';
+import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
 
 const source = await readFile(new URL('../web/js/app.mjs', import.meta.url), 'utf8');
 function section(start, end) {
@@ -51,6 +53,9 @@ async function fixture({ failure = null, pauseCatalog = null, cancelSelection = 
     policyChanges: { retained: true }, open: new Map([['retained', true]]), status: null,
   };
   const retained = { areas: state.areas, operations: state.operations, policyChanges: state.policyChanges, open: state.open };
+  const workspace = { environment: { id: 'synthetic-contract-owner' } };
+  const viewStates = new WorkspaceViewState(() => state);
+  viewStates.activate(workspace);
   const calls = [], selections = [], statuses = [];
   let view;
   const render = () => { view.renderSidebar(); mount(rail, view.contractList()); };
@@ -59,7 +64,8 @@ async function fixture({ failure = null, pauseCatalog = null, cancelSelection = 
     if (message) statuses.push({ message, tone });
   };
   const api = {
-    async createContract({ name }) {
+    async createContract({ name }, context) {
+      assert.equal(context, workspace);
       calls.push(`create:${name}`);
       if (failure === 'create') throw new Error('Create transaction refused.');
       const id = `contracts/${name}`, path = parameter(name);
@@ -68,12 +74,14 @@ async function fixture({ failure = null, pauseCatalog = null, cancelSelection = 
       sourceContracts.push(entry(id, path));
       return { id, dir: `${root}/contracts/${name}` };
     },
-    async contracts() {
+    async contracts(context) {
+      assert.equal(context, workspace);
       calls.push('contracts');
       if (failure === 'contracts') throw new Error('Contract discovery unavailable.');
       return contracts();
     },
-    async deployments() {
+    async deployments(context) {
+      assert.equal(context, workspace);
       calls.push('catalog');
       if (pauseCatalog) await pauseCatalog;
       if (failure === 'catalog') throw new Error('Parameter discovery unavailable.');
@@ -81,7 +89,8 @@ async function fixture({ failure = null, pauseCatalog = null, cancelSelection = 
     },
   };
   view = runInNewContext(`${handlers}\n({ openCreateContract, renderSidebar, contractList });`, {
-    state, api, h, mount, render, COMPACT_NAV: { matches: false }, els: { sidebar },
+    state, api, h, mount, render, guardedHandler, viewStates, activeWorkspace: () => workspace,
+    COMPACT_NAV: { matches: false }, els: { sidebar },
     requestAnimationFrame: (fn) => fn(), selectArea() {}, openOther() {},
     showModal: dom.showDialog, closeModal: dom.closeDialog,
     writeContextNode: () => h('p', {}, 'Synthetic local workspace'),
@@ -114,6 +123,8 @@ async function fixture({ failure = null, pauseCatalog = null, cancelSelection = 
   const open = (name) => {
     view.openCreateContract();
     const input = dom.modal.querySelectorAll('input').find((node) => node.id === 'new-contract-name');
+    input.setCustomValidity = (message) => { input.validationMessage = message; };
+    input.reportValidity = () => !input.validationMessage;
     input.value = name;
     input.dispatch('input');
   };

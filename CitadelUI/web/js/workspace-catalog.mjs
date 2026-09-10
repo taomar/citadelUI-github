@@ -40,6 +40,7 @@ import { ATTACH_STAGES, LOCAL_ATTACH_STAGES, RESUME_STAGES, StageTracker, create
 import { DEFAULT_REPOSITORY_SOURCE, parseRepositorySource, validateNewRepositoryName } from '../../shared/repository-source.mjs';
 import { createRepositoryProgress } from './repository-progress.mjs';
 import { openLocalSourceImport } from './local-source-import.mjs';
+import { createConfiguration, configurationOf } from '../../shared/workspace-configuration.mjs';
 
 function newRepositoryCreationState(accountId = null) {
   return {
@@ -90,6 +91,8 @@ export function workspaceStatus(environment, { connections = [], hasHandle = nul
 /** The row model the table renders, and the one the filters operate on. */
 export function workspaceRow(environment, { project, connections = [], hasHandle = null } = {}) {
   const source = environmentSourceOf(environment);
+  const configuration = configurationOf(environment);
+  const native = configuration.format === 'terraform';
   const connection =
     source.kind === 'github' && source.connectionProfileId
       ? connections.find((item) => item.id === source.connectionProfileId) || null
@@ -102,11 +105,14 @@ export function workspaceRow(environment, { project, connections = [], hasHandle
     kind: source.kind,
     label: environment.label,
     projectLabel: project?.label || '',
+    formatLabel: native ? `Terraform (${configuration.units.length} ${configuration.units.length === 1 ? 'unit' : 'units'})` : 'Bicep',
     location: source.kind === 'github' ? source.fullName : source.folderName,
     detail: source.kind === 'github' ? source.localPath || null : source.localPath || null,
     branch: source.kind === 'github' ? source.sourceBranch : null,
     workingBranch: source.kind === 'github' ? source.workingBranch : null,
-    capabilities: source.kind === 'github' ? source.capabilities || [] : [],
+    capabilities: native
+      ? [...new Set(configuration.units.map((unit) => ({ deployment: 'Azure Deployment', llm: 'LLM Onboarding', access: 'Access Contracts' })[unit.area]))]
+      : source.kind === 'github' ? source.capabilities || [] : [],
     connectionName: connection?.name || (source.kind === 'github' ? 'Not connected' : ''),
     status: workspaceStatus(environment, { connections, hasHandle }),
     lastOpenedAt: environment.lastOpenedAt || null,
@@ -119,6 +125,7 @@ function haystack(row) {
   return [
     row.label,
     row.projectLabel,
+    row.formatLabel,
     row.location,
     row.detail,
     row.branch,
@@ -913,7 +920,7 @@ export function presentWorkspaceCatalog(options) {
                   'td',
                   { 'data-label': 'Workspace' },
                   h('span', { class: 'otable-link' }, row.label),
-                  row.projectLabel ? h('small', { class: 'hint' }, row.projectLabel) : null
+                  h('small', { class: 'hint' }, [row.projectLabel, row.formatLabel].filter(Boolean).join(' \u00b7 '))
                 ),
                 h('td', { 'data-label': 'Source' }, sourceBadge(row.kind)),
                 h(
@@ -1273,6 +1280,8 @@ export function runAddWorkspace(options) {
   const state = {
     step: 'source',
     kind: null,
+    format: 'bicep',
+    configuration: null,
     githubIntent: 'existing',
     replaceCreationToken: false,
     creation: newRepositoryCreationState(),
@@ -1288,7 +1297,7 @@ export function runAddWorkspace(options) {
     newConnectionName: '',
     resumeFailed: false,
     account: null,
-    projectId: null,
+    projectId: options.projectId || null,
     projectLabel: 'Citadel',
     environmentLabel: '',
     localPath: '',
@@ -1317,10 +1326,10 @@ export function runAddWorkspace(options) {
   const steps = ['source', 'connection', 'repository', 'branch', 'details', 'review'];
 
   function visibleSteps() {
-    if (state.kind === 'local') return ['source', 'details', 'review'];
-    return state.githubIntent === 'new'
+    const order = state.kind === 'local' ? ['source', 'details', 'review'] : state.githubIntent === 'new'
       ? ['source', 'connection', 'creation', 'repository', 'branch', 'details', 'review']
       : steps;
+    return state.format === 'terraform' ? [...order.slice(0, -1), 'native', 'review'] : order;
   }
 
   function stepHeader() {
@@ -1338,7 +1347,7 @@ export function runAddWorkspace(options) {
             }`,
             'aria-current': position === index ? 'step' : null,
           },
-          { source: 'Source', connection: 'Connection', creation: 'Create repository', repository: 'Repository', branch: 'Branch', details: 'Details', review: 'Review' }[name]
+          { source: 'Source', connection: 'Connection', creation: 'Create repository', repository: 'Repository', branch: 'Branch', details: 'Details', native: 'Native inputs', review: 'Review' }[name]
         )
       )
     );
@@ -1378,6 +1387,8 @@ export function runAddWorkspace(options) {
     const choose = (kind, intent = 'existing') => {
       state.kind = kind;
       state.githubIntent = intent;
+      if (state.format === 'bicep' && !state.configuration) state.configuration = createConfiguration('bicep');
+      selection.setConfiguration(state.configuration || undefined, state.format);
       go(kind === 'local' ? 'details' : 'connection');
     };
     const importLocal = async () => {
@@ -1397,11 +1408,20 @@ export function runAddWorkspace(options) {
         else if (!closed) go('source');
       } finally { state.working = false; }
     };
+    const format = h('select', { class: 'ctl', 'aria-label': 'Configuration format', onchange: (event) => {
+      state.format = event.target.value;
+      state.configuration = null;
+      selection.setConfiguration(undefined, state.format);
+      sourceStep();
+    } }, h('option', { value: 'bicep', selected: state.format === 'bicep' }, 'Bicep / Citadel'),
+      h('option', { value: 'terraform', selected: state.format === 'terraform' }, 'Terraform (native)'));
     present(
       'Add workspace',
       h(
         'div',
         { class: 'catalog-choice' },
+        h('label', { class: 'field' }, 'Configuration format', format),
+        h('p', { class: 'hint' }, 'Format and source are independent. A saved GitHub connection can serve either format; each local workspace needs a separate repository folder.'),
         h(
           'button',
           { class: 'btn catalog-choice-option', type: 'button', onclick: () => choose('github') },
@@ -1409,18 +1429,18 @@ export function runAddWorkspace(options) {
           h(
             'span',
             { class: 'hint' },
-            'Edit a Citadel repository on a branch you choose. Saves become one commit on a Citadel working branch.'
+            'Edit native inputs in a repository and branch you choose. Saves are one atomic commit to the reviewed branch.'
           )
         ),
         h(
           'button',
-          { class: 'btn catalog-choice-option', type: 'button', onclick: () => choose('github', 'new') },
+          { class: 'btn catalog-choice-option', type: 'button', disabled: state.format === 'terraform', onclick: () => choose('github', 'new') },
           h('strong', {}, 'New GitHub Repo'),
           h('span', { class: 'hint' }, 'Create a private repository in your personal account from a Citadel source, then choose its workspace and branch as usual.')
         ),
         h(
           'button',
-          { class: 'btn catalog-choice-option', type: 'button', onclick: importLocal },
+          { class: 'btn catalog-choice-option', type: 'button', disabled: state.format === 'terraform', onclick: importLocal },
           h('strong', {}, 'Create local from Citadel source'),
           h('span', { class: 'hint' }, 'Copy the complete public citadel-v1 source into a new local project folder, then open it. No GitHub token or Git history.')
         ),
@@ -1431,7 +1451,7 @@ export function runAddWorkspace(options) {
           h(
             'span',
             { class: 'hint' },
-            'Edit a Citadel repository already on this machine. Saves are written through a verified backup-before-write transaction.'
+            'Edit a repository folder already on this machine. Saves use verified backup-before-write transactions.'
           )
         )
       ),
@@ -2165,6 +2185,7 @@ export function runAddWorkspace(options) {
       );
       say(progress, selection.validating ? 'Checking this branch for the Citadel source layout\u2026' : '');
       say(error, selection.validationError || '');
+      if (state.format === 'terraform') say(error, '');
       const detected = selection.validation?.detected || [];
       mount(
         verdict,
@@ -2200,7 +2221,9 @@ export function runAddWorkspace(options) {
           ? `${decision.workingBranch} is protected. Citadel will commit your change and, if the branch refuses it, put that commit on a branch of its own and tell you where.`
           : ''
       );
-      next.disabled = !selection.canAttach();
+      next.disabled = state.format === 'terraform'
+        ? !selection.connected || !selection.repository || !selection.branch || !decision.ok || selection.loading
+        : !selection.canAttach();
     }
 
     list.addEventListener('change', () => {
@@ -2364,7 +2387,9 @@ export function runAddWorkspace(options) {
                 row.environment.projectId === state.projectId &&
                 (row.source.connectionProfileId || null) === state.profileId &&
                 row.source.repositoryId === selection.repository?.id &&
-                row.source.sourceBranch === selection.branch
+                row.source.sourceBranch === selection.branch &&
+                (row.environment.configuration?.format || 'bicep') === state.format &&
+                state.format !== 'terraform'
             );
             if (existing) {
               say(
@@ -2388,7 +2413,7 @@ export function runAddWorkspace(options) {
               return;
             }
           }
-          go('review');
+          go(state.format === 'terraform' ? 'native' : 'review');
         },
       },
       'Continue'
@@ -2416,6 +2441,42 @@ export function runAddWorkspace(options) {
       [backButton(state.kind === 'local' ? 'source' : 'branch'), next],
       environmentLabel
     );
+  }
+
+  async function nativeStep() {
+    const error = alertLine();
+    const body = h('div', { class: 'catalog-form' }, h('p', { class: 'hint', role: 'status' }, 'Reading bounded native file inventory...'));
+    const next = h('button', { class: 'btn btn-primary', type: 'button', disabled: true }, 'Validate native inputs');
+    present('Choose native root and value files', body, [backButton('details'), next]);
+    let disposed = false;
+    disposeStep = () => { disposed = true; selection.onChange = () => {}; };
+    try {
+      const inventory = await actions.nativeInventory({ handle: state.kind === 'local' ? state.handle : null,
+        repositoryId: selection.repository?.id, branch: selection.branch });
+      if (disposed || closed) return;
+      const { nativeWorkspaceSelection } = await import('./native-workspace-selection.mjs');
+      body.replaceChildren(nativeWorkspaceSelection({ inventory, configuration: state.configuration, onChange: (configuration) => {
+        state.configuration = configuration;
+        next.disabled = !configuration;
+      } }), error);
+      next.disabled = !state.configuration;
+      next.addEventListener('click', async () => {
+        next.disabled = true;
+        say(error, '');
+        try {
+          if (state.kind === 'local') {
+            await actions.validateNativeLocal(state.handle, state.configuration);
+          } else {
+            selection.setConfiguration(state.configuration);
+            await selection.validate();
+            if (!selection.canAttach()) throw new Error(selection.validationError || 'Native validation did not complete for these bindings.');
+          }
+          if (!disposed && !closed) go('review');
+        } catch (failure) {
+          if (!disposed) { say(error, failure.message); next.disabled = false; }
+        }
+      });
+    } catch (failure) { if (!disposed) { body.replaceChildren(error); say(error, failure.message); } }
   }
 
   function reviewStep() {
@@ -2462,6 +2523,7 @@ export function runAddWorkspace(options) {
                     environmentLabel: state.environmentLabel,
                     localPath: state.localPath,
                     handle: state.handle,
+                    configuration: state.configuration || undefined,
                     stage: track,
                   })
                 : await actions.attachGitHub({
@@ -2469,6 +2531,7 @@ export function runAddWorkspace(options) {
                     projectLabel: state.projectLabel,
                     environmentLabel: state.environmentLabel,
                     ...selection.attachment(),
+                    connectionProfileId: state.profileId,
                     stage: track,
                   });
             state.working = false;
@@ -2514,6 +2577,8 @@ export function runAddWorkspace(options) {
           summary('Project', state.projectId ? actions.projectName(state.projectId) : state.projectLabel),
           summary('Workspace', state.environmentLabel),
           summary('Source', state.kind === 'github' ? 'GitHub repository' : 'Local folder'),
+          summary('Format', state.format === 'terraform' ? 'Terraform (native HCL/JSON inputs)' : 'Bicep / Citadel'),
+          ...(state.configuration?.units || []).map((unit) => summary('Native unit', h('code', {}, `${unit.rootAlias || '.'} -> ${unit.valueAlias}`))),
           state.kind === 'github'
             ? summary('Repository', h('code', {}, selection.repository?.fullName || ''))
             : summary('Folder', h('code', {}, state.handle?.name || '')),
@@ -2552,7 +2617,7 @@ export function runAddWorkspace(options) {
         region.root,
         error
       ),
-      [backButton('details'), attach],
+      [backButton(state.format === 'terraform' ? 'native' : 'details'), attach],
       attach
     );
   }
@@ -2575,6 +2640,7 @@ export function runAddWorkspace(options) {
       repository: repositoryStep,
       branch: branchStep,
       details: detailsStep,
+      native: nativeStep,
       review: reviewStep,
     })[state.step]();
   }

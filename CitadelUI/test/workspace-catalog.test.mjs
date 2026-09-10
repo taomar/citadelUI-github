@@ -29,6 +29,15 @@ const {
 } = await import('../web/js/workspace-catalog.mjs');
 const { RESUME_STAGES } = await import('../web/js/stage-progress.mjs');
 const { closeDialog } = await import('../web/js/dialog.mjs');
+const { nativeConfiguration } = await import('./_native-fixture.mjs');
+
+test('native catalog rows expose format and selected units independently of transport and labels', () => {
+  const row = workspaceRow(localEnvironment({ label: 'Operator source', configuration: nativeConfiguration(['access']) }));
+  assert.equal(row.kind, 'local');
+  assert.equal(row.formatLabel, 'Terraform (1 unit)');
+  assert.deepEqual(row.capabilities, ['Access Contracts']);
+  assert.equal(workspaceRow(githubEnvironment()).formatLabel, 'Bicep');
+});
 
 const styles = readFileSync(new URL('../web/css/components.css', import.meta.url), 'utf8');
 const catalogSource = readFileSync(new URL('../web/js/workspace-catalog.mjs', import.meta.url), 'utf8');
@@ -771,8 +780,9 @@ test('the dropdown lists every saved connection and defaults to a usable one', (
 
 test('no branch is preselected, and the local path is a shorter flow', () => {
   assert.match(catalogSource, /h\('option', \{ value: '', selected: !selection\.branch \}, 'Select a branch/);
-  assert.match(catalogSource, /if \(state\.kind === 'local'\) return \['source', 'details', 'review'\];/);
+  assert.match(catalogSource, /const order = state\.kind === 'local' \? \['source', 'details', 'review'\]/);
   assert.match(catalogSource, /state\.githubIntent === 'new'\s*\? \['source', 'connection', 'creation', 'repository', 'branch', 'details', 'review'\]\s*: steps/);
+  assert.match(catalogSource, /state\.format === 'terraform' \? \[\.\.\.order\.slice\(0, -1\), 'native', 'review'\] : order/);
 });
 
 test('the review step names the exact commit the attach will be checked against', () => {

@@ -1,4 +1,6 @@
 import { MutationCoordinator } from './mutation-coordinator.mjs';
+import { notifyGitHubHead } from './github-head-state.mjs';
+import { sha256 } from '../../shared/source-scope.mjs';
 
 function toBase64(bytes) {
   let binary = '';
@@ -40,7 +42,9 @@ export class GitHubCommitCoordinator extends MutationCoordinator {
   async commit(files, options = {}) {
     const context = this.resolve(options);
     const provider = context.provider;
+    await options.validateBeforeWrite?.();
     const head = await provider.workspaceHead();
+    if (options.expectedHead && options.expectedHead !== head) throw new Error('The shared GitHub branch head changed after review. Your draft is preserved; review it against the new head.');
     const payload = [];
     for (const file of files) {
       const create = Boolean(file.create);
@@ -64,8 +68,10 @@ export class GitHubCommitCoordinator extends MutationCoordinator {
         expectedHead: head,
         transactionId: globalThis.crypto.randomUUID(),
         files: payload,
+        ...(options.nativeProof ? { nativeProof: options.nativeProof, nativeIdentity: options.nativeIdentity } : {}),
       }),
     });
+    if (result.applied !== false && !result.unresolved) notifyGitHubHead(context.environment, result.commit);
     provider.reset();
     return {
       transactionId: result.transactionId,
@@ -86,7 +92,7 @@ export class GitHubCommitCoordinator extends MutationCoordinator {
       applied: result.applied !== false,
       alreadyApplied: Boolean(result.alreadyApplied),
       warnings: result.warnings || [],
-      files: files.map((file) => ({ alias: file.alias, hash: file.afterHash || null })),
+      files: await Promise.all(files.map(async (file) => ({ alias: file.alias, hash: await sha256(file.after) }))),
     };
   }
 
@@ -155,6 +161,7 @@ export class GitHubCommitCoordinator extends MutationCoordinator {
         transactionId: globalThis.crypto.randomUUID(),
       }),
     });
+    if (result.applied !== false && !result.unresolved) notifyGitHubHead(context.environment, result.commit);
     context.provider.reset();
     return result;
   }

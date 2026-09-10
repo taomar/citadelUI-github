@@ -30,37 +30,45 @@ export const api = {
   }),
   resetWorkspace: () => workspace.reset(),
   health: () => workspace.health(),
-  deployments: () => workspace.deployments(),
-  deployment: (path) => workspace.deployment(path),
-  preview: (path, operations, expectedHash) => workspace.preview(path, operations, expectedHash),
-  save: (path, operations, expectedHash) => workspace.save(path, operations, expectedHash),
-  saveSubscriptionId: (environmentName, value, expectedHash) =>
-    workspace.saveSubscriptionId(environmentName, value, expectedHash),
-  focus: () => workspace.focus(),
-  onboardedModels: () => workspace.onboardedModels(),
+  deployments: (context) => workspace.deployments(context ? { context } : {}),
+  deployment: (path, context) => workspace.deployment(path, context ? { context } : {}),
+  preview: (path, operations, expectedHash, nativeIdentity, context) => workspace.preview(path, operations, expectedHash, nativeIdentity, context),
+  save: (path, operations, expectedHash, nativeIdentity, context) => workspace.save(path, operations, expectedHash, nativeIdentity, context),
+  prepareLocalOverwrite: (document, operations, context) => workspace.prepareLocalOverwrite(document, operations, context),
+  saveLocalOverwrite: (review) => workspace.saveLocalOverwrite(review),
+  createCommitBranch: (commit, branch, context) => workspace.createCommitBranch(commit, branch, context),
+  saveSubscriptionId: (environmentName, value, expectedHash, context) =>
+    workspace.saveSubscriptionId(environmentName, value, expectedHash, context),
+  focus: (context) => workspace.focus(context),
+  onboardedModels: (context) => workspace.onboardedModels(context),
   policyVariables: () => workspace.policyVariables(),
-  contracts: () => workspace.contracts(),
-  contract: (id) => workspace.contract(id),
-  accessContractTargets: () => workspace.accessContractTargets(),
-  createContract: (payload) => workspace.createContract(payload),
+  contracts: (context) => workspace.contracts(context),
+  contract: (id, context) => workspace.contract(id, context),
+  accessContractTargets: (context) => workspace.accessContractTargets(context),
+  createContract: (payload, context) => workspace.createContract(payload, context),
   restoreContract: (id) => workspace.restoreContract(id),
-  previewPolicy: (path, changes, expectedHash) =>
-    workspace.previewPolicy(path, changes, null, expectedHash),
-  savePolicy: (payload) => workspace.savePolicy(payload),
-  compareEnvironment: (environmentId, path) => workspace.compareEnvironment(environmentId, path),
-  previewCopy: (environmentId, path, names, expectedSourceHash) =>
-    workspace.previewCopy(environmentId, path, names, expectedSourceHash),
-  copyParameters: (environmentId, path, names, expectedSourceHash, expectedTargetHash) =>
+  previewPolicy: (path, changes, expectedHash, context) =>
+    workspace.previewPolicy(path, changes, null, expectedHash, context),
+  previewPolicyPayload: (payload, context) =>
+    workspace.previewPolicy(payload.path, payload.changes, payload.text, payload.expectedHash, context),
+  prepareLocalPolicyOverwrite: (policy, changes, text, context) =>
+    workspace.prepareLocalPolicyOverwrite(policy, changes, text, context),
+  savePolicy: (payload, context) => workspace.savePolicy(payload, context),
+  compareEnvironment: (environmentId, path, context) => workspace.compareEnvironment(environmentId, path, context),
+  previewCopy: (environmentId, path, names, expectedSourceHash, context) =>
+    workspace.previewCopy(environmentId, path, names, expectedSourceHash, context),
+  copyParameters: (environmentId, path, names, expectedSourceHash, expectedTargetHash, context) =>
     workspace.copyParameters(
       environmentId,
       path,
       names,
       expectedSourceHash,
-      expectedTargetHash
+      expectedTargetHash,
+      context
     ),
-  history: () => workspace.history(),
-  inspectRecovery: (transactionId) => workspace.inspectRecovery(transactionId),
-  recoverTransaction: (transactionId, action) =>
-    workspace.recoverTransaction(transactionId, action),
-  restoreTransaction: (transactionId) => workspace.restoreTransaction(transactionId),
+  history: (context) => workspace.history(context),
+  inspectRecovery: (transactionId, context) => workspace.inspectRecovery(transactionId, context),
+  recoverTransaction: (transactionId, action, context) =>
+    workspace.recoverTransaction(transactionId, action, context),
+  restoreTransaction: (transactionId, context) => workspace.restoreTransaction(transactionId, context),
 };

@@ -643,6 +643,10 @@ textarea {
   text-wrap: pretty;
 }
 
+.area-sub-native {
+  overflow-wrap: anywhere;
+}
+
 /* --------------------------------------------------- all parameter files */
 
 .all-deployments {
@@ -1040,6 +1044,18 @@ select.ctl {
   width: var(--w-num);
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+
+.ctl-native-number {
+  width: min(100%, 32ch);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.native-policy-editor .raw-lines,
+.native-policy-editor .raw-stage .policy-raw {
+  height: 18rem;
+  min-height: 18rem;
 }
 
 input[type='search'].ctl {

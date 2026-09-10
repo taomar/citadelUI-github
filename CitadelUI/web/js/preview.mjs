@@ -34,7 +34,7 @@ const ARGS = '__args';
 function step(node, segment) {
   if (node === null || typeof node !== 'object') return undefined;
   if (segment === ARGS) return node.__expr === 'call' ? node.args : undefined;
-  return node[segment];
+  return Object.hasOwn(node, segment) ? node[segment] : undefined;
 }
 
 /** Walk to a container, yielding null rather than throwing on a stale path. */
@@ -53,10 +53,12 @@ function applyOne(param, op) {
   if (op.op === 'set') {
     if (!rest.length) {
       param.value = op.value;
+      if (Object.hasOwn(param, 'supplied')) param.supplied = true;
       return;
     }
     const parent = containerAt(param.value, rest.slice(0, -1));
-    if (parent) parent[rest[rest.length - 1]] = op.value;
+    if (parent) Object.defineProperty(parent, rest[rest.length - 1],
+      { value: op.value, writable: true, configurable: true, enumerable: true });
     return;
   }
 
@@ -68,12 +70,16 @@ function applyOne(param, op) {
 
   if (op.op === 'addProperty') {
     const target = containerAt(param.value, rest);
-    if (target && !Array.isArray(target)) target[op.key] = op.value;
+    if (target && !Array.isArray(target)) Object.defineProperty(target, op.key,
+      { value: op.value, writable: true, configurable: true, enumerable: true });
     return;
   }
 
   if (op.op === 'remove') {
-    if (!rest.length) return;
+    if (!rest.length) {
+      if (Object.hasOwn(param, 'supplied')) { param.value = undefined; param.supplied = false; }
+      return;
+    }
     const key = rest[rest.length - 1];
     const parent = containerAt(param.value, rest.slice(0, -1));
     if (!parent) return;
@@ -159,7 +165,7 @@ function operationTarget(op) {
 function originalHasPath(doc, path) {
   const param = doc && doc.params.find((candidate) => candidate.name === path[0]);
   if (!param) return false;
-  if (path.length === 1) return true;
+  if (path.length === 1) return param.supplied !== false;
   const parent = containerAt(param.value, path.slice(1, -1));
   return Boolean(parent) && Object.prototype.hasOwnProperty.call(parent, path[path.length - 1]);
 }
@@ -184,6 +190,21 @@ function originalHasPath(doc, path) {
  */
 export function queueOperation(operations, op, doc) {
   const path = toOriginalPath(op.path, operations);
+  const target = operationTarget({ ...op, path });
+  const owner = operations.findIndex((existing) => {
+    if (!['set', 'addProperty'].includes(existing.op)) return false;
+    const address = operationTarget(existing);
+    return (address.length < target.length || op.op === 'append' && address.length === target.length) &&
+      address.every((part, index) => part === target[index]);
+  });
+  if (owner >= 0) {
+    const address = operationTarget(operations[owner]);
+    const holder = { value: structuredClone(operations[owner].value) };
+    applyOne(holder, { ...op, path: ['', ...path.slice(address.length)] });
+    const next = operations.slice();
+    next[owner] = { ...operations[owner], value: compact(holder.value) };
+    return next;
+  }
 
   const prefix = [];
   for (let i = 0; i < path.length; i += 1) {
@@ -238,7 +259,7 @@ export function queueOperation(operations, op, doc) {
       const next = operations.slice();
       const exists = originalHasPath(doc, target);
 
-      if (candidate.op === 'remove' && operations[index].op === 'addProperty' && !exists) {
+      if (candidate.op === 'remove' && !exists) {
         next.splice(index, 1);
         return next;
       }
@@ -248,14 +269,19 @@ export function queueOperation(operations, op, doc) {
         return next;
       }
 
-      next[index] = exists
+      next[index] = exists || target.length === 1
         ? { op: 'set', path: target, value: candidate.value }
         : { op: 'addProperty', path: target.slice(0, -1), key: target[target.length - 1], value: candidate.value };
       return next;
     }
   }
 
-  return [...operations, candidate];
+  const address = operationTarget(candidate);
+  return [...operations.filter((existing) => {
+    const child = operationTarget(existing);
+    return !['set', 'remove'].includes(candidate.op) || child.length <= address.length ||
+      !address.every((part, index) => part === child[index]);
+  }), candidate];
 }
 
 /**

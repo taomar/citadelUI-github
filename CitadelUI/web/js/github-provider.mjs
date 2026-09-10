@@ -1,4 +1,8 @@
 import { sha256 } from '../../shared/source-scope.mjs';
+import { workspaceScope } from '../../shared/workspace-configuration.mjs';
+import { unitForAlias } from '../../shared/workspace-configuration.mjs';
+import { assertNativeDependencySafe, assertNativeFileSafe, decodeNativeBytes, readUnitSchema } from '../../shared/terraform/workspace.mjs';
+import { githubBranchKey, githubHeadRevision } from './github-head-state.mjs';
 
 /**
  * Read-only Citadel source provider backed by a GitHub repository.
@@ -16,12 +20,18 @@ export class GitHubRepositoryProvider {
   constructor(options = {}) {
     this.request = options.request;
     this.environmentId = options.environmentId;
+    this.scope = workspaceScope(options.configuration);
+    this.configuration = this.scope.configuration;
     this.instrument = options.instrument || (() => {});
     this.snapshot = null;
     this.blobs = new Map();
     // In-flight reads keyed by blob SHA, so concurrent readers of the same
     // content share one request rather than racing each other.
     this.pending = new Map();
+    this.generation = 0;
+    this.treePending = null;
+    this.branchKey = githubBranchKey(options.source);
+    this.branchRevision = githubHeadRevision(this.branchKey);
   }
 
   /**
@@ -80,26 +90,40 @@ export class GitHubRepositoryProvider {
    * two files in the same operation come from different revisions.
    */
   async tree(options = {}) {
-    if (!this.snapshot || options.refresh) {
+    this.syncBranch();
+    if (options.refresh) this.reset();
+    if (this.snapshot) return this.snapshot;
+    if (this.treePending) return this.treePending;
+    const generation = this.generation;
+    const work = (async () => {
       const snapshot = await this.request(`${this.base()}/tree`);
-      if (this.snapshot && this.snapshot.head !== snapshot.head) {
-        this.blobs.clear();
-        this.pending.clear();
-      }
+      this.assertGeneration(generation);
+      for (const file of snapshot.files) this.scope.read(file.alias);
       this.snapshot = snapshot;
-      this.instrument({
-        operation: 'enumerate',
-        count: snapshot.files.length,
-        head: snapshot.head,
-      });
-    }
-    return this.snapshot;
+      this.instrument({ operation: 'enumerate', count: snapshot.files.length, head: snapshot.head });
+      return snapshot;
+    })();
+    this.treePending = work;
+    try { return await work; }
+    finally { if (this.treePending === work) this.treePending = null; }
   }
 
   reset() {
+    this.generation += 1;
     this.snapshot = null;
+    this.treePending = null;
     this.blobs.clear();
     this.pending.clear();
+  }
+
+  syncBranch() {
+    const revision = githubHeadRevision(this.branchKey);
+    if (revision !== this.branchRevision) { this.branchRevision = revision; this.reset(); }
+  }
+
+  assertGeneration(generation) {
+    this.syncBranch();
+    if (generation !== this.generation) throw Object.assign(new Error('This GitHub read was superseded by a refresh or shared-branch save. Retry against the current head; drafts are preserved.'), { code: 'GITHUB_READ_SUPERSEDED' });
   }
 
   /** Current branch head, used as the optimistic concurrency token for saves. */
@@ -113,6 +137,7 @@ export class GitHubRepositoryProvider {
   }
 
   async entry(alias) {
+    this.scope.read(alias);
     const snapshot = await this.tree();
     const file = snapshot.files.find((item) => item.alias === alias);
     if (!file) {
@@ -132,7 +157,9 @@ export class GitHubRepositoryProvider {
 
   async read(alias) {
     const file = await this.entry(alias);
-    const cached = this.blobs.get(file.sha);
+    const generation = this.generation, snapshot = this.snapshot;
+    const key = this.scope.native ? `${snapshot.head}:${alias}:${file.sha}` : file.sha;
+    const cached = this.blobs.get(key);
     if (cached) return this.copy(cached, alias);
     // Two aliases can name the same blob — a contract copied from another, a
     // template shared by every instance. Caching the finished record alone only
@@ -141,14 +168,20 @@ export class GitHubRepositoryProvider {
     // same bytes are fetched twice by whichever two callers raced. This is the
     // same correction `discoverWorkspace` makes for aliases, applied to the
     // content those aliases resolve to.
-    const pending = this.pending.get(file.sha);
-    if (pending) return this.copy(await pending, alias);
-    const work = this.fetch(alias, file);
-    this.pending.set(file.sha, work);
+    const pending = this.pending.get(key);
+    if (pending) {
+      const record = await pending;
+      this.assertGeneration(generation);
+      return this.copy(record, alias);
+    }
+    const work = this.fetch(alias, file, snapshot, generation, key);
+    this.pending.set(key, work);
     try {
-      return this.copy(await work, alias);
+      const record = await work;
+      this.assertGeneration(generation);
+      return this.copy(record, alias);
     } finally {
-      this.pending.delete(file.sha);
+      if (this.pending.get(key) === work) this.pending.delete(key);
     }
   }
 
@@ -159,13 +192,15 @@ export class GitHubRepositoryProvider {
    * cached under one path must not tell the next caller it is a different file.
    */
   copy(record, alias) {
+    this.scope.read(alias);
     return { ...record, alias, bytes: record.bytes.slice() };
   }
 
-  async fetch(alias, file) {
+  async fetch(alias, file, snapshot, generation, key) {
     const payload = await this.request(
       `${this.base()}/blob?alias=${encodeURIComponent(alias)}&sha=${encodeURIComponent(file.sha)}`
     );
+    this.assertGeneration(generation);
     const bytes = Uint8Array.from(atob(payload.content), (character) => character.charCodeAt(0));
     if (bytes.byteLength !== payload.size) {
       throw new Error(`Source size did not match its contents: ${alias}`);
@@ -174,11 +209,11 @@ export class GitHubRepositoryProvider {
     if (hash !== payload.hash) {
       throw new Error(`Source hash verification failed: ${alias}`);
     }
-    const snapshot = await this.tree();
+    this.assertGeneration(generation);
     const record = {
       alias,
       bytes,
-      text: new TextDecoder().decode(bytes),
+      text: this.scope.native ? decodeNativeBytes(bytes) : new TextDecoder().decode(bytes),
       size: bytes.byteLength,
       lastModified: null,
       hash,
@@ -187,7 +222,15 @@ export class GitHubRepositoryProvider {
     };
     // Immutable content keyed by blob SHA: safe to keep in memory, never in
     // IndexedDB or /data.
-    this.blobs.set(file.sha, record);
+    const unit = unitForAlias(this.configuration, alias);
+    if (this.scope.native) await assertNativeDependencySafe(record.text, alias);
+    if (this.scope.native && unit) {
+      const { parameters } = await readUnitSchema(this, unit);
+      await assertNativeFileSafe(record.text, unit, parameters);
+    }
+    this.assertGeneration(generation);
+    this.scope.read(alias);
+    this.blobs.set(key, record);
     this.instrument({ operation: 'read', alias, size: record.size, hash });
     return record;
   }
@@ -199,12 +242,14 @@ export class GitHubRepositoryProvider {
    * rest of the `.env` file never reaches the browser.
    */
   async readSubscriptionId(environmentName) {
+    if (this.scope.native) throw new Error('The azd bridge is unavailable for native Terraform.');
     return this.request(
       `${this.base()}/subscription?environmentName=${encodeURIComponent(environmentName)}`
     );
   }
 
   async writeSubscriptionId(environmentName, value, expectedHash) {
+    if (this.scope.native) throw new Error('The azd bridge is unavailable for native Terraform.');
     const snapshot = await this.tree({ refresh: true });
     const result = await this.request(`${this.base()}/subscription`, {
       method: 'POST',

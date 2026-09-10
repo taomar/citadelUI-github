@@ -1,3 +1,5 @@
+import { sameNativeDraftBinding } from '../../shared/terraform/drafts.mjs';
+
 function policyPending(state) {
   return Object.keys(state.policyChanges || {}).length > 0 || state.policyRaw !== null;
 }
@@ -10,6 +12,7 @@ export function captureContractEdits(state) {
   return {
     parameterPath: state.current?.path || null,
     parameterHash: state.current?.hash || null,
+    nativeIdentity: state.current?.nativeIdentity || null,
     operations: structuredClone(state.operations || []),
     policyPath: state.contract?.policy?.path || null,
     policyHash: state.contract?.policy?.hash || null,
@@ -37,7 +40,8 @@ export function restoreContractEdits(
   if (options.parameters !== false && snapshot?.operations?.length) {
     if (
       snapshot.parameterPath === state.current?.path &&
-      snapshot.parameterHash === state.current?.hash
+      snapshot.parameterHash === state.current?.hash &&
+      (!state.current?.nativeIdentity || sameNativeDraftBinding(snapshot.nativeIdentity, state.current.nativeIdentity))
     ) {
       state.operations = structuredClone(snapshot.operations);
     } else {

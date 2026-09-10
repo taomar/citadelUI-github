@@ -56,6 +56,7 @@ export class GitHubAuditStore {
         baseCommit: String(entry.baseCommit || ''),
         commit: String(entry.commit || ''),
         aliases: (entry.aliases || []).slice(0, 64).map(alias),
+        ...(entry.configurationKey ? { configurationKey: entry.configurationKey, nativeCreation: entry.nativeCreation === true } : {}),
         recordedAt: new Date(this.now()).toISOString(),
       });
       await atomicJson(this.path, {

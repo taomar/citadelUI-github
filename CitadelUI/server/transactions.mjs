@@ -1,6 +1,9 @@
 import { mkdir, open, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { assertUnchangedConfiguration, configurationOf, unitForAlias, workspaceScope, unconfirmedNativeCreation } from '../shared/workspace-configuration.mjs';
+import { assertNativeBackupSafe, validateNativeTransactionProof } from '../shared/terraform/review.mjs';
+import { decodeNativeBytes } from '../shared/terraform/workspace.mjs';
 
 const HASH_RE = /^[a-f0-9]{64}$/;
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -29,7 +32,8 @@ function optionalLabel(value, name) {
   return label;
 }
 
-export function normalizeSourceAlias(alias) {
+export function normalizeSourceAlias(alias, configuration) {
+  if (configuration?.format === 'terraform') return workspaceScope(configuration).write(alias);
   if (typeof alias !== 'string' || !alias || alias.length > 512 || alias.includes('\0')) {
     throw transactionError(400, 'INVALID_ALIAS', 'Invalid source alias.');
   }
@@ -191,7 +195,7 @@ function normalizeChangedNameList(value) {
   return [...new Set(value.map(normalizeChangedName))].sort();
 }
 
-function normalizeChangedNames(value, aliases) {
+function normalizeChangedNames(value, aliases, configuration) {
   if (value === undefined) return [];
   if (Array.isArray(value)) return normalizeChangedNameList(value);
   if (!value || typeof value !== 'object') {
@@ -208,7 +212,7 @@ function normalizeChangedNames(value, aliases) {
   const normalized = {};
   let count = 0;
   for (const [candidateAlias, names] of entries) {
-    const alias = normalizeSourceAlias(candidateAlias);
+    const alias = normalizeSourceAlias(candidateAlias, configuration);
     if (!aliases.has(alias)) {
       throw transactionError(
         400,
@@ -251,6 +255,7 @@ function immutableManifestHash(manifest) {
       changedNames: manifest.changedNames,
       createdDirectories: manifest.createdDirectories,
       ownedCleanupDirectories: manifest.ownedCleanupDirectories,
+      ...(manifest.configuration ? { configuration: manifest.configuration, nativeProof: manifest.nativeProof } : {}),
       files: manifest.files.map((file) => ({
         id: file.id,
         alias: file.alias,
@@ -332,6 +337,7 @@ export class TransactionStore {
     this.minimumPerTarget = options.minimumPerTarget ?? 20;
     this.softBytesPerEnvironment = options.softBytesPerEnvironment ?? 2 * 1024 ** 3;
     this.queues = new Map();
+    this.getEnvironment = options.getEnvironment || null;
   }
 
   async initialize() {
@@ -402,6 +408,27 @@ export class TransactionStore {
       ) {
         throw new Error('Transaction identity mismatch.');
       }
+      if (manifest.configuration || this.getEnvironment) {
+        const environment = await this.getEnvironment?.(environmentId);
+        if (manifest.configuration) {
+          if (!environment) throw transactionError(403, 'NATIVE_WORKSPACE_UNAVAILABLE', 'The owning native workspace is not registered.');
+          assertUnchangedConfiguration(manifest.configuration, environment.configuration);
+        } else if (environment?.configuration?.format === 'terraform') {
+          throw transactionError(403, 'NATIVE_HISTORY_SCOPE', 'Legacy history cannot be applied to native workspace bindings.');
+        }
+        for (const file of manifest.files || []) normalizeSourceAlias(file.alias, manifest.configuration);
+        if (manifest.configuration) {
+          const aliases = new Set(manifest.files.map((file) => file.alias));
+          if (aliases.size !== manifest.files.length || manifest.changedAliases.some((alias) => !aliases.has(alias))) {
+            throw transactionError(403, 'NATIVE_HISTORY_SCOPE', 'Native history aliases do not match its file manifest.');
+          }
+          for (const alias of manifest.changedAliases) normalizeSourceAlias(alias, manifest.configuration);
+          normalizeChangedNames(manifest.changedNames, aliases, manifest.configuration);
+          if (manifest.nativeProof?.configuration !== JSON.stringify(manifest.configuration)) {
+            throw transactionError(403, 'NATIVE_HISTORY_SCOPE', 'Native history dependency identity is invalid.');
+          }
+        }
+      }
       return manifest;
     } catch (error) {
       if (error.code === 'ENOENT') {
@@ -467,7 +494,12 @@ export class TransactionStore {
   async prepare(input) {
     const environmentId = assertId(input?.environmentId, 'environment id');
     return this.withEnvironment(environmentId, async () => {
+      const environment = await this.getEnvironment?.(environmentId);
+      const configuration = environment ? configurationOf(environment) : undefined;
+      if (input.nativeProof && configuration?.format !== 'terraform') throw transactionError(400, 'NATIVE_WORKSPACE_REQUIRED', 'A registered native workspace is required.');
+      if (configuration?.format === 'terraform' && environment.source.kind !== 'local') throw transactionError(400, 'NATIVE_TRANSPORT', 'GitHub workspaces use their atomic commit boundary.');
       const targetId = assertId(input?.targetId, 'target id');
+      if (configuration?.format === 'terraform' && targetId !== environment.projectId) throw transactionError(400, 'NATIVE_TARGET', 'Native target identity does not match the owning workspace.');
       const environmentLabel = optionalLabel(input?.environmentLabel, 'environment label');
       const targetLabel = optionalLabel(input?.targetLabel, 'target label');
       if (!Array.isArray(input?.files) || input.files.length < 1 || input.files.length > 250) {
@@ -476,7 +508,7 @@ export class TransactionStore {
 
       const aliases = new Set();
       const files = input.files.map((candidate, index) => {
-        const alias = normalizeSourceAlias(candidate?.alias);
+        const alias = normalizeSourceAlias(candidate?.alias, configuration);
         if (aliases.has(alias)) throw transactionError(400, 'DUPLICATE_ALIAS', 'Duplicate source alias.');
         aliases.add(alias);
         const existed = candidate.existed ?? candidate.exists;
@@ -506,11 +538,13 @@ export class TransactionStore {
       if (!Array.isArray(requestedChanges) || requestedChanges.length < 1) {
         throw transactionError(400, 'INVALID_CHANGES', 'At least one changed alias is required.');
       }
-      const changedAliases = [...new Set(requestedChanges.map(normalizeSourceAlias))].sort();
+      const changedAliases = [...new Set(requestedChanges.map((alias) => normalizeSourceAlias(alias, configuration)))].sort();
       if (changedAliases.some((alias) => !aliases.has(alias))) {
         throw transactionError(400, 'UNKNOWN_CHANGED_ALIAS', 'Changed alias is not in the manifest.');
       }
-      const changedNames = normalizeChangedNames(input.changedNames, aliases);
+      const changedNames = normalizeChangedNames(input.changedNames, aliases, configuration);
+      const nativeProof = configuration?.format === 'terraform'
+        ? await validateNativeTransactionProof(configuration, [...aliases], input.nativeProof) : null;
       const createdDirectories = normalizeCreatedDirectories(input.createdDirectories, files);
 
       await mkdir(join(this.environmentRoot(environmentId), 'transactions'), { recursive: true });
@@ -557,6 +591,7 @@ export class TransactionStore {
         environmentLabel,
         targetId,
         targetLabel,
+        ...(nativeProof ? { configuration, nativeProof } : {}),
         status: 'preparing',
         recoveryRequired: false,
         createdAt,
@@ -682,6 +717,7 @@ export class TransactionStore {
       if (bytes.length !== file.originalSize || sha256(bytes) !== file.originalHash) {
         throw transactionError(409, 'BACKUP_VERIFICATION_FAILED', 'Backup bytes failed verification.');
       }
+      if (manifest.configuration) await assertNativeBackupSafe(manifest.configuration, manifest.nativeProof, file.alias, decodeNativeBytes(bytes));
       const backupPath = join(this.transactionRoot(environmentId, transactionId), 'files', `${file.id}.backup`);
       await atomicWrite(backupPath, bytes, { mode: 0o600 });
       await this.faultInjector('after-backup-write', { environmentId, transactionId, fileId });
@@ -753,6 +789,7 @@ export class TransactionStore {
       secret.authorizationTokenHash = sha256(authorizationToken);
       secret.transactionTokenExpiresAt = expiresAt;
       secret.authorizationTokenExpiresAt = expiresAt;
+      secret.unconfirmedNativeCreation = Boolean(unconfirmedNativeCreation(manifest));
       await atomicJson(this.secretPath(environmentId, transactionId), secret, { mode: 0o600 });
       await this.faultInjector('after-recovery-token-rotation', {
         environmentId,
@@ -777,11 +814,13 @@ export class TransactionStore {
   async beginRevert(environmentId, transactionId) {
     return this.withEnvironment(environmentId, async () => {
       const manifest = await this.readManifest(environmentId, transactionId);
+      const nativeCreation = manifest.configuration?.format === 'terraform' && manifest.files.length &&
+        manifest.files.every((file) => !file.existed && unitForAlias(manifest.configuration, file.alias)?.allowCreate);
       if (
         manifest.status !== 'committed' ||
-        manifest.targetLabel !== 'contract-create' ||
+        (!nativeCreation && manifest.targetLabel !== 'contract-create') ||
         !manifest.files.length ||
-        !contractCreationBoundary(manifest.files) ||
+        (!nativeCreation && !contractCreationBoundary(manifest.files)) ||
         manifest.files.some(
           (file) =>
             file.existed ||
@@ -793,7 +832,7 @@ export class TransactionStore {
         throw transactionError(
           409,
           'CREATION_REVERT_NOT_ALLOWED',
-          'Only a committed contract creation can be removed from History.'
+          'Only an unchanged committed contract or explicitly created native input can be removed from History.'
         );
       }
 
@@ -802,7 +841,7 @@ export class TransactionStore {
       const contractDirectory = contractCreationDirectory(manifest.files);
       const ownedCleanupDirectories =
         manifest.ownedCleanupDirectories || manifest.createdDirectories || [];
-      manifest.revertCleanupDirectories = [
+      manifest.revertCleanupDirectories = nativeCreation ? manifest.createdDirectories || [] : [
         contractDirectory,
         ownedCleanupDirectories.includes(boundary) ? boundary : null,
       ]
@@ -894,7 +933,7 @@ export class TransactionStore {
       }
       const planned = new Map();
       for (const candidate of input.files) {
-        const alias = normalizeSourceAlias(candidate?.alias);
+        const alias = normalizeSourceAlias(candidate?.alias, manifest.configuration);
         if (planned.has(alias)) throw transactionError(400, 'DUPLICATE_ALIAS', 'Duplicate commit alias.');
         const file = manifest.files.find((entry) => entry.alias === alias);
         if (!file || !manifest.changedAliases.includes(alias)) {
@@ -930,8 +969,12 @@ export class TransactionStore {
   async commitReceipt(environmentId, transactionId, authorizationToken, input) {
     return this.withEnvironment(environmentId, async () => {
       const manifest = await this.readManifest(environmentId, transactionId);
-      await this.assertAuthorizationToken(environmentId, transactionId, authorizationToken);
-      if (manifest.status !== 'committing') {
+      const credentials = await this.assertAuthorizationToken(environmentId, transactionId, authorizationToken);
+      if (credentials.unconfirmedNativeCreation) {
+        throw transactionError(409, 'NATIVE_CREATION_UNCONFIRMED', 'Recovery cannot attribute a native creation from matching bytes alone.');
+      }
+      if (manifest.status !== 'committing' && !(manifest.status === 'failed' &&
+          manifest.recoveryRequired && !unconfirmedNativeCreation(manifest))) {
         throw transactionError(409, 'INVALID_TRANSACTION_STATE', 'Transaction is not committing.');
       }
       const receipts = this.validateReceipts(manifest, input?.receipts, false);
@@ -958,7 +1001,7 @@ export class TransactionStore {
     }
     const receipts = new Map();
     for (const candidate of candidates) {
-      const alias = normalizeSourceAlias(candidate?.alias);
+      const alias = normalizeSourceAlias(candidate?.alias, manifest.configuration);
       if (receipts.has(alias) || !manifest.changedAliases.includes(alias)) {
         throw transactionError(400, 'INVALID_RECEIPTS', 'Receipt alias is duplicate or unknown.');
       }
@@ -988,7 +1031,7 @@ export class TransactionStore {
       }
       const changedAliases = input.changedAliases ?? [];
       if (!Array.isArray(changedAliases)) throw transactionError(400, 'INVALID_CHANGES', 'Invalid changed aliases.');
-      const changed = [...new Set(changedAliases.map(normalizeSourceAlias))].sort();
+      const changed = [...new Set(changedAliases.map((alias) => normalizeSourceAlias(alias, manifest.configuration)))].sort();
       if (changed.some((alias) => !manifest.changedAliases.includes(alias))) {
         throw transactionError(400, 'UNKNOWN_CHANGED_ALIAS', 'Unknown changed alias.');
       }
@@ -1175,6 +1218,7 @@ export class TransactionStore {
     if (!bytes || bytes.length !== file.originalSize || sha256(bytes) !== file.originalHash) {
       throw transactionError(409, 'BACKUP_VERIFICATION_FAILED', 'Stored backup failed verification.');
     }
+    if (manifest.configuration) await assertNativeBackupSafe(manifest.configuration, manifest.nativeProof, file.alias, decodeNativeBytes(bytes));
     return {
       bytes,
       metadata: {

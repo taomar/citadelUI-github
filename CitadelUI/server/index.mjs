@@ -83,6 +83,7 @@ const MIME = {
   '.png': 'image/png',
   '.webp': 'image/webp',
   '.woff2': 'font/woff2',
+  '.wasm': 'application/wasm',
 };
 
 const CSP = [
@@ -91,7 +92,7 @@ const CSP = [
   "object-src 'none'",
   "frame-ancestors 'none'",
   "form-action 'self'",
-  "script-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval'",
   "style-src 'self'",
   "img-src 'self' data:",
   "font-src 'self'",
@@ -814,8 +815,8 @@ export async function createCitadelServer(options = {}) {
   }
   const sessionToken = options.sessionToken || randomBytes(32).toString('base64url');
   const maxConcurrency = options.maxConcurrency ?? 32;
-  const store = options.store || new TransactionStore({ dataRoot, ...(options.transactionOptions || {}) });
   const registryStore = options.registryStore || new RegistryStore({ dataRoot });
+  const store = options.store || new TransactionStore({ dataRoot, getEnvironment: (id) => registryStore.getEnvironment(id), ...(options.transactionOptions || {}) });
   const connectionStore = options.connectionStore || new ConnectionProfileStore({ dataRoot });
   const activityStore = options.activityStore || new ActivityStore({ dataRoot });
   const snapshotStore = options.snapshotStore || new MigrationSnapshotStore({ dataRoot, ...(options.snapshotOptions || {}) });
@@ -843,9 +844,9 @@ export async function createCitadelServer(options = {}) {
           activity: activityStore,
           ...(options.githubOptions || {}),
         });
+  await registryStore.initialize();
   await store.initialize();
   await snapshotStore.initialize();
-  await registryStore.initialize();
   await connectionStore.initialize();
   await credentialVault.initialize();
   await githubRoutes?.creations?.initialize();

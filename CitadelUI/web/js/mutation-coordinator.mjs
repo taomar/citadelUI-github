@@ -1,3 +1,6 @@
+import { configurationOf, unitForAlias, unconfirmedNativeCreation } from '../../shared/workspace-configuration.mjs';
+import { nativeHistoryProof } from '../../shared/terraform/workspace.mjs';
+
 /**
  * Source-owning mutation boundary.
  *
@@ -120,8 +123,9 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
     return {
       transaction: result.transaction,
       files,
+      unconfirmedCreation: Boolean(unconfirmedNativeCreation(result.transaction)),
       canComplete:
-        result.transaction.status === 'reverting'
+        unconfirmedNativeCreation(result.transaction) ? false : result.transaction.status === 'reverting'
           ? files.every((file) => file.state === 'absent')
           : files.every((file) => file.state === 'final'),
     };
@@ -141,11 +145,15 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
       }
     );
     const transaction = inspection.transaction;
+    const configuration = configurationOf(context.environment);
+    const native = configuration.format === 'terraform';
+    if (native) await nativeHistoryProof(provider, configuration, transaction);
     const transactionHeaders = {
       'X-Citadel-Environment': environmentId,
       'X-Citadel-Transaction': recovery.transactionToken,
     };
     if (action === 'complete' && transaction.status !== 'reverting') {
+      if (inspection.unconfirmedCreation) throw new Error('This native creation is unconfirmed. Citadel will not adopt a present file. Keep or move the file outside Citadel; rollback can close this attempt once the selected path is absent.');
       if (!inspection.canComplete) throw new Error('Not every target matches its planned final hash.');
       return this.request(`/api/transactions/${encodeURIComponent(transactionId)}/receipt`, {
         method: 'POST',
@@ -168,6 +176,7 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
 
     const receipts = [];
     for (const file of [...transaction.files].reverse()) {
+      if (native) await nativeHistoryProof(provider, configuration, transaction);
       let current = null;
       try {
         current = await provider.read(file.alias);
@@ -176,6 +185,7 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
       }
       if (!file.existed) {
         if (current) {
+          if (inspection.unconfirmedCreation) throw new Error('This native creation is unconfirmed. Citadel will not remove a present file, even when it matches the proposed bytes. Keep or move it outside Citadel before retrying rollback.');
           if (current.hash !== file.finalHash || current.size !== file.finalSize) {
             throw new Error(`Created source changed outside Citadel UI: ${file.alias}`);
           }
@@ -192,6 +202,9 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
         continue;
       }
       if (current?.hash !== file.originalHash || current?.size !== file.originalSize) {
+        if (native && (current?.hash !== file.finalHash || current?.size !== file.finalSize)) {
+          throw new Error('The native recovery target has foreign or missing bytes. No backup was applied.');
+        }
         const backup = await this.request(
           `/api/transactions/${encodeURIComponent(transactionId)}/backups/${encodeURIComponent(file.id)}?environmentId=${encodeURIComponent(environmentId)}`,
           {
@@ -203,6 +216,7 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
           create: !current,
           expectedHash: current?.hash ?? null,
           finalHash: file.originalHash,
+          ...(native ? { validateBeforeWrite: () => nativeHistoryProof(provider, configuration, transaction) } : {}),
         });
         current = verified;
       }
@@ -226,6 +240,9 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
     if (!restorable.length) {
       return this.revertCreation(detail.transaction, { context });
     }
+    const configuration = configurationOf(context.environment);
+    const native = configuration.format === 'terraform';
+    const proof = native ? await nativeHistoryProof(provider, configuration, detail.transaction) : null;
     const token = await this.request(
       `/api/transactions/${encodeURIComponent(transactionId)}/restore-token`,
       {
@@ -249,6 +266,9 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
       } catch (error) {
         if (!isNotFound(error)) throw error;
       }
+      if (native && (current?.hash !== file.finalHash || current?.size !== file.finalSize)) {
+        throw new Error('The native History target no longer matches the saved transaction. Its current bytes were not overwritten.');
+      }
       files.push({
         alias: file.alias,
         before: current?.bytes || null,
@@ -258,16 +278,21 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
         create: !current,
       });
     }
-    return this.commit(files, { action: 'history-restore', context });
+    return this.commit(files, { action: 'history-restore', context,
+      ...(native ? { nativeProof: proof, validateBeforeWrite: () => nativeHistoryProof(provider, configuration, detail.transaction) } : {}) });
   }
 
   async revertCreation(transaction, options = {}) {
     const context = this.resolve(options);
     const provider = context.provider;
     const boundary = contractCreationBoundary(transaction);
-    if (!boundary || transaction.status !== 'committed') {
+    const configuration = configurationOf(context.environment);
+    const nativeCreation = configuration.format === 'terraform' && transaction.files.length &&
+      transaction.files.every((file) => !file.existed && unitForAlias(configuration, file.alias)?.allowCreate);
+    if ((!boundary && !nativeCreation) || transaction.status !== 'committed') {
       throw new Error('This transaction has no prior file bytes to restore.');
     }
+    if (nativeCreation) await nativeHistoryProof(provider, configuration, transaction);
     const current = new Map();
     for (const file of transaction.files) {
       let source;
@@ -304,6 +329,7 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
 
     const receipts = [];
     for (const file of [...transaction.files].reverse()) {
+      if (nativeCreation) await nativeHistoryProof(provider, configuration, transaction);
       await provider.remove(file.alias, {
         expectedHash: file.finalHash,
         removeEmptyDirectories: (revert.cleanupDirectories || []).filter((directory) =>

@@ -60,11 +60,12 @@ export function rawXmlEditor(policy, ctx) {
   const code = h('pre', { class: 'raw-code', 'aria-hidden': 'true' });
   const input = h('textarea', {
     class: 'ctl policy-raw',
-    'aria-label': 'Raw policy XML',
+    'aria-label': ctx.label || 'Raw policy XML',
     spellcheck: false,
     readOnly: Boolean(ctx.readOnly),
     value: policy.text,
     oninput: (e) => {
+      if (ctx.readOnly) return;
       sync(e.target.value);
       ctx.onPolicyRaw(e.target.value);
     },

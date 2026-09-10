@@ -2,9 +2,11 @@
 
 A containerized editor for user-selected Citadel repositories, run locally or
 hosted on Azure Container Apps.
-Citadel UI presents `.bicepparam` files and their associated APIM policy XML as
-explained forms and writes surgical changes without disturbing unrelated
-comments or formatting.
+Citadel UI presents independent Bicep/Citadel and native Terraform workspaces.
+It edits `.bicepparam` and associated APIM XML, or explicitly selected native
+`.tfvars` / `.tfvars.json` inputs, using the shared typed controls. Ordinary
+field edits preserve unrelated comments and formatting. Neither format is
+automatically converted into, or synchronized with, the other.
 
 One container manages any number of user-labeled environments. Microsoft Edge
 or Google Chrome grants repository access through the File System Access API;
@@ -109,25 +111,30 @@ upstream `citadel-v1` snapshot without a GitHub token. Choose an empty parent
 folder, enter the new project subfolder name, and review the exact destination
 and pinned commit before copying. The named child becomes the workspace only
 after full content verification and registration. This is not a Git clone and
-does not run scripts. The same flow is in **Settings > New project**.
+does not run scripts. The same flow is in **Settings > Add workspace**.
 See the [local source walkthrough](../guides/using-the-control-plane.md#create-a-local-project-from-citadel-source)
 for limits, concurrency guarantees, and partial-folder recovery.
 
-To attach existing files instead, create a project, enter an environment label and display-only
+To attach existing files instead, choose **Bicep / Citadel** or **Terraform (native)**
+independently of **Local Edit** or **Existing GitHub Repo**. Create a project, enter an environment label and display-only
 **Local path**, and choose the exact Citadel repository through the in-app folder
 picker. Repeat from **Settings** for Development, Test, Production, or any other
 labels. Labels, folder names, and Local paths are informational. Normal attachment
-requires the Main deployment,
+for Bicep requires the Main deployment,
 LLM onboarding, and Access Contracts template paths and signatures; an incomplete
 tree is rejected with the missing capability names and is never activated.
+Terraform instead admits one or more explicitly selected native units; LLM or
+Access can stand alone without Main or a Bicep workspace.
 
 Directory handles remain in the browser profile because they cannot be moved
 into a container. Non-sensitive project and environment metadata, including the
 user-entered display-only Local path, is mirrored to
 `/data/settings/registry.json`. After a container restart, retained browser
 handles reopen normally. After browser-profile loss, labels and fingerprints
-remain visible with their Local paths and each profile asks the user to reconnect
-its folder.
+remain visible with their Local paths. A native Local workspace must reconnect
+its original retained handle. If that handle was lost, attach a new workspace
+instead of transferring old native drafts or history to an unproven folder.
+Identical or demonstrably overlapping Local folder attachments are refused.
 
 Use `scripts\status.ps1`, `scripts\logs.ps1`, and `scripts\stop.ps1` for local
 operation in PowerShell. In Bash, use `docker compose --env-file container.env ps`,
@@ -140,7 +147,7 @@ Direct `node server/index.mjs` execution is developer-only.
 ## What it can access
 
 The browser traverses only a directory explicitly selected by the user. The
-normal configuration editor's source scope is:
+Bicep configuration editor's source scope is:
 
 - `.bicepparam` files.
 - Bicep templates referenced by those parameter files for editor schema.
@@ -175,10 +182,103 @@ Partial folders are retained for explicit retry or manual handling, not deleted.
 Preparation and retry ownership are memory-only, unlike migration's durable
 **Prepared sources**. Neither full-copy workflow changes the editor scope.
 
+## Native Terraform workspaces
+
+Native loading and saving are separate from **Export to Terraform**. One named
+GitHub connection can serve both formats and different repositories or branches.
+Local folders are not reusable connections: each attachment has one workspace
+owner, with any selected native units inside that folder.
+
+| Native area | Schema/configuration root | Explicit input selection |
+| --- | --- | --- |
+| Azure Deployment | Repository root | `environments/<name>.tfvars` |
+| LLM Onboarding | `llm-backend-onboarding/` | A named `.tfvars` in that root |
+| Access Contracts | `citadel-access-contracts/` | One or more named `.tfvars` units in that root |
+
+Explicit `.tfvars.json` is also supported. Examples and `.auto.tfvars` are not
+edit targets. Missing or Git-ignored inputs require choosing another file or
+explicitly allowing an empty file on first save; schemas and examples are never
+copied silently. Profile/unit IDs, format, native root, value alias and syntax
+are versioned and immutable. Select a new workspace for different bindings.
+Legacy records without a descriptor keep their existing Bicep identity.
+
+Only the selected nonsecret operator inputs are writable. Known root schemas,
+bounded module dependencies and the conventional Access policy source are
+read-only; inventory is not permission to read unselected value files.
+State, plan, credential and `.terraform` files are excluded. The azd subscription
+bridge is Bicep-only. Native policy changes use a service's literal `policy_xml`
+in its owning input file; shared XML is inspectable but not edited.
+
+Known-sensitive whole files are blocked before ordinary read/review/save,
+backup and history exposure, including edits to unrelated fields. Empty/null
+slots are preserved. The pinned source's exact public PII placeholder is
+recognized only as a schema default, not as an allowed operator secret value.
+Detection does not prove arbitrary files secret-free and does not encrypt or
+remove source secrets. Supply secrets outside this editor.
+
+For a changed existing Local file, Review/Save offers **Cancel** or **Back up and
+overwrite**. Explicit overwrite backs up the current external version and
+replaces it with the reviewed contents; a further change requires fresh consent.
+GitHub keeps its exact-head, non-forced atomic commit rules.
+
+Local creation uses absence/content/mtime/dependency checks and an exclusive
+writable stream where supported, not OS-level exclusion or atomic create-if-absent.
+Keep the folder untouched during creation: simultaneous same-path creation
+cannot always be distinguished. Detected collisions are refused. Unconfirmed
+creations are not adopted or removed merely because their bytes match a plan.
+Receipt uncertainty and foreign changes retain explicit History recovery.
+
+The [native walkthrough](../guides/using-the-control-plane.md#native-terraform-workspaces)
+describes controls, draft isolation, limitations and the synthetic screenshots.
+Inputs are source configuration, not effective runtime state. No Terraform,
+provider, state, source script, APIM expression or cloud reference is executed.
+
+### Offline native parser
+
+The browser/server use pinned Tree-sitter CST assets: `web-tree-sitter@0.25.10`
+(MIT), `@tree-sitter-grammars/tree-sitter-hcl@1.2.0` (Apache-2.0) and
+`tree-sitter-json@0.24.8` (MIT). Exact package integrity is retained in
+`tools/native-parser/package-lock.json`; asset hashes, provenance and licenses
+are under `shared/terraform/vendor/`. Published prebuilt WASM is copied
+byte-for-byte, not compiled or fetched by the running application.
+The app's `.gitattributes` keeps vendored bytes unchanged across Git checkouts,
+including Windows line-ending settings.
+
+For a development asset rebuild only:
+
+```powershell
+Set-Location .\tools\native-parser
+npm ci --ignore-scripts
+npm run build
+```
+
+Normal browser/container operation is offline with no npm runtime or CDN.
+Assets come from the existing app origin; WASM is served as `application/wasm`.
+The only CSP change is `script-src 'self'` to
+`script-src 'self' 'wasm-unsafe-eval'`. JavaScript `unsafe-eval`, script/connect
+origins, owner sign-in and origin/transport restrictions are unchanged.
+
+The supported editor grammar is bounded literal HCL/JSON, not Terraform
+evaluation. Duplicate/error/missing nodes and unsupported expressions are
+refused. Exact number lexemes, supported heredocs, Unicode offsets, CRLF/LF and
+untouched source spans are preserved. Valid HCL integer-mantissa exponents
+such as `2e30` are a selected-grammar limitation: the document stays read-only,
+unchanged, without normalization or JavaScript rounding. Decimal-mantissa
+exponents and explicit JSON exponents are supported.
+Leading-zero numeric spellings are also an explicit read-only literal-reader
+limitation, not silently normalized values.
+
+Limits are 512 KiB per parsed source, 64 literal nesting levels, 32 nested schema
+type levels, 100,000 CST nodes, a 300 ms parser cancellation deadline, 1,000
+operations and 1,024 characters per exact number. A native dependency inventory
+is bounded to 150 files / 4 MiB. Literal `contains` validations are interpreted;
+other Terraform validations are marked unevaluated. BOM files, unsupported
+types/default expressions and untyped absent inputs are not silently rewritten.
+
 ## Export to Terraform
 
 **Export to Terraform (Experimental)** is a desktop-only, saved-source workflow
-in the command bar. Bicep and policy XML remain the authoring files; normal
+in the command bar for a Bicep workspace. Bicep and policy XML remain its authoring files; normal
 review/save and migration are unchanged. Save or deliberately discard ordinary
 drafts before entering. Across Deployment, LLM Onboarding and Access Contracts,
 the export screen uses the same Bicepparam controls and groups to display the

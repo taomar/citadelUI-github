@@ -28,6 +28,7 @@
 import { h } from './dom.mjs';
 import { picker } from './picker.mjs';
 import { editorField } from './editor-focus.mjs';
+import { exactNumber, isExactNumber } from '../../shared/terraform/parser.mjs';
 import {
   APIC_LOCATION_VALUES,
   PRIMARY_REGIONS,
@@ -42,6 +43,7 @@ function isExpr(value) {
 }
 
 function typeOf(value) {
+  if (isExactNumber(value)) return 'number';
   if (isExpr(value)) return 'expr';
   if (value === null || value === undefined) return 'null';
   if (Array.isArray(value)) return 'array';
@@ -275,6 +277,7 @@ function isLocationSchema(schema, path = []) {
 }
 
 export function regionOptionsFor(schema, path = []) {
+  if (schema?.native) return null;
   if (!isLocationSchema(schema, path)) return null;
   if (schema && Array.isArray(schema.allowedValues) && schema.allowedValues.length) {
     return schema.allowedValues.map(String);
@@ -342,10 +345,22 @@ function comboControl(value, allowed, commit, secure, schema) {
  * and provenance appears nowhere in them.
  */
 function scalarControl(value, path, ctx, schema) {
-  schema = ctx.readOnly ? schema : withRegionSchema(schema, path);
+  schema = ctx.readOnly || ctx.native ? schema : withRegionSchema(schema, path);
   const commit = (next) => ctx.onChange(path, next);
   const type = schema && schema.type;
   const label = valueLabel(path, schema);
+  if (ctx.native && (schema?.type === 'number' || isExactNumber(value))) {
+    const input = h('input', { class: 'ctl ctl-native-number', type: 'text', inputmode: 'decimal',
+      value: isExactNumber(value) ? value.__tfNumber : String(value), 'aria-label': label,
+      onchange: (event) => {
+        try {
+          const next = exactNumber(event.target.value, schema?.syntax);
+          event.target.setCustomValidity('');
+          commit(next);
+        } catch (error) { event.target.setCustomValidity(error.message); event.target.reportValidity(); }
+      } });
+    return namedControl(input, label, path);
+  }
 
   // A boolean is a switch, whatever shape it arrives in. `bool(readEnvironment
   // Variable(...))` delivers the string "true"; without this the fifteen
@@ -602,7 +617,7 @@ function chipList(value, path, ctx) {
 function isRecordList(value) {
   if (!Array.isArray(value) || value.length === 0) return false;
   const rows = value.filter(
-    (v) => v !== null && typeof v === 'object' && !Array.isArray(v) && !isExpr(v)
+    (v) => v !== null && typeof v === 'object' && !Array.isArray(v) && !isExpr(v) && !isExactNumber(v)
   );
   if (rows.length !== value.length) return false;
 
@@ -616,7 +631,7 @@ function isRecordList(value) {
   // and the table into a lie about the shape of the data.
   for (const row of rows) {
     for (const v of Object.values(row)) {
-      if (v !== null && typeof v === 'object' && !isExpr(v)) return false;
+      if (v !== null && typeof v === 'object' && !isExpr(v) && !isExactNumber(v)) return false;
     }
   }
   return true;
@@ -682,7 +697,7 @@ function recordCell(row, key, index, path, ctx, schema, config) {
       class: 'rec-cell',
       dataset: { kind: typeOf(row[key]), label: recordHeader(key) },
     },
-    control || (hasValue
+    control || (hasValue || ctx.native
       ? renderValue(row[key], [...path, index, key], ctx, columnSchema(schema, key))
       : h(
         'button',
@@ -855,9 +870,10 @@ function columnSchema(schema, key) {
 }
 
 function arrayEditor(value, path, ctx, schema, options) {
-  if (isScalarList(value)) return chipList(value, path, ctx);
+  const tuple = ctx.native && schema?.collection === 'tuple';
+  if (isScalarList(value) && (!ctx.native || schema?.item?.type === 'string')) return chipList(value, path, ctx);
   if (options && options.record) return recordTable(value, path, ctx, schema, options.record);
-  if (isRecordList(value)) return recordTable(value, path, ctx, schema, options && options.record);
+  if (!tuple && options?.array !== 'items' && isRecordList(value)) return recordTable(value, path, ctx, schema, options && options.record);
 
   const items = value.map((item, index) =>
     h(
@@ -871,6 +887,7 @@ function arrayEditor(value, path, ctx, schema, options) {
           'button',
           {
             class: 'btn btn-ghost btn-sm',
+            disabled: tuple,
             title: 'Remove this entry',
             onclick: () => ctx.onRemove([...path, index]),
           },
@@ -889,9 +906,10 @@ function arrayEditor(value, path, ctx, schema, options) {
       'button',
       {
         class: 'btn btn-sm',
-        onclick: () => ctx.onAppend(path, templateFrom(value[value.length - 1])),
+        disabled: tuple,
+        onclick: () => ctx.onAppend(path, ctx.newArrayItem ? ctx.newArrayItem(path, value.length) : templateFrom(value[value.length - 1])),
       },
-      'Add entry'
+      options?.addLabel || 'Add entry'
     )
   );
 }
@@ -977,12 +995,14 @@ function pathTable(value, path, ctx) {
  * definitions, not a document. Key at one fixed measure, control beside it, no
  * indent and no container.
  */
-function objectEditor(value, path, ctx, options) {
-  const keys = Object.entries(value);
-  if (!keys.length) return h('p', { class: 'empty' }, 'No properties.');
-  if (depthOf(value) > 1 && options?.object !== 'fields') return pathTable(value, path, ctx);
+function objectEditor(value, path, ctx, options, schema) {
+  const keys = ctx.native ? [...new Set([...Object.keys(value), ...Object.keys(schema?.properties || {})])]
+    .map((key) => [key, value[key]]) : Object.entries(value);
+  const map = ctx.native && schema?.collection === 'map';
+  if (!keys.length && !map) return h('p', { class: 'empty' }, 'No properties.');
+  if (!ctx.native && depthOf(value) > 1 && options?.object !== 'fields') return pathTable(value, path, ctx);
 
-  return h(
+  const content = h(
     'div',
     { class: 'defs' },
     keys.map(([key, val]) =>
@@ -994,19 +1014,39 @@ function objectEditor(value, path, ctx, options) {
       )
     )
   );
+  if (map && !ctx.readOnly) {
+    const input = h('input', { class: 'ctl', type: 'text', 'aria-label': `New key for ${path.join('.')}`, placeholder: 'New mapping key' });
+    const problem = h('span', { class: 'field-error', role: 'alert', hidden: true });
+    content.append(h('div', { class: 'form-actions' }, input,
+      h('button', { class: 'btn btn-sm', type: 'button', onclick: () => {
+        const key = input.value;
+        if (!key || Object.hasOwn(value, key) || key === '__tfNumber') {
+          problem.textContent = 'Choose a nonempty, unused key (the exact-number adapter key is reserved).';
+          problem.hidden = false;
+          return;
+        }
+        ctx.onAddProperty(path, key, ctx.newValue([...path, key]));
+      } }, 'Add mapping'), problem));
+  }
+  return content;
 }
 
 export function renderValue(value, path, ctx, schema, options = null) {
   if (ctx.schemaForValue) schema = ctx.schemaForValue(path, schema);
+  if (ctx.optionsForValue) options = ctx.optionsForValue(path, value, schema) || options;
   const rendered = renderValueContent(value, path, ctx, schema, options);
   return ctx.decorateValue ? ctx.decorateValue(path, rendered) : rendered;
 }
 
 function renderValueContent(value, path, ctx, schema, options) {
+  if (ctx.nativeValueControl) {
+    const control = ctx.nativeValueControl(value, path, schema);
+    if (control) return control;
+  }
   const kind = typeOf(value);
   if (kind === 'expr') return exprCard(value, path, ctx, schema);
   if (kind === 'array') return arrayEditor(value, path, ctx, schema, options);
-  if (kind === 'object') return objectEditor(value, path, ctx, options);
+  if (kind === 'object') return objectEditor(value, path, ctx, options, schema);
   // `null` and "no value" are the same fact to the reader, so they get the
   // same row state rather than a second vocabulary for absence.
   if (kind === 'null') {

@@ -30,8 +30,6 @@ import { classifyValidation, editableValue, validateDocument } from './validatio
 import { APIM_SKUS, LOGIC_APPS_TEMPLATE } from './azuremeta.mjs';
 import {
   activeWorkspace,
-  attachEnvironment,
-  attachLocalSourceEnvironment,
   attachGitHubEnvironment,
   assertSupportedScan,
   clearActiveWorkspace,
@@ -54,10 +52,17 @@ import { createProvider } from './source-factory.mjs';
 import { historyEntry } from './history-entry.mjs';
 import { createCompareSession } from './compare-session.mjs';
 import { openMigrationWizard } from './migration-wizard.mjs';
-import { openLocalSourceImport } from './local-source-import.mjs';
 import { openTerraformExport } from './terraform-export-view.mjs';
 import { describeCreatedBranch, saveStatusLine } from './save-resolution.mjs';
 import { refNameProblem } from '../../shared/git-refs.mjs';
+import { configurationOf } from '../../shared/workspace-configuration.mjs';
+import { assertNativeDraft, sameNativeDraftBinding } from '../../shared/terraform/drafts.mjs';
+import { assertNonsecretValues, validateNativeValues } from '../../shared/terraform/schema.mjs';
+import { NATIVE_WIRING_NOTICE, NATIVE_LOCAL_CREATION_NOTICE } from '../../shared/terraform/workspace.mjs';
+import { nativeEditContext, nativeReadonlyPolicy } from './native-controls.mjs';
+import { WorkspaceViewState } from './workspace-view-state.mjs';
+import { openRegisteredWorkspace, addRegisteredWorkspace } from './workspace-context.mjs';
+import { githubBranchKey, githubHeadEvents } from './github-head-state.mjs';
 
 /**
  * GitHub's compare view for the environment's working branch.
@@ -88,7 +93,7 @@ import {
   showDialog,
 } from './dialog.mjs';
 
-const state = {
+function createEditorState() { return {
   areas: [],
   area: null,
   catalog: null,
@@ -114,11 +119,28 @@ const state = {
   showAll: false,
   status: null,
   projectLabel: 'Project',
-};
+  workspaceId: null,
+  quarantinedDraft: null,
+  documentViews: new Map(),
+  reviewEpoch: 0,
+}; }
+
+const viewStates = new WorkspaceViewState(createEditorState);
+let state = createEditorState();
+let documentGeneration = 0;
 
 const els = {};
 const COMPACT_NAV = window.matchMedia('(max-width: 48rem)');
 const pendingByDocument = new Map();
+githubHeadEvents.addEventListener('change', ({ detail }) => {
+  for (const owner of viewStates.views.values()) {
+    if (owner.workspaceId !== detail.environmentId && githubBranchKey(owner.source) === detail.key) {
+      owner.reviewEpoch += 1;
+      owner.branchNotice = 'Another workspace saved to this shared GitHub branch. Your draft is retained, but the old approval is invalid; reload the source and review the new head.';
+      if (owner === state) { setStatus(owner.branchNotice, 'info'); renderActions(); }
+    }
+  }
+});
 
 /* ------------------------------------------------------------------ status */
 
@@ -132,7 +154,8 @@ let pendingSince = 0;
 const STILL_WORKING_AFTER_MS = 8000;
 
 function setStatus(message, tone = 'info', sticky = false, pending = false) {
-  state.status = message ? { message, tone, pending } : null;
+  const owner = state;
+  owner.status = message ? { message, tone, pending } : null;
   clearTimeout(statusTimer);
   clearTimeout(pendingTicker);
   if (message && pending) {
@@ -145,8 +168,8 @@ function setStatus(message, tone = 'info', sticky = false, pending = false) {
   // the success path stays pinned forever the moment anything throws.
   if (message && !sticky && tone !== 'error') {
     statusTimer = setTimeout(() => {
-      state.status = null;
-      renderStatus();
+      owner.status = null;
+      if (owner === state) renderStatus();
     }, 4000);
   }
   renderStatus();
@@ -283,13 +306,14 @@ async function withStatus(message, fn) {
   // `pending` is what turns a static sentence into a live, animated one. Every
   // await in the product passes through this function, so nothing can wait
   // silently without someone deliberately bypassing it.
+  const owner = state;
   setStatus(message, 'info', true, true);
   try {
     const result = await fn();
-    setStatus(null);
+    if (state === owner) setStatus(null);
     return result;
   } catch (err) {
-    setStatus(err.message, 'error');
+    if (state === owner) setStatus(err.message, 'error');
     return undefined;
   }
 }
@@ -302,6 +326,17 @@ function pathKey(path) {
 
 function draftContainsSecureValue(operations = state.operations) {
   const definitions = state.current?.schema?.parameters || {};
+  if (state.current?.format === 'terraform') {
+    try {
+      assertNativeDraft(configurationOf(activeWorkspace().environment), state.current.path, operations, state.current.nativeIdentity);
+      const projected = previewDocument(state.current, operations);
+      assertNonsecretValues(nativeValues(projected), definitions);
+      return false;
+    } catch (error) {
+      if (error.code === 'NATIVE_SENSITIVE_FILE') return true;
+      throw error;
+    }
+  }
   return operations.some((operation) => {
     const definition = definitions[operation.path?.[0]];
     return !definition || definition.secure;
@@ -309,7 +344,7 @@ function draftContainsSecureValue(operations = state.operations) {
 }
 
 async function persistParameterDraft() {
-  if (!state.current) return;
+  if (!state.current || state.quarantinedDraft) return;
   const environmentId = activeWorkspace().environment.id;
   if (!state.operations.length || draftContainsSecureValue()) {
     await workspaceRegistry.removeDraft(environmentId, state.current.path);
@@ -319,23 +354,31 @@ async function persistParameterDraft() {
     environmentId,
     state.current.path,
     state.current.hash,
-    state.operations
+    state.operations,
+    state.current.nativeIdentity
   );
 }
 
-async function restoreParameterDraft(document) {
-  const draft = await workspaceRegistry.getDraft(activeWorkspace().environment.id, document.path);
+async function restoreParameterDraft(document, owner = state) {
+  const draft = await workspaceRegistry.getDraft(owner.workspaceId || activeWorkspace().environment.id, document.path);
   if (!draft) return [];
-  if (draft.sourceHash !== document.hash) {
-    await workspaceRegistry.removeDraft(activeWorkspace().environment.id, document.path);
-    setStatus('A saved draft was discarded because the source changed outside Citadel UI.', 'info');
+  if (draft.sourceHash !== document.hash || document.format === 'terraform' &&
+      !sameNativeDraftBinding(draft.nativeIdentity, document.nativeIdentity)) {
+    owner.quarantinedDraft = { ...draft, reason: 'Source bytes or native schema/unit bindings changed outside Citadel. The draft is retained, but cannot be applied to a different source.' };
+    if (state === owner) setStatus(owner.quarantinedDraft.reason, 'error');
     return [];
   }
   return draft.operations || [];
 }
 
 function pushOperation(op) {
-  state.operations = queueOperation(state.operations, op, state.current);
+  if (state.quarantinedDraft) { setStatus(state.quarantinedDraft.reason, 'error'); return; }
+  const next = queueOperation(state.operations, op, state.current);
+  if (state.current?.format === 'terraform') {
+    try { assertNonsecretValues(nativeValues(previewDocument(state.current, next)), state.current.schema.parameters); }
+    catch (error) { setStatus(error.message, 'error'); return; }
+  }
+  state.operations = next;
   persistParameterDraft().catch((error) => setStatus(error.message, 'error'));
   preserveEditorFocus(els.workspace, render);
 }
@@ -353,7 +396,15 @@ function dirtyParams() {
 }
 
 function currentValidation(doc = viewOf(state.current)) {
-  return classifyValidation(validateDocument(doc), state.baselineValidation, dirtyParams());
+  return classifyValidation(documentFindings(doc), state.baselineValidation, dirtyParams());
+}
+
+function nativeValues(doc) {
+  return Object.fromEntries((doc?.params || []).filter((param) => param.value !== undefined).map((param) => [param.name, param.value]));
+}
+
+function documentFindings(doc) {
+  return doc?.format === 'terraform' ? validateNativeValues(nativeValues(doc), doc.schema.parameters) : validateDocument(doc);
 }
 
 function blockingValidation(doc = viewOf(state.current)) {
@@ -381,7 +432,7 @@ function hasPolicyEdits() {
 function pendingCount() {
   let count = editorPendingCount(state);
   for (const pending of pendingByDocument.values()) {
-    count += editorPendingCount(pending);
+    if (pending.environmentId === state.workspaceId) count += editorPendingCount(pending);
   }
   return count;
 }
@@ -404,10 +455,15 @@ function restoreStashedPending() {
   const key = pendingKey();
   const snapshot = key && pendingByDocument.get(key);
   if (!snapshot) return;
+  const durableOperations = state.operations;
   const conflicts = restoreContractEdits(state, snapshot);
+  if (!snapshot.operations?.length || conflicts.includes(snapshot.parameterPath || 'parameter file')) {
+    state.operations = durableOperations;
+  }
   if (!conflicts.length) {
     pendingByDocument.delete(key);
   } else {
+    state.quarantinedDraft = { ...snapshot, reason: `Preserved edits are quarantined because source changed: ${conflicts.join(', ')}.` };
     setStatus(
       `Preserved edits could not be reapplied because source changed: ${conflicts.join(', ')}.`,
       'error'
@@ -439,14 +495,15 @@ async function discardAllPending() {
     );
   }
   for (const snapshot of pendingByDocument.values()) {
-    if (snapshot.parameterPath) {
+    if (snapshot.environmentId === state.workspaceId && snapshot.parameterPath) {
       drafts.push(
         workspaceRegistry.removeDraft(snapshot.environmentId, snapshot.parameterPath)
       );
     }
   }
   await Promise.all(drafts);
-  pendingByDocument.clear();
+  for (const [key, snapshot] of pendingByDocument) if (snapshot.environmentId === state.workspaceId) pendingByDocument.delete(key);
+  state.quarantinedDraft = null;
   clearEditorPending(state);
 }
 
@@ -492,7 +549,7 @@ async function confirmPendingNavigation(options) {
    which is how a configured throttle block was lost once already. The browser
    owns the wording of the prompt; all we control is whether it appears. */
 window.addEventListener('beforeunload', (event) => {
-  if (pendingCount() === 0) return;
+  if (![...viewStates.views.values(), state].some((view) => editorPendingCount(view) || view.quarantinedDraft) && pendingByDocument.size === 0) return;
   event.preventDefault();
   event.returnValue = '';
   return '';
@@ -504,7 +561,7 @@ function editContext(doc) {
   const dirty = dirtyParams();
   const params = new Map((doc.params || []).map((param) => [param.name, param]));
   const findings = currentValidation(doc);
-  return {
+  const context = {
     onChange: (path, value) => pushOperation({ op: 'set', path, value }),
     onAppend: (path, value) => pushOperation({ op: 'append', path, value }),
     onRemove: (path) => pushOperation({ op: 'remove', path }),
@@ -531,6 +588,7 @@ function editContext(doc) {
     paramValue: (name) => editableValue(params.get(name) && params.get(name).value),
     findingsFor: (name) => findings.filter((finding) => finding.param === name),
     saveSubscriptionId: guardedHandler(async ({ environmentName, value, expectedHash }) => {
+      const context = activeWorkspace(), ticket = viewStates.ticket(), owner = state;
       const confirmed = await confirmDialog({
         title: 'Update Azure subscription ID?',
         message:
@@ -539,13 +597,13 @@ function editContext(doc) {
         confirmLabel: 'Update subscription ID',
         context: writeContextNode({ file: `.azure/${environmentName}/.env` }),
       });
-      if (!confirmed) return;
-      const pendingEdits = captureContractEdits(state);
-      const currentPath = state.current.path;
+      if (!confirmed || !viewStates.isCurrent(ticket)) return;
+      const pendingEdits = captureContractEdits(owner);
+      const currentPath = owner.current.path;
       const result = await withStatus('Saving subscription ID\u2026', () =>
-        api.saveSubscriptionId(environmentName, value, expectedHash)
+        api.saveSubscriptionId(environmentName, value, expectedHash, context)
       );
-      if (!result) return;
+      if (!result || !viewStates.isCurrent(ticket)) return;
       await loadDocument(currentPath);
       const conflicts = restoreContractEdits(state, pendingEdits);
       render();
@@ -577,6 +635,7 @@ function editContext(doc) {
     isOpen: (id, fallback) => (state.open.has(id) ? state.open.get(id) : fallback),
     setOpen: (id, value) => state.open.set(id, value),
   };
+  return doc.format === 'terraform' ? nativeEditContext(doc, context) : context;
 }
 
 /* ------------------------------------------------------------------ sidebar */
@@ -587,7 +646,8 @@ function areaButton(area) {
     'button',
     { class: `area${active ? ' active' : ''}`, onclick: () => selectArea(area.id) },
     h('span', { class: 'area-title' }, area.title),
-    h('span', { class: 'area-sub' }, area.subtitle)
+    h('span', { class: `area-sub${state.catalog?.format === 'terraform' ? ' area-sub-native' : ''}`,
+      title: area.subtitle }, area.subtitle)
   );
 }
 
@@ -722,6 +782,8 @@ async function restoreContract(id) {
 }
 
 function openCreateContract() {
+  const context = activeWorkspace(), owner = state, ticket = viewStates.ticket();
+  const contractRoot = `${owner.contracts.root}/${owner.contracts.parent}`;
   const input = h('input', {
     id: 'new-contract-name',
     name: 'contractName',
@@ -733,9 +795,10 @@ function openCreateContract() {
   });
   const preview = h('p', { class: 'hint hint-preview' }, '');
   input.addEventListener('input', () => {
+    input.setCustomValidity('');
     const name = input.value.trim().toLowerCase();
     preview.textContent = name
-      ? `Creates ${state.contracts.root}/${state.contracts.parent}/${name}/ containing main.bicepparam and ai-product-policy.xml`
+      ? `Creates ${contractRoot}/${name}/ containing main.bicepparam and ai-product-policy.xml`
       : '';
   });
 
@@ -749,7 +812,7 @@ function openCreateContract() {
         { class: 'hint' },
         'Copied from the module template and its default policy, with the module path and the policy reference rewired automatically.'
       ),
-      writeContextNode({ file: `${state.contracts.root}/${state.contracts.parent}/<new contract>/main.bicepparam` }),
+      writeContextNode({ file: `${contractRoot}/<new contract>/main.bicepparam` }),
       h('label', { class: 'pol-label', for: 'new-contract-name' }, 'Contract name'),
       input,
       h(
@@ -765,17 +828,19 @@ function openCreateContract() {
         'button',
         {
           class: 'btn btn-primary',
-          onclick: async () => {
+          onclick: guardedHandler(async () => {
+            if (!viewStates.isCurrent(ticket)) return;
             const name = input.value.trim();
-            if (!name) return;
-            const result = await withStatus('Creating\u2026', () => api.createContract({ name }));
+            if (!name) { input.setCustomValidity('Enter a contract name.'); input.reportValidity(); return; }
+            const result = await withStatus('Creating\u2026', () => api.createContract({ name }, context));
             if (!result) return;
+            if (!viewStates.isCurrent(ticket)) return;
             closeModal();
             const refreshed = await withStatus('Refreshing contracts\u2026', async () => {
               try {
                 // Contracts refreshes the invalidated discovery; deployments reuses it.
-                const contracts = await api.contracts();
-                const catalog = await api.deployments();
+                const contracts = await api.contracts(context);
+                const catalog = await api.deployments(context);
                 return { contracts, catalog };
               } catch (err) {
                 throw new Error(
@@ -784,12 +849,12 @@ function openCreateContract() {
                 );
               }
             });
-            if (!refreshed) return;
+            if (!refreshed || !viewStates.isCurrent(ticket)) return;
             state.contracts = refreshed.contracts;
             state.catalog = refreshed.catalog;
             render();
             if (await selectContract(result.id)) setStatus(`Created ${result.dir}`, 'ok');
-          },
+          }, { key: `create-contract:${context.environment.id}` }),
         },
         'Create'
       ),
@@ -799,24 +864,30 @@ function openCreateContract() {
 }
 
 async function loadContract(id, preserved = null, preserveOptions = undefined) {
+  const owner = state, ticket = viewStates.ticket(), generation = ++documentGeneration, context = activeWorkspace();
   const loaded = await withStatus('Loading contract\u2026', () =>
-    Promise.all([api.contract(id), api.accessContractTargets()])
+    Promise.all([api.contract(id, context), api.accessContractTargets(context)])
   );
-  if (!loaded) return false;
+  if (!loaded || !viewStates.isCurrent(ticket) || generation !== documentGeneration) return false;
   const [contract, accessTargets] = loaded;
   state.contractId = id;
   state.contract = contract;
   state.accessTargets = accessTargets;
   state.current = contract.param;
   state.baselineValidation = validateDocument(contract.param);
-  state.operations = await restoreParameterDraft(contract.param);
+  const operations = await restoreParameterDraft(contract.param, owner);
+  if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return false;
+  state.operations = operations;
   state.policyChanges = {};
   state.policyRaw = null;
   state.policyPreview = null;
-  state.open = new Map();
+  const remembered = state.documentViews.get(contract.param.path);
+  state.open = new Map(remembered?.open || []);
+  if (remembered) state.tab = remembered.tab;
   if (preserved) {
     const conflicts = restoreContractEdits(state, preserved, preserveOptions);
     if (conflicts.length) {
+      state.quarantinedDraft = { ...preserved, reason: `Pending edits are quarantined because source changed: ${conflicts.join(', ')}.` };
       setStatus(
         `Pending edits could not be reapplied because source changed: ${conflicts.join(', ')}.`,
         'error'
@@ -826,6 +897,12 @@ async function loadContract(id, preserved = null, preserveOptions = undefined) {
     restoreStashedPending();
   }
   render();
+  if (remembered) requestAnimationFrame(() => {
+    if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return;
+    els.workspace.scrollTop = remembered.scrollTop;
+    const control = [...els.workspace.querySelectorAll('[data-editor-focus]')].find((node) => node.dataset.editorFocus === remembered.focus);
+    if (control && !control.disabled && control.getClientRects().length) control.focus({ preventScroll: true });
+  });
 
   // The onboarded-model list only shapes a suggestion, so it is fetched after
   // the contract is on screen rather than made a precondition for showing it.
@@ -835,6 +912,7 @@ async function loadContract(id, preserved = null, preserveOptions = undefined) {
         api.onboardedModels(),
         api.policyVariables(),
       ]);
+      if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return true;
       state.onboardedModels = models || [];
       state.policyVariables = specs.variables || [];
       state.throttleSpecs = specs.throttles || null;
@@ -842,7 +920,7 @@ async function loadContract(id, preserved = null, preserveOptions = undefined) {
       state.contentSafetySpec = specs.contentSafety || null;
       render();
     } catch {
-      state.onboardedModels = [];
+      if (state === owner) state.onboardedModels = [];
     }
   }
   return true;
@@ -987,7 +1065,8 @@ function foldPolicyChange(change) {
  * the splice logic, so it re-parses the result and the screen renders that.
  */
 async function refreshPolicyPreview() {
-  const policy = state.contract && state.contract.policy;
+  const owner = state, context = activeWorkspace(), ticket = viewStates.ticket();
+  const policy = owner.contract && owner.contract.policy;
   if (!policy) return;
   const token = ++policyPreviewToken;
 
@@ -998,12 +1077,12 @@ async function refreshPolicyPreview() {
   }
 
   try {
-    const res = await api.previewPolicy(policy.path, state.policyChanges, policy.hash);
-    if (token !== policyPreviewToken) return;
-    state.policyPreview = { text: res.after, controls: res.controls };
+    const res = await api.previewPolicy(policy.path, structuredClone(owner.policyChanges), policy.hash, context);
+    if (token !== policyPreviewToken || !viewStates.isCurrent(ticket)) return;
+    owner.policyPreview = { text: res.after, controls: res.controls };
   } catch (err) {
-    if (token !== policyPreviewToken) return;
-    state.policyPreview = null;
+    if (token !== policyPreviewToken || !viewStates.isCurrent(ticket)) return;
+    owner.policyPreview = null;
     setStatus(err.message, 'error');
   }
   render();
@@ -1067,6 +1146,7 @@ function policyContext() {
 }
 
 async function savePolicy() {
+  const context = activeWorkspace(), owner = state, ticket = viewStates.ticket(), epoch = state.reviewEpoch;
   const policy = state.contract && state.contract.policy;
   if (!policy) return;
 
@@ -1074,33 +1154,36 @@ async function savePolicy() {
   const payload = {
     path: policy.path,
     expectedHash: policy.hash,
-    ...(raw !== null ? { text: raw } : { changes: state.policyChanges }),
+    ...(raw !== null ? { text: raw } : { changes: structuredClone(state.policyChanges) }),
   };
 
-  const preview =
-    raw !== null
-      ? { before: policy.text, after: raw, changed: raw !== policy.text }
-      : await withStatus('Preparing preview\u2026', () =>
-          api.previewPolicy(policy.path, state.policyChanges, policy.hash)
-        );
-  if (!preview) return;
-  if (!preview.changed) {
+  const review = { context, owner, ticket, epoch, policy, raw, payload };
+  const preview = await withStatus('Preparing preview\u2026', () =>
+    withLocalConflict(review, () => api.previewPolicyPayload(payload, context)));
+  if (!preview || !viewStates.isCurrent(ticket)) return;
+  if (!preview.changed && preview.kind !== 'local-overwrite') {
     setStatus('Nothing changed in the policy.', 'info');
     return;
   }
+  showPolicyReview(review, preview);
+}
 
+function showPolicyReview(review, preview) {
+  const { context, owner, ticket, epoch, policy, raw, payload } = review;
+  const overwrite = preview.kind === 'local-overwrite';
   const { node, stats } = renderDiff(preview.before, preview.after);
   showModal(
-    'Review policy changes',
+    overwrite ? 'File edited externally' : 'Review policy changes',
     h(
       'div',
       {},
       h('p', { class: 'hint' }, `${stats.added} added, ${stats.removed} removed in ${policy.name}.`),
+      overwrite ? localOverwriteNotice() : null,
       writeContextNode({ file: policy.path }),
       node
     ),
     [
-      h('button', { class: 'btn', onclick: closeModal }, 'Back'),
+      h('button', { class: 'btn', onclick: closeModal }, overwrite ? 'Cancel' : 'Back'),
       h(
         'button',
         {
@@ -1109,24 +1192,42 @@ async function savePolicy() {
           // Keyed by the operation, so a rebuilt modal cannot hand out a fresh
           // lock while the previous policy save is still running.
           onclick: guardedHandler(async () => {
-            const preserved = captureContractEdits(state);
-            const result = await withStatus('Saving\u2026', () => api.savePolicy(payload));
+            if (owner.reviewEpoch !== epoch) { setStatus('The draft or shared branch head changed. Review this policy again before saving.', 'error'); return; }
+            const preserved = captureContractEdits(owner);
+            const result = await withStatus('Saving\u2026', () => withLocalConflict(review, () =>
+              overwrite ? api.saveLocalOverwrite(preview) : api.savePolicy(payload, context)));
             if (!result) return;
+            if (result.kind === 'local-overwrite') {
+              if (viewStates.isCurrent(ticket)) showPolicyReview(review, result);
+              return;
+            }
+            const source = environmentSourceOf(context.environment);
+            const line = saveStatusLine(result, source);
+            if (line.pending) {
+              owner.status = { message: line.text, tone: line.tone };
+              if (viewStates.isCurrent(ticket)) {
+                closeModal();
+                setStatus(line.text, line.tone);
+                await resolveUnsavedCommit(line.pending, source, review);
+              }
+              return;
+            }
+            if (owner.policyRaw === raw && JSON.stringify(owner.policyChanges) === JSON.stringify(preserved.policyChanges)) {
+              owner.policyRaw = null;
+              owner.policyChanges = {};
+              owner.policyPreview = null;
+            }
+            if (!viewStates.isCurrent(ticket)) return;
             closeModal();
             await loadContract(
               state.contractId,
               preserved,
               { parameters: true, policy: false }
             );
-            setStatus(
-              result.changed
-                ? `Saved ${result.path}. Previous revision archived to ${result.archived}`
-                : 'Nothing changed.',
-              'ok'
-            );
-          }, { key: 'save-policy' }),
+            setStatus(line.text, line.tone);
+          }, { key: `save-policy:${context.environment.id}` }),
         },
-        'Save policy'
+        overwrite ? 'Back up and overwrite' : 'Save policy'
       ),
     ]
   );
@@ -1134,7 +1235,38 @@ async function savePolicy() {
 
 /* -------------------------------------------------------------- review/save */
 
+function localOverwriteNotice() {
+  return h('p', { class: 'hint', role: 'note' },
+    'This file was edited externally. Overwrite replaces the current file, including those external edits, with the reviewed contents below. Citadel will first back up the current on-disk version. Cancel keeps your draft.');
+}
+
+async function withLocalConflict(review, operation) {
+  try { return await operation(); }
+  catch (error) {
+    const loaded = review.policy || review.document;
+    if (environmentSourceOf(review.context.environment).kind !== 'local' || !loaded?.hash || loaded.absent ||
+        !['SOURCE_CHANGED', 'NATIVE_REVIEW_STALE'].includes(error.code)) throw error;
+    return review.policy
+      ? api.prepareLocalPolicyOverwrite(review.policy, review.payload.changes, review.payload.text, review.context)
+      : api.prepareLocalOverwrite(review.document, review.operations, review.context);
+  }
+}
+
+function showLocalOverwrite(review, proposal) {
+  const { node } = renderDiff(proposal.before, proposal.after);
+  showModal('File edited externally',
+    h('div', {}, localOverwriteNotice(), writeContextNode({ source: review.writeContext }), node), [
+      h('button', { class: 'btn', onclick: closeModal }, 'Cancel'),
+      h('button', { class: 'btn btn-primary',
+        onclick: guardedHandler(() => commitSave({ ...review, localOverwrite: proposal }), { key: `save-parameters:${review.context.environment.id}` }),
+      }, 'Back up and overwrite'),
+    ]);
+}
+
 async function openReview() {
+  const invalid = state.current?.format === 'terraform' &&
+    [...els.workspace.querySelectorAll('input, select, textarea')].find((input) => !input.checkValidity());
+  if (invalid) { invalid.reportValidity(); setStatus('Correct the invalid native input before review. It has not been queued or saved.', 'error'); return; }
   if (!state.operations.length) {
     setStatus('No pending changes.', 'info');
     return;
@@ -1144,10 +1276,14 @@ async function openReview() {
     setStatus(`Resolve ${findings.length} validation ${findings.length === 1 ? 'error' : 'errors'} before review.`, 'error');
     return;
   }
+  const review = { context: activeWorkspace(), owner: state, document: state.current,
+    operations: structuredClone(state.operations), ticket: viewStates.ticket(), writeContext: currentWriteContext(), epoch: state.reviewEpoch };
   const preview = await withStatus('Preparing preview\u2026', () =>
-    api.preview(state.current.path, state.operations, state.current.hash)
+    withLocalConflict(review, () =>
+      api.preview(review.document.path, review.operations, review.document.hash, review.document.nativeIdentity, review.context))
   );
-  if (!preview) return;
+  if (!preview || !viewStates.isCurrent(review.ticket)) return;
+  if (preview.kind === 'local-overwrite') { showLocalOverwrite(review, preview); return; }
 
   const { node, stats } = renderDiff(preview.before, preview.after);
   showModal(
@@ -1160,7 +1296,10 @@ async function openReview() {
         { class: 'hint' },
         `${stats.added} added, ${stats.removed} removed. Comments and formatting outside these lines are preserved byte-for-byte.`
       ),
-      writeContextNode(),
+      writeContextNode({ source: review.writeContext }),
+      review.document.format === 'terraform' && review.document.absent &&
+        environmentSourceOf(review.context.environment).kind === 'local'
+        ? h('p', { class: 'hint', role: 'note' }, NATIVE_LOCAL_CREATION_NOTICE) : null,
       node
     ),
     [
@@ -1175,7 +1314,7 @@ async function openReview() {
           class: 'btn btn-primary',
           // Keyed by the operation, not by this button. A modal rebuild must not
           // hand out a fresh lock while the previous save is still in flight.
-          onclick: guardedHandler(commitSave, { key: 'save-parameters' }),
+          onclick: guardedHandler(() => commitSave(review), { key: `save-parameters:${review.context.environment.id}` }),
         },
         'Save changes'
       ),
@@ -1183,19 +1322,25 @@ async function openReview() {
   );
 }
 
-async function commitSave() {
-  const findings = blockingValidation();
-  if (findings.length) {
+async function commitSave(review) {
+  const { owner, document, context, operations, ticket } = review;
+  if (owner.reviewEpoch !== review.epoch || owner.current !== document || JSON.stringify(owner.operations) !== JSON.stringify(operations)) {
     closeModal();
-    setStatus('The document became invalid. Resolve validation errors before saving.', 'error');
+    setStatus('The draft changed after preview. Review the current draft before saving.', 'error');
     return;
   }
-  const preserved = captureContractEdits(state);
+  const preserved = captureContractEdits(owner);
   const result = await withStatus('Saving\u2026', () =>
-    api.save(state.current.path, state.operations, state.current.hash)
+    withLocalConflict(review, () => review.localOverwrite ? api.saveLocalOverwrite(review.localOverwrite) :
+      api.save(document.path, operations, document.hash, document.nativeIdentity, context))
   );
   if (!result) return;
-  const source = environmentSourceOf(activeWorkspace().environment);
+  if (result.kind === 'local-overwrite') {
+    owner.status = { message: 'The file was edited externally. The draft is retained until a new overwrite review is confirmed.', tone: 'info' };
+    if (viewStates.isCurrent(ticket)) showLocalOverwrite(review, result);
+    return;
+  }
+  const source = environmentSourceOf(context.environment);
   const line = saveStatusLine(result, source);
 
   if (line.pending) {
@@ -1207,23 +1352,31 @@ async function commitSave() {
     // content with the user's edits apparently gone — the exact failure this
     // whole change exists to prevent. The commit SHA is the safety net for the
     // repository; the retained draft is the safety net for the editor.
-    closeModal();
-    setStatus(line.text, line.tone);
-    await resolveUnsavedCommit(line.pending, source);
+    owner.status = { message: line.text, tone: line.tone };
+    if (viewStates.isCurrent(ticket)) {
+      closeModal();
+      setStatus(line.text, line.tone);
+      await resolveUnsavedCommit(line.pending, source, review);
+    }
     return;
   }
 
+  if (JSON.stringify(owner.operations) === JSON.stringify(operations)) {
+    owner.operations = [];
+    await workspaceRegistry.removeDraft(context.environment.id, document.path);
+  } else {
+    owner.quarantinedDraft = { operations: structuredClone(owner.operations), reason: 'An approved save completed while this draft changed. The newer draft is retained for explicit reconciliation.' };
+  }
+  if (!viewStates.isCurrent(ticket)) return;
   closeModal();
-  state.operations = [];
-  await workspaceRegistry.removeDraft(activeWorkspace().environment.id, state.current.path);
-  if (state.area === 'access-contracts') {
+  if (owner.area === 'access-contracts') {
     await loadContract(
-      state.contractId,
+      owner.contractId,
       preserved,
       { parameters: false, policy: true }
     );
   }
-  else await loadDocument(state.current.path);
+  else await loadDocument(document.path);
   // A warning here always describes something the source could not confirm
   // *after* the write landed, so the save is reported as done and the caveat is
   // appended rather than replacing it with a failure.
@@ -1238,7 +1391,8 @@ async function commitSave() {
  * dismissing the dialog is a legitimate answer — "leave it" — and their edits
  * are still in the editor.
  */
-async function resolveUnsavedCommit(pending, source) {
+async function resolveUnsavedCommit(pending, source, review) {
+  const { owner, context, document, ticket } = review;
   await new Promise((resolve) => {
     const name = h('input', {
       class: 'ctl',
@@ -1262,15 +1416,22 @@ async function resolveUnsavedCommit(pending, source) {
         return;
       }
       const outcome = await withStatus('Creating the branch\u2026', () =>
-        api.createCommitBranch(pending.commit, chosen)
+        api.createCommitBranch(pending.commit, chosen, context)
       );
       if (!outcome) return;
       const created = describeCreatedBranch(outcome, source, pending.intendedBranch);
-      dismissDialog(true);
-      // Only now is the work on a branch, so only now is the draft safe to drop.
-      state.operations = [];
-      await workspaceRegistry.removeDraft(activeWorkspace().environment.id, state.current.path);
-      setStatus(created.message, 'ok');
+      if (configurationOf(context.environment).format === 'terraform' || review.policy) {
+        owner.status = { message: `${created.message} This workspace still targets ${source.workingBranch}; its draft is retained. Attach a new workspace to edit the new branch.`, tone: 'info' };
+      } else {
+        owner.operations = [];
+        await workspaceRegistry.removeDraft(context.environment.id, document.path);
+        owner.status = { message: created.message, tone: 'ok' };
+      }
+      if (viewStates.isCurrent(ticket)) {
+        dismissDialog(true);
+        render();
+        setStatus(owner.status.message, owner.status.tone);
+      }
       resolve();
     });
 
@@ -1310,14 +1471,23 @@ function closeModal() {
 /* ----------------------------------------------------------------- rendering */
 
 async function switchEnvironment(environment) {
-  if (
-    !(await confirmPendingNavigation({
-      destination: `switching to ${environment.label}`,
-      leavesPage: true,
-    }))
-  ) return;
-  workspaceRegistry.setActive(environment.projectId, environment.id);
-  location.reload();
+  rememberDocumentView();
+  await persistParameterDraft();
+  const workspace = await withStatus('Opening workspace\u2026', () => openRegisteredWorkspace(environment.id));
+  if (!workspace) return;
+  closeModal();
+  await activateWorkspaceView(workspace);
+}
+
+async function addWorkspaceInApp(projectId = null) {
+  rememberDocumentView();
+  await persistParameterDraft();
+  closeModal();
+  const workspace = await addRegisteredWorkspace({ projectId, onOpenExisting: async (id) => {
+    const environment = await workspaceRegistry.getEnvironment(id);
+    if (environment) await switchEnvironment(environment);
+  } });
+  if (workspace) await activateWorkspaceView(workspace);
 }
 
 /**
@@ -1325,8 +1495,9 @@ async function switchEnvironment(environment) {
  * in `history-entry.mjs` so it can be exercised without a DOM.
  */
 async function openHistory() {
-  const result = await withStatus('Loading history\u2026', () => api.history());
-  if (!result) return;
+  const context = activeWorkspace(), ticket = viewStates.ticket();
+  const result = await withStatus('Loading history\u2026', () => api.history(context));
+  if (!result || !viewStates.isCurrent(ticket)) return;
   const transactions = Array.isArray(result) ? result : result.transactions || result.items || [];
   showModal(
     'Environment history',
@@ -1374,9 +1545,9 @@ async function openHistory() {
                       onclick: async () => {
                         const id = transaction.transactionId || transaction.id;
                         const inspection = await withStatus('Inspecting source hashes\u2026', () =>
-                          api.inspectRecovery(id)
+                          api.inspectRecovery(id, context)
                         );
-                        if (!inspection) return;
+                        if (!inspection || !viewStates.isCurrent(ticket)) return;
                         showModal(
                           'Recover transaction',
                           h(
@@ -1418,9 +1589,9 @@ async function openHistory() {
                               class: 'btn',
                               onclick: async () => {
                                 const result = await withStatus('Restoring verified backups\u2026', () =>
-                                  api.recoverTransaction(id, 'rollback')
+                                  api.recoverTransaction(id, 'rollback', context)
                                 );
-                                if (result) await openHistory();
+                                if (result && viewStates.isCurrent(ticket)) await openHistory();
                               },
                             }, transaction.status === 'reverting' ? 'Continue removal' : 'Roll back'),
                             h('button', {
@@ -1428,9 +1599,9 @@ async function openHistory() {
                               disabled: !inspection.canComplete,
                               onclick: async () => {
                                 const result = await withStatus('Completing transaction\u2026', () =>
-                                  api.recoverTransaction(id, 'complete')
+                                  api.recoverTransaction(id, 'complete', context)
                                 );
-                                if (result) await openHistory();
+                                if (result && viewStates.isCurrent(ticket)) await openHistory();
                               },
                             }, transaction.status === 'reverting' ? 'Confirm removed' : 'Complete')
                           ]
@@ -1446,7 +1617,7 @@ async function openHistory() {
                         const creation = entry.isCreation;
                          if (
                            !(await confirmDialog({
-                             title: creation ? 'Undo contract creation?' : 'Restore prior revision?',
+                             title: creation ? entry.nativeCreation ? 'Undo native input file creation?' : 'Undo contract creation?' : 'Restore prior revision?',
                              message: creation
                                ? 'Remove the files created by this transaction? Every file must still match its committed hash.'
                                : 'Restore the prior bytes from this transaction? Current source will be backed up first.',
@@ -1458,11 +1629,11 @@ async function openHistory() {
                            }))
                          ) return;
                          const result = await withStatus('Backing up current source and restoring\u2026', () =>
-                           api.restoreTransaction(entry.id)
+                           api.restoreTransaction(entry.id, context)
                         );
-                        if (!result) return;
+                        if (!result || !viewStates.isCurrent(ticket)) return;
                         closeModal();
-                        if (creation) {
+                        if (creation && !entry.nativeCreation) {
                           state.contracts = await withStatus('Refreshing contracts\u2026', () =>
                             api.contracts()
                           );
@@ -1473,7 +1644,7 @@ async function openHistory() {
                         }
                         setStatus(
                           creation
-                            ? `Removed the committed contract creation ${result.transactionId}.`
+                            ? `Removed the committed ${entry.nativeCreation ? 'native input file' : 'contract'} creation ${result.transactionId}.`
                             : `Restored through new transaction ${result.transactionId}.`,
                           'ok'
                         );
@@ -1490,11 +1661,13 @@ async function openHistory() {
 }
 
 async function openEnvironmentCompare(environments) {
+  const context = activeWorkspace(), ticket = viewStates.ticket(), document = state.current;
   if (!state.current?.path?.endsWith('.bicepparam')) {
     setStatus('Open a parameter file before comparing environments.', 'info');
     return;
   }
-  const candidates = environments.filter((environment) => environment.id !== activeWorkspace().environment.id);
+  const candidates = environments.filter((environment) => environment.id !== context.environment.id &&
+    configurationOf(environment).format !== 'terraform');
   if (!candidates.length) {
     setStatus('Attach another environment before comparing.', 'info');
     return;
@@ -1533,9 +1706,9 @@ async function openEnvironmentCompare(environments) {
         const targetEnvironment = candidates.find((environment) => environment.id === targetId);
         select.disabled = true;
         const preview = await withStatus('Preparing target preview\u2026', () =>
-          api.previewCopy(targetId, state.current.path, names, state.current.hash)
+          api.previewCopy(targetId, document.path, names, document.hash, context)
         );
-        if (!preview) {
+        if (!preview || !viewStates.isCurrent(ticket)) {
           session.release();
           select.disabled = false;
           return;
@@ -1567,13 +1740,14 @@ async function openEnvironmentCompare(environments) {
                 const copied = await withStatus('Backing up and copying\u2026', () =>
                   api.copyParameters(
                     targetId,
-                    state.current.path,
+                    document.path,
                     names,
                     preview.sourceHash,
-                    preview.targetHash
+                    preview.targetHash,
+                    context
                   )
                 );
-                if (!copied) return;
+                if (!copied || !viewStates.isCurrent(ticket)) return;
                 session.release();
                 closeModal();
                 setStatus(`Copied ${names.length} parameters in transaction ${copied.transactionId}.`, 'ok');
@@ -1596,9 +1770,9 @@ async function openEnvironmentCompare(environments) {
     const token = session.begin(select.value);
     const targetId = token.targetId;
     const comparison = await withStatus('Comparing\u2026', () =>
-      api.compareEnvironment(targetId, state.current.path)
+      api.compareEnvironment(targetId, document.path, context)
     );
-    if (!comparison || session.isStale(token)) return;
+    if (!comparison || session.isStale(token) || !viewStates.isCurrent(ticket)) return;
     const secure = comparison.source.schema?.parameters || {};
     const differences = comparison.parameters.filter(
       (parameter) =>
@@ -1835,8 +2009,6 @@ async function openWorkspaceSettingsContent() {
     setGlobalStatus: setStatus,
   });
   const list = h('div', { class: 'environment-list' });
-  const addDraftScope = `environment-${context.projectId}`;
-  const addDraft = workspaceRegistry.profileDraft(addDraftScope) || {};
   const refresh = async () => {
     closeModal();
     await openWorkspaceSettings();
@@ -1980,7 +2152,7 @@ async function openWorkspaceSettingsContent() {
                   context: writeContextNode({ file: 'Environment profile' }),
                 }))
               ) return false;
-              const provider = new BrowserDirectoryProvider(handle);
+              const provider = new BrowserDirectoryProvider(handle, { configuration: environment.configuration });
               await provider.assertWritable({ request: true });
               const scan = await scanProvider(provider);
               assertSupportedScan(scan);
@@ -2038,7 +2210,8 @@ async function openWorkspaceSettingsContent() {
                 );
                 workspaceRegistry.setActive(environment.projectId, environment.id);
                 api.resetWorkspace();
-                location.reload();
+                closeModal();
+                await activateWorkspaceView(activeWorkspace());
                 return;
               }
               await syncRegistryMetadata();
@@ -2091,118 +2264,10 @@ async function openWorkspaceSettingsContent() {
       );
     list.append(row);
   }
-  const addLabel = h('input', {
-    id: 'new-environment-label',
-    name: 'newEnvironmentLabel',
-    class: 'ctl',
-    value: addDraft.environmentLabel || '',
-    placeholder: 'Environment label',
-    'aria-label': 'New environment label',
-  });
-  const addLocalPath = h('input', {
-    id: 'new-environment-path',
-    name: 'newEnvironmentPath',
-    class: 'ctl',
-    value: addDraft.localPath || '',
-    placeholder: 'C:\\source\\citadel or /home/user/citadel',
-    'aria-label': 'New environment Local path',
-  });
-  const persistAddDraft = () => {
-    try {
-      workspaceRegistry.saveProfileDraft(addDraftScope, {
-        environmentLabel: addLabel.value,
-        localPath: addLocalPath.value,
-      });
-      return true;
-    } catch (error) {
-      settingsNotice.className = 'operation-status operation-error';
-      settingsNotice.textContent = `Environment fields could not be retained for reload: ${error.message}`;
-      return false;
-    }
-  };
-  addLabel.addEventListener('input', persistAddDraft);
-  addLocalPath.addEventListener('input', persistAddDraft);
-  const add = h('button', {
-    class: 'btn btn-primary',
-    onclick: environmentOperation('Adding environment\u2026', async () => {
-      persistAddDraft();
-      const label = addLabel.value.trim();
-      if (!label) return;
-      const localPath = validateLocalPath(addLocalPath.value);
-      const handle = await showDirectoryPicker({ mode: 'readwrite' });
-      if (
-        !localPathMatchesHandle(localPath, handle.name) &&
-        !(await confirmDialog({
-          title: 'Local path differs from folder',
-          message: `The Local path leaf does not match the selected folder "${handle.name}". The browser cannot verify this display-only path.`,
-          confirmLabel: 'Use this folder',
-          context: writeContextNode({ file: 'New environment profile' }),
-        }))
-      ) return;
-      const provider = new BrowserDirectoryProvider(handle);
-      await provider.assertWritable({ request: true });
-      const scan = await scanProvider(provider);
-      assertSupportedScan(scan);
-      const duplicate = await workspaceRegistry.findSameHandle(handle);
-      const allowDuplicate = duplicate
-        ? await confirmDialog({
-            title: 'Attach folder again?',
-            message: `This folder is already attached as ${duplicate.label}. Attach it again as a separate logical context?`,
-            confirmLabel: 'Attach separately',
-            context: writeContextNode({ file: 'New environment profile' }),
-          })
-        : false;
-      if (duplicate && !allowDuplicate) return;
-      await attachEnvironment({
-        project,
-        environmentLabel: label,
-        localPath,
-        handle,
-        provider,
-        scan,
-        allowDuplicate,
-        activate: false,
-      });
-      if (!workspaceRegistry.clearProfileDraft(addDraftScope)) {
-        setStatus('Environment saved, but its pending form cache could not be cleared.', 'error');
-      }
-      await refresh();
-    }),
-  }, 'Add environment');
-
-  // GitHub source choice for an active workspace. Without this a local user can
-  // never add a GitHub environment, and a GitHub user can never attach a second
-  // repository, which is what makes GitHub-to-GitHub compare and copy reachable.
-  const { root: addForm, chooseSource } = createEnvironmentForm({
-    labelInput: addLabel,
-    pathInput: addLocalPath,
-    addButton: add,
-    createGitHubPanel: () => {
-      const githubPanel = createGitHubPanel({
-        onMessage: (text) => {
-          settingsNotice.className = 'operation-status';
-          settingsNotice.textContent = text;
-        },
-        onAttach: environmentOperation('Attaching GitHub repository\u2026', async (selection) => {
-          const label = addLabel.value.trim() || selection.repository.name;
-          await attachGitHubEnvironment({
-            project,
-            environmentLabel: label,
-            repositoryId: selection.repositoryId,
-            sourceBranch: selection.sourceBranch,
-            writeMode: selection.writeMode,
-            activate: false,
-          });
-          workspaceRegistry.clearProfileDraft(addDraftScope);
-          await refresh();
-        }),
-      });
-      // Delegated to the shared manager, so a session another panel already
-      // restored is adopted here rather than fetched again.
-      githubPanel.restore().catch(() => {});
-      return githubPanel.root;
-    },
-  });
+  const addForm = h('div', { class: 'catalog-form' },
+    h('p', { class: 'hint' }, 'Choose Bicep / Citadel or Terraform independently from Local folder or a reusable GitHub connection. Local attachments require separate folders.'),
+    h('button', { class: 'btn btn-primary', type: 'button',
+      onclick: guardedHandler(() => addWorkspaceInApp(context.projectId), { key: 'add-workspace' }) }, 'Add workspace'));
 
   /**
    * GitHub connection state, reachable while a workspace is active.
@@ -2218,7 +2283,7 @@ async function openWorkspaceSettingsContent() {
     const account = await githubSessions.restore();
     githubConnection.replaceChildren(
       createGitHubConnectionSummary(account, {
-        connect: () => chooseSource('github'),
+        connect: () => { closeModal(); return returnToSetup(); },
         disconnect: environmentOperation('Disconnecting GitHub\u2026', async () => {
               // Through the shared manager, so a connect still in flight is
               // superseded and revokes itself rather than quietly becoming the
@@ -2256,113 +2321,7 @@ async function openWorkspaceSettingsContent() {
         }, 'Rename project'),
         h('button', {
           class: 'btn btn-sm',
-          onclick: environmentOperation('Creating project\u2026', async () => {
-            const draftScope = 'new-project';
-            const draft = workspaceRegistry.profileDraft(draftScope) || {};
-            const kind = await chooseSourceKind({
-              title: 'New project source',
-              message:
-                'Start a new local project from the public Citadel source, attach an existing local folder, or choose a GitHub repository. Local options do not need a GitHub token.',
-            });
-            if (!kind) return false;
-            if (kind === 'local-source') {
-              if (!(await confirmPendingNavigation({
-                destination: 'opening the new local project', leavesPage: true,
-              }))) return false;
-              const imported = await openLocalSourceImport({
-                stack: true,
-                projectLabel: draft.projectLabel || '',
-                environmentLabel: draft.environmentLabel || 'Development',
-                localPath: draft.localPath || '',
-                folderName: draft.folderName || '',
-                environmentFieldLabel: 'First environment label',
-                scan: scanProvider,
-                attach: attachLocalSourceEnvironment,
-                onDraft: ({ projectLabel, environmentLabel, localPath, folderName }) =>
-                  workspaceRegistry.saveProfileDraft(draftScope, { projectLabel, environmentLabel, localPath, folderName }),
-              });
-              if (!imported) return false;
-              if (!workspaceRegistry.clearProfileDraft(draftScope)) {
-                setStatus('Project saved, but its pending form cache could not be cleared.', 'error');
-              }
-              location.reload();
-              return;
-            }
-            const fields = [
-              { name: 'label', label: 'Project label', value: draft.projectLabel || '' },
-              {
-                name: 'environmentLabel',
-                label: 'First environment label',
-                value: draft.environmentLabel || 'Development',
-              },
-            ];
-            if (kind === 'local') {
-              fields.push({
-                name: 'localPath',
-                label: 'Local path',
-                value: draft.localPath || '',
-                placeholder: 'C:\\source\\citadel or /home/user/citadel',
-                hint: 'Display only; the browser folder handle remains authoritative.',
-              });
-            }
-            const values = await promptDialog({
-              title: 'New project',
-              description:
-                kind === 'local'
-                  ? 'Create the project and its first environment, then choose the exact Citadel repository folder.'
-                  : 'Create the project and its first environment, then choose the repository and branch.',
-              fields,
-              submitLabel: kind === 'local' ? 'Choose folder' : 'Choose repository',
-              context: kind === 'local'
-                ? h('p', { class: 'hint' }, 'New local project. Only the folder you choose will be attached; the current workspace and GitHub repository are not changed.')
-                : writeContextNode({ file: 'New project profile' }),
-            });
-            if (!values) return false;
-            const label = values.label.trim();
-            const environmentLabel = values.environmentLabel.trim();
-            if (!label || !environmentLabel) return;
-            workspaceRegistry.saveProfileDraft(draftScope, {
-              projectLabel: values.label,
-              environmentLabel: values.environmentLabel,
-              localPath: values.localPath || '',
-            });
-            if (kind === 'github') {
-              const attached = await attachGitHubProject({ projectLabel: label, environmentLabel });
-              if (!attached) return false;
-              if (!workspaceRegistry.clearProfileDraft(draftScope)) {
-                setStatus('Project saved, but its pending form cache could not be cleared.', 'error');
-              }
-              location.reload();
-              return;
-            }
-            const localPath = validateLocalPath(values.localPath);
-            const handle = await showDirectoryPicker({ mode: 'readwrite' });
-            if (
-              !localPathMatchesHandle(localPath, handle.name) &&
-              !(await confirmDialog({
-                title: 'Local path differs from folder',
-                message: `The Local path leaf does not match the selected folder "${handle.name}". The browser cannot verify this display-only path.`,
-                confirmLabel: 'Use this folder',
-                context: h('p', { class: 'hint' }, `New local project: ${label} / ${environmentLabel}. Selected folder: ${handle.name}.`),
-              }))
-            ) return false;
-            const provider = new BrowserDirectoryProvider(handle);
-            await provider.assertWritable({ request: true });
-            const scan = await scanProvider(provider);
-            assertSupportedScan(scan);
-            await attachEnvironment({
-              projectLabel: label,
-              environmentLabel,
-              localPath,
-              handle,
-              provider,
-              scan,
-            });
-            if (!workspaceRegistry.clearProfileDraft(draftScope)) {
-              setStatus('Project saved, but its pending form cache could not be cleared.', 'error');
-            }
-            location.reload();
-          }),
+          onclick: guardedHandler(() => addWorkspaceInApp(), { key: 'add-workspace' }),
         }, 'New project'),
         h('button', {
           class: 'btn btn-sm btn-danger-ghost',
@@ -2407,7 +2366,8 @@ async function openWorkspaceSettingsContent() {
             if (fallback && fallbackEnvironments[0]) {
               workspaceRegistry.setActive(fallback.id, fallbackEnvironments[0].id);
             }
-            location.reload();
+            closeModal();
+            await returnToSetup();
           }),
         }, 'Remove project')
   );
@@ -2515,13 +2475,14 @@ async function openParameterMigration() {
 function renderActions() {
   let workspace = null;
   try { workspace = activeWorkspace(); } catch { /* Preserve setup/catalog flow. */ }
-  const migration = workspace
+  const bicep = workspace && configurationOf(workspace.environment).format === 'bicep';
+  const migration = bicep
     ? h('button', {
       class: 'btn btn-ghost', type: 'button',
       onclick: guardedHandler(openParameterMigration, { key: 'open-parameter-migration' }),
     }, 'Migrate Citadel Configuration (Experimental)')
     : null;
-  const terraformExport = workspace ? h('button', {
+  const terraformExport = bicep ? h('button', {
     class: 'btn btn-ghost', type: 'button', dataset: { terraformExportEntry: 'true' },
     onclick: guardedHandler(openTerraformExportReview, { key: 'open-terraform-export' }),
   }, 'Export to Terraform (Experimental)') : null;
@@ -2609,7 +2570,7 @@ function renderActions() {
           'button',
           {
             class: 'btn btn-primary',
-            disabled: !savableHere || blocking.length > 0,
+            disabled: !savableHere || blocking.length > 0 || Boolean(state.quarantinedDraft),
             title: blocking.length ? 'Resolve blocking validation errors before review' : '',
             onclick: openReview,
           },
@@ -2991,6 +2952,15 @@ function renderWorkspace() {
         sectionTabs
       ),
       area && area.blurb ? h('p', { class: 'sheet-blurb' }, area.blurb) : null,
+      doc.format === 'terraform' ? h('p', { class: 'banner banner-warn' }, NATIVE_WIRING_NOTICE) : null,
+      doc.format === 'terraform' ? nativeReadonlyPolicy(doc) : null,
+      state.quarantinedDraft ? h('div', { class: 'banner banner-warn', role: 'alert' },
+        h('p', {}, state.quarantinedDraft.reason),
+        h('button', { class: 'btn btn-sm', type: 'button', onclick: async () => {
+          await workspaceRegistry.removeDraft(state.workspaceId, doc.path);
+          state.quarantinedDraft = null;
+          render();
+        } }, 'Discard retained draft')) : null,
       h('div', { class: 'sheet-body' }, body)
     )
   );
@@ -3259,25 +3229,51 @@ function render() {
 
 /* ------------------------------------------------------------------ loading */
 
-async function loadDocument(path) {
-  const doc = await withStatus('Loading\u2026', () => api.deployment(path));
-  if (!doc) return;
+function rememberDocumentView() {
+  if (!state.current?.path) return;
+  state.documentViews.set(state.current.path, { tab: state.tab, open: new Map(state.open),
+    scrollTop: els.workspace?.scrollTop || 0, focus: state.lastEditorFocus || null });
+}
+
+async function loadDocument(path, { preserve = false } = {}) {
+  const owner = state, ticket = viewStates.ticket(), generation = ++documentGeneration, context = activeWorkspace();
+  const pending = preserve ? captureContractEdits(owner) : null;
+  const previousIdentity = owner.current?.nativeIdentity;
+  const doc = await withStatus('Loading\u2026', () => api.deployment(path, context));
+  if (!doc || !viewStates.isCurrent(ticket) || generation !== documentGeneration) return;
+  owner.quarantinedDraft = null;
+  const draft = await restoreParameterDraft(doc, owner);
+  if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return;
   state.current = doc;
-  state.baselineValidation = validateDocument(doc);
-  state.operations = await restoreParameterDraft(doc);
+  state.baselineValidation = documentFindings(doc);
+  state.operations = draft;
   state.policyChanges = {};
   state.policyRaw = null;
   state.policyPreview = null;
+  if (pending?.operations.length) {
+    if (pending.parameterHash === doc.hash && (!doc.nativeIdentity || sameNativeDraftBinding(previousIdentity, doc.nativeIdentity))) {
+      state.operations = pending.operations;
+    } else state.quarantinedDraft = { ...pending, reason: 'The file or its native schema/dependencies changed while this workspace was inactive. Its pending draft is retained, not applied to the new source.' };
+  }
   restoreStashedPending();
-  state.open = new Map();
+  const remembered = state.documentViews.get(path);
+  state.open = new Map(remembered?.open || []);
+  if (remembered) state.tab = remembered.tab;
   if (state.tab === 'policy') state.tab = 'params';
   render();
+  if (remembered) requestAnimationFrame(() => {
+    if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return;
+    els.workspace.scrollTop = remembered.scrollTop;
+    const control = [...els.workspace.querySelectorAll('[data-editor-focus]')].find((node) => node.dataset.editorFocus === remembered.focus);
+    if (control && !control.disabled && control.getClientRects().length) control.focus({ preventScroll: true });
+  });
 }
 
 async function selectArea(id) {
   const area = state.areas.find((a) => a.id === id);
   if (!area) return;
   if (state.area === id) return;
+  rememberDocumentView();
   if (
     !(await confirmPendingNavigation({
       destination: `opening ${area.title}`,
@@ -3303,6 +3299,7 @@ async function selectArea(id) {
 
 async function openOther(path) {
   if (state.current?.path === path) return;
+  rememberDocumentView();
   if (
     !(await confirmPendingNavigation({
       destination: `opening ${path}`,
@@ -3375,6 +3372,9 @@ async function init() {
     // The setup screen owns what the masthead should say before a workspace
     // exists; the header is owned here.
     observeSetupContext((context) => setSetupContext(context));
+    els.workspace.addEventListener('focusin', (event) => {
+      if (event.target.dataset.editorFocus) state.lastEditorFocus = event.target.dataset.editorFocus;
+    });
     els.localPathCopy.addEventListener('click', async () => {
       const path = activeWorkspace().environment.localPath;
       if (!path) return;
@@ -3410,22 +3410,40 @@ async function init() {
     // here left a pending toast escalating to "still working" for as long as they
     // browsed — the exact false alarm this feature exists to prevent.
     const workspace = await ensureWorkspace();
+    await activateWorkspaceView(workspace);
+
+  } catch (err) {
+    setStatus(err.message, 'error');
+    renderStartupRecovery(err);
+  }
+}
+
+async function activateWorkspaceView(workspace) {
+    state = viewStates.activate(workspace);
+    state.source = environmentSourceOf(workspace.environment);
+    const ticket = viewStates.ticket();
+    policyPreviewToken += 1;
+    documentGeneration += 1;
+    api.resetWorkspace();
     els.shell.dataset.workspace = 'active';
     // From here it really is loading, and every step is a network round trip.
     setStatus('Opening workspace\u2026', 'info', true, true);
     const health = await api.health();
     const projects = await workspaceRegistry.listProjects();
+    if (!viewStates.isCurrent(ticket)) return;
     state.projectLabel =
       projects.find((project) => project.id === workspace.projectId)?.label || 'Project';
 
     setStatus('Reading Citadel sources\u2026', 'info', true, true);
-    const [focus, catalog] = await Promise.all([api.focus(), api.deployments()]);
+    const [focus, catalog] = await Promise.all([api.focus(workspace), api.deployments(workspace)]);
+    if (!viewStates.isCurrent(ticket)) return;
     state.areas = focus.areas;
     state.catalog = catalog;
 
     render();
     setStatus('Checking history\u2026', 'info', true, true);
-    const history = await api.history();
+    const history = await api.history(workspace);
+    if (!viewStates.isCurrent(ticket)) return;
     // Cleared here rather than at the end, so the recovery notice below is not
     // immediately overwritten by dismissing this one.
     setStatus(null);
@@ -3442,17 +3460,16 @@ async function init() {
         true
       );
     }
-    if (state.areas.length) {
+    if (state.current && state.catalog.files.some((file) => file.path === state.current.path)) {
+      if (state.contractId && state.contract) await loadContract(state.contractId, captureContractEdits(state));
+      else await loadDocument(state.current.path, { preserve: true });
+    } else if (state.areas.length) {
+      state.area = null;
       await selectArea(state.areas[0].id);
     } else {
       const generic = state.catalog.files.find((file) => !file.parseError);
       if (generic) await openOther(generic.path);
     }
-
-  } catch (err) {
-    setStatus(err.message, 'error');
-    renderStartupRecovery(err);
-  }
 }
 
 /**
@@ -3515,21 +3532,22 @@ async function returnToSetup() {
     // so the only one that relied on `beforeunload` to protect unsaved work.
     // Policy edits live in memory alone, so leaving without asking loses them
     // silently.
-    if (!(await confirmPendingNavigation({ destination: 'the setup screen' }))) return false;
+    rememberDocumentView();
+    await persistParameterDraft();
+    viewStates.leave();
+    documentGeneration += 1;
+    policyPreviewToken += 1;
     clearActiveWorkspace();
-    state.areas = [];
-    state.catalog = null;
-    state.current = null;
     // `selectArea` early-returns when the requested area is already selected, so
     // a stale `state.area` would make the next environment open to an empty
     // sheet with that area highlighted and unclickable.
-    state.area = null;
-    state.contractId = null;
+    state = createEditorState();
     setSetupContext(null);
     els.shell.dataset.workspace = 'setup';
     els.sidebar?.replaceChildren();
     els.contextRail?.replaceChildren();
     updateHeaderContext();
+    els.tbActions?.replaceChildren();
     await init();
     return true;
   } catch (error) {

@@ -17,6 +17,8 @@ import {
   sourceScope,
 } from '../../shared/source-scope.mjs';
 import { publicDonorAlias, PUBLIC_DONOR_LIMITS } from '../../shared/migration-public-github.mjs';
+import { nativeAlias, nativeInventoryAlias, unitForAlias, workspaceScope } from '../../shared/workspace-configuration.mjs';
+import { assertNativeDependencySafe, assertNativeFileSafe, decodeNativeBytes, readUnitSchema } from '../../shared/terraform/workspace.mjs';
 
 export { sha256, sourceScope };
 
@@ -120,6 +122,19 @@ export class BrowserDirectoryProvider {
     if (!handle || handle.kind !== 'directory') throw new Error('Directory handle required.');
     this.root = handle;
     this.instrument = options.instrument || (() => {});
+    this.scope = workspaceScope(options.configuration);
+    this.configuration = this.scope.configuration;
+    this.nativeInventory = Boolean(options.nativeInventory);
+  }
+
+  safeAlias(alias, write = false) {
+    if (this.nativeInventory) {
+      if (write || !nativeInventoryAlias(alias) || !/\.(?:tf|xml)$/.test(alias)) {
+        throw new Error('Native inventory lists value-file names but only reads known schema dependencies. Select a nonsecret operator file before reading it.');
+      }
+      return nativeAlias(alias);
+    }
+    return write ? this.scope.write(alias) : this.scope.read(alias);
   }
 
   async permission(options = {}) {
@@ -134,16 +149,24 @@ export class BrowserDirectoryProvider {
   async entries() {
     await this.assertWritable();
     const files = [];
-    const walk = async (directory, prefix = '') => {
+    let visited = 0;
+    const walk = async (directory, prefix = '', depth = 0) => {
+      if (depth > 12) throw new Error('Source inventory exceeds the directory depth limit.');
       for await (const [name, handle] of directory.entries()) {
+        if (++visited > 20000) throw new Error('Source inventory exceeds 20,000 entries.');
         if (handle.kind === 'directory') {
           if (isSkippedDirectory(name)) continue;
-          await walk(handle, prefix ? `${prefix}/${name}` : name);
+          const child = prefix ? `${prefix}/${name}` : name;
+          if ((this.scope.native || this.nativeInventory) &&
+              !['environments', 'llm-backend-onboarding', 'citadel-access-contracts', 'modules'].some((root) => child === root || child.startsWith(`${root}/`))) continue;
+          await walk(handle, child, depth + 1);
           continue;
         }
         const alias = prefix ? `${prefix}/${name}` : name;
         if (isEnvironmentFile(name)) continue;
-        if (!isSourceExtension(name)) continue;
+        if (this.scope.native || this.nativeInventory) {
+          if (!(this.nativeInventory ? nativeInventoryAlias(alias) : this.scope.includes(alias))) continue;
+        } else if (!isSourceExtension(name)) continue;
         files.push({ alias, kind: sourceExtension(name).slice(1) });
       }
     };
@@ -154,6 +177,7 @@ export class BrowserDirectoryProvider {
   }
 
   async subscriptionEnvironmentFile(environmentName, options = {}) {
+    if (this.scope.native || this.nativeInventory) throw new Error('The azd subscription bridge is not available for native Terraform workspaces.');
     const name = validateAzdEnvironmentName(environmentName);
     const create = Boolean(options.create);
     try {
@@ -255,7 +279,7 @@ export class BrowserDirectoryProvider {
   }
 
   async fileHandle(alias, options = {}) {
-    const safe = normalizeAlias(alias);
+    const safe = this.safeAlias(alias, Boolean(options.create));
     const parts = safe.split('/');
     const leaf = parts.pop();
     let directory = this.root;
@@ -266,7 +290,7 @@ export class BrowserDirectoryProvider {
   }
 
   async missingDirectories(alias) {
-    const safe = normalizeAlias(alias);
+    const safe = this.safeAlias(alias, true);
     const parts = safe.split('/');
     parts.pop();
     const missing = [];
@@ -287,16 +311,33 @@ export class BrowserDirectoryProvider {
   }
 
   async read(alias) {
-    return readSource(this, normalizeAlias(alias));
+    const safe = this.safeAlias(alias);
+    const source = await readSource(this, safe);
+    if (this.scope.native || this.nativeInventory) {
+      source.text = decodeNativeBytes(source.bytes);
+      await assertNativeDependencySafe(source.text, safe);
+      const unit = unitForAlias(this.configuration, safe);
+      if (unit) {
+        const { parameters } = await readUnitSchema(this, unit);
+        await assertNativeFileSafe(source.text, unit, parameters);
+      }
+    }
+    return source;
   }
 
   async write(alias, bytes, options = {}) {
-    const safe = normalizeAlias(alias);
+    const safe = this.safeAlias(alias, true);
     const content = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    if (this.scope.native) {
+      const unit = unitForAlias(this.configuration, safe);
+      const { parameters } = await readUnitSchema(this, unit);
+      await assertNativeFileSafe(decodeNativeBytes(content), unit, parameters);
+    }
     if (content.byteLength > MAX_SOURCE_BYTES) {
       throw new Error(`Source exceeds the 8 MiB limit: ${safe}`);
     }
     await this.assertWritable();
+    await options.validateBeforeWrite?.({ alias: safe, created: false });
     if (options.expectedHash !== undefined) {
       let current = null;
       try {
@@ -310,17 +351,45 @@ export class BrowserDirectoryProvider {
       }
     }
     const handle = await this.fileHandle(safe, { create: Boolean(options.create) });
-    await options.validateBeforeWrite?.();
-    const stream = await handle.createWritable({ keepExistingData: false });
+    const phase = { alias: safe, created: Boolean(options.create) };
+    const beforeFile = this.scope.native ? await handle.getFile() : null;
+    const ensureUnpublished = async () => {
+      if (!this.scope.native) return;
+      const visible = await handle.getFile();
+      const bytes = new Uint8Array(await visible.arrayBuffer());
+      const expected = options.create ? await sha256(new Uint8Array()) : options.expectedHash;
+      if (await sha256(bytes) !== expected || options.create && visible.lastModified !== beforeFile.lastModified) {
+        throw new Error('The native file changed while opening its staged write. Nothing was published.');
+      }
+    };
+    let stream = null;
     try {
-      await options.validateBeforeWrite?.();
+      await ensureUnpublished();
+      await options.validateBeforeWrite?.(phase);
+      stream = await handle.createWritable({ keepExistingData: false, ...(this.scope.native ? { mode: 'exclusive' } : {}) });
+      await ensureUnpublished();
+      await options.validateBeforeWrite?.(phase);
       await stream.write(content);
       // File System Access stages writes until close. An operation-specific
       // invalidation while opening/writing the stream must abort, not publish.
-      await options.validateBeforeWrite?.();
+      await ensureUnpublished();
+      await options.validateBeforeWrite?.(phase);
       await stream.close();
     } catch (error) {
-      await stream.abort?.();
+      if (stream) {
+        try { await stream.abort?.(); }
+        catch (abortError) { throw new Error(`${error.message} The staged stream could not be confirmed aborted; inspect History recovery. ${abortError.message}`, { cause: error }); }
+      }
+      if (this.scope.native && options.create) {
+        const liveHandle = await this.fileHandle(safe);
+        if (beforeFile.size === 0 && await handle.isSameEntry(liveHandle)) {
+          const parts = safe.split('/'), leaf = parts.pop();
+          let parent = this.root;
+          for (const part of parts) parent = await parent.getDirectoryHandle(part);
+          const current = await liveHandle.getFile();
+          if (current.size === 0 && current.lastModified === beforeFile.lastModified) await parent.removeEntry(leaf);
+        }
+      }
       throw error;
     }
     const verified = await this.read(safe);
@@ -331,7 +400,7 @@ export class BrowserDirectoryProvider {
   }
 
   async remove(alias, options = {}) {
-    const safe = normalizeAlias(alias);
+    const safe = this.safeAlias(alias, true);
     const parts = safe.split('/');
     const leaf = parts.pop();
     let boundaryParts = null;

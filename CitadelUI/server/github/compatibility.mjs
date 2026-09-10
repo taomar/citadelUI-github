@@ -19,6 +19,8 @@ import { discoverWorkspace } from '../../shared/citadel-core.mjs';
 import { citadelSourcePlan, planScope } from '../../shared/source-plan.mjs';
 import { githubError } from './api.mjs';
 import { loadTree, readBlob, requireBranchHead } from './workspace.mjs';
+import { unitForAlias, workspaceScope } from '../../shared/workspace-configuration.mjs';
+import { assertNativeDependencySafe, assertNativeFileSafe, decodeNativeBytes, discoverConfiguredWorkspace, readUnitSchema } from '../../shared/terraform/workspace.mjs';
 
 /** Sources read during one scan, so a malformed repository cannot be a workload. */
 const MAX_SCANNED_SOURCES = 400;
@@ -29,24 +31,29 @@ const MAX_SCANNED_SOURCES = 400;
  * Only the two methods discovery uses are implemented. Anything else would be
  * an unused write path into a repository the user has not yet attached.
  */
-export function githubScanProvider(client, token, fullName, snapshot) {
+export function githubScanProvider(client, token, fullName, snapshot, configuration = undefined) {
   const blobs = new Map();
+  const scope = workspaceScope(configuration);
   let reads = 0;
   return {
     // Reads cross a network, so discovery scopes itself. This scan passes an
     // explicit narrower scope as well; stating it here keeps the provider
     // honest if that ever stops being true.
     remote: true,
+    configuration,
+    workspaceHead: async () => snapshot.commit,
     async entries() {
       return snapshot.files.map((file) => ({ alias: file.alias, kind: file.kind }));
     },
     async read(alias) {
+      scope.read(alias);
       const file = snapshot.files.find((item) => item.alias === alias);
       if (!file) {
         throw githubError(404, 'SOURCE_NOT_FOUND', `Source not found: ${alias}`);
       }
-      const cached = blobs.get(file.sha);
-      if (cached) return cached;
+      const key = scope.native ? `${alias}:${file.sha}` : file.sha;
+      const cached = blobs.get(key);
+      if (cached) return { ...cached, alias };
       reads += 1;
       if (reads > MAX_SCANNED_SOURCES) {
         throw githubError(
@@ -56,8 +63,17 @@ export function githubScanProvider(client, token, fullName, snapshot) {
         );
       }
       const blob = await readBlob(client, token, fullName, file.sha);
-      const record = { text: blob.text, size: blob.size, hash: blob.hash };
-      blobs.set(file.sha, record);
+      const record = { alias, text: scope.native ? decodeNativeBytes(blob.bytes) : blob.text,
+        bytes: blob.bytes, size: blob.size, hash: blob.hash, workspaceHead: snapshot.commit };
+      if (scope.native) {
+        await assertNativeDependencySafe(record.text, alias);
+        const unit = unitForAlias(scope.configuration, alias);
+        if (unit) {
+          const { parameters } = await readUnitSchema(this, unit);
+          await assertNativeFileSafe(record.text, unit, parameters);
+        }
+      }
+      blobs.set(key, record);
       return record;
     },
   };
@@ -92,14 +108,14 @@ function detectedCapabilities(catalog) {
  * from a stale one — which is how a successful validation ends up unable to
  * enable the button it exists to enable.
  */
-export async function inspectRepositoryCompatibility(client, token, fullName, commitSha, branch = null) {
-  const snapshot = await loadTree(client, token, fullName, commitSha);
-  const provider = githubScanProvider(client, token, fullName, snapshot);
+export async function inspectRepositoryCompatibility(client, token, fullName, commitSha, branch = null, configuration = undefined) {
+  const snapshot = await loadTree(client, token, fullName, commitSha, configuration);
+  const provider = githubScanProvider(client, token, fullName, snapshot, configuration);
   // Only the files that prove the three capabilities. Reading every parameter
   // file in the repository to answer "is this a Citadel repository" downloaded
   // the whole product to check its name plate.
   const plan = citadelSourcePlan(snapshot.files);
-  const catalog = await discoverWorkspace(provider, {
+  const catalog = await discoverConfiguredWorkspace(provider, null, {
     scope: planScope(plan, 'capabilities'),
   });
   return {
@@ -120,9 +136,9 @@ export async function inspectRepositoryCompatibility(client, token, fullName, co
  * The head is read here rather than accepted from the browser: the point of the
  * check is to describe what is really on that branch right now.
  */
-export async function inspectBranchCompatibility(client, token, fullName, branch) {
+export async function inspectBranchCompatibility(client, token, fullName, branch, configuration = undefined) {
   const head = await requireBranchHead(client, token, fullName, branch);
-  return inspectRepositoryCompatibility(client, token, fullName, head, branch);
+  return inspectRepositoryCompatibility(client, token, fullName, head, branch, configuration);
 }
 
 /**
@@ -133,7 +149,7 @@ export async function inspectBranchCompatibility(client, token, fullName, branch
  * was shown, and the contents are scanned again. Nothing has been created at the
  * point this throws.
  */
-export async function assertAttachableRepository(client, token, fullName, branch, expectedHead) {
+export async function assertAttachableRepository(client, token, fullName, branch, expectedHead, configuration = undefined) {
   const head = await requireBranchHead(client, token, fullName, branch);
   if (expectedHead && head !== expectedHead) {
     throw githubError(
@@ -143,7 +159,7 @@ export async function assertAttachableRepository(client, token, fullName, branch
       { head }
     );
   }
-  const result = await inspectRepositoryCompatibility(client, token, fullName, head, branch);
+  const result = await inspectRepositoryCompatibility(client, token, fullName, head, branch, configuration);
   if (!result.supported) {
     throw githubError(
       422,

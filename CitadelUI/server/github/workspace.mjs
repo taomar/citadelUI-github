@@ -7,6 +7,7 @@
  * `force: false`, so a moved branch is rejected instead of overwritten.
  */
 import { githubError, redactSecrets } from './api.mjs';
+import { workspaceScope } from '../../shared/workspace-configuration.mjs';
 import {
   BLOB_MODE_EXECUTABLE,
   BLOB_MODE_FILE,
@@ -178,7 +179,7 @@ async function walkSubtrees(client, token, fullName, rootTreeSha) {
 }
 
 /** Enumerate the Citadel source scope for one commit. */
-export async function loadTree(client, token, fullName, commitSha) {
+export async function loadTree(client, token, fullName, commitSha, configuration = undefined, options = {}) {
   const treeSha = await commitTreeSha(client, token, fullName, commitSha);
   const { data } = await client.request(
     `/repos/${fullName}/git/trees/${treeSha}?recursive=1`,
@@ -191,7 +192,7 @@ export async function loadTree(client, token, fullName, commitSha) {
   const entries = data?.truncated
     ? await walkSubtrees(client, token, fullName, treeSha)
     : raw;
-  const { files, rejected } = filterSourceTree(entries);
+  const { files, rejected } = filterSourceTree(entries, configuration, options);
   return { commit: commitSha, treeSha, files, rejected, truncated: Boolean(data?.truncated) };
 }
 
@@ -338,9 +339,9 @@ function assertScopedAlias(alias) {
  * editable scope -- notably `.azure/<environment>/.env`, which `normalizeAlias`
  * rejects outright and which only the subscription bridge may read.
  */
-export async function readSourceBlob(client, token, fullName, commitSha, alias, blobSha, tree) {
-  const safe = assertScopedAlias(alias);
-  const snapshot = tree || (await loadTree(client, token, fullName, commitSha));
+export async function readSourceBlob(client, token, fullName, commitSha, alias, blobSha, tree, configuration = undefined) {
+  const safe = workspaceScope(configuration).read(alias);
+  const snapshot = tree || (await loadTree(client, token, fullName, commitSha, configuration));
   const entry = snapshot.files.find((file) => file.alias === safe);
   if (!entry) {
     throw githubError(404, 'SOURCE_NOT_FOUND', `Source not found: ${safe}`);
@@ -363,8 +364,8 @@ export async function readSourceBlob(client, token, fullName, commitSha, alias, 
  * Enumeration already hides skipped directories, so writes must apply the same
  * rule or the editor could commit to a path it can never show.
  */
-export function assertWritableAlias(alias) {
-  const safe = assertScopedAlias(alias);
+export function assertWritableAlias(alias, configuration = undefined) {
+  const safe = workspaceScope(configuration).write(alias);
   const blocked = safe.split('/').slice(0, -1).find(isSkippedDirectory);
   if (blocked) {
     throw githubError(400, 'INVALID_ALIAS', `Citadel UI does not edit sources under ${blocked}.`);
@@ -463,7 +464,7 @@ export function normalizeChangeSet(files, options = {}) {
     }
     const requested = String(file.alias || '');
     const subscription = Boolean(subscriptionAlias) && requested === subscriptionAlias;
-    const alias = subscription ? subscriptionAlias : assertWritableAlias(requested);
+    const alias = subscription ? subscriptionAlias : assertWritableAlias(requested, options.configuration);
     if (seen.has(alias)) {
       throw githubError(400, 'INVALID_CHANGE_SET', `Duplicate file in change set: ${alias}`);
     }
@@ -705,6 +706,12 @@ export async function createCommitBranch(client, token, options) {
       'Citadel can only branch a commit it made for this workspace.'
     );
   }
+  if (options.configuration?.format === 'terraform' || record.configurationKey) {
+    const { assertNativeAuditScope, assertNativeHistoryBytes } = await import('./native-workspace.mjs');
+    assertNativeAuditScope(record, options.configuration);
+    await assertNativeHistoryBytes(client, token, fullName, sha, options.configuration, record.aliases);
+    await assertNativeHistoryBytes(client, token, fullName, record.baseCommit, options.configuration, record.aliases);
+  }
 
   try {
     await client.request(`/repos/${fullName}/git/refs`, {
@@ -760,7 +767,7 @@ export async function commitChangeSet(client, token, options) {
     subscriptionAlias,
     audit,
   } = options;
-  const changes = normalizeChangeSet(files, { subscriptionAlias });
+  const changes = normalizeChangeSet(files, { subscriptionAlias, configuration: options.configuration });
   if (!expectedHead) {
     throw githubError(
       400,
@@ -775,6 +782,10 @@ export async function commitChangeSet(client, token, options) {
       'STALE_WORKSPACE',
       'The branch moved after you reviewed these changes. Reload before saving.'
     );
+  }
+  let nativeConfigurationKey = null;
+  if (options.configuration?.format === 'terraform') {
+    nativeConfigurationKey = await (await import('./native-workspace.mjs')).validateNativeChangeSet(client, token, options, changes, head);
   }
   const baseTree = await commitTreeSha(client, token, fullName, head);
   const baseIndex = await treeIndex(client, token, fullName, head, { complete: true });
@@ -893,6 +904,8 @@ export async function commitChangeSet(client, token, options) {
     baseCommit: head,
     commit: commitSha,
     aliases: changes.map((change) => change.alias),
+    ...(nativeConfigurationKey ? { configurationKey: nativeConfigurationKey,
+      nativeCreation: changes.every((change) => change.create) } : {}),
   };
 
   // The audit is written before the ref moves, and a failure aborts the save.
@@ -1053,7 +1066,12 @@ export async function loadHistory(client, token, fullName, branch, environmentId
   const ref = validateBranchName(branch);
   const audit = options.audit || null;
   const audited = audit ? await audit.listForEnvironment(environmentId, ref) : [];
-  const auditedByCommit = new Map(audited.map((item) => [item.commit, item]));
+  const { assertNativeAuditScope } = await import('./native-workspace.mjs');
+  const eligible = audited.filter((record) => {
+    try { assertNativeAuditScope(record, options.configuration); return true; }
+    catch (error) { if (error.code === 'NATIVE_HISTORY_SCOPE' || error.code === 'NATIVE_SOURCE_SCOPE') return false; throw error; }
+  });
+  const auditedByCommit = new Map(eligible.map((item) => [item.commit, item]));
   const { data } = await client.request(
     `/repos/${fullName}/commits?sha=${encodeURIComponent(ref)}&per_page=100`,
     { token }
@@ -1078,6 +1096,7 @@ export async function loadHistory(client, token, fullName, branch, environmentId
         status: 'committed',
         targetLabel: record.action,
         action: record.action,
+        ...(record.configurationKey ? { nativeCreation: Boolean(record.nativeCreation) } : {}),
         aliases: record.aliases,
         files: record.aliases.map((item) => ({ alias: item })),
         author: entry.commit?.author?.name || null,
@@ -1113,6 +1132,9 @@ export async function isReachable(client, token, fullName, branch, candidate) {
  * holds exactly the bytes that commit produced.
  */
 export async function inspectCommit(client, token, fullName, branch, commitSha, options = {}) {
+  if (options.configuration?.format === 'terraform' || options.record?.configurationKey) {
+    (await import('./native-workspace.mjs')).assertNativeAuditScope(options.record, options.configuration);
+  }
   const sha = validateCommitSha(commitSha);
   const { data } = await client.request(`/repos/${fullName}/commits/${sha}`, { token });
   const parents = (data?.parents || []).map((parent) => parent.sha);
@@ -1126,6 +1148,7 @@ export async function inspectCommit(client, token, fullName, branch, commitSha, 
   const files = [];
   for (const file of data?.files || []) {
     const alias = file.filename;
+    if (options.configuration?.format === 'terraform') workspaceScope(options.configuration).write(alias);
     const finalSha = file.sha || null;
     // Both lookups resolve exactly: a truncated listing must not leave the mode
     // unknown on either side, because an unknown mode reads as a change and
@@ -1155,6 +1178,16 @@ export async function inspectCommit(client, token, fullName, branch, commitSha, 
     });
   }
   const record = options.record ?? null;
+  if (options.configuration?.format === 'terraform') {
+    const { assertNativeHistoryBytes } = await import('./native-workspace.mjs');
+    const aliases = files.map((file) => file.alias);
+    const savedDependencies = await assertNativeHistoryBytes(client, token, fullName, sha, options.configuration, aliases);
+    if (parent) await assertNativeHistoryBytes(client, token, fullName, parent, options.configuration, files.map((file) => file.alias));
+    const currentDependencies = await assertNativeHistoryBytes(client, token, fullName, head, options.configuration, aliases);
+    if (JSON.stringify(savedDependencies) !== JSON.stringify(currentDependencies)) {
+      throw githubError(409, 'NATIVE_HISTORY_STALE', 'The native schema, module or policy dependencies changed since this commit. History undo is blocked until the exact reviewed dependencies are restored.');
+    }
+  }
   const singleParent = parents.length === 1;
   return {
     commit: sha,
@@ -1213,7 +1246,7 @@ export async function revertCommit(client, token, options) {
       'That commit is not on the selected working branch.'
     );
   }
-  const inspection = await inspectCommit(client, token, fullName, branch, commitSha, { record });
+  const inspection = await inspectCommit(client, token, fullName, branch, commitSha, { record, configuration: options.configuration });
   if (inspection.parents.length !== 1) {
     throw githubError(
       409,
@@ -1321,6 +1354,8 @@ export async function revertCommit(client, token, options) {
     // Undo may legitimately restore the environment file the subscription
     // bridge previously wrote, and only for that exact path.
     subscriptionAlias,
+    configuration: options.configuration,
+    nativeHistory: options.configuration?.format === 'terraform',
   });
 }
 

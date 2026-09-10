@@ -1,5 +1,7 @@
 import { sha256 } from './directory-provider.mjs';
 import { activeWorkspace } from './workspace-context.mjs';
+import { configurationOf } from '../../shared/workspace-configuration.mjs';
+import { nativeHistoryProof } from '../../shared/terraform/workspace.mjs';
 
 function notFound(error) {
   return error?.name === 'NotFoundError' || /not found/i.test(error?.message || '');
@@ -51,6 +53,7 @@ export function createTransactionCommit(request) {
           preparedFiles.map((file) => [file.alias, file.changed || []])
         ),
         createdDirectories,
+        ...(options.nativeProof ? { nativeProof: options.nativeProof } : {}),
         files: preparedFiles.map((file) => ({
           alias: file.alias,
           existed: !file.create,
@@ -67,6 +70,7 @@ export function createTransactionCommit(request) {
     };
     let authorization = null;
     let committing = false;
+    let receiptAttempted = false;
     const written = [];
 
     try {
@@ -152,6 +156,7 @@ export function createTransactionCommit(request) {
         written.push({ ...file, finalHash: verified.hash });
       }
 
+      receiptAttempted = true;
       await request(`/api/transactions/${encodeURIComponent(transactionId)}/receipt`, {
         method: 'POST',
         headers: {
@@ -171,6 +176,30 @@ export function createTransactionCommit(request) {
         files: written.map((file) => ({ alias: file.alias, hash: file.finalHash })),
       };
     } catch (error) {
+      if (receiptAttempted && (options.nativeProof || options.confirmReceiptOutcome)) {
+        // An unanswered receipt may already be committed. Do not undo source
+        // bytes while that durable outcome is uncertain.
+        let recorded;
+        try {
+          recorded = await request(`/api/transactions/${encodeURIComponent(transactionId)}?environmentId=${encodeURIComponent(environment.id)}`);
+        } catch (inspectionError) {
+          throw new Error(`${error.message} The receipt could not be confirmed. Source bytes were retained; inspect History recovery. ${inspectionError.message}`, { cause: error });
+        }
+        const confirmed = () => ({ transactionId, files: written.map((file) => ({ alias: file.alias, hash: file.finalHash })),
+          warnings: ['The receipt response was interrupted, but the committed journal confirms this save.'] });
+        if (recorded.transaction.status === 'committed') return confirmed();
+        try {
+          await request(`/api/transactions/${encodeURIComponent(transactionId)}/fail`, {
+            method: 'POST', headers: environmentHeaders,
+            body: JSON.stringify({ changedAliases: written.map((file) => file.alias) }),
+          });
+        } catch (recoveryError) {
+          const latest = await request(`/api/transactions/${encodeURIComponent(transactionId)}?environmentId=${encodeURIComponent(environment.id)}`);
+          if (latest.transaction.status === 'committed') return confirmed();
+          throw new Error(`${error.message} Source bytes were retained, but recovery could not be recorded. Inspect History. ${recoveryError.message}`, { cause: error });
+        }
+        throw new Error(`${error.message} The save receipt is not confirmed. Source bytes were retained; inspect History recovery.`, { cause: error });
+      }
       if (!committing) {
         await request(`/api/transactions/${encodeURIComponent(transactionId)}/fail`, {
           method: 'POST',
@@ -181,8 +210,12 @@ export function createTransactionCommit(request) {
       }
 
       const rollback = [];
+      const validateRollback = options.nativeProof
+        ? () => nativeHistoryProof(provider, configurationOf(environment), preparation.transaction)
+        : undefined;
       for (const file of [...written].reverse()) {
         try {
+          await validateRollback?.();
           const current = await provider.read(file.alias);
           if (current.hash !== file.finalHash) {
             throw new Error(
@@ -208,6 +241,7 @@ export function createTransactionCommit(request) {
             await provider.write(file.alias, backup.bytes, {
               expectedHash: file.finalHash,
               finalHash: file.beforeHash,
+              validateBeforeWrite: validateRollback,
             });
           }
           rollback.push({ alias: file.alias, restored: true });

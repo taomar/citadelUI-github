@@ -1,7 +1,8 @@
 # Using Citadel Control Plane
 
 Citadel Control Plane edits the configuration of a Citadel AI Hub Gateway
-repository. It reads the banner comments those files already carry and renders
+repository through independent Bicep/Citadel and native Terraform workspaces.
+It reads the banner comments those files already carry and renders
 them as guidance, so the explanation beside a field is the repository's own.
 
 Nothing is written until you review and save, and every save is a verified
@@ -44,16 +45,18 @@ operator check the existing data mount rather than creating a new owner.
 
 ## Workspaces
 
-A workspace is one Citadel repository. It can be a folder on this machine, or a
-GitHub repository on a branch you choose. Attached workspaces are listed and open
-in one click.
+A workspace binds one configuration format to a repository source. Choose
+**Bicep / Citadel** or **Terraform (native)** independently of **Local Edit** or
+**Existing GitHub Repo**. Attached workspaces are listed and open in one click.
+Terraform does not require a Bicep workspace or an export first.
 
 ![Workspace catalog with a named local sample and session-only connection status](../docs/images/03-workspaces.png)
 
 Adding one is a guided sequence. Choose **Existing GitHub Repo**, **New GitHub Repo**,
 **Create local from Citadel source**, or **Local** to attach an existing folder.
-The repository is checked for the capabilities the editors need before
-it is attached; an incomplete tree is rejected rather than half-opened.
+The starter-copy options remain Bicep-only. Existing Bicep repositories are
+checked for the required Citadel capabilities. Native Terraform selection
+validates just the explicitly chosen supported roots and inputs.
 
 ![Add workspace offers GitHub creation and attachment, local source creation, and existing local attachment](../docs/images/04-add-workspace.png)
 
@@ -66,6 +69,140 @@ Local attachment reports folder checks, configuration reading and metadata
 saving, not GitHub branch creation. If the display path is invalid, its error
 appears in the attachment dialog. Choose **Back**, correct **Local path**, then
 continue and retry **Attach workspace**.
+
+One named GitHub connection can be reused for both formats and different
+repositories/branches; selecting Terraform does not require a second token.
+A Local attachment has one owner. Another Local workspace needs a distinct
+folder, not the same folder or a demonstrably overlapping parent/child.
+The typed Local path remains display-only, never filesystem authority.
+
+### Native Terraform workspaces
+
+![Synthetic native format selection independent of Local and GitHub source choices](../docs/images/60-native-format-loading.png)
+
+After choosing the source, add each **native unit** explicitly. A unit is a
+native root plus its named value file, not a Bicep-style contract directory.
+
+| Area | Native root | Value file |
+| --- | --- | --- |
+| Azure Deployment | Repository root | `environments/<name>.tfvars` |
+| LLM Onboarding | `llm-backend-onboarding/` | A named `.tfvars` in that root |
+| Access Contracts | `citadel-access-contracts/` | A named `.tfvars` in that root |
+
+Select any area independently, or several units in one attachment. Multiple
+Access configurations are separate root/file units. Explicit `.tfvars.json`
+is additional support, not a replacement for HCL. Files must be direct named
+inputs in the listed locations; examples and auto-loaded `.auto.tfvars` are
+not live edit targets.
+
+Ignored local `.tfvars` may not exist in GitHub. Choose an existing file or
+explicitly allow an empty operator file on first save. Opening a unit never
+copies an example, edits a schema default or supplies missing defaults.
+The upstream Access example's stray dot is a source syntax error, not something
+Citadel repairs silently.
+
+![Synthetic native Deployment inputs in the shared typed parameter sheet](../docs/images/61-native-deployment.png)
+
+The same fields, switches, object/list controls and backend/model cards are
+bound to native names and types. LLM uses `llm_backend_config`,
+`backend_id`, `supported_models` and the native model properties. Decimal and
+large exact numbers are not forced through Bicep integer rules or JavaScript
+rounding. Missing, explicit null and inherited defaults remain distinct.
+Unsupported or untyped inputs are identified rather than assigned guessed values.
+
+Only explicitly selected, nonsecret operator files are writable. The bounded
+`.tf` schemas/modules and conventional shared policy XML are read-only.
+Provider/backend/output configuration, state, plans, credentials, `.terraform`
+and unrelated value files are not writable targets. Inventory names do not
+grant read access to their contents. The azd subscription bridge is Bicep-only.
+
+Known-sensitive whole files are blocked, even for an unrelated nonsecret edit:
+the backup and GitHub commit carry the whole file. Empty/null sensitive slots
+may remain; actual credentials must stay outside this workflow. Detection is
+conservative, not proof that arbitrary files are secret-free. Citadel does not
+silently strip secrets or offer encrypted sensitive-file authoring. The exact
+public PII placeholder in the pinned schema is recognized as a schema default
+only, never as an exception for a supplied operator secret value.
+
+![Synthetic per-service native XML editor](../docs/images/62-native-access-policy.png)
+
+Access policy edits use the owning service's literal `policy_xml`. The editor
+encodes Terraform literal template escapes while preserving unrelated source.
+In the pinned Access root, an empty string chooses the conventional default;
+the `.tf` configuration determines that behavior. Inspect the shared policy
+source through its read-only disclosure. It may affect other units, so it is
+not presented as an exclusively owned editable file. `file()` is not valid in
+`.tfvars`; the default's `file()` belongs to `.tf` configuration. XML receives a
+tag-balance check, not APIM/runtime validation.
+
+These are selected source inputs, not effective runtime state. The pinned
+gateway has declared-but-unconsumed parameters and module/model/circuit-breaker
+wiring limitations. A referenced variable does not prove every nested setting
+affects deployed resources. Terraform export's missing-equivalence rules are
+separate and do not block an otherwise valid native edit. No provider, script,
+state, cloud ID, Terraform or APIM expression is evaluated here.
+
+#### Switching and reconnecting
+
+![Synthetic catalog with independent Bicep and native Terraform workspaces](../docs/images/63-native-workspace-isolation.png)
+
+Switch through **Settings** or the catalog without reloading the whole page.
+Each workspace/unit retains its own parameter draft, in-app nonsecret policy
+buffers, selection and editor state. Nonsecret parameter drafts also retain
+source hashes and native profile/unit/parser identity in browser storage.
+Do not depend on page-close recovery for unsaved external XML policy buffers.
+Known-secret buffers are not persisted.
+
+Changed source or schema identity preserves/quarantines the old draft with an
+explanation; it is not silently applied to another file. Native binding changes
+(format, root, input file, repository or branch) require a new workspace identity.
+Older Bicep workspaces without descriptors keep their existing IDs and history.
+Unknown future descriptor versions are refused.
+
+A native Local workspace reconnects only its original retained handle. If the
+browser profile lost that handle, attach a new workspace rather than move old
+drafts/history onto an unproven folder. GitHub credentials can be shared, but
+overlapping native writable files on the same repository/working branch cannot
+have multiple owners. Different credentials or project labels do not make the
+destination different.
+
+Disjoint GitHub units still share their branch head. A save in one invalidates
+other old approvals while preserving their drafts for a fresh review. Commits
+are exact-head and non-forced. A refused save creates no rescue branch unless
+the user explicitly names one; creating that branch does not retarget the
+native workspace.
+
+#### Local creation and parser boundaries
+
+Keep the folder untouched by other applications while creating a new input.
+The confirmation explains that simultaneous same-path creation cannot always
+be distinguished. Absence/content/mtime/dependency checks and supported
+exclusive writable streams are not OS-level exclusion or atomic create-if-absent.
+Detected collisions stop; an unexpected file at a create target is not offered
+the existing-file overwrite workflow.
+
+Successful creation has a scoped **History > Undo creation** action while its
+bytes still match. A failed/ambiguous creation is not adopted or deleted from
+matching bytes alone. Keep or move an unattributable file yourself; recovery
+can close that creation attempt once the selected target is absent. Existing
+file recovery likewise refuses foreign bytes or changed dependencies.
+
+The offline parser supports literal HCL/JSON with source spans, comments,
+quoted labels, exact numbers, Unicode, CRLF/LF and supported heredocs. Duplicate,
+malformed and ambiguous inputs are refused. Functions/traversals/calculations
+are not evaluated as value-file literals. A valid HCL `2e30` is currently
+unsupported by the selected grammar; the entire document is kept read-only
+and byte-identical, not normalized to another spelling. Decimal-mantissa
+exponents work, and explicit JSON supports integer-mantissa exponents.
+Leading-zero numeric spellings remain an explicit read-only editor limitation.
+
+Bounds are 512 KiB per source, 64 literal nesting levels, 32 schema type levels,
+100,000 CST nodes, a 300 ms parse deadline, 1,000 operations and 1,024 characters
+per exact number. Dependencies are bounded to 150 files / 4 MiB. Simple literal
+`contains` validations are checked; other validations say they are unevaluated.
+This is not a substitute for validation in your own Terraform workflow.
+The [parser packaging notes](../CitadelUI/README.md#offline-native-parser)
+record the pinned licenses, offline rebuild and minimal CSP allowance.
 
 ### Create a local project from Citadel source
 
@@ -511,7 +648,9 @@ attempt. Confirmed publication is never replayed over a later external reset.
 
 ## The three areas
 
-Everything the gateway is operated through falls into three areas, shown down the
+The following area walkthroughs describe the existing Bicep controls. Native
+Terraform uses the selected native schemas and semantics described above.
+The Bicep gateway configuration falls into three areas, shown down the
 left. Every other parameter file in the repository stays reachable under **All
 parameter files**.
 
@@ -636,12 +775,29 @@ whether anything blocks the save.
 
 **Review & save** shows what will be written before it is written. On confirmation
 the browser backs up every target, writes, verifies the resulting hashes, and
-restores from the verified backup bytes if any part fails. A failed multi-file
-write leaves the repository as it was.
+records the receipt. Safe rollback restores verified backup bytes; uncertain
+receipts or foreign changes retain an explicit recovery record instead of
+overwriting an unrecognized file. If a receipt response is lost after a confirmed
+commit, the saved journal is used rather than blindly undoing that save.
 
 For a GitHub workspace, a save becomes one commit on a working branch you choose.
 For a local folder it is written through the same verified transaction directly to
 disk.
+
+For an already-open **existing Local file**, Review/Save compares the loaded
+version with the current disk bytes. If it changed externally, choose **Cancel**
+to keep the draft, or **Back up and overwrite** to replace the external version
+with the reviewed proposed contents. The backup includes the external edits:
+it is the current disk file, not merely the stale version originally opened.
+A failed backup writes nothing. Another change after confirmation stops for
+fresh confirmation; there is no force flag bypassing hashes, schema, permission,
+secret-file or workspace guards.
+
+This is an explicit overwrite, not an automatic merge or rebase. Detection
+occurs at the existing review/save checkpoints, not through an OS watcher or
+periodic auto-reload. Normal explicit reopen/reload remains available. The
+confirmation does not apply to a newly created file or weaken GitHub's exact-head
+atomic commit rules.
 
 **Discard** abandons every pending change without touching the repository.
 

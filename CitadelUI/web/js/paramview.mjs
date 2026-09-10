@@ -590,6 +590,7 @@ function isBlank(value) {
  */
 function valueKind(param, schema) {
   const value = param.value;
+  if (schema?.native && schema.type === 'number') return 'num';
   if (Array.isArray(value)) return 'array';
   if (value && typeof value === 'object' && !('__expr' in value)) return 'object';
   if (value && typeof value === 'object' && !envCall(value)) return 'raw';
@@ -781,7 +782,7 @@ function paramRowContent(param, ctx) {
   }
 
   // The LLM backend array has a dedicated editor; it needs the full row width.
-  if (param.name === 'llmBackendConfig') {
+  if (param.name === (ctx.backendRoot || 'llmBackendConfig')) {
     return h(
       'div',
       { class: `prow prow-full${pending ? ' prow-dirty' : ''}`, id: `param-${param.name}` },

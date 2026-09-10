@@ -26,7 +26,8 @@ export class LocalFile {
   async createWritable(options) {
     await this.event('createWritable');
     if (this.locked) throw new DOMException('File locked', 'NoModificationAllowedError');
-    if (options?.mode !== 'exclusive' || options?.keepExistingData !== false) throw new Error('Expected an exclusive unpublished stream');
+    if ((options?.mode !== 'exclusive' && !(options?.mode === undefined && this.owner.allowDefaultWritable)) ||
+        options?.keepExistingData !== false) throw new Error('Expected an exclusive unpublished stream');
     this.locked = true;
     let pending = null;
     let closed = false;

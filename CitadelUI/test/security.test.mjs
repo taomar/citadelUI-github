@@ -162,6 +162,9 @@ test('bootstrap withholds the session token and every response receives restrict
   assert.equal(markup.includes(fixture.sessionToken), false, 'not the token under another name');
   assert.match(response.headers['content-security-policy'], /frame-ancestors 'none'/);
   assert.match(response.headers['content-security-policy'], /default-src 'self'/);
+  assert.match(response.headers['content-security-policy'], /script-src 'self' 'wasm-unsafe-eval'(?:;|$)/);
+  assert.match(response.headers['content-security-policy'], /connect-src 'self'(?:;|$)/);
+  assert.doesNotMatch(response.headers['content-security-policy'], /'unsafe-eval'|blob:|\*/);
   assert.equal(response.headers['x-content-type-options'], 'nosniff');
   assert.equal(response.headers['x-frame-options'], 'DENY');
   assert.equal(response.headers['referrer-policy'], 'no-referrer');

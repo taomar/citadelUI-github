@@ -333,17 +333,19 @@ test('local import UI: catalog Cancel retains usable source choices after the qu
   assert.equal(modal.open, false);
 });
 
-test('local import UI: Settings New project wires the shared flow and removes current-GitHub context only for local setup', async () => {
+test('local import UI: Settings New project and Add workspace use the shared format-aware source flow', async () => {
   const app = await readFile(new URL('../web/js/app.mjs', import.meta.url), 'utf8');
-  const flow = app.slice(app.indexOf("'Creating project\\u2026'"), app.indexOf("}, 'New project')"));
-  assert.match(flow, /kind === 'local-source'/);
-  assert.match(flow, /openLocalSourceImport\(/);
-  assert.match(flow, /attach: attachLocalSourceEnvironment/);
-  assert.match(flow, /onDraft: \(\{ projectLabel, environmentLabel, localPath, folderName \}\)/);
-  assert.match(flow, /folderName: draft.folderName/);
-  assert.match(flow, /confirmPendingNavigation\(/);
-  assert.match(flow, /context: kind === 'local'\s*\?/);
-  assert.match(flow, /current workspace and GitHub repository are not changed/);
-  assert.match(flow, /new BrowserDirectoryProvider\(handle\)/, 'existing folder attachment remains intact');
-  assert.match(flow, /attachGitHubProject\(/, 'existing GitHub attachment remains intact');
+  const catalog = await readFile(new URL('../web/js/workspace-catalog.mjs', import.meta.url), 'utf8');
+  const context = await readFile(new URL('../web/js/workspace-context.mjs', import.meta.url), 'utf8');
+  assert.match(app, /guardedHandler\(\(\) => addWorkspaceInApp\(\)/);
+  assert.match(app, /guardedHandler\(\(\) => addWorkspaceInApp\(context\.projectId\)/);
+  const flow = app.slice(app.indexOf('async function addWorkspaceInApp('), app.indexOf('/**', app.indexOf('async function addWorkspaceInApp(')));
+  assert.match(flow, /persistParameterDraft\(\)/);
+  assert.match(flow, /addRegisteredWorkspace\(\{ projectId/);
+  assert.match(flow, /activateWorkspaceView\(workspace\)/);
+  assert.match(catalog, /openLocalSourceImport\(/);
+  assert.match(catalog, /attach: actions\.attachLocalSource/);
+  assert.match(context, /attachLocalSource: attachLocalSourceEnvironment/);
+  assert.match(context, /new BrowserDirectoryProvider\(handle, \{ configuration \}\)/, 'existing folder attachment remains intact');
+  assert.match(context, /attachGitHubEnvironment\(/, 'existing GitHub attachment remains intact');
 });
