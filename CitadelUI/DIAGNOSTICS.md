@@ -5,11 +5,40 @@ as its normal owner. This support page has no entry in the application menus.
 The unlinked URL is not an access control: every diagnostic API also requires
 the owner session and the normal browser transport checks.
 
-Turn on **Instance-wide debugging**, reproduce the problem in the application,
-then use **Download debug report**. The switch actually enables collection on
-the server and in connected, signed-in application tabs. It does not enable
-unrestricted console or framework logging. Nothing is uploaded automatically.
-Share the downloaded JSON file manually.
+## Capture a report for support
+
+1. Open the exact `/debug` route, for example
+   <http://127.0.0.1:4173/debug> for the local installation. Use the same host as
+   the affected application, and sign in as its owner if prompted.
+2. Turn on **Instance-wide debugging**. Check the displayed start and automatic
+   off times. If a prior report exists, download it before confirming
+   **Replace and start capture**.
+3. Return to the application and reproduce the problem while capture is active.
+   Allow up to five seconds for already-running signed-in browsers to discover
+   the capture. Sleeping or disconnected tabs may not join in time.
+4. Return to `/debug`, turn the switch off, and choose **Download debug report**.
+   A stopped report is marked `final`; downloading before stopping produces a
+   `snapshot`.
+5. Share the downloaded JSON manually through your approved support channel.
+   Preserve it before choosing **Clear report**, starting another capture or
+   restarting the server.
+
+![Diagnostics page before activation, with Instance-wide debugging off and no captured report](../docs/images/70-debug-off.png)
+
+This retained synthetic-instance capture shows the default state. The switch
+enables real collection on this server and in connected signed-in application
+tabs, not unrestricted console or framework logging. Closing the debug page
+does not stop a live capture. Nothing is uploaded automatically.
+
+If the page cannot read authoritative status, use **Refresh** and follow the
+displayed error; do not assume capture is on. Delivery warnings or omissions
+mean the report may be incomplete. An empty report means no errors were
+recorded, not that the instance passed a health or security check.
+
+For operators maintaining an older installation, see the
+[source-version prerequisite](../README.md#start-with-a-clone). This support
+route is part of the locally accepted `4379522c` application, not a promise
+about older published images.
 
 ## The capture window
 

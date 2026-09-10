@@ -4,8 +4,8 @@ Configure the UI in
 [`CitadelUI/infra/main.bicepparam`](../CitadelUI/infra/main.bicepparam), then deploy
 with azd. No large PowerShell configuration block is needed.
 
-**Citadel UI only:** use `main`, not a sample branch. Run commands from
-`CitadelUI`; the repository-root `azure.yaml` belongs to the gateway.
+**Citadel UI only:** run commands from `CitadelUI`; the repository-root
+`azure.yaml` belongs to the gateway. A sample branch is not required.
 
 | Scenario | Instructions |
 | --- | --- |
@@ -24,6 +24,16 @@ resource configuration snapshots were unchanged. Fresh private mode has not
 been tested live.
 
 ## Prerequisites
+
+**Choose the application version first.** The clone examples below retrieve
+published `main`. This documentation also covers native workspaces and timed
+diagnostics from application source `4379522cdf0dbc8048bf45e0dbe0db2aa42cd358`;
+at this documentation revision those changes are accepted locally, not published
+on GitHub `main`. Use an operator-supplied reviewed checkout or image for that
+version. A local commit or branch name is not a remotely cloneable release.
+For an existing reviewed checkout, skip the clone and enter its `CitadelUI`
+directory. Do not run a launcher from an older checkout expecting newer features.
+See [release and offline operation](../CitadelUI/RELEASE.md).
 
 Azure deployment needs Git, PowerShell 7.4+, Azure CLI and Azure Developer CLI
 1.33+. Use a dedicated UI resource group and an account permitted to create
@@ -247,9 +257,11 @@ Data defaults to `CitadelUI/.data`; stopping retains it. If you change
 `CITADEL_DATA_PATH` in `container.env`, prepare that directory instead; Linux
 requires UID/GID `10001:10001` (adjust for rootless Docker).
 
-For either local path, create the owner account in the browser, then follow
-[Add a GitHub token](./using-the-control-plane.md#add-a-github-token) to connect a
-repository. Tokens are entered in the UI, not in `container.env`. A credential
+For either local path, create the owner account in the browser on first use,
+then [choose a format and workspace source](./using-the-control-plane.md#workspaces).
+Local folders need no GitHub token. For GitHub, follow
+[Add a GitHub token](./using-the-control-plane.md#add-a-github-token).
+Tokens are entered in the UI, not in `container.env`. A credential
 key is optional: the default local deployment supports session-only connections
 without one; only encrypted persistence is disabled.
 
