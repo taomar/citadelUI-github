@@ -32,11 +32,14 @@ test('the catalog retains the area frame without showing stale editor navigation
   assert.match(html, /id="workspace" class="sheet" tabindex="-1"/);
 });
 
-test('the owner gate shares the workspace tracks and avoids a separate floating card', () => {
+test('the owner gate is a centered card on the navigation background', () => {
   const gate = components.slice(components.indexOf('\n.gate {'));
-  assert.match(gate, /grid-template-columns:\s*var\(--rail-areas\) minmax\(0, 1fr\)/);
-  assert.match(gate, /\.gate-panel\s*\{[^}]*overflow-y:\s*auto/);
-  assert.doesNotMatch(gate, /box-shadow:|place-items:\s*center|text-transform:\s*uppercase/);
+  assert.match(gate, /place-items:\s*center/);
+  assert.match(gate, /background:\s*var\(--nav\)/);
+  assert.match(gate, /\.gate-panel\s*\{[^}]*width:\s*min\(100%, 32ch \+ 12rem\)/);
+  assert.match(gate, /\.gate-panel\s*\{[^}]*box-shadow:/);
+  assert.match(gate, /\.gate-brand \.tb-mark\s*\{/);
+  assert.doesNotMatch(gate, /grid-template-columns:\s*var\(--rail-areas\)/);
 });
 
 test('the source line is suppressed when it only repeats the path above it', () => {

@@ -7061,59 +7061,71 @@
 /* ============================================================
    Owner gate
    The first screen on an unclaimed container and the only screen
-   on a claimed one until the owner signs in. The same masthead,
-   area rail and ruled sheet as the workspace, without workspace
-   actions or data before authentication.
+   on a claimed one until the owner signs in. It is deliberately
+   compact and separate from the workspace behind it.
    ============================================================ */
 .gate {
   position: fixed;
   inset: 0;
   z-index: 9999;
   display: grid;
-  grid-template-columns: var(--rail-areas) minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
-  grid-template-areas: 'title title' 'areas sheet';
-  background: var(--sheet);
+  place-items: center;
+  overflow: auto;
+  padding: clamp(var(--sp-5), 5vw, var(--sp-8));
+  background: var(--nav);
 }
 
 .gate-panel {
-  grid-area: sheet;
+  width: min(100%, 32ch + 12rem);
   min-width: 0;
-  min-height: 0;
-  overflow-y: auto;
-  padding: var(--sp-6) var(--gutter) var(--sp-8);
+  padding: clamp(var(--sp-6), 6vw, var(--sp-8));
+  border: 1px solid var(--rule);
+  border-radius: var(--r-2);
+  background: var(--sheet);
+  box-shadow: 0 1.5rem 3rem rgba(11, 60, 104, 0.35);
 }
 
-.gate-masthead {
-  grid-template-columns: max-content minmax(0, 1fr);
+.gate-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-6);
+  color: var(--ink-2);
 }
 
-.gate-introduction {
-  padding-bottom: var(--sp-6);
-  margin-bottom: var(--sp-7);
-  border-bottom: 1px solid var(--rule);
+.gate-brand .tb-mark {
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: none;
+}
+
+.gate-brand-name {
+  font-family: var(--sans-small);
+  font-size: var(--t-small);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
 }
 
 .gate-title {
   margin: 0 0 var(--sp-4);
-  font-size: var(--t-h1);
+  font-size: var(--t-h2);
   color: var(--ink-1);
 }
 
 .gate-blurb {
-  max-width: 75ch;
-  color: var(--ink-3);
+  margin: 0 0 var(--sp-7);
+  color: var(--ink-2);
 }
 
-.gate-form {
-  display: grid;
-  gap: var(--sp-6);
-  max-width: var(--w-long);
-}
-
+.gate-form,
 .gate-field {
   display: grid;
   gap: var(--sp-4);
+}
+
+.gate-form {
+  gap: var(--sp-6);
 }
 
 .gate-label {
@@ -7144,4 +7156,14 @@
 
 .gate-submit {
   justify-self: start;
+}
+
+@media (max-width: 30rem) {
+  .gate {
+    place-items: start center;
+  }
+
+  .gate-panel {
+    padding: var(--sp-6);
+  }
 }

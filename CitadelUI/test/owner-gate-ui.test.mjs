@@ -62,7 +62,7 @@ for (const [code, field, clearsPassword] of [
   });
 }
 
-test('the framed owner form reuses controls and submits once while visibly busy', async (t) => {
+test('the centered owner card carries the Citadel mark and submits once while visibly busy', async (t) => {
   const dom = installDom();
   document.querySelector = (selector) => selector === '.shell' ? null : { content: 'unclaimed' };
   const originalWindow = globalThis.window;
@@ -73,8 +73,13 @@ test('the framed owner form reuses controls and submits once while visibly busy'
   let calls = 0;
   globalThis.fetch = () => { calls++; return new Promise((resolve) => { accept = resolve; }); };
   const session = requireOwnerSession();
-  assert.ok(dom.root.querySelector('.gate-masthead').classList.contains('titleblock'));
-  assert.ok(dom.root.querySelector('.gate-rail').classList.contains('rail-areas'));
+  const panel = dom.root.querySelector('.gate-panel');
+  assert.equal(panel.tagName, 'SECTION');
+  const brand = dom.root.querySelector('.gate-brand');
+  assert.equal(brand.getAttribute('aria-label'), 'Citadel Control Panel');
+  assert.ok(brand.querySelector('.tb-mark'));
+  assert.equal(dom.root.querySelector('.gate-masthead'), null);
+  assert.equal(dom.root.querySelector('.gate-rail'), null);
   const username = document.getElementById('gate-username');
   const password = document.getElementById('gate-password');
   assert.ok(username.classList.contains('ctl'));
@@ -101,7 +106,8 @@ test('an unavailable owner keeps the frame locked and offers no credential form'
   document.querySelector = (selector) => selector === '.shell' ? shell : { content: 'unavailable' };
   requireOwnerSession();
   assert.equal(shell.inert, true);
-  assert.equal(dom.root.querySelector('.area-title').textContent, 'Unavailable');
+  assert.equal(dom.root.querySelector('.gate-title').textContent, 'This container cannot be opened');
+  assert.equal(dom.root.querySelector('.gate-brand').getAttribute('aria-label'), 'Citadel Control Panel');
   assert.equal(dom.root.querySelector('input'), null);
   assert.equal(dom.root.querySelector('button'), null);
 });

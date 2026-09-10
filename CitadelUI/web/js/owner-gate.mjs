@@ -129,34 +129,20 @@ export function requireOwnerSession() {
     overlay.setAttribute('aria-modal', 'true');
     overlay.setAttribute('aria-labelledby', 'gate-title');
 
-    const masthead = document.createElement('header');
-    masthead.className = 'titleblock gate-masthead';
-    const brand = document.createElement('div');
-    brand.className = 'tb-brand';
-    brand.innerHTML = '<span class="tb-mark" aria-hidden="true"></span><span class="tb-brand-copy"><span class="tb-name">Citadel</span><span class="tb-mode">Control Panel</span></span>';
-    const context = document.createElement('span');
-    context.className = 'tb-crumb';
-    context.textContent = 'Owner account';
-    masthead.append(brand, context);
-
-    const rail = document.createElement('aside');
-    rail.className = 'rail rail-areas gate-rail';
-    rail.setAttribute('aria-label', 'Account access');
-    const current = document.createElement('div');
-    current.className = 'area active';
-    const areaTitle = document.createElement('span');
-    areaTitle.className = 'area-title';
-    areaTitle.textContent = state === 'unclaimed' ? 'Create owner' : 'Sign in';
-    const areaHint = document.createElement('span');
-    areaHint.className = 'area-sub';
-    areaHint.textContent = 'Account access';
-    current.append(areaTitle, areaHint);
-    rail.append(current);
-
-    const panel = document.createElement('main');
+    const panel = document.createElement('section');
     panel.className = 'gate-panel';
-    const introduction = document.createElement('header');
-    introduction.className = 'gate-introduction';
+
+    const brand = document.createElement('div');
+    brand.className = 'gate-brand';
+    brand.setAttribute('aria-label', 'Citadel Control Panel');
+    const brandMark = document.createElement('span');
+    brandMark.className = 'tb-mark';
+    brandMark.setAttribute('aria-hidden', 'true');
+    const brandName = document.createElement('span');
+    brandName.className = 'gate-brand-name';
+    brandName.setAttribute('aria-hidden', 'true');
+    brandName.textContent = 'Citadel Control Panel';
+    brand.append(brandMark, brandName);
 
     const title = document.createElement('h1');
     title.className = 'gate-title';
@@ -175,9 +161,8 @@ export function requireOwnerSession() {
     error.setAttribute('role', 'alert');
     error.hidden = true;
 
-    introduction.append(title, blurb);
-    panel.append(introduction, form);
-    overlay.append(masthead, rail, panel);
+    panel.append(brand, title, blurb, form);
+    overlay.append(panel);
 
     /**
      * A container whose owner record cannot be read is not a container anyone
@@ -185,7 +170,6 @@ export function requireOwnerSession() {
      * so plainly is the whole recovery instruction: redeploy.
      */
     if (state === 'unavailable') {
-      areaTitle.textContent = 'Unavailable';
       title.textContent = 'This container cannot be opened';
       blurb.textContent =
         'The owner record on the data volume is missing or unreadable, so this container cannot verify who owns it. Redeploy with fresh state to claim it again.';
