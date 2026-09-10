@@ -1,4 +1,5 @@
 import { h } from './dom.mjs';
+import { reportClientError } from './diagnostics-client.mjs';
 import { showDialog, dismissDialog, confirmDialog } from './dialog.mjs';
 import { DEFAULT_REPOSITORY_SOURCE, parseRepositorySource } from '../../shared/repository-source.mjs';
 import { validateLocalPath, localPathMatchesHandle, localChildDisplayPath } from '../../shared/local-path.mjs';
@@ -100,7 +101,10 @@ export function openLocalSourceImport(options) {
       allowDismiss = true;
       dismissDialog(false);
       finish(null);
-    } catch (error) { say(`Could not close the source preparation: ${error.message} Retry closing; the source cache expires automatically.`); }
+    } catch (error) {
+      reportClientError(error, 'app.local-import', { module: '/js/local-source-import.mjs' });
+      say(`Could not close the source preparation: ${error.message} Retry closing; the source cache expires automatically.`);
+    }
     finally { closing = false; }
   }
   function present(title, body, buttons, focus) {
@@ -135,6 +139,7 @@ export function openLocalSourceImport(options) {
     refresh();
     try { await action(); }
     catch (error) {
+      if (error?.name !== 'AbortError') reportClientError(error, 'app.local-import', { module: '/js/local-source-import.mjs' });
       say(error?.name === 'AbortError' ? 'Source transfer paused. No folder was changed; retry this same preparation.' : error.message);
       progress.update(copy?.root ? 'Import stopped; the partial folder is retained.' : 'Preparation stopped; no local files were written.', null, false);
     } finally {
@@ -277,6 +282,7 @@ export function openLocalSourceImport(options) {
       if (persist) {
         try { onDraft({ ...values }); }
         catch (error) {
+          reportClientError(error, 'app.local-import', { module: '/js/local-source-import.mjs' });
           say(`Could not retain the project form: ${error.message} Your entries remain in this dialog. Restore browser storage, then retry.`);
           return false;
         }

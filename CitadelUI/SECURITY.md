@@ -45,6 +45,34 @@ Known gaps, deliberate for a demo and listed for whoever hardens this next:
 
 ## Trust boundaries
 
+### Opt-in instance diagnostics
+
+`/debug` is an unlinked support page, not a security boundary. It uses normal
+owner sign-in, and every `/api/diagnostics/*` route requires the owner session,
+Host/Fetch-Site checks and the appropriate Origin check. No query-string switch,
+TTL override, cross-origin sharing route or unprotected report endpoint exists.
+
+Capture defaults off and lasts at most 30 minutes per explicit activation.
+Server wall/monotonic time and read/ingest/export checks enforce the cutoff even
+when browser timers or the page are suspended. The bounded latest report stays
+only in process memory, including after stop; restart clears it and never
+resumes capture. Nothing is written to `/data` or uploaded automatically.
+
+Records are constructed from finite codes, methods, route templates and known
+bundled assets, not scrubbed raw logs. Unknown fields are rejected before
+ingestion, and export/display revalidate the exact schema. No raw message, stack,
+URL, query, header, credential, source value, label, DOM text or arbitrary path
+is retained. Correlations are server-generated; caller-supplied correlations
+are not logged or captured. Browser records cannot supply them.
+
+Browser activation is normally within a 5-second poll; offline/throttled tabs
+can miss errors and cannot report historical events. Original application
+errors and browser console behavior are not suppressed. Explanatory UI text is
+static guidance, not proof of a cause; unknown 404s remain errors. The exact
+[capture/export schema and limitations](DIAGNOSTICS.md) are part of this contract.
+
+### Application and source boundaries
+
 - The browser owns Citadel repository authority through user-selected
   `FileSystemDirectoryHandle` objects retained in IndexedDB.
 - `/data/settings/registry.json` mirrors labels, IDs, and a tagged `source`

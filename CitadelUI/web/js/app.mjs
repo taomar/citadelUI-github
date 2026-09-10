@@ -18,7 +18,8 @@
  */
 
 import { api } from './api.mjs';
-import { ensureOwnerSession } from './owner-gate.mjs';
+import { ensureOwnerSession, forgetToken } from './owner-gate.mjs';
+import { reportClientError, startDiagnostics } from './diagnostics-client.mjs';
 import { h, mount, clear } from './dom.mjs';
 import { preserveEditorFocus } from './editor-focus.mjs';
 import { renderDiff } from './diff.mjs';
@@ -154,6 +155,7 @@ let pendingSince = 0;
 const STILL_WORKING_AFTER_MS = 8000;
 
 function setStatus(message, tone = 'info', sticky = false, pending = false) {
+  if (message && tone === 'error') reportClientError(null, 'app.status', { module: '/js/app.mjs' });
   const owner = state;
   owner.status = message ? { message, tone, pending } : null;
   clearTimeout(statusTimer);
@@ -313,6 +315,7 @@ async function withStatus(message, fn) {
     if (state === owner) setStatus(null);
     return result;
   } catch (err) {
+    reportClientError(err, 'app.action', { module: '/js/app.mjs' });
     if (state === owner) setStatus(err.message, 'error');
     return undefined;
   }
@@ -3486,6 +3489,7 @@ async function activateWorkspaceView(workspace) {
  * site, so a failure nobody anticipated still lands somewhere actionable.
  */
 function renderStartupRecovery(error) {
+  reportClientError(error, 'app.startup', { module: '/js/app.mjs' });
   if (!els.workspace) return;
   const message = String(error?.message || 'Citadel UI could not open the last workspace.');
   const actions = h('div', { class: 'setup-actions' });
@@ -3558,4 +3562,7 @@ async function returnToSetup() {
 
 // Nothing starts until this browser holds a session token, and the only way to
 // hold one is to create the owner account or sign in as it.
-ensureOwnerSession().then(() => init());
+ensureOwnerSession().then((token) => {
+  startDiagnostics({ token, onUnauthorized: () => { forgetToken(); window.location.reload(); } });
+  return init();
+});

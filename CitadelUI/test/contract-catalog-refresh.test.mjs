@@ -6,6 +6,7 @@ import { loadDialogModule, readText } from './_dom-stub.mjs';
 import { h, mount } from '../web/js/dom.mjs';
 import { guardedHandler } from '../web/js/single-flight.mjs';
 import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
+import { reportClientError } from '../web/js/diagnostics-client.mjs';
 
 const source = await readFile(new URL('../web/js/app.mjs', import.meta.url), 'utf8');
 function section(start, end) {
@@ -89,7 +90,7 @@ async function fixture({ failure = null, pauseCatalog = null, cancelSelection = 
     },
   };
   view = runInNewContext(`${handlers}\n({ openCreateContract, renderSidebar, contractList });`, {
-    state, api, h, mount, render, guardedHandler, viewStates, activeWorkspace: () => workspace,
+    state, api, h, mount, render, guardedHandler, viewStates, reportClientError, activeWorkspace: () => workspace,
     COMPACT_NAV: { matches: false }, els: { sidebar },
     requestAnimationFrame: (fn) => fn(), selectArea() {}, openOther() {},
     showModal: dom.showDialog, closeModal: dom.closeDialog,

@@ -1,4 +1,5 @@
 import { forgetToken, storedToken } from './owner-gate.mjs';
+import { reportApiFailure } from './diagnostics-client.mjs';
 
 export async function localRequest(path, options = {}) {
   // The token comes from the sign-in that issued it. The bootstrap meta tag is
@@ -15,6 +16,9 @@ export async function localRequest(path, options = {}) {
       ...(token ? { 'X-Citadel-Session': token } : {}),
       ...(options.headers || {}),
     },
+  }).catch((error) => {
+    reportApiFailure(error, path, null, options.method || 'GET');
+    throw error;
   });
   if (responseType === 'bytes' && res.ok) {
     return {
@@ -25,6 +29,7 @@ export async function localRequest(path, options = {}) {
   const body = await res.json().catch(() => ({ error: `${res.status} ${res.statusText}` }));
   if (!res.ok) {
     const detail = typeof body.error === 'object' ? body.error : body;
+    reportApiFailure(detail, path, res.status, options.method || 'GET');
     /**
      * A refused session means the token we hold is no longer the server's.
      *

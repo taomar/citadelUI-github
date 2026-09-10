@@ -386,9 +386,9 @@ test('two different environment operations are independent', async () => {
 test('every mutating save in the editor is bound through the guard', () => {
   assert.match(app, /import \{ guardedHandler \} from '\.\/single-flight\.mjs'/);
   // The parameter save: the exact binding that produced the duplicate.
-  assert.match(app, /onclick:\s*guardedHandler\(commitSave,\s*\{\s*key:\s*'save-parameters'\s*\}\)/);
+  assert.match(app, /onclick:\s*guardedHandler\(\(\) => commitSave\(review\),\s*\{\s*key:\s*`save-parameters:\$\{review\.context\.environment\.id\}`\s*\}\)/);
   // Its two siblings, which had the same shape and the same absence of a guard.
-  assert.match(app, /guardedHandler\(async \(\) => \{[\s\S]*?\}, \{ key: 'save-policy' \}\)/);
+  assert.match(app, /guardedHandler\(async \(\) => \{[\s\S]*?\}, \{ key: `save-policy:\$\{context\.environment\.id\}` \}\)/);
   assert.match(app, /saveSubscriptionId:\s*guardedHandler\(/);
   assert.match(app, /\{ key: 'save-subscription-id' \}\)/);
 });

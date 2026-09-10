@@ -1,4 +1,5 @@
 import { h, mount } from './dom.mjs';
+import { reportClientError } from './diagnostics-client.mjs';
 import { showDialog, dismissDialog, confirmDialog } from './dialog.mjs';
 import { renderDiff } from './diff.mjs';
 import { MigrationDonor } from './migration-donor.mjs';
@@ -1232,7 +1233,10 @@ export async function openMigrationWizard({
         failed = false;
         message = '';
         render(focus);
-      } catch (error) { failed = true; message = migrationMessage(error); render(focus); }
+      } catch (error) {
+        reportClientError(error, 'app.migration', { module: '/js/migration-wizard.mjs' });
+        failed = true; message = migrationMessage(error); render(focus);
+      }
     };
     const options = {
       busy, candidates: candidateChoices, pairs: backendChoices, expanded: expandedRows,
@@ -1477,6 +1481,7 @@ export async function openMigrationWizard({
       catch (error) {
         if (error?.name === 'AbortError') message = 'Selection cancelled. Nothing was written.';
         else {
+          reportClientError(error, 'app.migration', { module: '/js/migration-wizard.mjs' });
           message = migrationMessage(error);
           if (error instanceof MigrationError && error.acquisitionIssues?.length) {
             message += ` ${error.acquisitionIssues.slice(0, 3).map((issue) => `${safeLabel(issue.file)}: ${safeLabel(issue.reason)}`).join(' ')}`;
