@@ -1428,6 +1428,13 @@ input[type='search'].ctl {
   color: var(--warning);
 }
 
+.editor-loading {
+  grid-area: sheet;
+  align-self: start;
+  z-index: 20;
+  margin: var(--sp-4);
+}
+
 .welcome {
   display: grid;
   gap: var(--sp-5);

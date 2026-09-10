@@ -95,6 +95,8 @@ async function fixture({ failure = null, pauseCatalog = null, cancelSelection = 
     requestAnimationFrame: (fn) => fn(), selectArea() {}, openOther() {},
     showModal: dom.showDialog, closeModal: dom.closeDialog,
     writeContextNode: () => h('p', {}, 'Synthetic local workspace'),
+    withEditorLoad: async (_message, action) => action({}),
+    rememberDocumentView() {},
     setStatus, choosePendingNavigation: async () => 'keep',
     applyPendingNavigation: async () => !cancelSelection,
     async loadContract(id) {

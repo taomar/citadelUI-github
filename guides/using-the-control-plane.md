@@ -141,6 +141,10 @@ wiring limitations. A referenced variable does not prove every nested setting
 affects deployed resources. Terraform export's missing-equivalence rules are
 separate and do not block an otherwise valid native edit. No provider, script,
 state, cloud ID, Terraform or APIM expression is evaluated here.
+Unevaluated native validations and declared-but-unconsumed inputs stay visible
+as advisories when edited; they do not become blocking errors merely because the
+parameter changed. Type/value errors and source-safety checks still block review
+or saving. An advisory is not a claim that Terraform validated the expression.
 
 #### Switching and reconnecting
 
@@ -152,6 +156,12 @@ buffers, selection and editor state. Nonsecret parameter drafts also retain
 source hashes and native profile/unit/parser identity in browser storage.
 Do not depend on page-close recovery for unsaved external XML policy buffers.
 Known-secret buffers are not persisted.
+
+While a document or workspace is opening, the previous editor and its navigation
+controls are temporarily disabled. Values typed before navigation are committed
+to that document's draft before it is preserved. Cancelling navigation or a
+failed load leaves the previous document and its parameter/policy edits available;
+the selected area changes only after the new document and draft are loaded.
 
 Changed source or schema identity preserves/quarantines the old draft with an
 explanation; it is not silently applied to another file. Native binding changes

@@ -342,7 +342,8 @@ test('local import UI: Settings New project and Add workspace use the shared for
   const flow = app.slice(app.indexOf('async function addWorkspaceInApp('), app.indexOf('/**', app.indexOf('async function addWorkspaceInApp(')));
   assert.match(flow, /persistParameterDraft\(\)/);
   assert.match(flow, /addRegisteredWorkspace\(\{ projectId/);
-  assert.match(flow, /activateWorkspaceView\(workspace\)/);
+  assert.match(flow, /withEditorLoad\(/);
+  assert.match(flow, /activateWorkspaceView\(workspace, transition\)/);
   assert.match(catalog, /openLocalSourceImport\(/);
   assert.match(catalog, /attach: actions\.attachLocalSource/);
   assert.match(context, /attachLocalSource: attachLocalSourceEnvironment/);

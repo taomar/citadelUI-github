@@ -22,6 +22,7 @@ import { ensureOwnerSession, forgetToken } from './owner-gate.mjs';
 import { reportClientError, startDiagnostics } from './diagnostics-client.mjs';
 import { h, mount, clear } from './dom.mjs';
 import { preserveEditorFocus } from './editor-focus.mjs';
+import { pauseEditorForLoad } from './editor-load.mjs';
 import { renderDiff } from './diff.mjs';
 import { renderParamDocument, renderOutlineNav } from './paramview.mjs';
 import { previewDocument, queueOperation } from './preview.mjs';
@@ -129,6 +130,7 @@ function createEditorState() { return {
 const viewStates = new WorkspaceViewState(createEditorState);
 let state = createEditorState();
 let documentGeneration = 0;
+let editorTransition = null;
 
 const els = {};
 const COMPACT_NAV = window.matchMedia('(max-width: 48rem)');
@@ -383,7 +385,7 @@ function pushOperation(op) {
   }
   state.operations = next;
   persistParameterDraft().catch((error) => setStatus(error.message, 'error'));
-  preserveEditorFocus(els.workspace, render);
+  preserveEditorFocus(els.workspace, renderEditor);
 }
 
 function pushOperations(operations) {
@@ -391,7 +393,7 @@ function pushOperations(operations) {
     state.operations = queueOperation(state.operations, operation, state.current);
   }
   persistParameterDraft().catch((error) => setStatus(error.message, 'error'));
-  preserveEditorFocus(els.workspace, render);
+  preserveEditorFocus(els.workspace, renderEditor);
 }
 
 function dirtyParams() {
@@ -399,7 +401,9 @@ function dirtyParams() {
 }
 
 function currentValidation(doc = viewOf(state.current)) {
-  return classifyValidation(documentFindings(doc), state.baselineValidation, dirtyParams());
+  return classifyValidation(documentFindings(doc), state.baselineValidation, dirtyParams(), {
+    preserveWarnings: doc?.format === 'terraform',
+  });
 }
 
 function nativeValues(doc) {
@@ -866,77 +870,88 @@ function openCreateContract() {
   requestAnimationFrame(() => input.focus());
 }
 
-async function loadContract(id, preserved = null, preserveOptions = undefined) {
-  const owner = state, ticket = viewStates.ticket(), generation = ++documentGeneration, context = activeWorkspace();
-  const loaded = await withStatus('Loading contract\u2026', () =>
-    Promise.all([api.contract(id, context), api.accessContractTargets(context)])
-  );
-  if (!loaded || !viewStates.isCurrent(ticket) || generation !== documentGeneration) return false;
-  const [contract, accessTargets] = loaded;
-  state.contractId = id;
-  state.contract = contract;
-  state.accessTargets = accessTargets;
-  state.current = contract.param;
-  state.baselineValidation = validateDocument(contract.param);
-  const operations = await restoreParameterDraft(contract.param, owner);
-  if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return false;
-  state.operations = operations;
-  state.policyChanges = {};
-  state.policyRaw = null;
-  state.policyPreview = null;
-  const remembered = state.documentViews.get(contract.param.path);
-  state.open = new Map(remembered?.open || []);
-  if (remembered) state.tab = remembered.tab;
-  if (preserved) {
-    const conflicts = restoreContractEdits(state, preserved, preserveOptions);
-    if (conflicts.length) {
-      state.quarantinedDraft = { ...preserved, reason: `Pending edits are quarantined because source changed: ${conflicts.join(', ')}.` };
-      setStatus(
-        `Pending edits could not be reapplied because source changed: ${conflicts.join(', ')}.`,
-        'error'
-      );
+async function loadContract(id, preserved = null, preserveOptions = undefined, transition = null) {
+  return withEditorLoad('Opening contract. Editing is paused until loading finishes.', async () => {
+    const owner = state, ticket = viewStates.ticket(), generation = ++documentGeneration, context = activeWorkspace();
+    const loaded = await withStatus('Loading contract\u2026', async () => {
+      const [contract, accessTargets] = await Promise.all([api.contract(id, context), api.accessContractTargets(context)]);
+      if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return null;
+      const draftState = { workspaceId: owner.workspaceId, quarantinedDraft: null };
+      const operations = await restoreParameterDraft(contract.param, draftState);
+      return { contract, accessTargets, operations, draftState };
+    });
+    if (!loaded || !viewStates.isCurrent(ticket) || generation !== documentGeneration) return false;
+    const { contract, accessTargets, operations, draftState } = loaded;
+    state.contractId = id;
+    state.contract = contract;
+    state.accessTargets = accessTargets;
+    state.current = contract.param;
+    state.baselineValidation = validateDocument(contract.param);
+    state.quarantinedDraft = draftState.quarantinedDraft;
+    if (state.quarantinedDraft) setStatus(state.quarantinedDraft.reason, 'error');
+    state.operations = operations;
+    state.policyChanges = {};
+    state.policyRaw = null;
+    state.policyPreview = null;
+    const remembered = state.documentViews.get(contract.param.path);
+    state.open = new Map(remembered?.open || []);
+    if (remembered) state.tab = remembered.tab;
+    if (preserved) {
+      const conflicts = restoreContractEdits(state, preserved, preserveOptions);
+      if (conflicts.length) {
+        state.quarantinedDraft = { ...preserved, reason: `Pending edits are quarantined because source changed: ${conflicts.join(', ')}.` };
+        setStatus(
+          `Pending edits could not be reapplied because source changed: ${conflicts.join(', ')}.`,
+          'error'
+        );
+      }
+    } else {
+      restoreStashedPending();
     }
-  } else {
-    restoreStashedPending();
-  }
-  render();
-  if (remembered) requestAnimationFrame(() => {
-    if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return;
-    els.workspace.scrollTop = remembered.scrollTop;
-    const control = [...els.workspace.querySelectorAll('[data-editor-focus]')].find((node) => node.dataset.editorFocus === remembered.focus);
-    if (control && !control.disabled && control.getClientRects().length) control.focus({ preventScroll: true });
-  });
+    render();
+    if (remembered) requestAnimationFrame(() => {
+      if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return;
+      els.workspace.scrollTop = remembered.scrollTop;
+      const control = [...els.workspace.querySelectorAll('[data-editor-focus]')].find((node) => node.dataset.editorFocus === remembered.focus);
+      if (control && !control.disabled && control.getClientRects().length) control.focus({ preventScroll: true });
+    });
 
-  // The onboarded-model list only shapes a suggestion, so it is fetched after
-  // the contract is on screen rather than made a precondition for showing it.
-  if (!state.onboardedModels.length) {
-    try {
-      const [{ models }, specs] = await Promise.all([
-        api.onboardedModels(),
-        api.policyVariables(),
-      ]);
-      if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return true;
-      state.onboardedModels = models || [];
-      state.policyVariables = specs.variables || [];
-      state.throttleSpecs = specs.throttles || null;
-      state.semanticCacheSpec = specs.semanticCache || null;
-      state.contentSafetySpec = specs.contentSafety || null;
-      render();
-    } catch {
-      if (state === owner) state.onboardedModels = [];
+    // The onboarded-model list only shapes a suggestion, so it is fetched after
+    // the contract is on screen rather than made a precondition for showing it.
+    if (!state.onboardedModels.length) {
+      try {
+        const [{ models }, specs] = await Promise.all([
+          api.onboardedModels(),
+          api.policyVariables(),
+        ]);
+        if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return true;
+        state.onboardedModels = models || [];
+        state.policyVariables = specs.variables || [];
+        state.throttleSpecs = specs.throttles || null;
+        state.semanticCacheSpec = specs.semanticCache || null;
+        state.contentSafetySpec = specs.contentSafety || null;
+        render();
+      } catch {
+        if (state === owner) state.onboardedModels = [];
+      }
     }
-  }
-  return true;
+    return true;
+  }, transition);
 }
 
 async function selectContract(id, options = {}) {
-  if (!options.skipPendingCheck && state.contractId !== id) {
-    const choice = await choosePendingNavigation({
-      destination: `opening contract ${id}`,
-    });
-    if (!(await applyPendingNavigation(choice))) return false;
-  }
-  return loadContract(id, options.preserved, options.preserveOptions);
+  return withEditorLoad('Opening contract. Editing is paused until loading finishes.', async (transition) => {
+    const ticket = viewStates.ticket();
+    rememberDocumentView();
+    if (!options.skipPendingCheck && state.contractId !== id) {
+      const choice = await choosePendingNavigation({
+        destination: `opening contract ${id}`,
+      });
+      if (!viewStates.isCurrent(ticket) || !(await applyPendingNavigation(choice))) return false;
+    }
+    if (!viewStates.isCurrent(ticket)) return false;
+    return loadContract(id, options.preserved, options.preserveOptions, transition);
+  }, options.transition);
 }
 
 /* ------------------------------------------------------------------- policy */
@@ -1473,24 +1488,28 @@ function closeModal() {
 
 /* ----------------------------------------------------------------- rendering */
 
-async function switchEnvironment(environment) {
-  rememberDocumentView();
-  await persistParameterDraft();
-  const workspace = await withStatus('Opening workspace\u2026', () => openRegisteredWorkspace(environment.id));
-  if (!workspace) return;
-  closeModal();
-  await activateWorkspaceView(workspace);
+async function switchEnvironment(environment, transition = null) {
+  return withEditorLoad('Opening workspace. Editing is paused until loading finishes.', async (transition) => {
+    rememberDocumentView();
+    await persistParameterDraft();
+    const workspace = await withStatus('Opening workspace\u2026', () => openRegisteredWorkspace(environment.id));
+    if (!workspace) return;
+    closeModal();
+    await activateWorkspaceView(workspace, transition);
+  }, transition);
 }
 
 async function addWorkspaceInApp(projectId = null) {
-  rememberDocumentView();
-  await persistParameterDraft();
-  closeModal();
-  const workspace = await addRegisteredWorkspace({ projectId, onOpenExisting: async (id) => {
-    const environment = await workspaceRegistry.getEnvironment(id);
-    if (environment) await switchEnvironment(environment);
-  } });
-  if (workspace) await activateWorkspaceView(workspace);
+  return withEditorLoad('Choosing a workspace. The previous editor is paused.', async (transition) => {
+    rememberDocumentView();
+    await persistParameterDraft();
+    closeModal();
+    const workspace = await addRegisteredWorkspace({ projectId, onOpenExisting: async (id) => {
+      const environment = await workspaceRegistry.getEnvironment(id);
+      if (environment) await switchEnvironment(environment, transition);
+    } });
+    if (workspace) await activateWorkspaceView(workspace, transition);
+  });
 }
 
 /**
@@ -2500,6 +2519,7 @@ function renderActions() {
         h('button', { class: 'btn', onclick: openWorkspaceSettings }, 'Settings')
       )
     );
+    editorTransition?.pause.refresh();
     return;
   }
   const pending = pendingCount();
@@ -2597,6 +2617,7 @@ function renderActions() {
     ),
     h('div', { class: 'tb-command-set' }, migration, terraformExport, settings, discard, primary)
   );
+  editorTransition?.pause.refresh();
 }
 
 /**
@@ -3224,13 +3245,53 @@ function render() {
   }
   updateHeaderContext();
   renderSidebar();
+  renderEditor();
+}
+
+function renderEditor() {
+  if (els.shell.dataset.workspace !== 'active') return;
+  // Committing a field on blur must not detach the area button whose click
+  // follows that blur. Ordinary value edits do not change area navigation.
   renderActions();
   renderWorkspace();
   renderContextRail();
   markCurrentSection();
+  editorTransition?.pause.refresh();
 }
 
 /* ------------------------------------------------------------------ loading */
+
+async function withEditorLoad(message, action, transition = null) {
+  if (transition) return transition === editorTransition ? action(transition) : false;
+  if (editorTransition) {
+    setStatus('A document is still opening. Wait for loading to finish before navigating again.', 'info');
+    return false;
+  }
+  // Text fields can hold a typed value until blur. Commit before locking or
+  // capturing the predecessor, including keyboard-driven navigation.
+  if (els.workspace?.contains(document.activeElement)) document.activeElement.blur();
+  const owner = state, ticket = viewStates.ticket(), predecessor = owner.current;
+  const pause = pauseEditorForLoad(
+    [els.workspace, els.sidebar, els.contextRail, els.tbActions], els.editorLoading, message
+  );
+  const scope = { pause };
+  editorTransition = scope;
+  try {
+    return await action(scope);
+  } finally {
+    if (editorTransition === scope) {
+      editorTransition = null;
+      try {
+        if (state === owner && viewStates.isCurrent(ticket) && owner.current === predecessor) {
+          restoreStashedPending();
+          render();
+        }
+      } finally {
+        pause.release();
+      }
+    }
+  }
+}
 
 function rememberDocumentView() {
   if (!state.current?.path) return;
@@ -3238,80 +3299,89 @@ function rememberDocumentView() {
     scrollTop: els.workspace?.scrollTop || 0, focus: state.lastEditorFocus || null });
 }
 
-async function loadDocument(path, { preserve = false } = {}) {
-  const owner = state, ticket = viewStates.ticket(), generation = ++documentGeneration, context = activeWorkspace();
-  const pending = preserve ? captureContractEdits(owner) : null;
-  const previousIdentity = owner.current?.nativeIdentity;
-  const doc = await withStatus('Loading\u2026', () => api.deployment(path, context));
-  if (!doc || !viewStates.isCurrent(ticket) || generation !== documentGeneration) return;
-  owner.quarantinedDraft = null;
-  const draft = await restoreParameterDraft(doc, owner);
-  if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return;
-  state.current = doc;
-  state.baselineValidation = documentFindings(doc);
-  state.operations = draft;
-  state.policyChanges = {};
-  state.policyRaw = null;
-  state.policyPreview = null;
-  if (pending?.operations.length) {
-    if (pending.parameterHash === doc.hash && (!doc.nativeIdentity || sameNativeDraftBinding(previousIdentity, doc.nativeIdentity))) {
-      state.operations = pending.operations;
-    } else state.quarantinedDraft = { ...pending, reason: 'The file or its native schema/dependencies changed while this workspace was inactive. Its pending draft is retained, not applied to the new source.' };
-  }
-  restoreStashedPending();
-  const remembered = state.documentViews.get(path);
-  state.open = new Map(remembered?.open || []);
-  if (remembered) state.tab = remembered.tab;
-  if (state.tab === 'policy') state.tab = 'params';
-  render();
-  if (remembered) requestAnimationFrame(() => {
-    if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return;
-    els.workspace.scrollTop = remembered.scrollTop;
-    const control = [...els.workspace.querySelectorAll('[data-editor-focus]')].find((node) => node.dataset.editorFocus === remembered.focus);
-    if (control && !control.disabled && control.getClientRects().length) control.focus({ preventScroll: true });
-  });
+async function loadDocument(path, { preserve = false, selection = null, transition = null } = {}) {
+  return withEditorLoad('Opening document. Editing is paused until loading finishes.', async () => {
+    const owner = state, ticket = viewStates.ticket(), generation = ++documentGeneration, context = activeWorkspace();
+    const pending = preserve ? captureContractEdits(owner) : null;
+    const previousIdentity = owner.current?.nativeIdentity;
+    const loaded = await withStatus('Loading\u2026', async () => {
+      const doc = await api.deployment(path, context);
+      if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return null;
+      const draftState = { workspaceId: owner.workspaceId, quarantinedDraft: null };
+      const draft = await restoreParameterDraft(doc, draftState);
+      return { doc, draft, draftState };
+    });
+    if (!loaded || !viewStates.isCurrent(ticket) || generation !== documentGeneration) return false;
+    const { doc, draft, draftState } = loaded;
+    if (selection) Object.assign(owner, selection);
+    owner.quarantinedDraft = draftState.quarantinedDraft;
+    if (owner.quarantinedDraft) setStatus(owner.quarantinedDraft.reason, 'error');
+    state.current = doc;
+    state.baselineValidation = documentFindings(doc);
+    state.operations = draft;
+    state.policyChanges = {};
+    state.policyRaw = null;
+    state.policyPreview = null;
+    if (pending?.operations.length) {
+      if (pending.parameterHash === doc.hash && (!doc.nativeIdentity || sameNativeDraftBinding(previousIdentity, doc.nativeIdentity))) {
+        state.operations = pending.operations;
+      } else state.quarantinedDraft = { ...pending, reason: 'The file or its native schema/dependencies changed while this workspace was inactive. Its pending draft is retained, not applied to the new source.' };
+    }
+    restoreStashedPending();
+    const remembered = state.documentViews.get(path);
+    state.open = new Map(remembered?.open || []);
+    if (remembered) state.tab = remembered.tab;
+    if (state.tab === 'policy') state.tab = 'params';
+    render();
+    if (remembered) requestAnimationFrame(() => {
+      if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return;
+      els.workspace.scrollTop = remembered.scrollTop;
+      const control = [...els.workspace.querySelectorAll('[data-editor-focus]')].find((node) => node.dataset.editorFocus === remembered.focus);
+      if (control && !control.disabled && control.getClientRects().length) control.focus({ preventScroll: true });
+    });
+    return true;
+  }, transition);
 }
 
-async function selectArea(id) {
+async function selectArea(id, options = {}) {
   const area = state.areas.find((a) => a.id === id);
-  if (!area) return;
-  if (state.area === id) return;
-  rememberDocumentView();
-  if (
-    !(await confirmPendingNavigation({
-      destination: `opening ${area.title}`,
-    }))
-  ) return;
-  state.area = id;
-  state.tab = 'params';
-  state.contract = null;
-  state.contractId = null;
-  state.accessTargets = null;
+  if (!area || state.area === id) return false;
+  return withEditorLoad('Opening document. Editing is paused until loading finishes.', async (transition) => {
+    const owner = state, ticket = viewStates.ticket(), context = activeWorkspace();
+    rememberDocumentView();
+    if (
+      !(await confirmPendingNavigation({
+        destination: `opening ${area.title}`,
+      }))
+    ) return false;
+    if (!viewStates.isCurrent(ticket)) return false;
+    const selection = { area: id, tab: 'params', contract: null, contractId: null, accessTargets: null };
 
-  if (area.kind === 'contracts') {
-    state.current = null;
-    render();
-    const data = await withStatus('Loading contracts\u2026', () => api.contracts());
-    if (!data) return;
-    state.contracts = data;
-    render();
-    return;
-  }
-  await loadDocument(area.path);
+    if (area.kind === 'contracts') {
+      const data = await withStatus('Loading contracts\u2026', () => api.contracts(context));
+      if (!data || !viewStates.isCurrent(ticket)) return false;
+      Object.assign(owner, selection, { current: null, contracts: data });
+      render();
+      return true;
+    }
+    return loadDocument(area.path, { selection, transition });
+  }, options.transition);
 }
 
-async function openOther(path) {
-  if (state.current?.path === path) return;
-  rememberDocumentView();
-  if (
-    !(await confirmPendingNavigation({
-      destination: `opening ${path}`,
-    }))
-  ) return;
-  state.area = 'other';
-  state.contract = null;
-  state.tab = 'params';
-  await loadDocument(path);
+async function openOther(path, options = {}) {
+  if (state.current?.path === path) return false;
+  return withEditorLoad('Opening document. Editing is paused until loading finishes.', async (transition) => {
+    const ticket = viewStates.ticket();
+    rememberDocumentView();
+    if (
+      !(await confirmPendingNavigation({
+        destination: `opening ${path}`,
+      }))
+    ) return false;
+    if (!viewStates.isCurrent(ticket)) return false;
+    return loadDocument(path, { transition,
+      selection: { area: 'other', tab: 'params', contract: null, contractId: null, accessTargets: null } });
+  }, options.transition);
 }
 
 let wired = false;
@@ -3365,6 +3435,7 @@ async function init() {
   els.localPathLabel = document.getElementById('local-path-label');
   els.localPathCopy = document.getElementById('local-path-copy');
   els.workspace = document.getElementById('workspace');
+  els.editorLoading = document.getElementById('editor-loading');
   els.status = document.getElementById('status');
   els.modal = document.getElementById('modal');
   // `init` runs again when the user returns to setup, so anything bound to a
@@ -3421,7 +3492,8 @@ async function init() {
   }
 }
 
-async function activateWorkspaceView(workspace) {
+async function activateWorkspaceView(workspace, transition = null) {
+  return withEditorLoad('Opening workspace. Editing is paused until loading finishes.', async (transition) => {
     state = viewStates.activate(workspace);
     state.source = environmentSourceOf(workspace.environment);
     const ticket = viewStates.ticket();
@@ -3464,15 +3536,16 @@ async function activateWorkspaceView(workspace) {
       );
     }
     if (state.current && state.catalog.files.some((file) => file.path === state.current.path)) {
-      if (state.contractId && state.contract) await loadContract(state.contractId, captureContractEdits(state));
-      else await loadDocument(state.current.path, { preserve: true });
+      if (state.contractId && state.contract) await loadContract(state.contractId, captureContractEdits(state), undefined, transition);
+      else await loadDocument(state.current.path, { preserve: true, transition });
     } else if (state.areas.length) {
       state.area = null;
-      await selectArea(state.areas[0].id);
+      await selectArea(state.areas[0].id, { transition });
     } else {
       const generic = state.catalog.files.find((file) => !file.parseError);
-      if (generic) await openOther(generic.path);
+      if (generic) await openOther(generic.path, { transition });
     }
+  }, transition);
 }
 
 /**
@@ -3532,26 +3605,31 @@ function renderStartupRecovery(error) {
  */
 async function returnToSetup() {
   try {
-    // The only navigation entry point that used to be a real document load, and
-    // so the only one that relied on `beforeunload` to protect unsaved work.
-    // Policy edits live in memory alone, so leaving without asking loses them
-    // silently.
-    rememberDocumentView();
-    await persistParameterDraft();
-    viewStates.leave();
-    documentGeneration += 1;
-    policyPreviewToken += 1;
-    clearActiveWorkspace();
-    // `selectArea` early-returns when the requested area is already selected, so
-    // a stale `state.area` would make the next environment open to an empty
-    // sheet with that area highlighted and unclickable.
-    state = createEditorState();
-    setSetupContext(null);
-    els.shell.dataset.workspace = 'setup';
-    els.sidebar?.replaceChildren();
-    els.contextRail?.replaceChildren();
-    updateHeaderContext();
-    els.tbActions?.replaceChildren();
+    const left = await withEditorLoad('Returning to workspaces. The editor is paused.', async () => {
+      // The only navigation entry point that used to be a real document load, and
+      // so the only one that relied on `beforeunload` to protect unsaved work.
+      // Policy edits live in memory alone, so leaving without asking loses them
+      // silently.
+      rememberDocumentView();
+      await persistParameterDraft();
+      viewStates.leave();
+      documentGeneration += 1;
+      policyPreviewToken += 1;
+      clearActiveWorkspace();
+      // `selectArea` early-returns when the requested area is already selected, so
+      // a stale `state.area` would make the next environment open to an empty
+      // sheet with that area highlighted and unclickable.
+      state = createEditorState();
+      setSetupContext(null);
+      els.shell.dataset.workspace = 'setup';
+      els.sidebar?.replaceChildren();
+      els.contextRail?.replaceChildren();
+      els.workspace.replaceChildren(h('p', { class: 'banner', role: 'status' }, 'Opening workspaces\u2026'));
+      updateHeaderContext();
+      els.tbActions?.replaceChildren();
+      return true;
+    });
+    if (!left) return false;
     await init();
     return true;
   } catch (error) {

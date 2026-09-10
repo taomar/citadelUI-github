@@ -306,11 +306,12 @@ function validateNetworkConfiguration(findings, values) {
   }
 }
 
-export function classifyValidation(findings, baseline = [], dirty = new Set()) {
+export function classifyValidation(findings, baseline = [], dirty = new Set(), { preserveWarnings = false } = {}) {
   const baselineKeys = new Set(
     baseline.map((item) => JSON.stringify([item.param, item.path, item.message]))
   );
   return findings.map((item) => {
+    if (preserveWarnings && item.severity === 'warning') return item;
     const key = JSON.stringify([item.param, item.path, item.message]);
     const edited = dirty.has(item.param);
     if (edited) return { ...item, severity: 'error' };
