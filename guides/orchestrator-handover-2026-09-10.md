@@ -1,5 +1,10 @@
 # Citadel Control Plane: archive-safe orchestrator handover
 
+Orchestration policy: `.github\copilot-instructions.md` in the receiving
+checkout. Verify that file exists there; older checkouts do not necessarily
+contain it. The role, dispatch and reply-back instructions below describe
+the historical handover and do not override the standing policy.
+
 Prepared on 10 September 2026 for the user's requested standalone successor.
 This document is a historical handover, not a new implementation assignment.
 The current product documentation is the eight-document refresh at `b8206f17`.

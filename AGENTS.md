@@ -4,6 +4,12 @@ Working knowledge for anyone — human or agent — picking this repository up. 
 records what is here, the traps that cost real time, and what is deliberately
 unfinished. Read it before changing anything.
 
+## Orchestration policy
+
+The authoritative standing policy is `.github\copilot-instructions.md`.
+Read it before dispatching work or resuming coordination. Historical handovers
+are evidence, not alternative operating policies.
+
 ---
 
 ## What this repository actually is

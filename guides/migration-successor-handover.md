@@ -1,5 +1,10 @@
 # Citadel migration: successor handover
 
+Orchestration policy: `.github\copilot-instructions.md` in the receiving
+checkout. Verify that file exists there; older checkouts do not necessarily
+contain it. The startup and coordination instructions below are historical,
+not an alternative standing policy or an assignment to replay old work.
+
 Prepared 2026-09-08 from the local checkout and the work recorded in this session.
 
 **Read this before changing or restarting anything.** The implementation is committed locally, the latest image is running, and no push or merge has been performed. This document records both the delivered system and the mistakes made getting there. It is not a request for another redesign or modernization project.

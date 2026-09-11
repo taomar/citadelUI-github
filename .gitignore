@@ -404,6 +404,12 @@ local/**/*
 
 .debug
 .git*
+
+# Track the standing policy without exposing other ignored Git metadata.
+!/.github/
+/.github/*
+!/.github/copilot-instructions.md
+
 .vscode
 **/__azurite_db*__.json
 **/__blobstorage__
