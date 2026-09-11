@@ -434,12 +434,12 @@ test('migration public donor applies only through local backups and rechecks the
   assert.equal(stale.api.trace.at(-1), 'fail');
 });
 
-test('migration public donor receipt failure retains the existing rollback route and never writes GitHub', async () => {
+test('migration public donor receipt failure retains Local bytes for recovery and never writes GitHub', async () => {
   const h = publicHarness({ local: { hooks: { receipt: async () => { throw new Error('Synthetic receipt failure'); } } } });
   const preview = await acceptCount(h);
-  await assert.rejects(h.session.apply(preview.id, { reviewed: true }), { code: 'apply-failed' });
-  assert.equal((await h.provider.read(TARGET)).text, CURRENT);
-  assert.equal(h.api.trace.at(-1), 'rollback');
+  await assert.rejects(h.session.apply(preview.id, { reviewed: true }), { code: 'apply-recovery' });
+  assert.equal((await h.provider.read(TARGET)).text, CURRENT.replace('Count = 2', 'Count = 4'));
+  assert.equal(h.api.trace.at(-1), 'fail');
   assert(h.github.calls.every((call) => call.method === 'GET'));
 });
 

@@ -231,6 +231,7 @@ export function documentFromText(alias, text, file = {}) {
   return {
     path: alias,
     hash: file.hash || null,
+    bom: Boolean(file.bom),
     mtimeMs: file.lastModified || null,
     size: file.size ?? new TextEncoder().encode(text).byteLength,
     using: doc.using?.path || null,

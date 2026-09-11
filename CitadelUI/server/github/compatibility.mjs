@@ -21,6 +21,7 @@ import { githubError } from './api.mjs';
 import { loadTree, readBlob, requireBranchHead } from './workspace.mjs';
 import { unitForAlias, workspaceScope } from '../../shared/workspace-configuration.mjs';
 import { assertNativeDependencySafe, assertNativeFileSafe, decodeNativeBytes, discoverConfiguredWorkspace, readUnitSchema } from '../../shared/terraform/workspace.mjs';
+import { decodeSourceBytes } from '../../shared/source-text.mjs';
 
 /** Sources read during one scan, so a malformed repository cannot be a workload. */
 const MAX_SCANNED_SOURCES = 400;
@@ -63,7 +64,7 @@ export function githubScanProvider(client, token, fullName, snapshot, configurat
         );
       }
       const blob = await readBlob(client, token, fullName, file.sha);
-      const record = { alias, text: scope.native ? decodeNativeBytes(blob.bytes) : blob.text,
+      const record = { alias, ...(scope.native ? { text: decodeNativeBytes(blob.bytes) } : decodeSourceBytes(blob.bytes)),
         bytes: blob.bytes, size: blob.size, hash: blob.hash, workspaceHead: snapshot.commit };
       if (scope.native) {
         await assertNativeDependencySafe(record.text, alias);

@@ -681,6 +681,7 @@ export class MigrationSession {
       this.invalidate();
       return {
         transactionId: result.transactionId,
+        warnings: result.warnings || [],
         destination: this.destination,
         target: plan.target.alias,
         copied: evaluation.summary.copied,
@@ -689,6 +690,11 @@ export class MigrationSession {
     } catch (error) {
       this.invalidate();
       if (error instanceof MigrationError) throw error;
+      if (error.code === 'LOCAL_RECOVERY_REQUIRED') {
+        throw Object.assign(new MigrationError('apply-recovery'), {
+          transactionId: error.transactionId, applied: null, recoveryRequired: true,
+        });
+      }
       throw new MigrationError('apply-failed');
     }
   }

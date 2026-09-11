@@ -3,6 +3,7 @@ import { workspaceScope } from '../../shared/workspace-configuration.mjs';
 import { unitForAlias } from '../../shared/workspace-configuration.mjs';
 import { assertNativeDependencySafe, assertNativeFileSafe, decodeNativeBytes, readUnitSchema } from '../../shared/terraform/workspace.mjs';
 import { githubBranchKey, githubHeadRevision } from './github-head-state.mjs';
+import { decodeSourceBytes } from '../../shared/source-text.mjs';
 
 /**
  * Read-only Citadel source provider backed by a GitHub repository.
@@ -213,7 +214,7 @@ export class GitHubRepositoryProvider {
     const record = {
       alias,
       bytes,
-      text: this.scope.native ? decodeNativeBytes(bytes) : new TextDecoder().decode(bytes),
+      ...(this.scope.native ? { text: decodeNativeBytes(bytes) } : decodeSourceBytes(bytes)),
       size: bytes.byteLength,
       lastModified: null,
       hash,

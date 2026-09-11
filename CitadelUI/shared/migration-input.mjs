@@ -46,6 +46,7 @@ const MESSAGES = Object.freeze({
   remote: 'Remote destinations are preview/export-only. Migration never commits or writes to GitHub.',
   closed: 'This migration session has ended. Open Migrate Citadel Configuration again.',
   'apply-failed': 'The local transaction did not complete normally. Open Settings > History to check rollback or recovery before retrying.',
+  'apply-recovery': 'The local transaction outcome could not be confirmed. Source bytes were retained where ownership allowed; do not retry blindly. Open Settings > History to reconcile the receipt or recovery.',
   'public-input': 'Use a github.com repository root URL or owner/repo, and select an explicit branch, tag, or full commit SHA.',
   'public-rate': 'Anonymous GitHub rate limit reached. Wait for the public quota to reset, then reconnect and replan. A PAT is not required.',
   'public-not-found': 'The public GitHub repository, ref, or selected file is unavailable anonymously. It may be missing or no longer public. Reconnect and replan.',

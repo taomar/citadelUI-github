@@ -19,6 +19,7 @@ import {
 import { publicDonorAlias, PUBLIC_DONOR_LIMITS } from '../../shared/migration-public-github.mjs';
 import { nativeAlias, nativeInventoryAlias, unitForAlias, workspaceScope } from '../../shared/workspace-configuration.mjs';
 import { assertNativeDependencySafe, assertNativeFileSafe, decodeNativeBytes, readUnitSchema } from '../../shared/terraform/workspace.mjs';
+import { decodeSourceBytes } from '../../shared/source-text.mjs';
 
 export { sha256, sourceScope };
 
@@ -33,7 +34,9 @@ async function readSource(provider, safe) {
     throw Object.assign(new Error(`Source exceeds the 8 MiB limit: ${safe}`), { code: 'SOURCE_TOO_LARGE' });
   }
   const result = {
-    alias: safe, bytes, text: new TextDecoder().decode(bytes), size: bytes.byteLength,
+    alias: safe, bytes,
+    ...(provider.scope?.native || provider.nativeInventory ? { text: decodeNativeBytes(bytes) } : decodeSourceBytes(bytes)),
+    size: bytes.byteLength,
     lastModified: file.lastModified, hash: await sha256(bytes),
   };
   result.version = result.hash;
@@ -314,7 +317,6 @@ export class BrowserDirectoryProvider {
     const safe = this.safeAlias(alias);
     const source = await readSource(this, safe);
     if (this.scope.native || this.nativeInventory) {
-      source.text = decodeNativeBytes(source.bytes);
       await assertNativeDependencySafe(source.text, safe);
       const unit = unitForAlias(this.configuration, safe);
       if (unit) {
@@ -332,7 +334,7 @@ export class BrowserDirectoryProvider {
       const unit = unitForAlias(this.configuration, safe);
       const { parameters } = await readUnitSchema(this, unit);
       await assertNativeFileSafe(decodeNativeBytes(content), unit, parameters);
-    }
+    } else decodeSourceBytes(content);
     if (content.byteLength > MAX_SOURCE_BYTES) {
       throw new Error(`Source exceeds the 8 MiB limit: ${safe}`);
     }

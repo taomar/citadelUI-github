@@ -72,6 +72,15 @@ export function createTransactionCommit(request) {
     let committing = false;
     let receiptAttempted = false;
     const written = [];
+    const committedResult = () => ({
+      applied: true,
+      transactionId,
+      files: written.map((file) => ({ alias: file.alias, hash: file.finalHash })),
+    });
+    const recoveryFailure = (error, detail) => Object.assign(
+      new Error(`${error.message} ${detail}`, { cause: error }),
+      { code: 'LOCAL_RECOVERY_REQUIRED', transactionId, applied: null, recoveryRequired: true }
+    );
 
     try {
       for (const file of preparedFiles.filter((item) => !item.create)) {
@@ -171,41 +180,53 @@ export function createTransactionCommit(request) {
           })),
         }),
       });
-      return {
-        transactionId,
-        files: written.map((file) => ({ alias: file.alias, hash: file.finalHash })),
-      };
+      return committedResult();
     } catch (error) {
-      if (receiptAttempted && (options.nativeProof || options.confirmReceiptOutcome)) {
+      if (receiptAttempted) {
         // An unanswered receipt may already be committed. Do not undo source
         // bytes while that durable outcome is uncertain.
         let recorded;
         try {
           recorded = await request(`/api/transactions/${encodeURIComponent(transactionId)}?environmentId=${encodeURIComponent(environment.id)}`);
         } catch (inspectionError) {
-          throw new Error(`${error.message} The receipt could not be confirmed. Source bytes were retained; inspect History recovery. ${inspectionError.message}`, { cause: error });
+          throw recoveryFailure(error, `The receipt could not be confirmed. Source bytes were retained; inspect History recovery. ${inspectionError.message}`);
         }
-        const confirmed = () => ({ transactionId, files: written.map((file) => ({ alias: file.alias, hash: file.finalHash })),
-          warnings: ['The receipt response was interrupted, but the committed journal confirms this save.'] });
-        if (recorded.transaction.status === 'committed') return confirmed();
+        const confirmed = (record) => ({
+          ...committedResult(),
+          warnings: [
+            'The receipt response failed, but the committed journal confirms this save.',
+            ...(record.transaction.auditRecorded === false
+              ? ['The terminal audit is still pending. Inspect History before another change.'] : []),
+          ],
+        });
+        if (recorded.transaction.status === 'committed') return confirmed(recorded);
         try {
           await request(`/api/transactions/${encodeURIComponent(transactionId)}/fail`, {
             method: 'POST', headers: environmentHeaders,
             body: JSON.stringify({ changedAliases: written.map((file) => file.alias) }),
           });
         } catch (recoveryError) {
-          const latest = await request(`/api/transactions/${encodeURIComponent(transactionId)}?environmentId=${encodeURIComponent(environment.id)}`);
-          if (latest.transaction.status === 'committed') return confirmed();
-          throw new Error(`${error.message} Source bytes were retained, but recovery could not be recorded. Inspect History. ${recoveryError.message}`, { cause: error });
+          let latest;
+          try {
+            latest = await request(`/api/transactions/${encodeURIComponent(transactionId)}?environmentId=${encodeURIComponent(environment.id)}`);
+          } catch (inspectionError) {
+            throw recoveryFailure(error, `Source bytes were retained, but recovery could not be recorded or confirmed. Inspect History. ${recoveryError.message} ${inspectionError.message}`);
+          }
+          if (latest.transaction.status === 'committed') return confirmed(latest);
+          throw recoveryFailure(error, `Source bytes were retained, but recovery could not be recorded. Inspect History. ${recoveryError.message}`);
         }
-        throw new Error(`${error.message} The save receipt is not confirmed. Source bytes were retained; inspect History recovery.`, { cause: error });
+        throw recoveryFailure(error, 'The save receipt is not confirmed. Source bytes were retained; inspect History recovery.');
       }
       if (!committing) {
-        await request(`/api/transactions/${encodeURIComponent(transactionId)}/fail`, {
-          method: 'POST',
-          headers: environmentHeaders,
-          body: JSON.stringify({ changedAliases: [] }),
-        }).catch(() => {});
+        try {
+          await request(`/api/transactions/${encodeURIComponent(transactionId)}/fail`, {
+            method: 'POST',
+            headers: environmentHeaders,
+            body: JSON.stringify({ changedAliases: [] }),
+          });
+        } catch (recordError) {
+          throw recoveryFailure(error, `No source write was attempted, but the failure could not be recorded. Inspect History. ${recordError.message}`);
+        }
         throw error;
       }
 
@@ -293,20 +314,26 @@ export function createTransactionCommit(request) {
 
       if (incomplete.length) {
         const unresolved = [...new Set(incomplete.map((item) => item.alias))];
-        await request(`/api/transactions/${encodeURIComponent(transactionId)}/fail`, {
+        try {
+          await request(`/api/transactions/${encodeURIComponent(transactionId)}/fail`, {
+            method: 'POST',
+            headers: environmentHeaders,
+            body: JSON.stringify({ changedAliases: unresolved }),
+          });
+        } catch (recordError) {
+          throw recoveryFailure(error, `Recovery still requires attention for ${unresolved.join(', ')} and could not be recorded. Inspect History. ${recordError.message}`);
+        }
+        throw recoveryFailure(error, `Recovery still requires attention for ${unresolved.join(', ')}.`);
+      }
+      try {
+        await request(`/api/transactions/${encodeURIComponent(transactionId)}/rollback`, {
           method: 'POST',
           headers: environmentHeaders,
-          body: JSON.stringify({ changedAliases: unresolved }),
-        }).catch(() => {});
-        throw new Error(
-          `${error.message} Recovery still requires attention for ${unresolved.join(', ')}.`
-        );
+          body: JSON.stringify({ receipts }),
+        });
+      } catch (recordError) {
+        throw recoveryFailure(error, `Source bytes were restored, but the rollback receipt could not be confirmed. Inspect History. ${recordError.message}`);
       }
-      await request(`/api/transactions/${encodeURIComponent(transactionId)}/rollback`, {
-        method: 'POST',
-        headers: environmentHeaders,
-        body: JSON.stringify({ receipts }),
-      }).catch(() => {});
       throw error;
     }
   };

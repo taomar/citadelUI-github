@@ -545,12 +545,12 @@ test('migration destination BOM survives the surgical local apply', async () => 
   assert.deepEqual([...target.entry.bytes.slice(0, 3)], [0xef, 0xbb, 0xbf]);
 });
 
-test('migration receipt failure restores original destination bytes through transaction backups', async () => {
+test('migration receipt failure retains destination bytes for explicit transaction recovery', async () => {
   const h = migrationHarness({ hooks: { receipt: async () => { throw new Error('Synthetic receipt failure'); } } });
   const preview = await acceptCount(h);
-  await assert.rejects(h.session.apply(preview.id, { reviewed: true }), { code: 'apply-failed' });
-  assert.equal((await h.provider.read(TARGET)).text, CURRENT);
-  assert.deepEqual(h.api.trace, ['prepare', 'backup', 'authorize', 'committing', 'receipt', 'restore-backup', 'rollback']);
+  await assert.rejects(h.session.apply(preview.id, { reviewed: true }), { code: 'apply-recovery', recoveryRequired: true });
+  assert.equal((await h.provider.read(TARGET)).text, CURRENT.replace('Count = 2', 'Count = 4'));
+  assert.deepEqual(h.api.trace, ['prepare', 'backup', 'authorize', 'committing', 'receipt', 'inspect', 'fail']);
   assert(h.donorTrace.every((entry) => !/writable|write:|readwrite|create=true/.test(entry)));
 });
 

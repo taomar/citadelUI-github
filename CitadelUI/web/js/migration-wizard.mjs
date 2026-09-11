@@ -596,6 +596,7 @@ export async function openMigrationWizard({
           : h('section', { class: 'migration-result' },
             h('p', {}, `${result.copied} reviewed parameter replacement${result.copied === 1 ? '' : 's'} applied to the displayed local destination.`),
             h('p', {}, 'Transaction receipt: ', h('code', {}, safeLabel(result.transactionId))),
+            ...(result.warnings || []).map((warning) => h('p', { class: 'notice warn' }, warning)),
             h('p', {}, 'The donor was not written. Previous destination bytes are backed up through the normal transaction history; use Settings > History for undo/recovery.'),
             h('p', { class: 'hint' }, 'No deployment ran. Review remaining semantic/reference items separately before using this configuration.'),
           );

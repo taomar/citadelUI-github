@@ -15,6 +15,7 @@ import { nativePreview, nativeTransactionProof, validateNativeAfter } from '../.
 import { nativeError } from '../../shared/terraform/parser.mjs';
 import { assertNativeDraft, sameNativeDraftBinding } from '../../shared/terraform/drafts.mjs';
 import { environmentSourceOf } from './registry.mjs';
+import { encodeSourceText } from '../../shared/source-text.mjs';
 import {
   applyPolicyChanges,
   assertBalancedXml,
@@ -320,12 +321,14 @@ export class WorkspaceService {
     const source = await context.provider.read(alias);
     assertLoadedHash(source, expectedHash);
     const after = previewDocumentText(source.text, operations);
+    encodeSourceText(after, source);
     return {
       path: alias,
       before: source.text,
       after,
       changed: source.text !== after,
       beforeHash: expectedHash,
+      bom: source.bom,
     };
   }
 
@@ -366,7 +369,7 @@ export class WorkspaceService {
       const source = await context.provider.read(current.meta.template);
       dependencies.push({ alias: current.meta.template, hash: source.hash });
     }
-    const review = Object.freeze({ kind: 'local-overwrite', path: loaded.path, before: current.text, after, beforeHash: current.hash });
+    const review = Object.freeze({ kind: 'local-overwrite', path: loaded.path, before: current.text, after, beforeHash: current.hash, bom: current.bom });
     this.#localOverwriteReviews.set(review, {
       context, configuration: configurationKey(configuration), current, dependencies, after,
       changed: [...new Set(operations.map((operation) => operation.path[0]))],
@@ -400,7 +403,7 @@ export class WorkspaceService {
     if (native) validateNativeAfter(current, after);
     const result = await this.commitFiles([{
       alias: current.path, before: source.bytes, beforeHash: source.hash,
-      after: new TextEncoder().encode(after), changed,
+      after: native ? new TextEncoder().encode(after) : encodeSourceText(after, source), changed,
     }], { action: prepared.action || 'parameter-edit', context, validateBeforeWrite, confirmReceiptOutcome: true,
       ...(native ? { nativeProof: nativeTransactionProof(configuration, current), nativeIdentity: current.nativeIdentity } : {}) });
     this.catalogs.delete(context.provider);
@@ -430,7 +433,7 @@ export class WorkspaceService {
     const after = previewDocumentText(source.text, operations);
     if (after === source.text) return { path: alias, changed: false, archived: null };
     const result = await this.commitFiles([
-      { alias, before: source.bytes, beforeHash: expectedHash, after: new TextEncoder().encode(after), changed: operations.map((operation) => operation.path?.[0]).filter(Boolean) },
+      { alias, before: source.bytes, beforeHash: expectedHash, after: encodeSourceText(after, source), changed: operations.map((operation) => operation.path?.[0]).filter(Boolean) },
     ], { action: 'parameter-edit', context });
     this.catalog = null;
     this.catalogs.delete(context.provider);
@@ -524,6 +527,7 @@ export class WorkspaceService {
         path: entry.policyFile,
         name: entry.policyFile.split('/').at(-1),
         text: source.text,
+        bom: source.bom,
         hash: source.hash,
         mtimeMs: source.lastModified,
         controls: readPolicyControls(source.text),
@@ -570,12 +574,12 @@ export class WorkspaceService {
     const usingPath = relativeAlias(targetDir, usingTarget);
     const paramText = rewriteContractTemplate(paramSource.text, usingPath);
     const created = await this.commitFiles([
-      { alias: paramAlias, before: null, beforeHash: null, after: new TextEncoder().encode(paramText), changed: ['using', 'policyXml'], create: true },
+      { alias: paramAlias, before: null, beforeHash: null, after: encodeSourceText(paramText, paramSource), changed: ['using', 'policyXml'], create: true },
       { alias: policyAlias, before: null, beforeHash: null, after: policySource.bytes, changed: ['policyXml'], create: true },
     ], { action: 'contract-create', context });
     this.catalog = null;
     this.catalogs.delete(context.provider);
-    return { id: `contracts/${clean}`, dir: targetDir, created: created.files.map((file) => file.alias), using: usingPath };
+    return { ...created, id: `contracts/${clean}`, dir: targetDir, created: created.files.map((file) => file.alias), using: usingPath };
   }
 
   async previewPolicy(alias, changes, text = null, expectedHash, context = this.context) {
@@ -584,22 +588,26 @@ export class WorkspaceService {
     assertLoadedHash(source, expectedHash);
     if (typeof text === 'string') {
       assertBalancedXml(text);
+      encodeSourceText(text, source);
       return {
         path: alias,
         before: source.text,
         after: text,
         changed: text !== source.text,
         beforeHash: expectedHash,
+        bom: source.bom,
       };
     }
     const after = applyPolicyChanges(source.text, changes || {});
     assertBalancedXml(after);
+    encodeSourceText(after, source);
     return {
       path: alias,
       before: source.text,
       after,
       changed: after !== source.text,
       beforeHash: expectedHash,
+      bom: source.bom,
       controls: readPolicyControls(after),
     };
   }
@@ -613,7 +621,7 @@ export class WorkspaceService {
     if (source.hash === loaded.hash) throw new Error('The policy no longer differs from the loaded version. Review it again.');
     const after = typeof text === 'string' ? text : applyPolicyChanges(loaded.text, changes || {});
     assertBalancedXml(after);
-    const review = Object.freeze({ kind: 'local-overwrite', path: loaded.path, before: source.text, after, beforeHash: source.hash });
+    const review = Object.freeze({ kind: 'local-overwrite', path: loaded.path, before: source.text, after, beforeHash: source.hash, bom: source.bom });
     this.#localOverwriteReviews.set(review, {
       context, configuration: configurationKey(configuration),
       current: { path: loaded.path, ...source }, dependencies: [], after,
@@ -634,7 +642,7 @@ export class WorkspaceService {
     const source = await context.provider.read(payload.path);
     assertLoadedHash(source, payload.expectedHash);
     const result = await this.commitFiles([
-      { alias: payload.path, before: source.bytes, beforeHash: payload.expectedHash, after: new TextEncoder().encode(preview.after), changed: Object.keys(payload.changes || { raw: true }) },
+      { alias: payload.path, before: source.bytes, beforeHash: payload.expectedHash, after: encodeSourceText(preview.after, source), changed: Object.keys(payload.changes || { raw: true }) },
     ], { action: 'policy-edit', context });
     this.catalog = null;
     this.catalogs.delete(context.provider);
@@ -735,7 +743,7 @@ export class WorkspaceService {
       value: parameter.source,
     }));
     const after = previewDocumentText(comparison.destination.text, operations);
-    const bytes = new TextEncoder().encode(after);
+    const bytes = encodeSourceText(after, comparison.destination);
     return this.commitFiles([
       {
         alias: comparison.targetAlias,
@@ -773,6 +781,7 @@ export class WorkspaceService {
       targetHash: comparison.destination.hash,
       targetLabel: comparison.target.environment.label,
       targetAlias: comparison.targetAlias,
+      bom: comparison.destination.bom,
     };
   }
 

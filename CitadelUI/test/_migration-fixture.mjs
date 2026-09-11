@@ -114,6 +114,7 @@ export function migrationTransactionApi(hooks = {}) {
   const bodies = [];
   const backups = new Map();
   let preparation;
+  let status = 'preparing';
   const request = async (path, options = {}) => {
     const body = typeof options.body === 'string' ? JSON.parse(options.body) : null;
     if (body) bodies.push({ path, body });
@@ -146,11 +147,13 @@ export function migrationTransactionApi(hooks = {}) {
     if (path.endsWith('/committing')) {
       trace.push('committing');
       await hooks.committing?.();
+      status = 'committing';
       return { status: 'committing' };
     }
     if (path.endsWith('/receipt')) {
       trace.push('receipt');
       await hooks.receipt?.();
+      status = 'committed';
       return { status: 'committed' };
     }
     if (path.includes('/backups/') && options.responseType === 'bytes') {
@@ -158,7 +161,11 @@ export function migrationTransactionApi(hooks = {}) {
       return { bytes: backups.get(path.split('?')[0].split('/').at(-1)).slice() };
     }
     if (path.endsWith('/rollback')) { trace.push('rollback'); return { status: 'rolled-back' }; }
-    if (path.endsWith('/fail')) { trace.push('fail'); return { status: 'failed' }; }
+    if (path.endsWith('/fail')) { trace.push('fail'); status = 'failed'; return { status }; }
+    if (path.startsWith('/api/transactions/synthetic-migration-transaction?')) {
+      trace.push('inspect');
+      return { transaction: { status } };
+    }
     throw new Error('Unexpected synthetic transaction request');
   };
   return { request, trace, bodies, backups };
