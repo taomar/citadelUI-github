@@ -1870,6 +1870,7 @@ async function openHistory() {
                        class: 'btn btn-sm btn-danger-ghost',
                       onclick: guardedHandler(async () => {
                         const creation = entry.isCreation;
+                        const restoreAction = captureDocumentAction(owner);
                          if (
                            !(await confirmDialog({
                              title: creation ? entry.nativeCreation ? 'Undo native input file creation?' : 'Undo contract creation?' : 'Restore prior revision?',
@@ -1904,7 +1905,6 @@ async function openHistory() {
                         const preserved = captureContractEdits(owner);
                         closeModal();
                         if (creation && !entry.nativeCreation) {
-                          const selectedDocument = owner.current;
                           const refreshed = await withStatus('Refreshing contract and parameter catalogs\u2026', async () => ({
                             contracts: await api.contracts(context),
                             catalog: await api.deployments(context),
@@ -1919,7 +1919,7 @@ async function openHistory() {
                           renderSidebar();
                           renderContextRail();
                           const fallback = state.contracts.contracts?.find((item) => item.isTemplate);
-                          if (fallback && owner.current === selectedDocument) await selectContract(fallback.id);
+                          if (fallback && ownsDocumentAction(restoreAction)) await selectContract(fallback.id);
                         } else if (owner.contractId && owner.contract) {
                           await loadContract(owner.contractId, preserved);
                         } else if (state.current) {
