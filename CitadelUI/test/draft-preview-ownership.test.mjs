@@ -246,7 +246,7 @@ for (const completion of ['success', 'error']) for (const destination of ['docum
   });
 }
 
-test('policy preview ownership: a same-hash reload and raw transition retire an older edit revision', async () => {
+for (const failure of [false, true]) test(`policy preview ownership: a same-hash reload and raw transition retire an older edit revision${failure ? ' error' : ''}`, async () => {
   const f = fixture(), pending = deferred();
   f.preview = (call) => f.previews.length === 1 ? pending.promise : call.result;
   f.state.policyChanges = { variables: { jwtRequired: true } };
@@ -256,8 +256,11 @@ test('policy preview ownership: a same-hash reload and raw transition retire an 
   f.scope.policyContext().setPolicyMode('raw'); await tick();
   const projection = f.state.policyPreview;
   assert.match(f.raw(), /name="jwtRequired" value="true"/);
-  pending.resolve({ after: xml, controls: readPolicyControls(xml) }); await request;
+  if (failure) pending.reject(new Error('Superseded same-hash preview failed'));
+  else pending.resolve({ after: xml, controls: readPolicyControls(xml) });
+  await request;
   assert.equal(f.state.policyPreview, projection);
+  assert.equal(f.state.policyPreviewError, null);
   assert.match(f.raw(), /name="jwtRequired" value="true"/);
 });
 
@@ -319,4 +322,96 @@ test('policy preview ownership: parameter-save reload keeps guided controls and 
   assert.equal(f.state.policyChanges.variables.jwtRequired, true);
   assert.equal(f.jwt().checked, true); assert.match(f.raw(), /name="jwtRequired" value="true"/);
   assert.equal(f.state.quarantinedDraft, null);
+});
+
+for (const composing of [false, true]) {
+  test(`C1 UI: ${composing ? 'composition' : 'unblurred'} input and secure queued drafts survive catalog reopen only in memory`, async () => {
+    const f = fixture(), path = ['label'];
+    const original = clone([...f.contracts]);
+    f.state.operations = clone(operations);
+    edits.setParameterInput(f.state, path, { value: 'newer raw input \u65e5', composing });
+    f.state.policyRaw = raw;
+    const inputs = clone(f.state.parameterInputs);
+    assert.equal(f.scope.pendingCount(), 3, 'Two queued fields plus policy; the input overlaps a queued field.');
+    assert.equal(f.scope.canPersistAllPending(), false);
+    for (let index = 0; index < 3; index++) {
+      await f.reopen();
+      assert.deepEqual(clone(f.state.parameterInputs), inputs);
+      assert.deepEqual(clone(f.state.operations), operations);
+      assert.equal(f.state.policyRaw, raw);
+      assert.equal(f.scope.canPersistAllPending(), false);
+    }
+    assert.deepEqual(f.writes, []);
+    assert.equal(f.durable.size, 0);
+    assert.deepEqual(clone([...f.contracts]), original, 'Catalog navigation never commits partial input to source.');
+  });
+}
+
+test('C1 UI: repeated reopen and failed then explicit discard preserve independent quarantine copies without resurrection', async () => {
+  const f = fixture(), firstWorkspace = workspace(), pathA = f.state.current.path;
+  const original = clone([...f.contracts]);
+  const snapshots = [];
+  for (const version of ['first', 'newer']) {
+    f.state.operations = [{ op: 'set', path: ['secureValue'], value: `${version}-secure` }];
+    edits.setParameterInput(f.state, ['label'], { value: `${version}-unblurred`, composing: version === 'newer' });
+    f.state.policyRaw = raw.replace('retained-in-memory', version);
+    snapshots.push(edits.captureContractEdits(f.state));
+  }
+  edits.clearEditorPending(f.state);
+  for (const snapshot of snapshots) edits.retainQuarantinedDraft(f.state, snapshot, 'A durable save completed with newer pending edits.');
+  snapshots[0].policyRaw = 'mutating the caller snapshot must not change the retained copy';
+  const owner = f.state, retainedA = clone(owner.quarantinedDrafts.get(pathA));
+  assert.equal(retainedA.length, 2);
+  assert.match(retainedA[0].policyRaw, /first/);
+  assert.equal(retainedA[1].parameterInputs['["label"]'].value, 'newer-unblurred');
+  for (let index = 0; index < 3; index++) {
+    await f.reopen();
+    assert.deepEqual(clone(f.state.quarantinedDrafts.get(pathA)), retainedA);
+    assert.equal(f.state.quarantinedDraft.policyRaw, retainedA[0].policyRaw);
+  }
+  await f.scope.selectContract('B');
+  const pathB = f.state.current.path;
+  f.state.policyRaw = raw.replace('retained-in-memory', 'independent-B');
+  const snapshotB = edits.captureContractEdits(f.state);
+  edits.clearEditorPending(f.state);
+  edits.retainQuarantinedDraft(f.state, snapshotB, 'Independent B reconciliation');
+  const retainedB = clone(f.state.quarantinedDrafts.get(pathB));
+  await f.scope.selectContract('A');
+  const discard = () => {
+    const button = f.els.workspace.querySelectorAll('button').find(node => text(node) === 'Discard retained draft');
+    assert(button);
+    return button.listeners.get('click')[0]();
+  };
+  const remove = f.scope.workspaceRegistry.removeDraft;
+  f.scope.workspaceRegistry.removeDraft = async () => { throw new Error('Synthetic draft removal unavailable'); };
+  await discard();
+  assert.match(f.state.status.message, /draft removal unavailable/);
+  assert.deepEqual(clone(f.state.quarantinedDrafts.get(pathA)), retainedA);
+  assert.deepEqual(clone(f.state.quarantinedDrafts.get(pathB)), retainedB);
+  f.scope.workspaceRegistry.removeDraft = remove;
+  await discard();
+  assert.equal(f.state.quarantinedDrafts.has(pathA), false);
+  for (let index = 0; index < 3; index++) {
+    await f.scope.selectContract('B');
+    await f.reopen();
+    assert.deepEqual(clone(f.state.quarantinedDrafts.get(pathB)), retainedB);
+    await f.scope.selectContract('A');
+    await f.reopen();
+    assert.equal(f.state.quarantinedDraft, null);
+    assert.equal(f.state.quarantinedDrafts.has(pathA), false);
+  }
+  await f.reopen(workspace('one', 'independent-profile'));
+  assert.notEqual(f.state, owner);
+  f.state.policyRaw = raw.replace('retained-in-memory', 'other-configuration');
+  edits.retainQuarantinedDraft(f.state, edits.captureContractEdits(f.state), 'Other configuration');
+  await f.scope.discardAllPending();
+  assert.equal(f.state.quarantinedDrafts.size, 0);
+  assert.deepEqual(clone(owner.quarantinedDrafts.get(pathB)), retainedB);
+  await f.reopen(firstWorkspace);
+  assert.equal(f.state, owner);
+  assert.equal(f.state.quarantinedDrafts.has(pathA), false);
+  assert.deepEqual(clone(f.state.quarantinedDrafts.get(pathB)), retainedB);
+  assert.deepEqual(f.writes, []);
+  assert.equal(f.durable.size, 0);
+  assert.deepEqual(clone([...f.contracts]), original);
 });
