@@ -40,7 +40,9 @@ conflicting instructions instead of silently choosing between them.
 - Running, blocked, idle-but-unfinished, and completed workers awaiting
   integration or cleanup ALL occupy slots.
 - Split substantial work into independent slices and run them
-  concurrently when dependencies permit. Do not create filler tasks.
+  concurrently when dependencies permit. Keep ready, authorized work
+  moving whenever a safely available slot and non-overlapping scope allow;
+  do not leave it waiting for unrelated work. Do not create filler tasks.
 - Create named, visible child sessions under the MAIN.
   No detached workers, hidden helpers, or nested delegation.
 - Use isolated worktrees for implementation and one writer per scope.
