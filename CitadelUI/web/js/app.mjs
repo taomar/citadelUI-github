@@ -1721,8 +1721,9 @@ async function addWorkspaceInApp(projectId = null) {
  */
 async function openHistory() {
   const context = activeWorkspace(), owner = state, ticket = viewStates.ticket();
+  const action = captureDocumentAction(owner);
   const result = await withStatus('Loading history\u2026', () => api.history(context));
-  if (!result || !viewStates.isCurrent(ticket)) return;
+  if (!result || !ownsDocumentAction(action)) return;
   const transactions = Array.isArray(result) ? result : result.transactions || result.items || [];
   showModal(
     'Environment history',
@@ -1772,7 +1773,7 @@ async function openHistory() {
                         const inspection = await withStatus('Inspecting source hashes\u2026', () =>
                           api.inspectRecovery(id, context)
                         );
-                        if (!inspection || !viewStates.isCurrent(ticket)) return;
+                        if (!inspection || !ownsDocumentAction(action)) return;
                         showModal(
                           'Recover transaction',
                           h(
@@ -1823,10 +1824,39 @@ async function openHistory() {
                               class: 'btn btn-primary',
                               disabled: !inspection.canComplete,
                               onclick: async () => {
+                                const announce = captureDialogStatus();
+                                if (transaction.status !== 'reverting' && !ownsDocumentAction(action)) {
+                                  retainDocumentNotice(action, 'This recovery review belongs to another document. Open History again before continuing.', 'info');
+                                  announce.close();
+                                  return;
+                                }
                                 const result = await withStatus('Completing transaction\u2026', () =>
                                   api.recoverTransaction(id, 'complete', context)
                                 );
-                                if (result && viewStates.isCurrent(ticket)) await openHistory();
+                                if (!result) return;
+                                if (transaction.status === 'reverting') {
+                                  if (viewStates.isCurrent(ticket)) await openHistory();
+                                  return;
+                                }
+                                const line = saveStatusLine(result, environmentSourceOf(context.environment), {
+                                  successText: `Completed transaction ${id}.`,
+                                });
+                                retainDocumentNotice(action, line.text, line.tone, true);
+                                if (!ownsDocumentAction(action)) { announce.close(); return; }
+                                if (!mutationComplete(result)) {
+                                  announce(line.text, line.tone);
+                                  return;
+                                }
+                                const refreshed = await openHistory();
+                                if (!ownsDocumentAction(action)) return;
+                                if (refreshed?.isCurrent()) {
+                                  refreshed(line.text, line.tone);
+                                  setStatus(line.text, line.tone);
+                                } else if (announce.isCurrent()) {
+                                  const message = `${line.text} History could not be refreshed. ${owner.status?.message || ''}`;
+                                  announce(message, 'warn');
+                                  retainDocumentNotice(action, message, 'warn', true);
+                                }
                               },
                             }, transaction.status === 'reverting' ? 'Confirm removed' : 'Complete')
                           ]
@@ -1906,6 +1936,7 @@ async function openHistory() {
     ),
     [h('button', { class: 'btn', onclick: closeModal }, 'Close')]
   );
+  return captureDialogStatus();
 }
 
 async function openEnvironmentCompare(environments) {
