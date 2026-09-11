@@ -1,4 +1,5 @@
 import { sha256 } from './directory-provider.mjs';
+import { commitLocalReceipt, localRecoveryFailure } from './mutation-coordinator.mjs';
 import { activeWorkspace } from './workspace-context.mjs';
 import { configurationOf } from '../../shared/workspace-configuration.mjs';
 import { nativeHistoryProof } from '../../shared/terraform/workspace.mjs';
@@ -77,10 +78,7 @@ export function createTransactionCommit(request) {
       transactionId,
       files: written.map((file) => ({ alias: file.alias, hash: file.finalHash })),
     });
-    const recoveryFailure = (error, detail) => Object.assign(
-      new Error(`${error.message} ${detail}`, { cause: error }),
-      { code: 'LOCAL_RECOVERY_REQUIRED', transactionId, applied: null, recoveryRequired: true }
-    );
+    const recoveryFailure = (error, detail) => localRecoveryFailure(error, transactionId, detail);
 
     try {
       for (const file of preparedFiles.filter((item) => !item.create)) {
@@ -166,57 +164,18 @@ export function createTransactionCommit(request) {
       }
 
       receiptAttempted = true;
-      await request(`/api/transactions/${encodeURIComponent(transactionId)}/receipt`, {
-        method: 'POST',
-        headers: {
-          ...environmentHeaders,
-          'X-Citadel-Authorization': authorization.authorizationToken,
-        },
-        body: JSON.stringify({
-          receipts: written.map((file) => ({
-            alias: file.alias,
-            hash: file.finalHash,
-            size: file.afterSize,
-          })),
-        }),
+      const receipt = await commitLocalReceipt(request, {
+        transactionId, environmentId: environment.id, transactionToken,
+        authorizationToken: authorization.authorizationToken,
+        receipts: written.map((file) => ({
+          alias: file.alias,
+          hash: file.finalHash,
+          size: file.afterSize,
+        })),
       });
-      return committedResult();
+      return { ...committedResult(), ...(receipt.warnings ? { warnings: receipt.warnings } : {}) };
     } catch (error) {
-      if (receiptAttempted) {
-        // An unanswered receipt may already be committed. Do not undo source
-        // bytes while that durable outcome is uncertain.
-        let recorded;
-        try {
-          recorded = await request(`/api/transactions/${encodeURIComponent(transactionId)}?environmentId=${encodeURIComponent(environment.id)}`);
-        } catch (inspectionError) {
-          throw recoveryFailure(error, `The receipt could not be confirmed. Source bytes were retained; inspect History recovery. ${inspectionError.message}`);
-        }
-        const confirmed = (record) => ({
-          ...committedResult(),
-          warnings: [
-            'The receipt response failed, but the committed journal confirms this save.',
-            ...(record.transaction.auditRecorded === false
-              ? ['The terminal audit is still pending. Inspect History before another change.'] : []),
-          ],
-        });
-        if (recorded.transaction.status === 'committed') return confirmed(recorded);
-        try {
-          await request(`/api/transactions/${encodeURIComponent(transactionId)}/fail`, {
-            method: 'POST', headers: environmentHeaders,
-            body: JSON.stringify({ changedAliases: written.map((file) => file.alias) }),
-          });
-        } catch (recoveryError) {
-          let latest;
-          try {
-            latest = await request(`/api/transactions/${encodeURIComponent(transactionId)}?environmentId=${encodeURIComponent(environment.id)}`);
-          } catch (inspectionError) {
-            throw recoveryFailure(error, `Source bytes were retained, but recovery could not be recorded or confirmed. Inspect History. ${recoveryError.message} ${inspectionError.message}`);
-          }
-          if (latest.transaction.status === 'committed') return confirmed(latest);
-          throw recoveryFailure(error, `Source bytes were retained, but recovery could not be recorded. Inspect History. ${recoveryError.message}`);
-        }
-        throw recoveryFailure(error, 'The save receipt is not confirmed. Source bytes were retained; inspect History recovery.');
-      }
+      if (receiptAttempted) throw error;
       if (!committing) {
         try {
           await request(`/api/transactions/${encodeURIComponent(transactionId)}/fail`, {
