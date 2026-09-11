@@ -17,23 +17,9 @@
 
 import { h } from './dom.mjs';
 import { picker } from './picker.mjs';
+import { decodePolicyAttribute as decodeAttr } from '../../shared/policy.mjs';
 
 const QUOTA_PERIODS = ['Hourly', 'Daily', 'Weekly', 'Monthly', 'Yearly'];
-
-/**
- * Attribute values are read straight out of the XML, so a counter key that
- * embeds a quoted string arrives as `&quot;`. Showing that to the user is both
- * unreadable and a trap: editing the field would send the entity back as
- * literal text and the escaper would turn its ampersand into `&amp;quot;`.
- */
-function decodeAttr(value) {
-  return String(value)
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&');
-}
 
 function escapeMarkup(value) {
   return String(value)
@@ -382,13 +368,19 @@ function tokenLimitsEditor(limits, onboarded, onChange) {
       )
     ),
 
-    perModelAdder(
-      limits,
-      onboarded,
-      'per-model-limit-options',
-      (model) => onChange({ control: 'tokenLimits', addModel: model }),
-      'Give this model its own budget'
-    )
+    limits.universal || limits.chooseSpan
+      ? perModelAdder(
+          limits,
+          onboarded,
+          'per-model-limit-options',
+          (model) => onChange({ control: 'tokenLimits', addModel: model }),
+          'Give this model its own budget'
+        )
+      : h(
+          'p',
+          { class: 'hint' },
+          'Add a universal token limit in Raw XML before creating the first model budget. No default budget is chosen for you.'
+        )
   );
 }
 
@@ -557,16 +549,21 @@ function variableField(def, state, onChange) {
     );
   }
 
+  const multiline = /[\r\n]/.test(value || '');
+  // Text inputs remove line breaks; textareas preserve LF but normalize CR.
+  const rawOnly = /\r/.test(value || '');
   return field(
     def.label,
-    def.help,
-    h('input', {
+    rawOnly ? `${def.help} This value contains carriage returns. Edit it in Raw XML to preserve them.` : def.help,
+    h(multiline ? 'textarea' : 'input', {
       class: 'ctl',
-      type: def.type === 'number' ? 'number' : 'text',
+      type: multiline ? undefined : def.type === 'number' ? 'number' : 'text',
       step: def.type === 'number' ? '0.05' : undefined,
+      rows: multiline ? 3 : undefined,
+      readOnly: rawOnly,
       value: value === null ? '' : value,
       placeholder: 'not set',
-      onchange: (e) => write(e.target.value === '' ? null : e.target.value),
+      onchange: rawOnly ? undefined : (e) => write(e.target.value === '' ? null : e.target.value),
     })
   );
 }

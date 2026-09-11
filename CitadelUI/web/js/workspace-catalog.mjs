@@ -388,6 +388,10 @@ export function presentWorkspaceCatalog(options) {
     const banner = alertLine();
     const progress = statusLine();
     const root = h('section', { class: 'workspace-catalog', 'aria-label': 'Citadel workspaces' });
+    // The dialog retains this opener while a catalogue refresh may repaint its surroundings.
+    const addWorkspaceButton = h('button', {
+      class: 'btn btn-primary', type: 'button', onclick: () => startAddWorkspace(),
+    });
 
     function persist() {
       savePreferences({
@@ -1008,11 +1012,7 @@ export function presentWorkspaceCatalog(options) {
           { class: 'hint' },
           'A workspace is one Citadel repository — a local folder, or a GitHub repository on a branch you choose. Once attached it appears here and opens in one click.'
         ),
-        h(
-          'button',
-          { class: 'btn btn-primary', type: 'button', onclick: () => startAddWorkspace() },
-          'Add your first workspace'
-        )
+        addWorkspaceButton
       );
     }
 
@@ -1127,16 +1127,23 @@ export function presentWorkspaceCatalog(options) {
     }
 
     let listHost = null;
+    let resultCount = null;
 
     function renderList() {
       if (!listHost) return render();
       const visible = filterWorkspaces(rows, view);
+      resultCount.textContent = `${visible.length} of ${rows.length}`;
       mount(listHost, visible.length ? workspaceTable(visible) : emptyWorkspaces(visible));
       return undefined;
     }
 
     function render() {
+      const restoreAddFocus = document.activeElement === addWorkspaceButton;
+      const addLabel = rows.length ? 'Add workspace' : 'Add your first workspace';
+      if (addWorkspaceButton.textContent !== addLabel) addWorkspaceButton.textContent = addLabel;
+      addWorkspaceButton.disabled = busy;
       const visible = filterWorkspaces(rows, view);
+      resultCount = h('span', { class: 'hint catalog-result-count' }, `${visible.length} of ${rows.length}`);
       listHost = h('div', { class: 'catalog-list' });
       mount(root,
         h(
@@ -1154,18 +1161,7 @@ export function presentWorkspaceCatalog(options) {
             // Only when there is a list to add to. On an empty catalogue the
             // empty state carries the call to action, and two identical primary
             // buttons on one screen is indecision rendered twice.
-            rows.length
-              ? h(
-                  'button',
-                  {
-                    class: 'btn btn-primary',
-                    type: 'button',
-                    disabled: busy,
-                    onclick: () => startAddWorkspace(),
-                  },
-                  'Add workspace'
-                )
-              : null
+            rows.length ? addWorkspaceButton : null
           ),
           progress,
           banner,
@@ -1180,7 +1176,7 @@ export function presentWorkspaceCatalog(options) {
             'div',
             { class: 'catalog-section-head' },
             h('h2', {}, 'Saved workspaces'),
-            h('span', { class: 'hint' }, `${visible.length} of ${rows.length}`)
+            resultCount
           ),
           rows.length ? filters() : null,
           listHost
@@ -1231,6 +1227,9 @@ export function presentWorkspaceCatalog(options) {
         activityPanel()
       );
       mount(listHost, visible.length ? workspaceTable(visible) : emptyWorkspaces(visible));
+      if (restoreAddFocus && !document.getElementById('modal')?.open && addWorkspaceButton.isConnected) {
+        addWorkspaceButton.focus({ preventScroll: true });
+      }
       return undefined;
     }
 
@@ -1728,12 +1727,14 @@ export function runAddWorkspace(options) {
             'catalog-connection-select',
             'Connection',
             chooser,
-            'Pick a saved connection, or choose "Add a new connection" to enter a token.'
+            'Pick an existing connection, or choose "Add a new connection" to enter a token.'
           )
         : h(
             'p',
             { class: 'hint' },
-            'No connection is saved yet. Name this one, then paste a fine-grained personal access token for the account that owns the repositories.'
+            selected
+              ? 'Use the existing GitHub connection shown below.'
+              : 'No connection is saved yet. Name this one, then paste a fine-grained personal access token for the account that owns the repositories.'
           ),
       summary,
       ...(mode === 'new' ? newFields : needsToken ? reconnectFields : live ? liveFields : idleFields),

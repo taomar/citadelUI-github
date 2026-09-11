@@ -5668,6 +5668,44 @@
   color: var(--header-danger);
 }
 
+/* Let secondary commands wrap before they consume the current write context. */
+@media (min-width: 48.001rem) {
+  .titleblock {
+    grid-template-columns: max-content minmax(36ch, 1fr) minmax(0, max-content);
+  }
+
+  .tb-actions,
+  .tb-command-set {
+    min-width: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .tb-status-group {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .tb-project,
+  .tb-environment {
+    flex-shrink: 0;
+    max-width: 18ch;
+  }
+
+  .titleblock .tb-pending {
+    white-space: normal;
+  }
+}
+
+@media (min-width: 48.001rem) and (max-width: 100rem) {
+  .tb-command-set > .btn-ghost {
+    max-width: 22ch;
+    height: auto;
+    white-space: normal;
+    text-wrap: balance;
+  }
+}
+
 @media (max-width: 80rem) {
   .titleblock {
     gap: var(--sp-4);
