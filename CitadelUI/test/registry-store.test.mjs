@@ -7,7 +7,8 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { RegistryStore } from '../server/registry-store.mjs';
-import { WorkspaceRegistry } from '../web/js/registry.mjs';
+import { WorkspaceRegistry, labelKey as browserLabelKey } from '../web/js/registry.mjs';
+import { labelKey as stringLabelKey } from '../shared/label-key.mjs';
 import {
   attachEnvironment,
   localPathMatchesHandle,
@@ -139,6 +140,97 @@ test('browser registry namespace is injectable for QA isolation', () => {
     }),
     /production Citadel origin/
   );
+});
+
+const labelCases = [
+  ['  CAF\u00c9  ', 'cafe'],
+  ['Cafe\u0301', 'cafe'],
+  ['\uff23\uff21\uff26\uff25', 'cafe'],
+  ['\ufb03', 'ffi'],
+  ['\u212b', 'a'],
+  ['\u0130', 'i'],
+  [' A  B ', 'a  b'],
+  ['Stra\u00dfe', 'stra\u00dfe'],
+  ['STRASSE', 'strasse'],
+  ['a\u1ab0', 'a\u1ab0'],
+  [' \u65e5\u672c ', '\u65e5\u672c'],
+];
+
+test('L2 label key: the pure string projection preserves exact Unicode comparison rules', () => {
+  for (const [value, expected] of labelCases) {
+    assert.equal(stringLabelKey(value), expected);
+    assert.equal(browserLabelKey(value), expected);
+  }
+  assert.throws(() => stringLabelKey(null), TypeError);
+  assert.throws(() => stringLabelKey(42), TypeError);
+});
+
+test('L2 label key: browser coercion remains in its existing wrapper', () => {
+  for (const [value, expected] of [
+    [null, ''], [undefined, ''], ['', ''], [42, '42'], [false, 'false'], [NaN, 'nan'],
+    [[], ''], [[' CAF\u00c9 '], 'cafe'], [Symbol('CAF\u00c9'), 'symbol(cafe)'],
+    [{ toString: () => ' CAF\u00c9 ' }, 'cafe'],
+  ]) assert.equal(browserLabelKey(value), expected);
+  const error = new Error('Synthetic coercion failure');
+  assert.throws(() => browserLabelKey({ toString() { throw error; } }), found => found === error);
+});
+
+test('L2 label key: browser availability remains project scoped and honors the excluded workspace', async () => {
+  const { registry, records } = memoryRegistry();
+  records.environments.set(environment.id, { ...environment, label: 'Caf\u00e9' });
+  const otherProject = { ...project, id: 'project-two' };
+  records.projects.set(otherProject.id, otherProject);
+  records.environments.set(productionEnvironment.id, {
+    ...productionEnvironment, projectId: otherProject.id, label: 'CAFE',
+  });
+  const before = structuredClone([...records.environments]);
+  await assert.rejects(registry.assertLabelAvailable(project.id, ' CAFE\u0301 '),
+    { message: 'This project already has a workspace named "Caf\u00e9".' });
+  await registry.assertLabelAvailable(project.id, 'CAFE', environment.id);
+  await registry.assertLabelAvailable(project.id, 'Cafe (2)');
+  assert.deepEqual([...records.environments], before);
+});
+
+test('L2 label key: server collisions preserve original labels and persisted registry bytes', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'citadel-label-collisions-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = new RegistryStore({ dataRoot: root });
+  await store.initialize();
+  const otherProject = { ...project, id: 'project-two' };
+  const saved = await store.reconcile({
+    ...await authority(store),
+    projects: [project, otherProject],
+    environments: [
+      { ...environment, label: 'Caf\u00e9' },
+      { ...productionEnvironment, projectId: otherProject.id, label: 'CAFE' },
+    ],
+  });
+  assert.equal(saved.environments.find(item => item.id === environment.id).label, 'Caf\u00e9');
+  assert.equal(saved.environments.find(item => item.id === productionEnvironment.id).label, 'CAFE');
+  const before = await readFile(store.path);
+  await assert.rejects(store.reconcile({
+    ...await authority(store),
+    environments: [{ ...productionEnvironment, id: 'label-collision', label: 'CAFE\u0301' }],
+  }), {
+    code: 'DUPLICATE_ENVIRONMENT_LABEL',
+    message: 'This project already has a workspace named "CAFE\u0301". Choose a different name.',
+  });
+  assert.deepEqual(await readFile(store.path), before);
+});
+
+test('L2 label key: server validation still rejects non-labels before deriving comparison keys', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'citadel-label-validation-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = new RegistryStore({ dataRoot: root });
+  await store.initialize();
+  const before = await readFile(store.path);
+  const poisonous = { toString() { assert.fail('The server must validate labels before coercion.'); } };
+  for (const value of [null, undefined, 42, false, poisonous, ' ', 'Bad\u0000Label']) {
+    await assert.rejects(store.reconcile({
+      ...await authority(store), projects: [project], environments: [{ ...environment, label: value }],
+    }), { code: 'INVALID_REGISTRY_LABEL' });
+    assert.deepEqual(await readFile(store.path), before);
+  }
 });
 
 test('browser draft lookup resolves the owning stored environment without rewriting legacy identity', async () => {

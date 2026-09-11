@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { atomicJson } from './atomic-json.mjs';
 import { transactionError } from './transactions.mjs';
+import { labelKey as stringLabelKey } from '../shared/label-key.mjs';
 import { assertNoWritableOverlap, assertUnchangedConfiguration, assertUnchangedNativeSource, bindingKey, configurationOf, validateConfiguration } from '../shared/workspace-configuration.mjs';
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -418,7 +419,7 @@ function uniqueLabel(value, projectId, taken) {
 }
 
 function labelKey(value) {
-  return String(value).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+  return stringLabelKey(String(value));
 }
 
 /**

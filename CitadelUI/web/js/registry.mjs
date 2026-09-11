@@ -1,5 +1,6 @@
 import { assertNoWritableOverlap, assertUnchangedConfiguration, assertUnchangedNativeSource, bindingKey, configurationOf, validateConfiguration } from '../../shared/workspace-configuration.mjs';
 import { assertNativeDraft } from '../../shared/terraform/drafts.mjs';
+import { labelKey as stringLabelKey } from '../../shared/label-key.mjs';
 
 const DB_NAME = 'citadel-ui';
 const DB_VERSION = 4;
@@ -111,11 +112,7 @@ export function environmentSourceOf(environment) {
 
 /** Labels are compared case- and accent-insensitively, as the server does. */
 export function labelKey(value) {
-  return String(value ?? '')
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .trim()
-    .toLowerCase();
+  return stringLabelKey(String(value ?? ''));
 }
 
 export function isGitHubEnvironment(environment) {
