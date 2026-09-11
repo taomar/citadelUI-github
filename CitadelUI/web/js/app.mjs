@@ -85,6 +85,12 @@ import {
   clearEditorPending,
   editorPendingCount,
   restoreContractEdits,
+  retainQuarantinedDraft,
+  restoreQuarantinedDrafts,
+  discardQuarantinedDraft,
+  invalidatePolicyPreview,
+  policyPreviewIdentity,
+  ownsPolicyPreview,
 } from './contract-edit-state.mjs';
 import {
   choiceDialog,
@@ -109,6 +115,9 @@ function createEditorState() { return {
   semanticCacheSpec: null,
   contentSafetySpec: null,
   policyPreview: null,
+  policyRevision: 0,
+  policyPreviewPending: false,
+  policyPreviewError: null,
   current: null,
   baselineValidation: [],
   operations: [],
@@ -123,6 +132,7 @@ function createEditorState() { return {
   projectLabel: 'Project',
   workspaceId: null,
   quarantinedDraft: null,
+  quarantinedDrafts: new Map(),
   documentViews: new Map(),
   reviewEpoch: 0,
 }; }
@@ -365,11 +375,13 @@ async function persistParameterDraft() {
 }
 
 async function restoreParameterDraft(document, owner = state) {
+  if (owner.quarantinedDrafts?.has(document.path)) return [];
   const draft = await workspaceRegistry.getDraft(owner.workspaceId || activeWorkspace().environment.id, document.path);
   if (!draft) return [];
   if (draft.sourceHash !== document.hash || document.format === 'terraform' &&
       !sameNativeDraftBinding(draft.nativeIdentity, document.nativeIdentity)) {
-    owner.quarantinedDraft = { ...draft, reason: 'Source bytes or native schema/unit bindings changed outside Citadel. The draft is retained, but cannot be applied to a different source.' };
+    retainQuarantinedDraft(owner, draft,
+      'Source bytes or native schema/unit bindings changed outside Citadel. The draft is retained, but cannot be applied to a different source.', document.path);
     if (state === owner) setStatus(owner.quarantinedDraft.reason, 'error');
     return [];
   }
@@ -437,19 +449,19 @@ function hasPolicyEdits() {
 }
 
 function pendingCount() {
-  let count = editorPendingCount(state);
+  let count = editorPendingCount(state) + (state.quarantinedDrafts?.size || 0);
   for (const pending of pendingByDocument.values()) {
-    if (pending.environmentId === state.workspaceId) count += editorPendingCount(pending);
+    if (pending.workspaceKey === state.workspaceKey) count += editorPendingCount(pending);
   }
   return count;
 }
 
 function pendingKey(path = state.current?.path, environmentId = activeWorkspace().environment.id) {
-  return path ? `${environmentId}:${path}` : null;
+  return path ? JSON.stringify([state.workspaceKey || environmentId, path]) : null;
 }
 
 async function stashCurrentPending() {
-  if (!editorPendingCount(state) || !state.current) return;
+  if ((!editorPendingCount(state) && !state.quarantinedDraft) || !state.current) return;
   if (state.operations.length && !draftContainsSecureValue()) await persistParameterDraft();
   const snapshot = captureContractEdits(state);
   snapshot.environmentId = activeWorkspace().environment.id;
@@ -467,18 +479,19 @@ function restoreStashedPending() {
   if (!snapshot.operations?.length || conflicts.includes(snapshot.parameterPath || 'parameter file')) {
     state.operations = durableOperations;
   }
-  if (!conflicts.length) {
-    pendingByDocument.delete(key);
-  } else {
-    state.quarantinedDraft = { ...snapshot, reason: `Preserved edits are quarantined because source changed: ${conflicts.join(', ')}.` };
+  pendingByDocument.delete(key);
+  if (conflicts.length) {
+    retainQuarantinedDraft(state, snapshot, `Preserved edits are quarantined because source changed: ${conflicts.join(', ')}.`);
     setStatus(
       `Preserved edits could not be reapplied because source changed: ${conflicts.join(', ')}.`,
       'error'
     );
   }
+  return true;
 }
 
 function canPersistAllPending() {
+  if ([...viewStates.views.values()].some((view) => view.quarantinedDrafts?.size)) return false;
   const snapshots = [
     {
       ...captureContractEdits(state),
@@ -502,14 +515,18 @@ async function discardAllPending() {
     );
   }
   for (const snapshot of pendingByDocument.values()) {
-    if (snapshot.environmentId === state.workspaceId && snapshot.parameterPath) {
+    if (snapshot.workspaceKey === state.workspaceKey && snapshot.parameterPath) {
       drafts.push(
         workspaceRegistry.removeDraft(snapshot.environmentId, snapshot.parameterPath)
       );
     }
   }
+  for (const path of state.quarantinedDrafts.keys()) {
+    drafts.push(workspaceRegistry.removeDraft(state.workspaceId, path));
+  }
   await Promise.all(drafts);
-  for (const [key, snapshot] of pendingByDocument) if (snapshot.environmentId === state.workspaceId) pendingByDocument.delete(key);
+  for (const [key, snapshot] of pendingByDocument) if (snapshot.workspaceKey === state.workspaceKey) pendingByDocument.delete(key);
+  state.quarantinedDrafts.clear();
   state.quarantinedDraft = null;
   clearEditorPending(state);
 }
@@ -556,7 +573,7 @@ async function confirmPendingNavigation(options) {
    which is how a configured throttle block was lost once already. The browser
    owns the wording of the prompt; all we control is whether it appears. */
 window.addEventListener('beforeunload', (event) => {
-  if (![...viewStates.views.values(), state].some((view) => editorPendingCount(view) || view.quarantinedDraft) && pendingByDocument.size === 0) return;
+  if (![...viewStates.views.values(), state].some((view) => editorPendingCount(view) || view.quarantinedDraft || view.quarantinedDrafts?.size) && pendingByDocument.size === 0) return;
   event.preventDefault();
   event.returnValue = '';
   return '';
@@ -876,7 +893,8 @@ async function loadContract(id, preserved = null, preserveOptions = undefined, t
     const loaded = await withStatus('Loading contract\u2026', async () => {
       const [contract, accessTargets] = await Promise.all([api.contract(id, context), api.accessContractTargets(context)]);
       if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return null;
-      const draftState = { workspaceId: owner.workspaceId, quarantinedDraft: null };
+      const draftState = { workspaceId: owner.workspaceId, workspaceKey: owner.workspaceKey,
+        quarantinedDrafts: new Map([...owner.quarantinedDrafts].filter(([path]) => path === contract.param.path)) };
       const operations = await restoreParameterDraft(contract.param, draftState);
       return { contract, accessTargets, operations, draftState };
     });
@@ -887,19 +905,19 @@ async function loadContract(id, preserved = null, preserveOptions = undefined, t
     state.accessTargets = accessTargets;
     state.current = contract.param;
     state.baselineValidation = validateDocument(contract.param);
-    state.quarantinedDraft = draftState.quarantinedDraft;
+    restoreQuarantinedDrafts(state, draftState);
     if (state.quarantinedDraft) setStatus(state.quarantinedDraft.reason, 'error');
     state.operations = operations;
     state.policyChanges = {};
     state.policyRaw = null;
-    state.policyPreview = null;
+    invalidatePolicyPreview(state);
     const remembered = state.documentViews.get(contract.param.path);
     state.open = new Map(remembered?.open || []);
     if (remembered) state.tab = remembered.tab;
     if (preserved) {
       const conflicts = restoreContractEdits(state, preserved, preserveOptions);
       if (conflicts.length) {
-        state.quarantinedDraft = { ...preserved, reason: `Pending edits are quarantined because source changed: ${conflicts.join(', ')}.` };
+        retainQuarantinedDraft(state, preserved, `Pending edits are quarantined because source changed: ${conflicts.join(', ')}.`);
         setStatus(
           `Pending edits could not be reapplied because source changed: ${conflicts.join(', ')}.`,
           'error'
@@ -908,6 +926,8 @@ async function loadContract(id, preserved = null, preserveOptions = undefined, t
     } else {
       restoreStashedPending();
     }
+    if (state.policyRaw === null && Object.keys(state.policyChanges).length) await refreshPolicyPreview();
+    if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return false;
     render();
     if (remembered) requestAnimationFrame(() => {
       if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return;
@@ -1070,7 +1090,7 @@ function foldPolicyChange(change) {
   // Structured edits and hand-edited XML are mutually exclusive: mixing them
   // would splice spans computed against text the user has since rewritten.
   state.policyRaw = null;
-  render();
+  invalidatePolicyPreview(state);
   refreshPolicyPreview();
 }
 
@@ -1079,7 +1099,7 @@ function foldPolicyChange(change) {
  *
  * The controls carry character spans into the policy text, so a pending change
  * cannot be projected onto them client-side the way a parameter edit can --
- * adding a per-model limit moves every span after it. The server already owns
+ * adding a per-model limit moves every span after it. The workspace service owns
  * the splice logic, so it re-parses the result and the screen renders that.
  */
 async function refreshPolicyPreview() {
@@ -1087,22 +1107,30 @@ async function refreshPolicyPreview() {
   const policy = owner.contract && owner.contract.policy;
   if (!policy) return;
   const token = ++policyPreviewToken;
+  const generation = documentGeneration, identity = policyPreviewIdentity(owner);
+  const current = () => token === policyPreviewToken && generation === documentGeneration &&
+    viewStates.isCurrent(ticket) && state === owner && ownsPolicyPreview(owner, identity);
 
-  if (!Object.keys(state.policyChanges).length) {
-    state.policyPreview = null;
+  if (owner.policyRaw !== null || !Object.keys(owner.policyChanges).length) {
+    invalidatePolicyPreview(owner);
     render();
     return;
   }
 
+  owner.policyPreviewPending = true;
+  owner.policyPreviewError = null;
+  render();
   try {
     const res = await api.previewPolicy(policy.path, structuredClone(owner.policyChanges), policy.hash, context);
-    if (token !== policyPreviewToken || !viewStates.isCurrent(ticket)) return;
-    owner.policyPreview = { text: res.after, controls: res.controls };
+    if (!current()) return;
+    owner.policyPreview = { text: res.after, controls: res.controls, identity };
   } catch (err) {
-    if (token !== policyPreviewToken || !viewStates.isCurrent(ticket)) return;
+    if (!current()) return;
     owner.policyPreview = null;
+    owner.policyPreviewError = err.message;
     setStatus(err.message, 'error');
   }
+  owner.policyPreviewPending = false;
   render();
 }
 
@@ -1118,8 +1146,9 @@ function policyContext() {
     setPolicyMode: (mode) => {
       const losing = mode === 'guided' && state.policyRaw !== null;
       if (!losing) {
+        invalidatePolicyPreview(state);
         state.policyMode = mode;
-        render();
+        refreshPolicyPreview();
         return;
       }
       showModal(
@@ -1142,8 +1171,9 @@ function policyContext() {
               onclick: () => {
                 state.policyRaw = null;
                 state.policyMode = 'guided';
+                invalidatePolicyPreview(state);
                 closeModal();
-                render();
+                refreshPolicyPreview();
               },
             },
             'Discard and switch'
@@ -1383,7 +1413,7 @@ async function commitSave(review) {
     owner.operations = [];
     await workspaceRegistry.removeDraft(context.environment.id, document.path);
   } else {
-    owner.quarantinedDraft = { operations: structuredClone(owner.operations), reason: 'An approved save completed while this draft changed. The newer draft is retained for explicit reconciliation.' };
+    retainQuarantinedDraft(owner, captureContractEdits(owner), 'An approved save completed while this draft changed. The newer draft is retained for explicit reconciliation.');
   }
   if (!viewStates.isCurrent(ticket)) return;
   closeModal();
@@ -2188,7 +2218,7 @@ async function openWorkspaceSettingsContent() {
               const snapshot = current
                 ? await workspaceRegistry.projectSnapshot(environment.projectId)
                 : await workspaceRegistry.environmentSnapshot(environment.id);
-              const uiPending = current ? captureContractEdits(state) : null;
+              const uiPending = current ? captureContractEdits(state, { allQuarantines: true }) : null;
               const storedPending = current
                 ? new Map(
                     [...pendingByDocument].map(([key, value]) => [
@@ -2364,7 +2394,7 @@ async function openWorkspaceSettingsContent() {
             });
             if (!pendingChoice || pendingChoice === 'stay') return false;
             const snapshot = await workspaceRegistry.projectSnapshot(context.projectId);
-            const uiPending = captureContractEdits(state);
+            const uiPending = captureContractEdits(state, { allQuarantines: true });
             const storedPending = new Map(
               [...pendingByDocument].map(([key, value]) => [
                 key,
@@ -2978,13 +3008,7 @@ function renderWorkspace() {
       area && area.blurb ? h('p', { class: 'sheet-blurb' }, area.blurb) : null,
       doc.format === 'terraform' ? h('p', { class: 'banner banner-warn' }, NATIVE_WIRING_NOTICE) : null,
       doc.format === 'terraform' ? nativeReadonlyPolicy(doc) : null,
-      state.quarantinedDraft ? h('div', { class: 'banner banner-warn', role: 'alert' },
-        h('p', {}, state.quarantinedDraft.reason),
-        h('button', { class: 'btn btn-sm', type: 'button', onclick: async () => {
-          await workspaceRegistry.removeDraft(state.workspaceId, doc.path);
-          state.quarantinedDraft = null;
-          render();
-        } }, 'Discard retained draft')) : null,
+      quarantineNotice(),
       h('div', { class: 'sheet-body' }, body)
     )
   );
@@ -3164,6 +3188,18 @@ function contractsOverview(area) {
   );
 }
 
+function quarantineNotice() {
+  const owner = state, path = owner.current?.path;
+  if (!owner.quarantinedDraft) return null;
+  return h('div', { class: 'banner banner-warn', role: 'alert' },
+    h('p', {}, owner.quarantinedDraft.reason),
+    h('button', { class: 'btn btn-sm', type: 'button', onclick: () => withStatus('Discarding retained draft...', async () => {
+      await workspaceRegistry.removeDraft(owner.workspaceId, path);
+      discardQuarantinedDraft(owner, path);
+      if (state === owner) render();
+    }) }, 'Discard retained draft'));
+}
+
 function renderContractsArea(area) {
   const contract = state.contract;
 
@@ -3181,11 +3217,15 @@ function renderContractsArea(area) {
 
   const body =
     state.tab === 'policy'
-      ? decoratePolicy(
+      ? state.policyRaw === null && hasPolicyEdits() && !ownsPolicyPreview(state, state.policyPreview?.identity)
+        ? h('div', { class: 'banner', role: 'status' },
+            state.policyPreviewError || 'Preparing the policy draft preview...',
+            state.policyPreviewError ? h('button', { class: 'btn btn-sm', onclick: refreshPolicyPreview }, 'Retry preview') : null)
+        : decoratePolicy(
           renderPolicy(
             state.policyRaw !== null
               ? { ...contract.policy, text: state.policyRaw }
-              : state.policyPreview
+              : ownsPolicyPreview(state, state.policyPreview?.identity)
               ? { ...contract.policy, text: state.policyPreview.text, controls: state.policyPreview.controls }
               : contract.policy,
             policyContext()
@@ -3221,6 +3261,7 @@ function renderContractsArea(area) {
             'This is the template every new contract is copied from. Editing it changes the starting point for future contracts.'
           )
         : null,
+      quarantineNotice(),
       h('div', { class: 'sheet-body' }, body)
     )
   );
@@ -3283,8 +3324,10 @@ async function withEditorLoad(message, action, transition = null) {
       editorTransition = null;
       try {
         if (state === owner && viewStates.isCurrent(ticket) && owner.current === predecessor) {
-          restoreStashedPending();
-          render();
+          const restored = restoreStashedPending();
+          if (restored && owner.contract?.policy && owner.policyRaw === null && Object.keys(owner.policyChanges).length) {
+            refreshPolicyPreview();
+          } else render();
         }
       } finally {
         pause.release();
@@ -3307,25 +3350,26 @@ async function loadDocument(path, { preserve = false, selection = null, transiti
     const loaded = await withStatus('Loading\u2026', async () => {
       const doc = await api.deployment(path, context);
       if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return null;
-      const draftState = { workspaceId: owner.workspaceId, quarantinedDraft: null };
+      const draftState = { workspaceId: owner.workspaceId, workspaceKey: owner.workspaceKey,
+        quarantinedDrafts: new Map([...owner.quarantinedDrafts].filter(([path]) => path === doc.path)) };
       const draft = await restoreParameterDraft(doc, draftState);
       return { doc, draft, draftState };
     });
     if (!loaded || !viewStates.isCurrent(ticket) || generation !== documentGeneration) return false;
     const { doc, draft, draftState } = loaded;
     if (selection) Object.assign(owner, selection);
-    owner.quarantinedDraft = draftState.quarantinedDraft;
-    if (owner.quarantinedDraft) setStatus(owner.quarantinedDraft.reason, 'error');
     state.current = doc;
+    restoreQuarantinedDrafts(owner, draftState);
+    if (owner.quarantinedDraft) setStatus(owner.quarantinedDraft.reason, 'error');
     state.baselineValidation = documentFindings(doc);
     state.operations = draft;
     state.policyChanges = {};
     state.policyRaw = null;
-    state.policyPreview = null;
+    invalidatePolicyPreview(state);
     if (pending?.operations.length) {
       if (pending.parameterHash === doc.hash && (!doc.nativeIdentity || sameNativeDraftBinding(previousIdentity, doc.nativeIdentity))) {
         state.operations = pending.operations;
-      } else state.quarantinedDraft = { ...pending, reason: 'The file or its native schema/dependencies changed while this workspace was inactive. Its pending draft is retained, not applied to the new source.' };
+      } else retainQuarantinedDraft(state, pending, 'The file or its native schema/dependencies changed while this workspace was inactive. Its pending draft is retained, not applied to the new source.');
     }
     restoreStashedPending();
     const remembered = state.documentViews.get(path);

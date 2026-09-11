@@ -8,6 +8,7 @@ import { pauseEditorForLoad } from '../web/js/editor-load.mjs';
 import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
 import { previewDocument, queueOperation } from '../web/js/preview.mjs';
 import { captureContractEdits, clearEditorPending, editorPendingCount, restoreContractEdits } from '../web/js/contract-edit-state.mjs';
+import { retainQuarantinedDraft, restoreQuarantinedDrafts, invalidatePolicyPreview } from '../web/js/contract-edit-state.mjs';
 import { initializeNativeParser } from '../shared/terraform/parser.mjs';
 import { assertNativeDraft, sameNativeDraftBinding } from '../shared/terraform/drafts.mjs';
 import { assertNonsecretValues, validateNativeValues } from '../shared/terraform/schema.mjs';
@@ -52,6 +53,7 @@ async function fixture(t, { choice = 'preserve', failure = null, pause = 'source
   let held = false, active = f.context;
   const scope = { document: globalThis.document, structuredClone, Map, h, pauseEditorForLoad,
     captureContractEdits, clearEditorPending, editorPendingCount, restoreContractEdits, configurationOf,
+    retainQuarantinedDraft, restoreQuarantinedDrafts, invalidatePolicyPreview,
     assertNativeDraft, assertNonsecretValues, sameNativeDraftBinding, previewDocument,
     nativeValues: (doc) => Object.fromEntries(doc.params.filter((param) => param.value !== undefined).map((param) => [param.name, param.value])),
     documentFindings: (doc) => validateNativeValues(scope.nativeValues(doc), doc.schema.parameters),
@@ -253,6 +255,30 @@ test('cancelling native navigation keeps original parameter/policy buffers and p
   assert.equal(f.value(), 'baseline-before-delayed-navigation'); assert.equal(f.policy(), policy);
   assert.equal(f.els.workspace.inert, false); assert.equal(f.els.editorLoading.hidden, true);
   assert.equal(f.calls.some(([kind]) => kind === 'read'), false);
+});
+
+test('native draft ownership: quarantine survives repeated unit navigation without reapplying obsolete value bindings', async (t) => {
+  const f = await fixture(t, { pause: 'none' }), pending = clone(f.state.operations);
+  const originalIdentity = clone(f.state.current.nativeIdentity);
+  const before = await f.provider.read(first);
+  await f.provider.write(first, new TextEncoder().encode(`${before.text}\n# External edit\n`), { expectedHash: before.hash });
+  f.documents.set(first, await f.service.deployment(first));
+  assert.equal(await f.scope.loadDocument(first, { preserve: true }), true);
+  assert.equal(f.state.operations.length, 0);
+  const retained = clone(f.state.quarantinedDrafts.get(first));
+  assert(retained.some((draft) => JSON.stringify(draft.operations) === JSON.stringify(pending)));
+  assert(retained.some((draft) => JSON.stringify(draft.nativeIdentity) === JSON.stringify(originalIdentity)));
+  assert(retained.some((draft) => draft.parameterHash === before.hash));
+  for (let index = 0; index < 3; index++) {
+    assert.equal(await f.scope.selectArea('second'), true);
+    assert.equal(f.state.quarantinedDraft, null);
+    assert.equal(f.value(), 'independent-second-draft');
+    assert.equal(await f.scope.selectArea('first'), true);
+    assert.equal(f.state.operations.length, 0);
+    assert.deepEqual(clone(f.state.quarantinedDrafts.get(first)), retained);
+  }
+  assert.deepEqual(f.durable.get(`${f.environment.id}:${second}`), f.unrelated);
+  assert.equal((await f.provider.read(first)).text, `${before.text}\n# External edit\n`);
 });
 
 for (const pause of ['source', 'draft']) {

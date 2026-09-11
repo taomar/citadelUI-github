@@ -13,6 +13,7 @@ export class WorkspaceViewState {
     if (!this.views.has(key)) this.views.set(key, this.createState());
     this.current = { key, state: this.views.get(key), environmentId: context.environment.id };
     this.current.state.workspaceId = context.environment.id;
+    this.current.state.workspaceKey = key;
     this.generation += 1;
     return this.current.state;
   }
