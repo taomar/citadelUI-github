@@ -260,6 +260,86 @@ test('changed names accept flat or per-alias metadata and reject unsafe value-li
   }
 });
 
+test('T6 manifest facade rejects invalid prepare metadata before any lease, journal or audit write', async (t) => {
+  const { root, store } = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const original = Buffer.from('');
+  const cases = [
+    [{ files: [] }, 'INVALID_FILES', 'One to 250 source files are required.'],
+    [{ files: Array(251).fill({}) }, 'INVALID_FILES', 'One to 250 source files are required.'],
+    [{ files: [null] }, 'INVALID_ALIAS', 'Invalid source alias.'],
+    [{ files: [{ alias: 'a.xml', size: 0 }] }, 'INVALID_EXISTENCE', 'File existence must be declared.'],
+    [{ files: [{ alias: 'a.xml', existed: true, size: -1, hash: 'bad' }] }, 'INVALID_SIZE', 'Invalid original size.'],
+    [{ files: [{ alias: 'a.xml', existed: true, size: 0, hash: 'bad' }] }, 'INVALID_HASH', 'Invalid original hash.'],
+    [{ files: [{ alias: 'a.xml', existed: false, size: 1 }] }, 'INVALID_NEW_FILE', 'New files must have null hash and zero size.'],
+    [{ changedAliases: [] }, 'INVALID_CHANGES', 'At least one changed alias is required.'],
+    [{ changedAliases: ['other.xml'] }, 'UNKNOWN_CHANGED_ALIAS', 'Changed alias is not in the manifest.'],
+    [{ changedNames: null }, 'INVALID_CHANGED_NAMES', 'Changed names must be a list or an alias-to-list object.'],
+    [{ changedNames: ['a=value'] }, 'INVALID_CHANGED_NAME', 'Invalid changed name.'],
+    [{ changedNames: { 'other.xml': [] } }, 'UNKNOWN_CHANGED_NAME_ALIAS', 'Changed-name alias is not in the manifest.'],
+    [{ createdDirectories: null }, 'INVALID_CREATED_DIRECTORIES', 'Created directories must be an array of at most 250 aliases.'],
+    [{ createdDirectories: ['bicep'] }, 'INVALID_CREATED_DIRECTORY', 'Created directories must contain a newly created source.'],
+  ];
+  for (const [overrides, code, message] of cases) {
+    await assert.rejects(store.prepare(proposal(original, overrides)), { name: 'Error', status: 400, code, message });
+    assert.deepEqual(await readdir(store.environmentsRoot), [], `${code} wrote durable metadata`);
+  }
+});
+
+test('T6 manifest facade keeps token and state gates before validation and validates before mutation', async (t) => {
+  const { root, store } = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const prepared = await store.prepare({
+    environmentId: 'env-one', targetId: 'gateway',
+    files: [{ alias: 'new.xml', existed: false, size: 0 }],
+  });
+  const { environmentId, transactionId } = prepared.transaction;
+  const authorization = await store.authorize(environmentId, transactionId, prepared.transactionToken);
+  const token = authorization.authorizationToken;
+  const plan = { manifestHash: authorization.manifestHash, files: [
+    { alias: 'new.xml', finalHash: hash('new'), finalSize: 3 },
+  ] };
+  const durable = () => Promise.all([
+    store.manifestPath(environmentId, transactionId), store.secretPath(environmentId, transactionId),
+    store.auditPath(environmentId), store.leasePath(environmentId),
+  ].map((path) => readFile(path, 'utf8')));
+  const authorizedBytes = await durable();
+  const validations = [];
+  const validate = store.validateReceipts.bind(store);
+  store.validateReceipts = (manifest, candidates, rollback) => {
+    validations.push({ status: manifest.status, candidates, rollback });
+    return validate(manifest, candidates, rollback);
+  };
+  for (const [work, status, code, message] of [
+    [() => store.beginCommit(environmentId, transactionId, 'wrong-token', {}), 401, 'INVALID_AUTHORIZATION_TOKEN', 'Invalid authorization token.'],
+    [() => store.beginCommit(environmentId, transactionId, token, {}), 409, 'STALE_MANIFEST_HASH', 'Authorized manifest hash is stale.'],
+    [() => store.beginCommit(environmentId, transactionId, token, { manifestHash: plan.manifestHash }), 400, 'INVALID_COMMIT_PLAN', 'Commit plan must cover every changed alias.'],
+    [() => store.beginCommit(environmentId, transactionId, token, { ...plan, files: [{ ...plan.files[0], originalHash: hash('old') }] }), 409, 'STALE_ORIGINAL_HASH', 'Prepared source hash is stale.'],
+    [() => store.beginCommit(environmentId, transactionId, token, { ...plan, files: [{ ...plan.files[0], finalSize: -1 }] }), 400, 'INVALID_SIZE', 'Invalid final size.'],
+    [() => store.commitReceipt(environmentId, transactionId, token, {}), 409, 'INVALID_TRANSACTION_STATE', 'Transaction is not committing.'],
+  ]) {
+    await assert.rejects(work(), { name: 'Error', status, code, message });
+    assert.deepEqual(await durable(), authorizedBytes, code);
+  }
+  assert.deepEqual(validations, []);
+  await store.beginCommit(environmentId, transactionId, token, plan);
+  const committingBytes = await durable();
+  await assert.rejects(store.fail(environmentId, transactionId, prepared.transactionToken, { changedAliases: ['other.xml'] }),
+    { status: 400, code: 'UNKNOWN_CHANGED_ALIAS', message: 'Unknown changed alias.' });
+  await assert.rejects(store.commitReceipt(environmentId, transactionId, token, { receipts: [] }),
+    { status: 400, code: 'INVALID_RECEIPTS', message: 'Receipts must cover every changed alias.' });
+  assert.deepEqual(await durable(), committingBytes);
+  const receipts = [{ alias: 'new.xml', hash: hash('new'), size: 3 }];
+  await store.commitReceipt(environmentId, transactionId, token, { receipts });
+  assert.equal(validations.length, 2);
+  assert.equal(validations[1].status, 'committing');
+  assert.equal(validations[1].rollback, false);
+  assert.equal(validations[1].candidates, receipts);
+  await assert.rejects(store.commitReceipt(environmentId, transactionId, token, {}),
+    { status: 409, code: 'INVALID_TRANSACTION_STATE', message: 'Transaction is not committing.' });
+  assert.equal(validations.length, 2, 'terminal state rejects before receipt validation');
+});
+
 test('commit protocol rejects stale plans and receipts, then records a hash-chained audit', async (t) => {
   const original = Buffer.from("param enabled = false\n");
   const final = Buffer.from("param enabled = true\n");
