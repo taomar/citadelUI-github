@@ -11,6 +11,7 @@ import { WorkspaceService } from '../web/js/workspace-service.mjs';
 import { primaryCapabilities } from '../shared/citadel-core.mjs';
 import { sha256 } from '../shared/source-scope.mjs';
 import { citadelRepositoryFiles } from './_citadel-fixture.mjs';
+import { nativeConfiguration } from './_native-fixture.mjs';
 import { MemoryAudit, MockGitHub, TEST_TOKEN, environmentRegistry } from './_github-mock.mjs';
 
 const MAIN = 'bicep/infra/main.bicepparam';
@@ -376,6 +377,28 @@ test('copy refuses an environment outside the active project', async () => {
   );
   assert.ok(source.hash);
 });
+
+for (const nativeSides of [['env-alpha'], ['env-beta'], ['env-alpha', 'env-beta']]) {
+  test(`L2 parameter copy: native ${nativeSides.join(' and ')} remains refused before source reads or planning`, async (t) => {
+    const context = await project();
+    for (const id of nativeSides) context.environments[id].configuration = nativeConfiguration(['llm']);
+    const sourceRead = t.mock.method(context.providers['env-alpha'], 'read');
+    const targetRead = t.mock.method(context.providers['env-beta'], 'read');
+    const writable = t.mock.method(context.providers['env-beta'], 'assertWritable');
+    const mutations = context.github.calls.filter((call) => call.method !== 'GET');
+    const expected = {
+      code: 'NATIVE_SYNTAX',
+      message: 'Native workspaces save their own inputs. Cross-format or cross-unit parameter copying is not an implicit conversion.',
+    };
+    await assert.rejects(context.service.previewCopy('env-beta', MAIN, null, 'stale'), expected);
+    await assert.rejects(context.service.copyParameters('env-beta', MAIN, null, 'stale', 'stale'), expected);
+    assert.equal(writable.mock.callCount(), 2, 'Destination permission remains ahead of the native-format gate.');
+    assert.equal(sourceRead.mock.callCount(), 0);
+    assert.equal(targetRead.mock.callCount(), 0);
+    assert.deepEqual(context.github.calls.filter((call) => call.method !== 'GET'), mutations);
+    assert.deepEqual(context.localCommits, []);
+  });
+}
 
 test('every planned operation stays available after attaching a GitHub repository', async () => {
   const context = await project();

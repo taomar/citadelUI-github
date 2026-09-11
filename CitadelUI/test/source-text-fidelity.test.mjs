@@ -222,6 +222,84 @@ for (const transport of ['Local', 'GitHub']) {
   });
 }
 
+for (const sourceTransport of ['Local', 'GitHub']) for (const targetTransport of ['Local', 'GitHub']) {
+  for (const targetBom of [false, true]) {
+    test(`L2 parameter copy: ${sourceTransport} to ${targetTransport} retains ${targetBom ? 'BOM' : 'no BOM'}, ordered names, bytes and request accounting`, async (t) => {
+      const sourceText = main.replace("'dev'", "'source-copy'").replace("'westeurope'", "'eastus'");
+      const sourceBytes = encode(`${targetBom ? '' : '\uFEFF'}${sourceText}`);
+      const targetText = main.replace("'dev'", "'target'").replace('// keep', '// target-owned');
+      const targetBytes = encode(`${targetBom ? '\uFEFF' : ''}${targetText}`);
+      const expectedText = targetText.replace("'target'", "'source-copy'").replace("'westeurope'", "'eastus'");
+      const expectedBytes = encode(`${targetBom ? '\uFEFF' : ''}${expectedText}`);
+      const source = await fixture(t, sourceTransport, { [MAIN]: sourceBytes }, false, 'l2-copy-source');
+      const target = await fixture(t, targetTransport, { [MAIN]: targetBytes }, false, 'l2-copy-target');
+      source.service.registry = { listEnvironments: async () => [source.environment, target.environment], getHandle: async () => null };
+      source.service.createProvider = async (environment) => environment.id === target.environment.id ? target.provider : source.provider;
+      source.service.coordinator = target.coordinator;
+      const originals = sourceSnapshot(source, sourceTransport), destinations = sourceSnapshot(target, targetTransport);
+      const sourceMutations = mutationRequests(source, sourceTransport), targetMutations = mutationRequests(target, targetTransport);
+      const validate = t.mock.method(target.coordinator, 'validateRequest');
+      const commit = t.mock.method(target.coordinator, 'commit');
+      const loaded = await source.provider.read(MAIN);
+      const selection = ['location', 'apimSku', 'environmentName', 'location'];
+      const preview = await source.service.previewCopy(target.environment.id, MAIN, selection, loaded.hash);
+      assert.deepEqual(preview, {
+        before: targetText, after: expectedText, changed: true, selected: ['environmentName', 'location'],
+        sourceHash: loaded.hash, targetHash: await sha256(targetBytes),
+        targetLabel: target.environment.label, targetAlias: MAIN, bom: targetBom,
+      });
+      assert.deepEqual(sourceSnapshot(source, sourceTransport), originals);
+      assert.deepEqual(sourceSnapshot(target, targetTransport), destinations);
+      assert.deepEqual(mutationRequests(source, sourceTransport), sourceMutations);
+      assert.deepEqual(mutationRequests(target, targetTransport), targetMutations);
+      assert.equal(commit.mock.callCount(), 0);
+      assert.equal(validate.mock.callCount(), 1);
+      const [previewFiles, previewOptions] = validate.mock.calls[0].arguments;
+      assert.deepEqual(previewFiles, [{ alias: MAIN, beforeHash: preview.targetHash, after: expectedBytes }]);
+      assert.equal(previewOptions.context.provider, target.provider);
+      assert.equal(previewOptions.context.environment, target.environment);
+      assert.equal(previewOptions.action, 'environment-copy');
+
+      const result = await source.service.copyParameters(target.environment.id, MAIN, selection, preview.sourceHash, preview.targetHash);
+      assert.equal(result.outcome, 'applied');
+      assert.equal(commit.mock.callCount(), 1);
+      const [commitFiles, commitOptions] = commit.mock.calls[0].arguments;
+      assert.deepEqual(commitFiles, [{
+        alias: MAIN, before: targetBytes, beforeHash: preview.targetHash, after: expectedBytes,
+        changed: ['environmentName', 'location'],
+      }]);
+      assert.equal(commitOptions.context.provider, target.provider);
+      assert.equal(commitOptions.context.environment, target.environment);
+      assert.equal(commitOptions.action, 'environment-copy');
+      assert.deepEqual(await target.raw(MAIN), expectedBytes);
+      assert.deepEqual(sourceSnapshot(target, targetTransport), { ...destinations, [MAIN]: expectedBytes });
+      assert.deepEqual(sourceSnapshot(source, sourceTransport), originals);
+      assert.deepEqual(mutationRequests(source, sourceTransport), sourceMutations);
+      if (targetTransport === 'Local') {
+        assert.deepEqual(await localBackup(target, result.transactionId), targetBytes);
+        assert.equal(target.trace.filter((entry) => entry.action === 'prepare').length, 1);
+      } else {
+        const submissions = target.calls.filter((call) => call.method === 'POST' && call.path.endsWith('/commits'));
+        assert.equal(submissions.length, 1);
+        const budget = await validate.mock.calls[0].result;
+        assert.equal(budget.limit, 12582912);
+        assert.equal(Buffer.byteLength(submissions[0].body), budget.encodedBytes);
+        const body = JSON.parse(submissions[0].body);
+        assert.equal(body.action, 'environment-copy');
+        assert.equal(body.files.length, 1);
+        assert.equal(body.files[0].beforeHash, preview.targetHash);
+        assert.deepEqual(Buffer.from(body.files[0].after, 'base64'), Buffer.from(expectedBytes));
+        const parent = target.github.commits.get(result.commit).parents[0];
+        const entry = target.github.treeOf(parent).find((file) => file.path === MAIN);
+        assert.deepEqual(Buffer.from(target.github.blobs.get(entry.sha), 'base64'), Buffer.from(targetBytes));
+      }
+      await target.service.restoreTransaction(result.commit || result.transactionId);
+      assert.deepEqual(sourceSnapshot(target, targetTransport), destinations);
+      assert.deepEqual(sourceSnapshot(source, sourceTransport), originals);
+    });
+  }
+}
+
 test('source fidelity: Local overwrite backs up exact external encoding and retains its BOM', async (t) => {
   const f = await fixture(t, 'Local', { [MAIN]: main });
   const loaded = await f.service.deployment(MAIN);
