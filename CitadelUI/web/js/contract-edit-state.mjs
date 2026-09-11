@@ -4,8 +4,35 @@ function policyPending(state) {
   return Object.keys(state.policyChanges || {}).length > 0 || typeof state.policyRaw === 'string';
 }
 
+export function hasParameterInputs(state) {
+  return Object.keys(state.parameterInputs || {}).length > 0;
+}
+
+export function parameterInput(state, path) {
+  return state.parameterInputs?.[JSON.stringify(path)] || null;
+}
+
+export function setParameterInput(state, path, input) {
+  if (!Array.isArray(path) || !path.length || input && typeof input.value !== 'string') {
+    throw new Error('A pending input requires its parameter path and literal text.');
+  }
+  const key = JSON.stringify(path), previous = state.parameterInputs || {};
+  const next = input ? {
+    path: [...path], value: input.value, composing: Boolean(input.composing),
+    badInput: Boolean(input.badInput), validationMessage: input.validationMessage || '',
+  } : undefined;
+  if (JSON.stringify(previous[key]) === JSON.stringify(next)) return false;
+  state.parameterInputs = { ...previous };
+  if (next) state.parameterInputs[key] = next;
+  else delete state.parameterInputs[key];
+  return true;
+}
+
 export function editorPendingCount(state) {
-  return (state.operations || []).length + (policyPending(state) ? 1 : 0);
+  const operations = state.operations || [];
+  const covered = new Set(operations.filter((op) => op.op === 'set').map((op) => JSON.stringify(op.path)));
+  const inputs = Object.keys(state.parameterInputs || {}).filter((key) => !covered.has(key)).length;
+  return operations.length + inputs + (policyPending(state) ? 1 : 0);
 }
 
 export function captureContractEdits(state, { allQuarantines = false } = {}) {
@@ -18,6 +45,7 @@ export function captureContractEdits(state, { allQuarantines = false } = {}) {
     parameterHash: state.current?.hash || null,
     nativeIdentity: state.current?.nativeIdentity || null,
     operations: structuredClone(state.operations || []),
+    parameterInputs: structuredClone(state.parameterInputs || {}),
     policyPath: state.contract?.policy?.path || null,
     policyHash: state.contract?.policy?.hash || null,
     policyChanges: structuredClone(state.policyChanges || {}),
@@ -91,6 +119,8 @@ export function ownsPolicyPreview(state, identity) {
 
 export function clearEditorPending(state) {
   state.operations = [];
+  state.parameterInputs = {};
+  state.inputScope = {};
   state.policyChanges = {};
   state.policyRaw = null;
   invalidatePolicyPreview(state);
@@ -106,13 +136,14 @@ export function restoreContractEdits(
   clearEditorPending(state);
   restoreQuarantinedDrafts(state, snapshot);
 
-  if (options.parameters !== false && snapshot?.operations?.length) {
+  if (options.parameters !== false && (snapshot?.operations?.length || hasParameterInputs(snapshot || {}))) {
     if (
       snapshot.parameterPath === state.current?.path &&
       snapshot.parameterHash === state.current?.hash &&
       (!state.current?.nativeIdentity || sameNativeDraftBinding(snapshot.nativeIdentity, state.current.nativeIdentity))
     ) {
-      state.operations = structuredClone(snapshot.operations);
+      state.operations = structuredClone(snapshot.operations || []);
+      state.parameterInputs = structuredClone(snapshot.parameterInputs || {});
     } else {
       conflicts.push(snapshot.parameterPath || 'parameter file');
     }

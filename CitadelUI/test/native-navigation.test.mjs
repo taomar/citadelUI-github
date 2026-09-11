@@ -9,6 +9,8 @@ import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
 import { previewDocument, queueOperation } from '../web/js/preview.mjs';
 import { captureContractEdits, clearEditorPending, editorPendingCount, restoreContractEdits } from '../web/js/contract-edit-state.mjs';
 import { retainQuarantinedDraft, restoreQuarantinedDrafts, invalidatePolicyPreview } from '../web/js/contract-edit-state.mjs';
+import { hasParameterInputs } from '../web/js/contract-edit-state.mjs';
+import { captureDialogStatus } from '../web/js/dialog.mjs';
 import { initializeNativeParser } from '../shared/terraform/parser.mjs';
 import { assertNativeDraft, sameNativeDraftBinding } from '../shared/terraform/drafts.mjs';
 import { assertNonsecretValues, validateNativeValues } from '../shared/terraform/schema.mjs';
@@ -26,6 +28,7 @@ const handlers = [
   section('function createEditorState()', 'const viewStates ='),
   section('function draftContainsSecureValue(', 'function pushOperation('),
   section('function hasPolicyEdits(', '/* Pending edits live only in memory'),
+  section('function canLeaveIncompleteNumber(', 'function currentValidation('),
   section('async function withEditorLoad(', 'let wired = false'),
   section('async function returnToSetup()', '// Nothing starts'),
   section('async function withStatus(', '/* -------------------------------------------------------------- operations */'),
@@ -52,6 +55,7 @@ async function fixture(t, { choice = 'preserve', failure = null, pause = 'source
   const durable = new Map(), statuses = [], calls = [], frames = [], started = deferred(), release = deferred();
   let held = false, active = f.context;
   const scope = { document: globalThis.document, structuredClone, Map, h, pauseEditorForLoad,
+    captureDialogStatus, hasParameterInputs, Event: globalThis.Event,
     captureContractEdits, clearEditorPending, editorPendingCount, restoreContractEdits, configurationOf,
     retainQuarantinedDraft, restoreQuarantinedDrafts, invalidatePolicyPreview,
     assertNativeDraft, assertNonsecretValues, sameNativeDraftBinding, previewDocument,

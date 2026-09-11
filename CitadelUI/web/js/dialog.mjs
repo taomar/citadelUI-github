@@ -49,7 +49,7 @@ function renderFrame(frame) {
         '\u2715'
       )
     ),
-    h('div', { class: 'modal-body' }, frame.body),
+    h('div', { class: 'modal-body' }, frame.status, frame.body),
     h('footer', { class: 'modal-foot' }, frame.actions)
   );
   dialog.setAttribute('aria-labelledby', frame.titleId);
@@ -128,6 +128,9 @@ export function showDialog(title, body, actions = [], options = {}) {
   const frame = {
     title,
     body,
+    status: h('p', {
+      class: 'modal-status hint', role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true', hidden: true,
+    }),
     actions: actions.filter(Boolean),
     initialFocus: options.initialFocus || null,
     onDismiss: options.onDismiss || null,
@@ -152,6 +155,25 @@ export function showDialog(title, body, actions = [], options = {}) {
     stack = [frame];
   }
   renderFrame(frame);
+}
+
+/** Keep asynchronous feedback with its original frame, not a successor modal. */
+export function captureDialogStatus() {
+  const frame = stack.at(-1);
+  const announce = (message, tone = 'info') => {
+    if (!frame || !stack.includes(frame) || !host().open) return false;
+    frame.status.className = `modal-status ${tone === 'error' ? 'field-error' : 'hint'}`;
+    frame.status.hidden = !message;
+    frame.status.textContent = message || '';
+    return true;
+  };
+  announce.isCurrent = () => Boolean(frame && stack.at(-1) === frame && host().open);
+  announce.close = () => {
+    if (!announce.isCurrent()) return false;
+    closeHost();
+    return true;
+  };
+  return announce;
 }
 
 export function dismissDialog(result) {

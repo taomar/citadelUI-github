@@ -7,6 +7,7 @@ import { h, mount } from '../web/js/dom.mjs';
 import { pauseEditorForLoad } from '../web/js/editor-load.mjs';
 import { renderPolicy } from '../web/js/policyview.mjs';
 import { setRawPolicyDraft } from '../web/js/policy-edit-state.mjs';
+import { captureDialogStatus } from '../web/js/dialog.mjs';
 import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
 import * as edits from '../web/js/contract-edit-state.mjs';
 import { configurationOf } from '../shared/workspace-configuration.mjs';
@@ -20,8 +21,10 @@ function section(start, end) {
 }
 const handlers = [
   section('function createEditorState()', 'const viewStates ='),
+  section('function captureDocumentAction(', '/* -------------------------------------------------------------- operations */'),
   section('function draftContainsSecureValue(', 'function pushOperation('),
   section('function hasPolicyEdits(', '/* Pending edits live only in memory'),
+  section('function canLeaveIncompleteNumber(', 'function currentValidation('),
   section('async function loadContract(', 'let policyPreviewToken ='),
   section('function pruneEmptyChanges(', 'async function savePolicy()'),
   section('function quarantineNotice()', '/**\n * Repaint the workspace.'),
@@ -64,6 +67,7 @@ function fixture() {
     sidebar: dom.node('nav'), contextRail: dom.node('aside'), tbActions: dom.node('header'), editorLoading: dom.node() };
   dom.root.append(els.workspace, els.sidebar, els.contextRail, els.tbActions, els.editorLoading);
   const scope = { structuredClone, Map, h, mount, pauseEditorForLoad, ...edits, setRawPolicyDraft, renderPolicy,
+    captureDialogStatus, Event: globalThis.Event,
     configurationOf, document: globalThis.document, els, pendingByDocument: new Map(),
     editorTransition: null, documentGeneration: 0, policyPreviewToken: 0,
     activeWorkspace: () => active, environmentSourceOf: (environment) => environment.source,

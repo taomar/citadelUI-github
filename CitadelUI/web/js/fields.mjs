@@ -198,15 +198,13 @@ function withBounds(input, schema) {
  * gets a monospace box that grows to the text instead of a single line that
  * scrolls the beginning of the value out of sight.
  */
-function exprBox(str, commit) {
-  const ta = h('textarea', {
+function exprBox(str, commit, path, ctx) {
+  return draftControl(h('textarea', {
     class: 'ctl ctl-expr',
     rows: Math.max(2, Math.min(10, str.split('\n').length + 1)),
     value: str,
     spellcheck: false,
-    onchange: (e) => commit(e.target.value),
-  });
-  return ta;
+  }), path, ctx, (event) => commit(event.target.value));
 }
 
 /**
@@ -339,6 +337,46 @@ function comboControl(value, allowed, commit, secure, schema) {
   return wrap;
 }
 
+// Number inputs do not expose their incomplete text through .value.
+const incompleteNumbers = new WeakMap();
+
+function draftControl(input, path, ctx, onChange) {
+  const key = JSON.stringify(path);
+  const controls = ctx.inputOwner && incompleteNumbers.get(ctx.inputOwner);
+  const retained = ctx.inputDraft?.(path);
+  if (retained?.badInput && controls?.has(key)) return controls.get(key);
+  controls?.delete(key);
+  const original = input.value;
+  if (retained) {
+    input.value = retained.value;
+    input.setCustomValidity?.(retained.validationMessage || '');
+  }
+  input.dataset.parameterInput = key;
+  let composing = false;
+  const notify = () => {
+    if (!ctx.onInputDraft || !input.isConnected || ctx.readOnly || input.readOnly || input.disabled) return;
+    const badInput = Boolean(input.validity?.badInput);
+    if (ctx.inputOwner) {
+      if (badInput) {
+        if (!incompleteNumbers.has(ctx.inputOwner)) incompleteNumbers.set(ctx.inputOwner, new Map());
+        incompleteNumbers.get(ctx.inputOwner).set(key, input);
+      } else incompleteNumbers.get(ctx.inputOwner)?.delete(key);
+    }
+    ctx.onInputDraft(path, input.value === original && !badInput ? null : {
+      value: input.value, composing, badInput, validationMessage: input.validationMessage || '',
+    });
+  };
+  input.addEventListener('input', notify);
+  input.addEventListener('compositionstart', () => { composing = true; });
+  input.addEventListener('compositionend', () => { composing = false; notify(); });
+  input.addEventListener('change', (event) => {
+    if (composing || ctx.onInputDraft && !input.isConnected) return;
+    onChange(event);
+    if (input.isConnected && ctx.inputDraft?.(path)) notify();
+  });
+  return input;
+}
+
 /**
  * Rule 1, in one function: the declared type decides, the expression does not.
  * The branches are ordered by type -- bool, int, enum, secret, long, string --
@@ -350,15 +388,15 @@ function scalarControl(value, path, ctx, schema) {
   const type = schema && schema.type;
   const label = valueLabel(path, schema);
   if (ctx.native && (schema?.type === 'number' || isExactNumber(value))) {
-    const input = h('input', { class: 'ctl ctl-native-number', type: 'text', inputmode: 'decimal',
+    const input = draftControl(h('input', { class: 'ctl ctl-native-number', type: 'text', inputmode: 'decimal',
       value: isExactNumber(value) ? value.__tfNumber : String(value), 'aria-label': label,
-      onchange: (event) => {
-        try {
-          const next = exactNumber(event.target.value, schema?.syntax);
-          event.target.setCustomValidity('');
-          commit(next);
-        } catch (error) { event.target.setCustomValidity(error.message); event.target.reportValidity(); }
-      } });
+    }), path, ctx, (event) => {
+      try {
+        const next = exactNumber(event.target.value, schema?.syntax);
+        event.target.setCustomValidity('');
+        commit(next);
+      } catch (error) { event.target.setCustomValidity(error.message); event.target.reportValidity(); }
+    });
     return namedControl(input, label, path);
   }
 
@@ -392,12 +430,14 @@ function scalarControl(value, path, ctx, schema) {
   if (typeof value === 'number' || (type === 'int' && typeof value === 'string')) {
     const numeric = typeof value === 'number';
     return namedControl(withBounds(
-      h('input', {
+      draftControl(h('input', {
         class: 'ctl ctl-num',
         type: 'number',
         inputmode: 'numeric',
         value: String(value),
-        onchange: (e) => commit(numeric ? Number(e.target.value) : e.target.value),
+      }), path, ctx, (event) => {
+        if (event.target.validity?.badInput) { event.target.reportValidity(); return; }
+        commit(numeric ? Number(event.target.value) : event.target.value);
       }),
       schema
     ), label, path);
@@ -412,16 +452,15 @@ function scalarControl(value, path, ctx, schema) {
   // all. Sixty characters is where a value stops fitting the sheet's value
   // column on a laptop, so that is where the single line stops being honest.
   const multiline = str.includes('\n') || str.length > 60 || str.startsWith('@(');
-  if (multiline) return namedControl(exprBox(str, commit), label, path);
+  if (multiline) return namedControl(exprBox(str, commit, path, ctx), label, path);
 
-  const input = h('input', {
+  const input = draftControl(h('input', {
     class: `ctl ${widthClass(schema, str)}`,
     type: schema && schema.secure ? 'password' : 'text',
     value: str,
     placeholder:
       schema && !schema.envVar && schema.hasDefault ? String(schema.defaultValue ?? '') : '',
-    onchange: (e) => commit(e.target.value),
-  });
+  }), path, ctx, (event) => commit(event.target.value));
   return namedControl(schema && schema.secure ? withReveal(input) : input, label, path);
 }
 

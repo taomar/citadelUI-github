@@ -12,6 +12,8 @@ import { configurationOf } from '../shared/workspace-configuration.mjs';
 import { environmentSourceOf } from '../web/js/registry.mjs';
 import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
 import { pauseEditorForLoad } from '../web/js/editor-load.mjs';
+import { captureDialogStatus } from '../web/js/dialog.mjs';
+import { hasParameterInputs } from '../web/js/contract-edit-state.mjs';
 import { nativeConfiguration, nativeLocalFixture, NATIVE_FILES } from './_native-fixture.mjs';
 
 await initializeNativeParser();
@@ -57,6 +59,7 @@ variable "password" { type = string
   const viewStates = new WorkspaceViewState(() => state); viewStates.activate(f.context);
   const calls = [], statuses = [], dialogs = [];
   const scope = { state, viewStates, editorTransition: null, h, mount, structuredClone, classifyValidation, validateDocument, previewDocument,
+    captureDialogStatus, hasParameterInputs, document: globalThis.document, Event: globalThis.Event,
     validateNativeValues, configurationOf, environmentSourceOf,
     activeWorkspace: () => f.context, currentWriteContext: () => ({ format: 'terraform' }),
     pendingCount: () => state.operations.length, els: { tbActions: actions, workspace },

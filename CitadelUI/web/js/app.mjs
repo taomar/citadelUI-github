@@ -75,6 +75,7 @@ import { githubBranchKey, githubHeadEvents } from './github-head-state.mjs';
  */
 function pullRequestUrl(environment) {
   const source = environmentSourceOf(environment);
+  if (!source.sourceBranch || !source.workingBranch || source.sourceBranch === source.workingBranch) return null;
   const compare = `${encodeURIComponent(source.sourceBranch)}...${encodeURIComponent(source.workingBranch)}`;
   return `https://github.com/${source.fullName}/compare/${compare}?expand=1`;
 }
@@ -85,6 +86,9 @@ import {
   captureContractEdits,
   clearEditorPending,
   editorPendingCount,
+  hasParameterInputs,
+  parameterInput,
+  setParameterInput,
   restoreContractEdits,
   retainQuarantinedDraft,
   restoreQuarantinedDrafts,
@@ -94,6 +98,7 @@ import {
   ownsPolicyPreview,
 } from './contract-edit-state.mjs';
 import {
+  captureDialogStatus,
   choiceDialog,
   closeDialog,
   confirmDialog,
@@ -122,6 +127,8 @@ function createEditorState() { return {
   current: null,
   baselineValidation: [],
   operations: [],
+  parameterInputs: {},
+  inputScope: {},
   policyChanges: {},
   policyRaw: null,
   policyMode: 'guided',
@@ -135,6 +142,8 @@ function createEditorState() { return {
   quarantinedDraft: null,
   quarantinedDrafts: new Map(),
   documentViews: new Map(),
+  documentGeneration: 0,
+  documentNotices: new Map(),
   reviewEpoch: 0,
 }; }
 
@@ -171,6 +180,7 @@ function setStatus(message, tone = 'info', sticky = false, pending = false) {
   if (message && tone === 'error') reportClientError(null, 'app.status', { module: '/js/app.mjs' });
   const owner = state;
   owner.status = message ? { message, tone, pending } : null;
+  const notice = owner.status;
   clearTimeout(statusTimer);
   clearTimeout(pendingTicker);
   if (message && pending) {
@@ -183,6 +193,7 @@ function setStatus(message, tone = 'info', sticky = false, pending = false) {
   // the success path stays pinned forever the moment anything throws.
   if (message && !sticky && tone !== 'error') {
     statusTimer = setTimeout(() => {
+      if (owner.status !== notice) return;
       owner.status = null;
       if (owner === state) renderStatus();
     }, 4000);
@@ -321,17 +332,58 @@ async function withStatus(message, fn) {
   // `pending` is what turns a static sentence into a live, animated one. Every
   // await in the product passes through this function, so nothing can wait
   // silently without someone deliberately bypassing it.
-  const owner = state;
+  const owner = state, action = captureDocumentAction(owner);
+  const announce = captureDialogStatus();
+  announce(message);
   setStatus(message, 'info', true, true);
+  const pending = owner.status;
   try {
     const result = await fn();
-    if (state === owner) setStatus(null);
+    if (ownsDocumentAction(action)) announce(null);
+    if (owner.status === pending) {
+      owner.status = null;
+      if (ownsDocumentAction(action)) setStatus(null);
+    }
     return result;
   } catch (err) {
     reportClientError(err, 'app.action', { module: '/js/app.mjs' });
-    if (state === owner) setStatus(err.message, 'error');
+    if (ownsDocumentAction(action)) announce(err.message, 'error');
+    retainDocumentNotice(action, err.message, 'error');
     return undefined;
   }
+}
+
+function captureDocumentAction(owner = state) {
+  return { owner, document: owner.current, contract: owner.contract,
+    generation: owner.documentGeneration, ticket: viewStates.ticket() };
+}
+
+function ownsDocumentAction(action) {
+  return state === action.owner && viewStates.isCurrent(action.ticket) &&
+    action.owner.current === action.document && action.owner.contract === action.contract &&
+    action.owner.documentGeneration === action.generation;
+}
+
+function retainDocumentNotice(action, message, tone, outcome = false) {
+  const { owner, document, contract, generation } = action;
+  const path = document?.path || contract?.policy?.path;
+  const notice = { message, tone, outcome };
+  if (path) {
+    owner.documentNotices ||= new Map();
+    // A reload error must not erase a confirmed source outcome awaiting its owner.
+    if (outcome || !owner.documentNotices.get(path)?.outcome) owner.documentNotices.set(path, notice);
+  }
+  if (owner.current === document && owner.contract === contract && owner.documentGeneration === generation) {
+    owner.status = notice;
+  }
+  if (ownsDocumentAction(action)) setStatus(message, tone);
+}
+
+function restoreDocumentNotice() {
+  const path = state.current?.path, notice = state.documentNotices?.get(path);
+  if (!notice) return;
+  state.documentNotices.delete(path);
+  setStatus(notice.message, notice.tone);
 }
 
 /* -------------------------------------------------------------- operations */
@@ -391,17 +443,27 @@ async function restoreParameterDraft(document, owner = state) {
 
 function pushOperation(op) {
   if (state.quarantinedDraft) { setStatus(state.quarantinedDraft.reason, 'error'); return; }
+  if (hasParameterInputs(state) && (op.op !== 'set' || Object.values(state.parameterInputs).some((input) =>
+    input.path.length > op.path.length && op.path.every((part, index) => input.path[index] === part)))) {
+    setStatus('Finish or discard the pending field input before changing its container.', 'error');
+    return false;
+  }
   const next = queueOperation(state.operations, op, state.current);
   if (state.current?.format === 'terraform') {
     try { assertNonsecretValues(nativeValues(previewDocument(state.current, next)), state.current.schema.parameters); }
     catch (error) { setStatus(error.message, 'error'); return; }
   }
   state.operations = next;
+  setParameterInput(state, op.path, null);
   persistParameterDraft().catch((error) => setStatus(error.message, 'error'));
   preserveEditorFocus(els.workspace, renderEditor);
 }
 
 function pushOperations(operations) {
+  if (hasParameterInputs(state)) {
+    setStatus('Finish or discard the pending field input before applying multiple changes.', 'error');
+    return false;
+  }
   for (const operation of operations) {
     state.operations = queueOperation(state.operations, operation, state.current);
   }
@@ -410,7 +472,37 @@ function pushOperations(operations) {
 }
 
 function dirtyParams() {
-  return new Set(state.operations.map((o) => o.path && o.path[0]).filter(Boolean));
+  return new Set([...state.operations, ...Object.values(state.parameterInputs || {})]
+    .map((o) => o.path && o.path[0]).filter(Boolean));
+}
+
+function canLeaveIncompleteNumber() {
+  const input = Object.values(state.parameterInputs || {}).find((draft) => draft.badInput);
+  if (!input) return true;
+  const message = `Complete or discard the incomplete number in ${input.path[0]} before leaving this view. Its text remains in the field.`;
+  setStatus(message, 'error');
+  captureDialogStatus()(message, 'error');
+  return false;
+}
+
+function flushParameterInputs() {
+  const owner = state, sourceDocument = owner.current;
+  if (els.workspace.contains(document.activeElement)) document.activeElement.blur();
+  for (const [key, input] of Object.entries(owner.parameterInputs || {})) {
+    if (state !== owner || owner.current !== sourceDocument) return false;
+    const control = [...els.workspace.querySelectorAll('[data-parameter-input]')]
+      .find((element) => element.dataset.parameterInput === key);
+    if (!control || control.disabled || control.readOnly || input.composing) {
+      setStatus('Return to the pending parameter field and finish or discard its input before review. Its text is retained in memory.', 'error');
+      return false;
+    }
+    control.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  if (hasParameterInputs(owner)) {
+    setStatus('Correct the pending parameter input before review. Its text is retained in memory and has not been saved.', 'error');
+    return false;
+  }
+  return true;
 }
 
 function currentValidation(doc = viewOf(state.current)) {
@@ -492,7 +584,7 @@ function restoreStashedPending() {
 }
 
 function canPersistAllPending() {
-  if ([...viewStates.views.values()].some((view) => view.quarantinedDrafts?.size)) return false;
+  if ([...viewStates.views.values()].some((view) => view.quarantinedDrafts?.size || hasParameterInputs(view))) return false;
   const snapshots = [
     {
       ...captureContractEdits(state),
@@ -503,6 +595,7 @@ function canPersistAllPending() {
   return snapshots.every(
     (snapshot) =>
       !snapshot.secureParameters &&
+      !hasParameterInputs(snapshot) &&
       !Object.keys(snapshot.policyChanges || {}).length &&
       snapshot.policyRaw === null
   );
@@ -583,16 +676,28 @@ window.addEventListener('beforeunload', (event) => {
 /* -------------------------------------------------------------- edit context */
 
 function editContext(doc) {
+  const owner = state, sourceDocument = state.current, ticket = viewStates.ticket(), inputScope = state.inputScope;
+  const ownsInputs = () => owner === state && owner.current === sourceDocument &&
+    owner.inputScope === inputScope && viewStates.isCurrent(ticket);
+  const change = (op) => ownsInputs() && !owner.paintingEditor ? pushOperation(op) : false;
   const dirty = dirtyParams();
   const params = new Map((doc.params || []).map((param) => [param.name, param]));
   const findings = currentValidation(doc);
   const context = {
-    onChange: (path, value) => pushOperation({ op: 'set', path, value }),
-    onAppend: (path, value) => pushOperation({ op: 'append', path, value }),
-    onRemove: (path) => pushOperation({ op: 'remove', path }),
+    inputOwner: inputScope,
+    inputDraft: (path) => ownsInputs() ? parameterInput(owner, path) : null,
+    onInputDraft: (path, input) => {
+      if (!ownsInputs() || owner.paintingEditor || owner.quarantinedDraft) return;
+      const before = editorPendingCount(owner);
+      setParameterInput(owner, path, input);
+      if (before !== editorPendingCount(owner)) renderActions();
+    },
+    onChange: (path, value) => change({ op: 'set', path, value }),
+    onAppend: (path, value) => change({ op: 'append', path, value }),
+    onRemove: (path) => change({ op: 'remove', path }),
     // `set` rewrites an existing span, so a property the file does not yet
     // carry has to be created instead of assigned.
-    onAddProperty: (path, key, value) => pushOperation({ op: 'addProperty', path, key, value }),
+    onAddProperty: (path, key, value) => change({ op: 'addProperty', path, key, value }),
     rerender: () => render(),
     resolveEnv: () => null,
     schemaFor: (name) => {
@@ -646,6 +751,7 @@ function editContext(doc) {
     }, { key: 'save-subscription-id' }),
     accessTargets: state.accessTargets,
     applyObject: (path, source, fields) => {
+      if (!ownsInputs()) return;
       const target = path.reduce((value, segment) => value && value[segment], Object.fromEntries(
         (doc.params || []).map((param) => [param.name, param.value])
       ));
@@ -904,6 +1010,7 @@ function openCreateContract() {
 async function loadContract(id, preserved = null, preserveOptions = undefined, transition = null) {
   return withEditorLoad('Opening contract. Editing is paused until loading finishes.', async () => {
     const owner = state, ticket = viewStates.ticket(), generation = ++documentGeneration, context = activeWorkspace();
+    owner.documentGeneration = generation;
     const loaded = await withStatus('Loading contract\u2026', async () => {
       const [contract, accessTargets] = await Promise.all([api.contract(id, context), api.accessContractTargets(context)]);
       if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return null;
@@ -922,6 +1029,8 @@ async function loadContract(id, preserved = null, preserveOptions = undefined, t
     restoreQuarantinedDrafts(state, draftState);
     if (state.quarantinedDraft) setStatus(state.quarantinedDraft.reason, 'error');
     state.operations = operations;
+    state.parameterInputs = {};
+    state.inputScope = {};
     state.policyChanges = {};
     state.policyRaw = null;
     invalidatePolicyPreview(state);
@@ -943,6 +1052,7 @@ async function loadContract(id, preserved = null, preserveOptions = undefined, t
     if (state.policyRaw === null && Object.keys(state.policyChanges).length) await refreshPolicyPreview();
     if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return false;
     render();
+    restoreDocumentNotice();
     if (remembered) requestAnimationFrame(() => {
       if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return;
       els.workspace.scrollTop = remembered.scrollTop;
@@ -1219,10 +1329,15 @@ async function savePolicy() {
     ...(raw !== null ? { text: raw } : { changes: structuredClone(state.policyChanges) }),
   };
 
-  const review = { context, owner, ticket, epoch, policy, raw, payload };
+  const review = { context, owner, ticket, epoch, policy, raw, payload,
+    document: owner.current, scope: captureDocumentAction(owner), revision: owner.policyRevision || 0 };
   const preview = await withStatus('Preparing preview\u2026', () =>
     withLocalConflict(review, () => api.previewPolicyPayload(payload, context)));
-  if (!preview || !viewStates.isCurrent(ticket)) return;
+  if (!preview || !ownsDocumentAction(review.scope)) return;
+  if (!policyReviewMatches(review)) {
+    setStatus('The policy draft changed while previewing. Review the latest draft before saving.', 'info');
+    return;
+  }
   if (!preview.changed && preview.kind !== 'local-overwrite') {
     setStatus('Nothing changed in the policy.', 'info');
     return;
@@ -1232,6 +1347,9 @@ async function savePolicy() {
 
 function showPolicyReview(review, preview) {
   const { context, owner, ticket, epoch, policy, raw, payload } = review;
+  const action = review.scope || captureDocumentAction(owner);
+  const document = review.document || action.document;
+  const submittedChanges = structuredClone(payload.changes || {});
   const overwrite = preview.kind === 'local-overwrite';
   const { node, stats } = renderDiff(preview.before, preview.after);
   showModal(
@@ -1254,51 +1372,68 @@ function showPolicyReview(review, preview) {
           // Keyed by the operation, so a rebuilt modal cannot hand out a fresh
           // lock while the previous policy save is still running.
           onclick: guardedHandler(async () => {
-            if (owner.reviewEpoch !== epoch) { setStatus('The draft or shared branch head changed. Review this policy again before saving.', 'error'); return; }
-            const document = owner.current, submittedChanges = structuredClone(owner.policyChanges);
+            const announce = captureDialogStatus();
+            if (!ownsDocumentAction(action) || !policyReviewMatches(review)) {
+              const message = 'The draft or shared branch head changed. Review this policy again before saving.';
+              if (ownsDocumentAction(action)) announce(message, 'error');
+              else announce.close();
+              retainDocumentNotice(action, message, 'error');
+              return;
+            }
             const result = await withStatus('Saving\u2026', () => withLocalConflict(review, () =>
               overwrite ? api.saveLocalOverwrite(preview) : api.savePolicy(payload, context)));
             if (!result) return;
             if (result.kind === 'local-overwrite') {
-              if (viewStates.isCurrent(ticket)) showPolicyReview(review, result);
+              if (ownsDocumentAction(action) && policyReviewMatches(review)) showPolicyReview(review, result);
               return;
             }
             const source = environmentSourceOf(context.environment);
             const line = saveStatusLine(result, source);
             if (!mutationComplete(result)) {
-              owner.status = { message: line.text, tone: line.tone };
-              if (viewStates.isCurrent(ticket)) {
-                setStatus(line.text, line.tone);
+              retainDocumentNotice(action, line.text, line.tone, true);
+              if (ownsDocumentAction(action)) {
+                announce(line.text, line.tone);
                 if (line.pending) await resolveUnsavedCommit(line.pending, source, review);
               }
               return;
             }
-            if (owner.current !== document || owner.contract?.policy !== policy) {
-              owner.status = { message: line.text, tone: line.tone };
-              if (viewStates.isCurrent(ticket)) setStatus(line.text, line.tone);
+            retainDocumentNotice(action, line.text, line.tone, true);
+            if (!ownsDocumentAction(action) || owner.contract?.policy !== policy) {
+              announce.close();
               return;
             }
             const preserved = captureContractEdits(owner);
-            if (owner.policyRaw === raw && JSON.stringify(owner.policyChanges) === JSON.stringify(submittedChanges)) {
+            if (policyReviewMatches(review) && JSON.stringify(owner.policyChanges) === JSON.stringify(submittedChanges)) {
               owner.policyRaw = null;
               owner.policyChanges = {};
               invalidatePolicyPreview(owner);
             } else retainQuarantinedDraft(owner, captureContractEdits(owner),
               'An approved policy save completed while this draft changed. The newer draft is retained for explicit reconciliation.');
-            if (!viewStates.isCurrent(ticket)) return;
-            closeModal();
-            await loadContract(
+            if (!ownsDocumentAction(action)) return;
+            announce.close();
+            const loading = loadContract(
               state.contractId,
               preserved,
               { parameters: true, policy: false }
             );
-            setStatus(line.text, line.tone);
+            const generation = owner.documentGeneration;
+            await loading;
+            if (state === owner && viewStates.isCurrent(ticket) && owner.documentGeneration === generation &&
+                owner.current?.path === document?.path) setStatus(line.text, line.tone);
           }, { key: `save-policy:${context.environment.id}` }),
         },
         overwrite ? 'Back up and overwrite' : 'Save policy'
       ),
     ]
   );
+}
+
+function policyReviewMatches(review) {
+  const { owner, policy, raw, payload, epoch, revision } = review;
+  return owner.reviewEpoch === epoch && owner.contract?.policy === policy &&
+    (revision === undefined || (owner.policyRevision || 0) === revision) &&
+    owner.policyRaw === raw &&
+    JSON.stringify(owner.policyChanges) === JSON.stringify(payload.changes || {});
 }
 
 /* -------------------------------------------------------------- review/save */
@@ -1332,6 +1467,7 @@ function showLocalOverwrite(review, proposal) {
 }
 
 async function openReview() {
+  if (!flushParameterInputs()) return;
   const invalid = state.current?.format === 'terraform' &&
     [...els.workspace.querySelectorAll('input, select, textarea')].find((input) => !input.checkValidity());
   if (invalid) { invalid.reportValidity(); setStatus('Correct the invalid native input before review. It has not been queued or saved.', 'error'); return; }
@@ -1345,12 +1481,18 @@ async function openReview() {
     return;
   }
   const review = { context: activeWorkspace(), owner: state, document: state.current,
-    operations: structuredClone(state.operations), ticket: viewStates.ticket(), writeContext: currentWriteContext(), epoch: state.reviewEpoch };
+    operations: structuredClone(state.operations), ticket: viewStates.ticket(), writeContext: currentWriteContext(), epoch: state.reviewEpoch,
+    scope: captureDocumentAction() };
   const preview = await withStatus('Preparing preview\u2026', () =>
     withLocalConflict(review, () =>
       api.preview(review.document.path, review.operations, review.document.hash, review.document.nativeIdentity, review.context))
   );
-  if (!preview || !viewStates.isCurrent(review.ticket)) return;
+  if (!preview || !ownsDocumentAction(review.scope)) return;
+  if (state.reviewEpoch !== review.epoch || hasParameterInputs(state) ||
+      JSON.stringify(state.operations) !== JSON.stringify(review.operations)) {
+    setStatus('The draft changed while previewing. Review the latest draft before saving.', 'info');
+    return;
+  }
   if (preview.kind === 'local-overwrite') { showLocalOverwrite(review, preview); return; }
 
   const { node, stats } = renderDiff(preview.before, preview.after);
@@ -1392,9 +1534,12 @@ async function openReview() {
 
 async function commitSave(review) {
   const { owner, document, context, operations, ticket } = review;
-  if (owner.reviewEpoch !== review.epoch || owner.current !== document || JSON.stringify(owner.operations) !== JSON.stringify(operations)) {
-    closeModal();
-    setStatus('The draft changed after preview. Review the current draft before saving.', 'error');
+  const action = review.scope || captureDocumentAction(owner);
+  const announce = captureDialogStatus();
+  if (!ownsDocumentAction(action) || owner.reviewEpoch !== review.epoch || owner.current !== document || hasParameterInputs(owner) ||
+      JSON.stringify(owner.operations) !== JSON.stringify(operations)) {
+    announce.close();
+    retainDocumentNotice(action, 'The draft changed after preview. Review the current draft before saving.', 'error');
     return;
   }
   const result = await withStatus('Saving\u2026', () =>
@@ -1403,8 +1548,8 @@ async function commitSave(review) {
   );
   if (!result) return;
   if (result.kind === 'local-overwrite') {
-    owner.status = { message: 'The file was edited externally. The draft is retained until a new overwrite review is confirmed.', tone: 'info' };
-    if (viewStates.isCurrent(ticket)) showLocalOverwrite(review, result);
+    retainDocumentNotice(action, 'The file was edited externally. The draft is retained until a new overwrite review is confirmed.', 'info');
+    if (ownsDocumentAction(action)) showLocalOverwrite(review, result);
     return;
   }
   const source = environmentSourceOf(context.environment);
@@ -1413,40 +1558,44 @@ async function commitSave(review) {
   if (!mutationComplete(result)) {
     // A pending or unknown outcome must not consume the draft. A known proposed
     // commit may receive another branch only through the existing user decision.
-    owner.status = { message: line.text, tone: line.tone };
-    if (viewStates.isCurrent(ticket)) {
-      setStatus(line.text, line.tone);
+    retainDocumentNotice(action, line.text, line.tone, true);
+    if (ownsDocumentAction(action)) {
+      announce(line.text, line.tone);
       if (line.pending) await resolveUnsavedCommit(line.pending, source, review);
     }
     return;
   }
 
-  if (owner.current !== document) {
-    owner.status = { message: line.text, tone: line.tone };
-    if (viewStates.isCurrent(ticket)) setStatus(line.text, line.tone);
+  retainDocumentNotice(action, line.text, line.tone, true);
+  if (!ownsDocumentAction(action)) {
+    announce.close();
     return;
   }
   const preserved = captureContractEdits(owner);
-  if (JSON.stringify(owner.operations) === JSON.stringify(operations)) {
+  if (JSON.stringify(owner.operations) === JSON.stringify(operations) && !hasParameterInputs(owner)) {
     owner.operations = [];
     await workspaceRegistry.removeDraft(context.environment.id, document.path);
   } else {
     retainQuarantinedDraft(owner, captureContractEdits(owner), 'An approved save completed while this draft changed. The newer draft is retained for explicit reconciliation.');
   }
-  if (!viewStates.isCurrent(ticket)) return;
-  closeModal();
+  if (!ownsDocumentAction(action)) return;
+  announce.close();
+  let loading;
   if (owner.area === 'access-contracts') {
-    await loadContract(
+    loading = loadContract(
       owner.contractId,
       preserved,
       { parameters: false, policy: true }
     );
   }
-  else await loadDocument(document.path);
+  else loading = loadDocument(document.path);
+  const generation = owner.documentGeneration;
+  await loading;
   // A warning here always describes something the source could not confirm
   // *after* the write landed, so the save is reported as done and the caveat is
   // appended rather than replacing it with a failure.
-  setStatus(line.text, line.tone);
+  if (state === owner && viewStates.isCurrent(ticket) && owner.documentGeneration === generation &&
+      owner.current?.path === document.path) setStatus(line.text, line.tone);
 }
 
 /**
@@ -1459,6 +1608,7 @@ async function commitSave(review) {
  */
 async function resolveUnsavedCommit(pending, source, review) {
   const { owner, context, ticket } = review;
+  const action = review.scope || captureDocumentAction(owner);
   await new Promise((resolve) => {
     const name = h('input', {
       class: 'ctl',
@@ -1488,20 +1638,20 @@ async function resolveUnsavedCommit(pending, source, review) {
       const created = describeCreatedBranch(outcome, source, pending.intendedBranch);
       if (!created) {
         const message = 'The branch outcome is not confirmed. Keep this action and inspect the named branch before another attempt.';
-        owner.status = { message, tone: 'warn' };
-        if (viewStates.isCurrent(ticket)) {
+        retainDocumentNotice(action, message, 'warn', true);
+        if (ownsDocumentAction(action)) {
           problem.textContent = message;
           problem.hidden = false;
-          setStatus(message, 'warn');
         }
         return;
       }
       const target = review.operation === 'environment-copy' ? 'The destination workspace' : 'This workspace';
-      owner.status = { message: `${created.message} ${target} still targets ${source.workingBranch}; editor drafts and the pending action are retained. Attach a new workspace to edit the new branch.`, tone: created.tone };
-      if (viewStates.isCurrent(ticket)) {
+      const message = `${created.message} ${target} still targets ${source.workingBranch}; editor drafts and the pending action are retained. Attach a new workspace to edit the new branch.`;
+      retainDocumentNotice(action, message, created.tone, true);
+      if (ownsDocumentAction(action)) {
         dismissDialog(true);
         render();
-        setStatus(owner.status.message, owner.status.tone);
+        setStatus(message, created.tone);
       }
       resolve();
     });
@@ -1724,11 +1874,22 @@ async function openHistory() {
                         const preserved = captureContractEdits(owner);
                         closeModal();
                         if (creation && !entry.nativeCreation) {
-                          state.contracts = await withStatus('Refreshing contracts\u2026', () =>
-                            api.contracts(context)
-                          );
+                          const selectedDocument = owner.current;
+                          const refreshed = await withStatus('Refreshing contract and parameter catalogs\u2026', async () => ({
+                            contracts: await api.contracts(context),
+                            catalog: await api.deployments(context),
+                          }));
+                          if (!viewStates.isCurrent(ticket)) return;
+                          if (!refreshed) {
+                            setStatus(`${line.text} The contract and parameter lists could not be refreshed. Reopen this workspace before continuing; do not repeat the removal.`, 'error');
+                            return;
+                          }
+                          state.contracts = refreshed.contracts;
+                          state.catalog = refreshed.catalog;
+                          renderSidebar();
+                          renderContextRail();
                           const fallback = state.contracts.contracts?.find((item) => item.isTemplate);
-                          if (fallback) await selectContract(fallback.id);
+                          if (fallback && owner.current === selectedDocument) await selectContract(fallback.id);
                         } else if (owner.contractId && owner.contract) {
                           await loadContract(owner.contractId, preserved);
                         } else if (state.current) {
@@ -2211,7 +2372,7 @@ async function openWorkspaceSettingsContent() {
               await refresh();
             }),
           }, 'Rename'),
-          isGitHubEnvironment(environment)
+          isGitHubEnvironment(environment) && pullRequestUrl(environment)
             ? h(
                 'a',
                 {
@@ -2608,7 +2769,7 @@ function renderActions() {
   // hidden, but each tab can only save its own file. When the two disagree the
   // button says where the work actually is and goes there, rather than sitting
   // inert next to a count that claims there is something to save.
-  const savableHere = policyTab ? hasPolicyEdits() : state.operations.length > 0;
+  const savableHere = policyTab ? hasPolicyEdits() : state.operations.length > 0 || hasParameterInputs(state);
   const validation = policyTab ? [] : currentValidation();
   const blocking = validation.filter((finding) => finding.severity === 'error');
   const warnings = validation.filter((finding) => finding.severity === 'warning');
@@ -2656,6 +2817,8 @@ function renderActions() {
           class: 'btn',
           title: `The unsaved changes are on the ${targetLabel} tab`,
           onclick: () => {
+            if (els.workspace.contains(document.activeElement)) document.activeElement.blur();
+            if (!canLeaveIncompleteNumber()) return;
             state.tab = target;
             render();
           },
@@ -2674,6 +2837,7 @@ function renderActions() {
             class: 'btn btn-primary',
             disabled: !savableHere || blocking.length > 0 || Boolean(state.quarantinedDraft),
             title: blocking.length ? 'Resolve blocking validation errors before review' : '',
+            onmousedown: (event) => event.preventDefault(),
             onclick: openReview,
           },
           'Review & save'
@@ -2972,6 +3136,8 @@ function tabBar(tabs) {
         {
           class: `tab${state.tab === id ? ' active' : ''}`,
           onclick: () => {
+            if (els.workspace.contains(document.activeElement)) document.activeElement.blur();
+            if (!canLeaveIncompleteNumber()) return;
             state.tab = id;
             render();
           },
@@ -3342,11 +3508,21 @@ function renderEditor() {
   if (els.shell.dataset.workspace !== 'active') return;
   // Committing a field on blur must not detach the area button whose click
   // follows that blur. Ordinary value edits do not change area navigation.
-  renderActions();
-  renderWorkspace();
-  renderContextRail();
-  markCurrentSection();
-  editorTransition?.pause.refresh();
+  const owner = state;
+  const paint = () => {
+    owner.paintingEditor = true;
+    try {
+      renderActions();
+      renderWorkspace();
+      renderContextRail();
+      markCurrentSection();
+      editorTransition?.pause.refresh();
+    } finally {
+      owner.paintingEditor = false;
+    }
+  };
+  if (hasParameterInputs(owner)) preserveEditorFocus(els.workspace, paint);
+  else paint();
 }
 
 /* ------------------------------------------------------------------ loading */
@@ -3360,6 +3536,7 @@ async function withEditorLoad(message, action, transition = null) {
   // Text fields can hold a typed value until blur. Commit before locking or
   // capturing the predecessor, including keyboard-driven navigation.
   if (els.workspace?.contains(document.activeElement)) document.activeElement.blur();
+  if (!canLeaveIncompleteNumber()) return false;
   const owner = state, ticket = viewStates.ticket(), predecessor = owner.current;
   const pause = pauseEditorForLoad(
     [els.workspace, els.sidebar, els.contextRail, els.tbActions], els.editorLoading, message
@@ -3394,6 +3571,7 @@ function rememberDocumentView() {
 async function loadDocument(path, { preserve = false, selection = null, transition = null } = {}) {
   return withEditorLoad('Opening document. Editing is paused until loading finishes.', async () => {
     const owner = state, ticket = viewStates.ticket(), generation = ++documentGeneration, context = activeWorkspace();
+    owner.documentGeneration = generation;
     const pending = preserve ? captureContractEdits(owner) : null;
     const previousIdentity = owner.current?.nativeIdentity;
     const loaded = await withStatus('Loading\u2026', async () => {
@@ -3412,12 +3590,15 @@ async function loadDocument(path, { preserve = false, selection = null, transiti
     if (owner.quarantinedDraft) setStatus(owner.quarantinedDraft.reason, 'error');
     state.baselineValidation = documentFindings(doc);
     state.operations = draft;
+    state.parameterInputs = {};
+    state.inputScope = {};
     state.policyChanges = {};
     state.policyRaw = null;
     invalidatePolicyPreview(state);
-    if (pending?.operations.length) {
+    if (pending && (pending.operations.length || hasParameterInputs(pending))) {
       if (pending.parameterHash === doc.hash && (!doc.nativeIdentity || sameNativeDraftBinding(previousIdentity, doc.nativeIdentity))) {
         state.operations = pending.operations;
+        state.parameterInputs = structuredClone(pending.parameterInputs || {});
       } else retainQuarantinedDraft(state, pending, 'The file or its native schema/dependencies changed while this workspace was inactive. Its pending draft is retained, not applied to the new source.');
     }
     restoreStashedPending();
@@ -3426,6 +3607,7 @@ async function loadDocument(path, { preserve = false, selection = null, transiti
     if (remembered) state.tab = remembered.tab;
     if (state.tab === 'policy') state.tab = 'params';
     render();
+    restoreDocumentNotice();
     if (remembered) requestAnimationFrame(() => {
       if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return;
       els.workspace.scrollTop = remembered.scrollTop;

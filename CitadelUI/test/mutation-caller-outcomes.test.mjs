@@ -63,6 +63,7 @@ async function fixture(initial, { local = false } = {}) {
     return node;
   };
   const scope = { structuredClone, Map, h: domH, guardedHandler, ...edits, mutationComplete,
+    captureDialogStatus: dom.captureDialogStatus,
     environmentSourceOf, environmentLocation, configurationOf, describeCreatedBranch, saveStatusLine, refNameProblem, historyEntry,
     activeWorkspace: () => context, requestAnimationFrame() {}, render() { calls.push(['render']); },
     reportClientError(error) { calls.push(['error', error.message]); }, writeContextNode: () => domH('p', {}, 'Synthetic context'),

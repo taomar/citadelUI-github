@@ -95,6 +95,7 @@ async function fixture({ failure = null, pauseCatalog = null, cancelSelection = 
   view = runInNewContext(`${handlers}\n({ openCreateContract, renderSidebar, contractList });`, {
     state, api, h, mount, render, guardedHandler, viewStates, reportClientError, activeWorkspace: () => workspace,
     environmentSourceOf, saveStatusLine, mutationComplete,
+    captureDialogStatus: dom.captureDialogStatus,
     COMPACT_NAV: { matches: false }, els: { sidebar },
     requestAnimationFrame: (fn) => fn(), selectArea() {}, openOther() {},
     showModal: dom.showDialog, closeModal: dom.closeDialog,
