@@ -4,7 +4,7 @@ import { createConfiguration } from '../shared/workspace-configuration.mjs';
 import { decodeNativeBytes } from '../shared/terraform/workspace.mjs';
 import { decodeSourceBytes, encodeSourceText } from '../shared/source-text.mjs';
 import { sha256 } from '../shared/source-scope.mjs';
-import { nativeLocalFixture } from './_native-fixture.mjs';
+import { nativeLocalFixture, nativeConfiguration, NATIVE_FILES } from './_native-fixture.mjs';
 import { githubWorkspaceFixture } from './_github-workspace-fixture.mjs';
 import { ACCESS_PATHS, citadelRepositoryFiles } from './_citadel-fixture.mjs';
 
@@ -15,6 +15,20 @@ const main = citadelRepositoryFiles()[MAIN]
   .replace("param environmentName = 'dev'", `// ${comment}\nparam environmentName = 'dev' // keep`)
   .replace(/\n/g, '\r\n');
 const policy = `<policies>\r\n  <!-- ${comment} -->\r\n  <inbound><set-variable name="jwtRequired" value="false" /></inbound>\r\n</policies>\r\n`;
+
+const mutationRequests = (f, transport) => transport === 'Local'
+  ? f.root.owner.trace.filter((entry) => ['createWritable', 'write', 'close', 'createFile', 'createDirectory', 'removeEntry'].includes(entry.operation))
+  : f.github.calls.filter((entry) => entry.method !== 'GET');
+const sourceSnapshot = (f, transport) => Object.fromEntries(transport === 'Local'
+  ? f.root.allFiles().map(({ path, bytes }) => [path, bytes.slice()])
+  : f.github.treeOf(f.repository.refs.get(f.environment.source.workingBranch)).map(({ path }) => [path, f.raw(path)]));
+
+async function localBackup(f, transactionId) {
+  const transaction = await f.store.getTransaction(f.environment.id, transactionId);
+  const token = await f.store.issueRestoreToken(f.environment.id, transactionId);
+  const backup = await f.store.getBackupForRestore(f.environment.id, transactionId, transaction.files[0].id, token.backupReadToken);
+  return new Uint8Array(backup.bytes);
+}
 
 async function fixture(t, transport, files, afterAttach = false, environmentId) {
   if (transport === 'GitHub') return githubWorkspaceFixture({ environmentId, [afterAttach ? 'filesAfterAttach' : 'files']: Object.fromEntries(
@@ -33,8 +47,12 @@ async function fixture(t, transport, files, afterAttach = false, environmentId) 
 test('source codec roundtrips BOM, CRLF, Unicode and an intentional second leading marker', () => {
   for (const text of ['', main, policy, '\uFEFF', `\uFEFF${main}`, `\uFEFF\uFEFF${main}`]) {
     const bytes = encode(text), decoded = decodeSourceBytes(bytes);
+    assert.deepEqual(decoded, { text: text.startsWith('\uFEFF') ? text.slice(1) : text, bom: text.startsWith('\uFEFF') });
     assert.deepEqual(encodeSourceText(decoded.text, decoded), bytes);
   }
+  assert.deepEqual(encodeSourceText(main, { bytes: encode(`\uFEFF${main}`) }), encode(`\uFEFF${main}`));
+  assert.deepEqual(encodeSourceText(main, { bom: false, bytes: encode(`\uFEFF${main}`) }), encode(main), 'Explicit BOM provenance overrides byte inference.');
+  assert.deepEqual(encodeSourceText(`\uFEFF${main}`, { bom: true }), encode(`\uFEFF\uFEFF${main}`));
   for (const bytes of [new Uint8Array([0xff]), new Uint8Array([0xc0, 0xaf]), new Uint8Array([0xe2, 0x82]),
     new Uint8Array([0xff, 0xfe, 0x61, 0])]) {
     assert.throws(() => decodeSourceBytes(bytes), { code: 'SOURCE_ENCODING_UNSUPPORTED' });
@@ -51,6 +69,7 @@ for (const transport of ['Local', 'GitHub']) {
         const alias = kind === 'parameter' ? MAIN : ACCESS_PATHS.policy;
         const original = encode(`${bom ? '\uFEFF' : ''}${kind === 'parameter' ? main : policy}`);
         const f = await fixture(t, transport, { [alias]: original });
+        const originals = sourceSnapshot(f, transport), mutations = mutationRequests(f, transport);
         const source = await f.provider.read(alias);
         assert.equal(source.bom, bom);
         assert.deepEqual(encodeSourceText(source.text, source), original);
@@ -65,16 +84,15 @@ for (const transport of ['Local', 'GitHub']) {
           ? main.replace("'dev'", "'reviewed'") : policy.replace('value="false"', 'value="true"')}`);
         assert.deepEqual(encodeSourceText(preview.before, preview), original);
         assert.deepEqual(encodeSourceText(preview.after, preview), expected);
+        assert.deepEqual(mutationRequests(f, transport), mutations, 'Preview cannot write source or Git objects.');
         const result = kind === 'parameter'
           ? await f.service.save(alias, operations, source.hash)
           : await f.service.savePolicy({ path: alias, changes, text, expectedHash: source.hash });
         assert.deepEqual(await f.raw(alias), expected);
+        assert.deepEqual(sourceSnapshot(f, transport), { ...originals, [alias]: expected }, 'All unrelated source bytes remain untouched.');
         const historyId = (await f.service.history()).transactions[0].transactionId;
         if (transport === 'Local') {
-          const transaction = await f.store.getTransaction(f.environment.id, result.archived);
-          const token = await f.store.issueRestoreToken(f.environment.id, result.archived);
-          const backup = await f.store.getBackupForRestore(f.environment.id, result.archived, transaction.files[0].id, token.backupReadToken);
-          assert.deepEqual(new Uint8Array(backup.bytes), original);
+          assert.deepEqual(await localBackup(f, result.archived), original);
         } else {
           const recorded = f.audit.commits.find((entry) => entry.commit === historyId);
           assert.ok(recorded.aliases.includes(alias));
@@ -92,6 +110,7 @@ for (const transport of ['Local', 'GitHub']) {
     test(`source fidelity: ${transport} refuses malformed UTF-8 before preview or save for ${alias}`, async (t) => {
       const invalid = new Uint8Array([...encode('// unreviewed '), 0xff, ...encode(`\n${alias === MAIN ? main : policy}`)]);
       const f = await fixture(t, transport, { [alias]: invalid }, true);
+      const mutations = mutationRequests(f, transport), originals = sourceSnapshot(f, transport);
       const hash = await sha256(invalid);
       const operations = [{ op: 'set', path: ['environmentName'], value: 'refused' }];
       await assert.rejects(f.provider.read(alias), { code: 'SOURCE_ENCODING_UNSUPPORTED' });
@@ -103,6 +122,8 @@ for (const transport of ['Local', 'GitHub']) {
         : f.service.savePolicy({ path: alias, text: '<policies/>', expectedHash: hash }),
       { code: 'SOURCE_ENCODING_UNSUPPORTED' });
       assert.deepEqual(await f.raw(alias), invalid);
+      assert.deepEqual(sourceSnapshot(f, transport), originals);
+      assert.deepEqual(mutationRequests(f, transport), mutations);
       if (transport === 'Local') assert.equal((await f.store.history(f.environment.id)).length, 0);
       else assert.equal(f.audit.commits.length, 0);
     });
@@ -146,6 +167,7 @@ for (const transport of ['Local', 'GitHub']) {
   test(`source fidelity: ${transport} no-op previews and saves leave original bytes and History unchanged`, async (t) => {
     const originals = { [MAIN]: encode(`\uFEFF${main}`), [ACCESS_PATHS.policy]: encode(`\uFEFF${policy}`) };
     const f = await fixture(t, transport, originals);
+    const mutations = mutationRequests(f, transport);
     const parameter = await f.provider.read(MAIN), xml = await f.provider.read(ACCESS_PATHS.policy);
     assert.equal((await f.service.preview(MAIN, [], parameter.hash)).changed, false);
     assert.equal((await f.service.save(MAIN, [], parameter.hash)).outcome, 'unchanged');
@@ -156,6 +178,47 @@ for (const transport of ['Local', 'GitHub']) {
     await assert.rejects(f.service.previewPolicy(ACCESS_PATHS.policy, {}, policy.replace(comment, '\ud800'), xml.hash),
       { code: 'SOURCE_ENCODING_UNSUPPORTED' });
     assert.deepEqual(await f.raw(ACCESS_PATHS.policy), originals[ACCESS_PATHS.policy]);
+    assert.deepEqual(mutationRequests(f, transport), mutations);
+  });
+
+  test(`C1 Git source fidelity: ${transport} raw policy preserves an intentional second leading marker through preview, save and Undo`, async (t) => {
+    const alias = ACCESS_PATHS.policy, original = encode(`\uFEFF\uFEFF${policy}`);
+    const f = await fixture(t, transport, { [alias]: original });
+    const source = await f.provider.read(alias), mutations = mutationRequests(f, transport);
+    assert.equal(source.bom, true); assert.equal(source.text, `\uFEFF${policy}`);
+    const text = source.text.replace('value="false"', 'value="true"'), expected = encode(`\uFEFF${text}`);
+    const preview = await f.service.previewPolicy(alias, {}, text, source.hash);
+    assert.deepEqual({ before: preview.before, after: preview.after, bom: preview.bom },
+      { before: `\uFEFF${policy}`, after: text, bom: true });
+    assert.deepEqual(encodeSourceText(preview.after, preview), expected);
+    assert.deepEqual(mutationRequests(f, transport), mutations);
+    const result = await f.service.savePolicy({ path: alias, text, expectedHash: source.hash });
+    assert.equal(result.outcome, 'applied'); assert.deepEqual(await f.raw(alias), expected);
+    if (transport === 'Local') assert.deepEqual(await localBackup(f, result.archived), original);
+    else {
+      const parent = f.github.commits.get(result.commit).parents[0];
+      const entry = f.github.treeOf(parent).find((file) => file.path === alias);
+      assert.deepEqual(Buffer.from(f.github.blobs.get(entry.sha), 'base64'), Buffer.from(original));
+    }
+    await f.service.restoreTransaction(result.commit || result.transactionId);
+    assert.deepEqual(await f.raw(alias), original);
+  });
+
+  test(`C1 Git source fidelity: ${transport} unencodable parameter and policy edits fail before writes or backups`, async (t) => {
+    const f = await fixture(t, transport, { [MAIN]: `\uFEFF${main}`, [ACCESS_PATHS.policy]: policy });
+    const originals = sourceSnapshot(f, transport), mutations = mutationRequests(f, transport);
+    const parameter = await f.provider.read(MAIN), xml = await f.provider.read(ACCESS_PATHS.policy);
+    const operations = [{ op: 'set', path: ['environmentName'], value: '\ud800' }];
+    const text = policy.replace(comment, '\udfff');
+    await assert.rejects(f.service.preview(MAIN, operations, parameter.hash), { code: 'SOURCE_ENCODING_UNSUPPORTED' });
+    await assert.rejects(f.service.save(MAIN, operations, parameter.hash), { code: 'SOURCE_ENCODING_UNSUPPORTED' });
+    await assert.rejects(f.service.previewPolicy(ACCESS_PATHS.policy, {}, text, xml.hash), { code: 'SOURCE_ENCODING_UNSUPPORTED' });
+    await assert.rejects(f.service.savePolicy({ path: ACCESS_PATHS.policy, text, expectedHash: xml.hash }), { code: 'SOURCE_ENCODING_UNSUPPORTED' });
+    assert.deepEqual(operations, [{ op: 'set', path: ['environmentName'], value: '\ud800' }]);
+    assert.deepEqual(sourceSnapshot(f, transport), originals);
+    assert.deepEqual(mutationRequests(f, transport), mutations);
+    assert.deepEqual((await f.service.history()).transactions, []);
+    if (transport === 'Local') assert.deepEqual(f.trace.filter((entry) => entry.method !== 'GET'), []);
   });
 }
 
@@ -167,6 +230,8 @@ test('source fidelity: Local overwrite backs up exact external encoding and reta
   const review = await f.service.prepareLocalOverwrite(loaded, [{ op: 'set', path: ['environmentName'], value: 'replacement' }]);
   const result = await f.service.saveLocalOverwrite(review);
   assert.equal(review.bom, true);
+  assert.deepEqual(encodeSourceText(review.before, review), external);
+  assert.deepEqual(await localBackup(f, result.archived), external);
   assert.deepEqual(await f.raw(MAIN), encode(`\uFEFF${main.replace("'dev'", "'replacement'")}`));
   await f.service.restoreTransaction(result.archived);
   assert.deepEqual(await f.raw(MAIN), external);
@@ -181,11 +246,41 @@ test('source fidelity: Local policy overwrite previews preserve current external
   assert.equal(review.bom, true);
   assert.deepEqual(encodeSourceText(review.before, review), external);
   const result = await f.service.saveLocalOverwrite(review);
+  assert.deepEqual(await localBackup(f, result.archived), external);
   assert.deepEqual(await f.raw(ACCESS_PATHS.policy), encode(`\uFEFF${policy.replace('value="false"', 'value="true"')}`));
   await f.service.restoreTransaction(result.archived);
   assert.deepEqual(await f.raw(ACCESS_PATHS.policy), external);
   const invalid = new Uint8Array([...external, 0xff]);
   (await f.provider.fileHandle(ACCESS_PATHS.policy)).change(invalid);
+  const mutations = mutationRequests(f, 'Local'), history = await f.store.history(f.environment.id);
   await assert.rejects(f.service.prepareLocalPolicyOverwrite(loaded, {}, null), { code: 'SOURCE_ENCODING_UNSUPPORTED' });
   assert.deepEqual(await f.raw(ACCESS_PATHS.policy), invalid);
+  assert.deepEqual(mutationRequests(f, 'Local'), mutations);
+  assert.deepEqual(await f.store.history(f.environment.id), history);
+});
+
+test('C1 Git source fidelity: Local native admission still refuses BOM, whole-file sensitivity and parser size before unrelated edits', async (t) => {
+  const configuration = nativeConfiguration(['llm']), alias = configuration.units[0].valueAlias;
+  const f = await nativeLocalFixture({ configuration });
+  t.after(f.close);
+  const loaded = await f.service.deployment(alias), handle = await f.provider.fileHandle(alias);
+  const rejectedSources = [
+    { bytes: encode(`\uFEFF${NATIVE_FILES[alias]}`), code: 'NATIVE_SYNTAX', message: /BOM files are read-only/ },
+    { bytes: encode(NATIVE_FILES[alias].replace('secret_value = null', 'secret_value = "synthetic-sensitive-marker"')),
+      code: 'NATIVE_SENSITIVE_FILE', message: /sensitive/i },
+    { bytes: encode(`#${' '.repeat(512 * 1024)}\n${NATIVE_FILES[alias]}`), code: 'NATIVE_LIMIT', message: /512 KiB/ },
+  ];
+  for (const { bytes, code, message } of rejectedSources) {
+    assert.doesNotThrow(() => decodeSourceBytes(bytes), 'Reversible UTF-8 is not native whole-file admission.');
+    handle.change(bytes);
+    const mutations = mutationRequests(f, 'Local'), originals = sourceSnapshot(f, 'Local');
+    const refuses = (error) => error.code === code && message.test(error.message);
+    await assert.rejects(f.provider.read(alias), refuses);
+    await assert.rejects(f.service.preview(alias, [{ op: 'set', path: ['apim_name'], value: 'unrelated' }], loaded.hash, loaded.nativeIdentity), refuses);
+    await assert.rejects(f.service.save(alias, [{ op: 'set', path: ['apim_name'], value: 'unrelated' }], loaded.hash, loaded.nativeIdentity), refuses);
+    assert.deepEqual(sourceSnapshot(f, 'Local'), originals);
+    assert.deepEqual(mutationRequests(f, 'Local'), mutations);
+  }
+  assert.deepEqual(await f.store.history(f.environment.id), []);
+  assert.deepEqual(f.trace.filter((entry) => entry.method !== 'GET'), []);
 });
