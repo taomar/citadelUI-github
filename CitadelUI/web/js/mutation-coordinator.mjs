@@ -15,6 +15,9 @@ import { nativeHistoryProof } from '../../shared/terraform/workspace.mjs';
  * operation and inverse commits for undo.
  */
 export class MutationCoordinator {
+  /** Local bytes travel in separate bounded backup/write steps, not an aggregate JSON request. */
+  async validateRequest(_files, _options = {}) {}
+
   /** Apply every file change as one all-or-nothing operation. */
   async commit(_files, _options = {}) {
     throw new Error('Mutation coordinator does not implement commit.');
@@ -351,6 +354,8 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
     );
     return {
       ...result,
+      applied: true,
+      outcome: 'applied',
       transactionId: transaction.transactionId,
       removed: receipts.map((item) => item.alias),
     };

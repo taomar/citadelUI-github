@@ -7,6 +7,9 @@ import { h, mount } from '../web/js/dom.mjs';
 import { guardedHandler } from '../web/js/single-flight.mjs';
 import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
 import { reportClientError } from '../web/js/diagnostics-client.mjs';
+import { environmentSourceOf } from '../web/js/registry.mjs';
+import { saveStatusLine } from '../web/js/save-resolution.mjs';
+import { mutationComplete } from '../shared/mutation-outcome.mjs';
 
 const source = await readFile(new URL('../web/js/app.mjs', import.meta.url), 'utf8');
 function section(start, end) {
@@ -73,7 +76,7 @@ async function fixture({ failure = null, pauseCatalog = null, cancelSelection = 
       if (sourceContracts.some((contract) => contract.id === id)) throw new Error('Contract already exists.');
       sourceFiles.push(file(path));
       sourceContracts.push(entry(id, path));
-      return { id, dir: `${root}/contracts/${name}` };
+      return { applied: true, outcome: 'applied', id, dir: `${root}/contracts/${name}` };
     },
     async contracts(context) {
       assert.equal(context, workspace);
@@ -91,6 +94,7 @@ async function fixture({ failure = null, pauseCatalog = null, cancelSelection = 
   };
   view = runInNewContext(`${handlers}\n({ openCreateContract, renderSidebar, contractList });`, {
     state, api, h, mount, render, guardedHandler, viewStates, reportClientError, activeWorkspace: () => workspace,
+    environmentSourceOf, saveStatusLine, mutationComplete,
     COMPACT_NAV: { matches: false }, els: { sidebar },
     requestAnimationFrame: (fn) => fn(), selectArea() {}, openOther() {},
     showModal: dom.showDialog, closeModal: dom.closeDialog,
@@ -199,7 +203,7 @@ for (const failure of ['contracts', 'catalog']) {
     assert.equal(f.count(), 'All parameter files (5)');
     assert.deepEqual(f.selections, []);
     assert.equal(f.state.status.tone, 'error');
-    assert.match(f.state.status.message, /Created .*created-but-unlisted.*could not refresh/i);
+    assert.match(f.state.status.message, /contract at .*created-but-unlisted.*confirmed.*could not be refreshed/i);
     assert.match(f.state.status.message, /discovery unavailable/);
     assert.match(f.state.status.message, /reopen.*workspace.*do not create.*again/i);
     assert.equal(f.statuses.some((status) => status.tone === 'ok'), false);

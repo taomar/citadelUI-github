@@ -412,6 +412,7 @@ await assert.rejects(() => oversized.read('main.bicepparam'), /8 MiB/);
         });
       }
       return {
+        applied: true,
         transactionId: 'contract-create',
         files: await Promise.all(
           files.map(async (file) => ({ alias: file.alias, hash: await sha256(file.after) }))

@@ -1368,6 +1368,7 @@ export class GitHubRoutes {
       return commitChangeSet(this.client, token, {
         fullName,
         branch,
+        requestBody: body,
         repositoryId: repository.id,
         expectedHead: body.expectedHead ? validateCommitSha(body.expectedHead) : null,
         files: body.files,

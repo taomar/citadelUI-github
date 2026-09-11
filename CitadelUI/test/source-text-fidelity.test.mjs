@@ -16,11 +16,12 @@ const main = citadelRepositoryFiles()[MAIN]
   .replace(/\n/g, '\r\n');
 const policy = `<policies>\r\n  <!-- ${comment} -->\r\n  <inbound><set-variable name="jwtRequired" value="false" /></inbound>\r\n</policies>\r\n`;
 
-async function fixture(t, transport, files, afterAttach = false) {
-  if (transport === 'GitHub') return githubWorkspaceFixture({ [afterAttach ? 'filesAfterAttach' : 'files']: Object.fromEntries(
+async function fixture(t, transport, files, afterAttach = false, environmentId) {
+  if (transport === 'GitHub') return githubWorkspaceFixture({ environmentId, [afterAttach ? 'filesAfterAttach' : 'files']: Object.fromEntries(
     Object.entries(files).map(([alias, content]) => [alias, typeof content === 'string' ? content : { content }])
   ) });
   const f = await nativeLocalFixture({
+    environmentId,
     configuration: createConfiguration('bicep'),
     onlyFiles: { ...Object.fromEntries(Object.entries(citadelRepositoryFiles()).filter(([, value]) => typeof value === 'string')), ...files },
   });
@@ -120,6 +121,42 @@ for (const transport of ['Local', 'GitHub']) {
     assert.deepEqual(await f.raw(xml), encode(`\uFEFF${policy}`));
     assert.match((await f.provider.read(parameter)).text, /using '\.\.\/\.\.\/main.bicep'\r\n/);
   });
+
+  test(`source fidelity: ${transport} parameter copy preserves destination BOM, CRLF, comments and exact prior bytes`, async (t) => {
+    const sourceBytes = encode(main.replace("'dev'", "'source-copy'"));
+    const targetText = main.replace("'dev'", "'target'").replace('// keep', '// target-owned');
+    const targetBytes = encode(`\uFEFF${targetText}`);
+    const source = await fixture(t, transport, { [MAIN]: sourceBytes }, false, 'encoding-copy-source');
+    const target = await fixture(t, transport, { [MAIN]: targetBytes }, false, 'encoding-copy-target');
+    source.service.registry = { listEnvironments: async () => [source.environment, target.environment], getHandle: async () => null };
+    source.service.createProvider = async (environment) => environment.id === target.environment.id ? target.provider : source.provider;
+    source.service.coordinator = target.coordinator;
+    const file = await source.provider.read(MAIN);
+    const preview = await source.service.previewCopy(target.environment.id, MAIN, ['environmentName'], file.hash);
+    assert.equal(preview.bom, true);
+    const expected = encode(`\uFEFF${targetText.replace("'target'", "'source-copy'")}`);
+    assert.deepEqual(encodeSourceText(preview.after, preview), expected);
+    const result = await source.service.copyParameters(target.environment.id, MAIN, ['environmentName'], preview.sourceHash, preview.targetHash);
+    assert.equal(result.applied, true);
+    assert.deepEqual(await target.raw(MAIN), expected); assert.deepEqual(await source.raw(MAIN), sourceBytes);
+    await target.service.restoreTransaction(result.commit || result.transactionId);
+    assert.deepEqual(await target.raw(MAIN), targetBytes);
+  });
+
+  test(`source fidelity: ${transport} no-op previews and saves leave original bytes and History unchanged`, async (t) => {
+    const originals = { [MAIN]: encode(`\uFEFF${main}`), [ACCESS_PATHS.policy]: encode(`\uFEFF${policy}`) };
+    const f = await fixture(t, transport, originals);
+    const parameter = await f.provider.read(MAIN), xml = await f.provider.read(ACCESS_PATHS.policy);
+    assert.equal((await f.service.preview(MAIN, [], parameter.hash)).changed, false);
+    assert.equal((await f.service.save(MAIN, [], parameter.hash)).outcome, 'unchanged');
+    assert.equal((await f.service.previewPolicy(ACCESS_PATHS.policy, {}, null, xml.hash)).changed, false);
+    assert.equal((await f.service.savePolicy({ path: ACCESS_PATHS.policy, changes: {}, expectedHash: xml.hash })).outcome, 'unchanged');
+    for (const [alias, bytes] of Object.entries(originals)) assert.deepEqual(await f.raw(alias), bytes);
+    assert.equal((await f.service.history()).transactions.length, 0);
+    await assert.rejects(f.service.previewPolicy(ACCESS_PATHS.policy, {}, policy.replace(comment, '\ud800'), xml.hash),
+      { code: 'SOURCE_ENCODING_UNSUPPORTED' });
+    assert.deepEqual(await f.raw(ACCESS_PATHS.policy), originals[ACCESS_PATHS.policy]);
+  });
 }
 
 test('source fidelity: Local overwrite backs up exact external encoding and retains its BOM', async (t) => {
@@ -133,4 +170,22 @@ test('source fidelity: Local overwrite backs up exact external encoding and reta
   assert.deepEqual(await f.raw(MAIN), encode(`\uFEFF${main.replace("'dev'", "'replacement'")}`));
   await f.service.restoreTransaction(result.archived);
   assert.deepEqual(await f.raw(MAIN), external);
+});
+
+test('source fidelity: Local policy overwrite previews preserve current external BOM and restore exact external bytes', async (t) => {
+  const f = await fixture(t, 'Local', { [ACCESS_PATHS.policy]: policy });
+  const loaded = { path: ACCESS_PATHS.policy, ...await f.provider.read(ACCESS_PATHS.policy) };
+  const external = encode(`\uFEFF${policy.replace(comment, 'External untouched bytes')}`);
+  (await f.provider.fileHandle(ACCESS_PATHS.policy)).change(external);
+  const review = await f.service.prepareLocalPolicyOverwrite(loaded, { variables: { jwtRequired: true } }, null);
+  assert.equal(review.bom, true);
+  assert.deepEqual(encodeSourceText(review.before, review), external);
+  const result = await f.service.saveLocalOverwrite(review);
+  assert.deepEqual(await f.raw(ACCESS_PATHS.policy), encode(`\uFEFF${policy.replace('value="false"', 'value="true"')}`));
+  await f.service.restoreTransaction(result.archived);
+  assert.deepEqual(await f.raw(ACCESS_PATHS.policy), external);
+  const invalid = new Uint8Array([...external, 0xff]);
+  (await f.provider.fileHandle(ACCESS_PATHS.policy)).change(invalid);
+  await assert.rejects(f.service.prepareLocalPolicyOverwrite(loaded, {}, null), { code: 'SOURCE_ENCODING_UNSUPPORTED' });
+  assert.deepEqual(await f.raw(ACCESS_PATHS.policy), invalid);
 });

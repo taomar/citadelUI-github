@@ -130,7 +130,11 @@ test('the History panel consumes the normalized entry, not raw file bookkeeping'
   const panel = app.slice(app.indexOf('async function openHistory'), app.indexOf('async function openEnvironmentCompare'));
   assert.match(panel, /const entry = historyEntry\(transaction\)/);
   assert.match(panel, /entry\.canUndo/);
-  assert.match(panel, /api\.restoreTransaction\(entry\.id\)/);
+  assert.match(panel, /api\.restoreTransaction\(entry\.id, context\)/);
+  const restore = panel.slice(panel.indexOf('api.restoreTransaction(entry.id, context)'));
+  const pending = restore.indexOf('if (!mutationComplete(result))');
+  assert(pending >= 0 && pending < restore.indexOf('closeModal()'));
+  assert(pending < restore.indexOf('api.contracts(context)'));
   // Reading `existed` here is what hid Undo on every GitHub commit.
   assert.doesNotMatch(panel, /\.existed/);
 });

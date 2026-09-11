@@ -22,13 +22,14 @@ import {
   isSkippedDirectory,
   MAX_ENV_BYTES,
   MAX_SOURCE_BYTES,
+  MAX_COMMIT_FILES,
   normalizeAlias,
   sha256,
   subscriptionEnvironmentAlias,
   SUBSCRIPTION_ENVIRONMENT_KEY,
 } from '../../shared/source-scope.mjs';
+import { assertGitHubRequestBudget } from '../../shared/github-request-budget.mjs';
 
-const MAX_COMMIT_FILES = 64;
 const MAX_HISTORY = 100;
 /**
  * How far back to look for a change that already landed.
@@ -449,6 +450,7 @@ export function normalizeChangeSet(files, options = {}) {
   if (!Array.isArray(files) || !files.length || files.length > MAX_COMMIT_FILES) {
     throw githubError(400, 'INVALID_CHANGE_SET', 'A change set of 1 to 64 files is required.');
   }
+  if (options.requestBudget !== false) assertGitHubRequestBudget(options.requestBody || { files });
   const subscriptionAlias = options.subscriptionAlias || null;
   const seen = new Set();
   return files.map((file) => {
@@ -598,66 +600,50 @@ async function reconcileAmbiguousRefUpdate(client, token, options) {
 }
 
 /**
- * Is this change already on the branch?
+ * Distinguish an audited applied retry from current content equivalence.
  *
- * ## The defect this exists to fix
+ * A reachable audited commit from the reviewed parent proves the save happened,
+ * even when collaborators subsequently moved the branch. An unaudited matching
+ * ancestor proves neither authorship nor current content: it may be reverted.
+ * Only the current matching tree can complete such an intent as a no-op.
  *
- * A refused ref update was treated as proof that the change was absent, and the
- * commit was given a rescue branch. Those are different facts. A user
- * double-clicked Save; both invocations built a commit from the same reviewed
- * parent with the same content; the first won the ref and the second was
- * refused with 422. The branch head's tree was byte-identical to the tree of the
- * commit being "rescued", so the honest answer was *your change is already
- * saved* and the correct number of new branches was zero. Instead the user got
- * two branches for one action.
- *
- * ## Why the tree SHA is the right question
- *
- * A Git tree SHA is a content hash of the entire tree. If the branch holds a
- * commit whose tree equals ours, the repository already contains exactly the
- * state this save intended to produce — whether this save put it there, a
- * retry did, or a collaborator made the identical change. In every one of those
- * cases a rescue branch is noise, and telling the user their work went
- * somewhere else would be false.
- *
- * ## Bounds
- *
- * The walk follows first parents only, stops at the reviewed parent — beyond
- * that point the content predates the save and cannot be it — and is capped at
- * `MAX_RECONCILE_DEPTH` commits. `baseCommit` itself is never a match: it is
- * the state the user was editing *away* from.
- *
- * Returns the matching commit SHA, or null. Never throws: an unreadable history
- * means "cannot prove it is already there", which falls through to the rescue
- * that was going to happen anyway.
+ * The first-parent walk stops before the reviewed parent and is bounded. Read
+ * failures propagate so callers retain an explicitly indeterminate outcome.
  */
 export async function findAppliedCommit(client, token, options) {
-  const { fullName, branch, treeSha, baseCommit } = options;
+  const { fullName, branch, treeSha, baseCommit, audit, environmentId, repositoryId } = options;
   const depth = options.depth || MAX_RECONCILE_DEPTH;
   if (!treeSha) return null;
-  try {
-    let cursor = await branchHead(client, token, fullName, branch);
-    const seen = new Set();
-    for (let step = 0; step < depth && cursor; step += 1) {
-      if (seen.has(cursor)) break;
-      seen.add(cursor);
-      // The reviewed parent bounds the search. Anything at or below it is the
-      // state that existed before this save, so it cannot be this save.
-      if (baseCommit && cursor === baseCommit) return null;
-      const { data } = await client.request(
-        `/repos/${fullName}/git/commits/${validateCommitSha(cursor)}`,
-        { token }
-      );
-      if (data?.tree?.sha === treeSha) return cursor;
-      const parents = Array.isArray(data?.parents) ? data.parents : [];
-      const next = parents[0]?.sha;
-      cursor = next ? validateCommitSha(next) : null;
+  const attributed = async (commit, data) => {
+    const record = audit ? await audit.find({ commit, repositoryId, environmentId, branch }) : null;
+    if (!record || record.fullName !== fullName || record.baseCommit !== baseCommit ||
+        (record.configurationKey || null) !== (options.configurationKey || null)) return null;
+    return { kind: 'applied', commit, record, author: data?.author?.name || null };
+  };
+  const initialHead = await branchHead(client, token, fullName, branch);
+  let cursor = initialHead, equivalent = null;
+  const seen = new Set();
+  for (let step = 0; step < depth && cursor; step += 1) {
+    if (seen.has(cursor) || cursor === baseCommit) break;
+    seen.add(cursor);
+    const { data } = await client.request(
+      `/repos/${fullName}/git/commits/${validateCommitSha(cursor)}`, { token }
+    );
+    if (data?.tree?.sha === treeSha) {
+      const applied = await attributed(cursor, data);
+      if (applied) return applied;
+      if (cursor === initialHead) equivalent = { kind: 'equivalent', head: cursor };
     }
-  } catch {
-    // Unprovable, not disproven. The caller rescues, which is safe.
-    return null;
+    const next = Array.isArray(data?.parents) ? data.parents[0]?.sha : null;
+    cursor = next ? validateCommitSha(next) : null;
   }
-  return null;
+  if (!equivalent) return null;
+  const latest = await branchHead(client, token, fullName, branch);
+  if (latest === initialHead) return equivalent;
+  if (!latest || latest === baseCommit) return null;
+  const { data } = await client.request(`/repos/${fullName}/git/commits/${validateCommitSha(latest)}`, { token });
+  if (data?.tree?.sha !== treeSha) return null;
+  return await attributed(latest, data) || { kind: 'equivalent', head: latest };
 }
 
 /**
@@ -767,7 +753,11 @@ export async function commitChangeSet(client, token, options) {
     subscriptionAlias,
     audit,
   } = options;
-  const changes = normalizeChangeSet(files, { subscriptionAlias, configuration: options.configuration });
+  const changes = normalizeChangeSet(files, {
+    subscriptionAlias, configuration: options.configuration, requestBudget: options.requestBudget,
+    requestBody: options.requestBody || { action, expectedHead, transactionId, files,
+      nativeProof: options.nativeProof, nativeIdentity: options.nativeIdentity },
+  });
   if (!expectedHead) {
     throw githubError(
       400,
@@ -934,6 +924,8 @@ export async function commitChangeSet(client, token, options) {
   const warnings = [];
   let unresolved = null;
   let alreadyApplied = null;
+  let equivalent = null;
+  let indeterminate = false;
 
   try {
     await client.request(`/repos/${fullName}/git/refs/heads/${encodePath(branch)}`, {
@@ -943,40 +935,31 @@ export async function commitChangeSet(client, token, options) {
     });
   } catch (error) {
     if (error.status === 422 || error.status === 403 || error.status === 409) {
-      // The branch will not take this commit — it moved, or it is protected.
-      //
-      // That is not a failed save. The blob, the tree, the commit with the
-      // reviewed parent and the audit record all exist by now; only the ref
-      // update was refused. Reporting "your edits were not applied" would be
-      // false, and telling the user to reload would destroy work that is
-      // already durable in the repository.
-      //
-      // But "the ref would not move" is not the same fact as "the change is
-      // not there". Ask the branch first: if it already holds a commit with
-      // this exact tree, this save has landed, and the right number of new
-      // branches is zero. Skipping this question is what turned one
-      // double-clicked save into two branches holding an identical tree.
-      alreadyApplied = await findAppliedCommit(client, token, {
-        fullName,
-        branch,
-        treeSha,
-        baseCommit: head,
-      });
+      let reconciled;
+      try {
+        reconciled = await findAppliedCommit(client, token, {
+          fullName, branch, treeSha, baseCommit: head, audit, environmentId,
+          repositoryId: options.repositoryId, configurationKey: nativeConfigurationKey,
+        });
+      } catch (inspectionError) {
+        indeterminate = true;
+        warnings.push(`The branch could not be inspected after refusing the update. Keep this draft and inspect History before retrying. ${redactSecrets(inspectionError.message)}`);
+      }
+      alreadyApplied = reconciled?.kind === 'applied' ? reconciled : null;
+      equivalent = reconciled?.kind === 'equivalent' ? reconciled : null;
       if (alreadyApplied) {
-        // Idempotent success. No ref is created and no second audit record is
-        // written: the commit that is really on the branch already has one, and
-        // logging this attempt again would count one user action twice.
+        // Report the reachable audited commit, not this attempt's unreferenced
+        // proposal. Only the actual applied commit belongs in branch History.
         warnings.push(
-          `This change was already on ${branch} as ${alreadyApplied.slice(0, 12)}, so Citadel did not save it a second time.`
+          `This change was already on ${branch} as ${alreadyApplied.commit.slice(0, 12)}, so Citadel did not save it a second time.`
         );
+      } else if (equivalent) {
+        warnings.push(`The current tree on ${branch} already matches the reviewed change. No Citadel commit was applied; the matching commit ${equivalent.head.slice(0, 12)} is not attributed to this save in History.`);
       } else {
-        // Genuinely absent, and this is where Citadel used to create a branch
-        // nobody asked for. It no longer does. The commit is real and reachable
-        // by SHA with no ref pointing at it, so nothing is lost while the user
-        // is asked what they want done with it — and asking is the only way to
-        // keep the promise that Citadel creates no ref the user did not request.
+        // No proof of application. Keep the proposal available for an explicit
+        // branch decision, including when inspection left the outcome unknown.
         unresolved = {
-          kind: error.status === 422 ? 'branch-moved' : 'branch-protected',
+          kind: indeterminate ? 'outcome-unknown' : error.status === 422 ? 'branch-moved' : 'branch-protected',
           commit: commitSha,
           intendedBranch: branch,
           baseCommit: head,
@@ -1013,24 +996,29 @@ export async function commitChangeSet(client, token, options) {
   // may throw: reporting a failure for work that already landed would invite the
   // user to re-apply it, and a retry would duplicate the commit.
   const result = {
-    transactionId,
+    transactionId: alreadyApplied?.record.transactionId || transactionId,
+    outcome: indeterminate ? 'indeterminate' : unresolved ? 'pending' : equivalent ? 'unchanged' : 'applied',
+    applied: indeterminate ? null : !unresolved && !equivalent,
+    changed: !unresolved && !equivalent,
     // When the change was already there, the commit the user should be given is
     // the one the branch actually holds. Ours is a real object but nothing
     // references it, so History would never list it and Undo would refuse it.
-    commit: alreadyApplied || commitSha,
-    baseCommit: head,
+    commit: equivalent ? null : alreadyApplied?.commit || commitSha,
+    baseCommit: alreadyApplied?.record.baseCommit || head,
     // Always the branch this save aimed at. No ref was created, so there is no
     // other branch to name.
     branch,
-    author: authorName || null,
+    author: equivalent ? null : alreadyApplied ? alreadyApplied.author : authorName || null,
     files: tree.map((entry) => ({ alias: entry.path, sha: entry.sha, mode: entry.mode })),
     warnings,
-    ...(alreadyApplied ? { alreadyApplied: true, duplicateCommit: commitSha } : {}),
-    ...(unresolved ? { unresolved, applied: false } : {}),
+    ...(alreadyApplied ? { alreadyApplied: true, duplicateCommit: commitSha, attemptTransactionId: transactionId } : {}),
+    ...(equivalent ? { equivalentCommit: equivalent.head, head: equivalent.head, proposedCommit: commitSha } : {}),
+    ...(indeterminate ? { indeterminate: true } : {}),
+    ...(unresolved ? { unresolved } : {}),
   };
-  if (unresolved) {
-    // The branch is untouched and nothing was created. What the user needs is
-    // the decision, not a re-read of a head that did not move.
+  if (unresolved || equivalent) {
+    // Neither an unresolved proposal nor content equivalence is a newly applied
+    // Citadel commit.
     return result;
   }
   try {
@@ -1044,6 +1032,7 @@ export async function commitChangeSet(client, token, options) {
       // collaboration, not a failed save.
       result.movedAfterSave = true;
       result.head = finalHead;
+      warnings.push(`${branch} moved after this audited save. The next source read reflects the current branch, not necessarily the saved revision.`);
     }
   } catch (error) {
     result.headUnknown = true;
@@ -1345,6 +1334,9 @@ export async function revertCommit(client, token, options) {
     fullName,
     branch,
     expectedHead: inspection.head,
+    // The undo HTTP request contains identifiers only. Restored blobs are sent
+    // individually to GitHub, not as an aggregate browser commit request.
+    requestBudget: false,
     files,
     action: 'history-undo',
     environmentId,

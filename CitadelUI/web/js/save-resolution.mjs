@@ -1,3 +1,5 @@
+import { mutationComplete, mutationOutcome } from '../../shared/mutation-outcome.mjs';
+
 /**
  * What to ask the user when a save is refused and the work is not on the branch.
  *
@@ -38,6 +40,12 @@ export function describeSaveResolution(result, source) {
   const unresolved = result?.unresolved;
   if (!unresolved?.commit) return null;
   const intended = unresolved.intendedBranch || source?.workingBranch || 'the branch';
+  if (unresolved.kind === 'outcome-unknown') {
+    return {
+      ...unresolved, title: 'This change needs outcome confirmation',
+      message: `Commit ${unresolved.commit.slice(0, 12)} exists, but Citadel could not confirm its outcome on ${intended}. Keep this action and inspect History or reopen the workspace before retrying. You may explicitly give the commit another branch name; that does not change this workspace's target.`,
+    };
+  }
   const cause =
     unresolved.kind === 'branch-protected'
       ? `${intended} is protected, so Citadel could not update it.`
@@ -64,28 +72,41 @@ export function describeSaveResolution(result, source) {
  * A refused save is not a completed one, so it is not reported as "Saved". The
  * work is safe and the sentence says so, but the outcome is a question.
  */
-export function saveStatusLine(result, source) {
+export function saveStatusLine(result, source, options = {}) {
   const pending = describeSaveResolution(result, source);
   const caveats = (result?.warnings || []).join(' ');
   if (pending) {
     return { text: `${pending.message}${caveats ? ` ${caveats}` : ''}`, tone: 'warn', pending };
   }
-  if (!result?.changed) return { text: 'Nothing changed.', tone: 'ok' };
-  const base = `Saved ${result.path}. Previous revision archived to ${result.archived}`;
+  if (!mutationComplete(result)) {
+    const base = mutationOutcome(result) === 'recovery-required'
+      ? 'This change requires History recovery. Source bytes and the pending action must be retained.'
+      : mutationOutcome(result) === 'pending'
+        ? 'This change has not been applied. The pending action is retained.'
+        : 'The mutation outcome is not confirmed. Keep the pending action and inspect History before another attempt.';
+    return { text: `${base}${caveats ? ` ${caveats}` : ''}`, tone: 'warn' };
+  }
+  if (mutationOutcome(result) === 'unchanged') {
+    return { text: `${options.unchangedText || 'Nothing changed.'}${caveats ? ` ${caveats}` : ''}`, tone: caveats ? 'warn' : 'ok' };
+  }
+  const base = options.successText || `Saved ${result.path}. Previous revision archived to ${result.archived}`;
   return { text: `${base}${caveats ? ` ${caveats}` : ''}`, tone: caveats ? 'warn' : 'ok' };
 }
 
 /** Confirmation once the user has named a branch and Citadel has created it. */
 export function describeCreatedBranch(outcome, source, intendedBranch) {
-  if (!outcome?.branch) return null;
+  if (!outcome?.branch || typeof outcome.branch !== 'string' || typeof outcome.created !== 'boolean') return null;
+  const warnings = [...(outcome.warnings || [])];
+  if (outcome.unlogged) warnings.push('The branch exists, but its History audit record could not be written.');
+  const message = outcome.created
+    ? `Your change is on ${outcome.branch}. Compare it against ${intendedBranch || 'the branch'} and open a pull request when you are ready.`
+    : `${outcome.branch} already held this change.`;
   return {
     branch: outcome.branch,
     commit: outcome.commit || null,
-    message: outcome.created
-      ? `Your change is on ${outcome.branch}. Compare it against ${
-          intendedBranch || 'the branch'
-        } and open a pull request when you are ready.`
-      : `${outcome.branch} already held this change.`,
+    message: `${message}${warnings.length ? ` ${warnings.join(' ')}` : ''}`,
+    tone: warnings.length ? 'warn' : 'info',
+    warnings,
     compareUrl: compareUrl(source?.fullName, intendedBranch, outcome.branch),
     linkLabel: `Compare ${outcome.branch}`,
   };

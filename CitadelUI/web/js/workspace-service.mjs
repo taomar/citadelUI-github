@@ -16,6 +16,7 @@ import { nativeError } from '../../shared/terraform/parser.mjs';
 import { assertNativeDraft, sameNativeDraftBinding } from '../../shared/terraform/drafts.mjs';
 import { environmentSourceOf } from './registry.mjs';
 import { encodeSourceText } from '../../shared/source-text.mjs';
+import { mutationComplete, withMutationOutcome } from '../../shared/mutation-outcome.mjs';
 import {
   applyPolicyChanges,
   assertBalancedXml,
@@ -37,6 +38,15 @@ function assertLoadedHash(source, expectedHash) {
     error.code = 'SOURCE_CHANGED';
     throw error;
   }
+}
+
+function documentMutationResult(result, path) {
+  return {
+    ...result, path,
+    archived: result.outcome === 'applied' ? result.commit || result.transactionId : null,
+    ...(mutationComplete(result) && result.files?.find((file) => file.alias === path)?.hash
+      ? { hash: result.files.find((file) => file.alias === path).hash } : {}),
+  };
 }
 
 function values(document) {
@@ -174,8 +184,17 @@ export class WorkspaceService {
     return this.context.provider;
   }
 
-  commitFiles(files, options = {}) {
-    return this.coordinator.commit(files, options);
+  async commitFiles(files, options = {}) {
+    return this.acceptMutationResult(await this.coordinator.commit(files, options), options.context || this.context);
+  }
+
+  acceptMutationResult(result, context) {
+    const outcome = withMutationOutcome(result);
+    if (mutationComplete(outcome)) {
+      this.catalog = null;
+      this.catalogs.delete(context.provider);
+    }
+    return outcome;
   }
 
   reset() {
@@ -312,16 +331,24 @@ export class WorkspaceService {
   }
 
   async preview(alias, operations, expectedHash, nativeIdentity, context = this.context) {
-    if (configurationOf(context.environment).format === 'terraform') {
+    const configuration = configurationOf(context.environment);
+    if (configuration.format === 'terraform') {
       const document = await this.nativeReviewedDocument(context, alias, expectedHash, nativeIdentity);
       const { after, findings } = nativePreview(document, operations);
+      if (document.text !== after) await this.coordinator.validateRequest?.([{
+        alias, create: document.absent, beforeHash: expectedHash, after: new TextEncoder().encode(after),
+      }], { context, action: 'parameter-edit', nativeProof: nativeTransactionProof(configuration, document),
+        nativeIdentity: document.nativeIdentity, expectedHead: document.nativeIdentity.head });
       return { path: alias, before: document.text, after, changed: document.text !== after,
         beforeHash: expectedHash, nativeIdentity: document.nativeIdentity, findings };
     }
     const source = await context.provider.read(alias);
     assertLoadedHash(source, expectedHash);
     const after = previewDocumentText(source.text, operations);
-    encodeSourceText(after, source);
+    const bytes = encodeSourceText(after, source);
+    if (source.text !== after) await this.coordinator.validateRequest?.([{
+      alias, beforeHash: expectedHash, after: bytes,
+    }], { context, action: 'parameter-edit' });
     return {
       path: alias,
       before: source.text,
@@ -369,6 +396,7 @@ export class WorkspaceService {
       const source = await context.provider.read(current.meta.template);
       dependencies.push({ alias: current.meta.template, hash: source.hash });
     }
+    if (!native) encodeSourceText(after, current);
     const review = Object.freeze({ kind: 'local-overwrite', path: loaded.path, before: current.text, after, beforeHash: current.hash, bom: current.bom });
     this.#localOverwriteReviews.set(review, {
       context, configuration: configurationKey(configuration), current, dependencies, after,
@@ -406,8 +434,7 @@ export class WorkspaceService {
       after: native ? new TextEncoder().encode(after) : encodeSourceText(after, source), changed,
     }], { action: prepared.action || 'parameter-edit', context, validateBeforeWrite, confirmReceiptOutcome: true,
       ...(native ? { nativeProof: nativeTransactionProof(configuration, current), nativeIdentity: current.nativeIdentity } : {}) });
-    this.catalogs.delete(context.provider);
-    return { path: current.path, changed: true, archived: result.transactionId, hash: result.files[0].hash, warnings: result.warnings || [] };
+    return documentMutationResult(result, current.path);
   }
 
   async save(alias, operations, expectedHash, nativeIdentity, context = this.context) {
@@ -415,7 +442,7 @@ export class WorkspaceService {
     if (configuration.format === 'terraform') {
       const document = await this.nativeReviewedDocument(context, alias, expectedHash, nativeIdentity);
       const { after } = nativePreview(document, operations);
-      if (after === document.text) return { path: alias, changed: false, archived: null };
+      if (after === document.text) return { path: alias, applied: false, outcome: 'unchanged', changed: false, archived: null };
       const result = await this.commitFiles([{
         alias, before: document.absent ? null : document.source.bytes, beforeHash: expectedHash,
         after: new TextEncoder().encode(after), create: document.absent,
@@ -424,31 +451,16 @@ export class WorkspaceService {
         nativeIdentity: document.nativeIdentity, expectedHead: document.nativeIdentity.head,
         validateBeforeWrite: (phase) => validateNativeReview(context.provider, configuration, document.unit, document,
           { includeValue: !(document.absent && phase?.created && phase.alias === alias) }) });
-      this.catalogs.delete(context.provider);
-      return { path: alias, changed: true, archived: result.transactionId, hash: result.files[0].hash,
-        warnings: result.warnings || [], unresolved: result.unresolved || null };
+      return documentMutationResult(result, alias);
     }
     const source = await context.provider.read(alias);
     assertLoadedHash(source, expectedHash);
     const after = previewDocumentText(source.text, operations);
-    if (after === source.text) return { path: alias, changed: false, archived: null };
+    if (after === source.text) return { path: alias, applied: false, outcome: 'unchanged', changed: false, archived: null };
     const result = await this.commitFiles([
       { alias, before: source.bytes, beforeHash: expectedHash, after: encodeSourceText(after, source), changed: operations.map((operation) => operation.path?.[0]).filter(Boolean) },
     ], { action: 'parameter-edit', context });
-    this.catalog = null;
-    this.catalogs.delete(context.provider);
-    return {
-      path: alias,
-      changed: true,
-      archived: result.transactionId,
-      hash: result.files[0].hash,
-      // Anything the source could not confirm after the write landed. Never a
-      // failure, so the caller reports it alongside a successful save.
-      warnings: result.warnings || [],
-      // The intended branch refused this commit and Citadel created nothing.
-      // The caller has to ask the user what to do with it.
-      unresolved: result.unresolved || null,
-    };
+    return documentMutationResult(result, alias);
   }
 
   /**
@@ -577,9 +589,10 @@ export class WorkspaceService {
       { alias: paramAlias, before: null, beforeHash: null, after: encodeSourceText(paramText, paramSource), changed: ['using', 'policyXml'], create: true },
       { alias: policyAlias, before: null, beforeHash: null, after: policySource.bytes, changed: ['policyXml'], create: true },
     ], { action: 'contract-create', context });
-    this.catalog = null;
-    this.catalogs.delete(context.provider);
-    return { ...created, id: `contracts/${clean}`, dir: targetDir, created: created.files.map((file) => file.alias), using: usingPath };
+    const intended = { id: `contracts/${clean}`, dir: targetDir, using: usingPath };
+    return mutationComplete(created)
+      ? { ...created, ...intended, created: created.outcome === 'applied' ? created.files.map((file) => file.alias) : [] }
+      : { ...created, intended };
   }
 
   async previewPolicy(alias, changes, text = null, expectedHash, context = this.context) {
@@ -588,7 +601,10 @@ export class WorkspaceService {
     assertLoadedHash(source, expectedHash);
     if (typeof text === 'string') {
       assertBalancedXml(text);
-      encodeSourceText(text, source);
+      const bytes = encodeSourceText(text, source);
+      if (text !== source.text) await this.coordinator.validateRequest?.([{
+        alias, beforeHash: expectedHash, after: bytes,
+      }], { context, action: 'policy-edit' });
       return {
         path: alias,
         before: source.text,
@@ -600,7 +616,10 @@ export class WorkspaceService {
     }
     const after = applyPolicyChanges(source.text, changes || {});
     assertBalancedXml(after);
-    encodeSourceText(after, source);
+    const bytes = encodeSourceText(after, source);
+    if (after !== source.text) await this.coordinator.validateRequest?.([{
+      alias, beforeHash: expectedHash, after: bytes,
+    }], { context, action: 'policy-edit' });
     return {
       path: alias,
       before: source.text,
@@ -621,6 +640,7 @@ export class WorkspaceService {
     if (source.hash === loaded.hash) throw new Error('The policy no longer differs from the loaded version. Review it again.');
     const after = typeof text === 'string' ? text : applyPolicyChanges(loaded.text, changes || {});
     assertBalancedXml(after);
+    encodeSourceText(after, source);
     const review = Object.freeze({ kind: 'local-overwrite', path: loaded.path, before: source.text, after, beforeHash: source.hash, bom: source.bom });
     this.#localOverwriteReviews.set(review, {
       context, configuration: configurationKey(configuration),
@@ -638,16 +658,13 @@ export class WorkspaceService {
       payload.expectedHash,
       context
     );
-    if (!preview.changed) return { path: payload.path, changed: false, archived: null };
+    if (!preview.changed) return { path: payload.path, applied: false, outcome: 'unchanged', changed: false, archived: null };
     const source = await context.provider.read(payload.path);
     assertLoadedHash(source, payload.expectedHash);
     const result = await this.commitFiles([
       { alias: payload.path, before: source.bytes, beforeHash: payload.expectedHash, after: encodeSourceText(preview.after, source), changed: Object.keys(payload.changes || { raw: true }) },
     ], { action: 'policy-edit', context });
-    this.catalog = null;
-    this.catalogs.delete(context.provider);
-    return { path: payload.path, changed: true, archived: result.transactionId,
-      warnings: result.warnings || [], unresolved: result.unresolved || null };
+    return documentMutationResult(result, payload.path);
   }
 
   async restoreContract() {
@@ -772,6 +789,10 @@ export class WorkspaceService {
       comparison.destination.text,
       selected.map((parameter) => ({ op: 'set', path: [parameter.name], value: parameter.source }))
     );
+    const bytes = encodeSourceText(after, comparison.destination);
+    if (after !== comparison.destination.text) await this.coordinator.validateRequest?.([{
+      alias: comparison.targetAlias, beforeHash: comparison.destination.hash, after: bytes,
+    }], { context: comparison.target, action: 'environment-copy' });
     return {
       before: comparison.destination.text,
       after,
@@ -798,9 +819,6 @@ export class WorkspaceService {
   }
 
   async restoreTransaction(transactionId, context = this.context) {
-    const result = await this.coordinator.revert(transactionId, { context });
-    this.catalog = null;
-    this.catalogs.delete(context.provider);
-    return result;
+    return this.acceptMutationResult(await this.coordinator.revert(transactionId, { context }), context);
   }
 }
