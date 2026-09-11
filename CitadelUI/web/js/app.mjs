@@ -56,6 +56,7 @@ import { createCompareSession } from './compare-session.mjs';
 import { openMigrationWizard } from './migration-wizard.mjs';
 import { openTerraformExport } from './terraform-export-view.mjs';
 import { describeCreatedBranch, saveStatusLine } from './save-resolution.mjs';
+import { mutationComplete } from '../../shared/mutation-outcome.mjs';
 import { refNameProblem } from '../../shared/git-refs.mjs';
 import { configurationOf } from '../../shared/workspace-configuration.mjs';
 import { assertNativeDraft, sameNativeDraftBinding } from '../../shared/terraform/drafts.mjs';
@@ -858,6 +859,19 @@ function openCreateContract() {
             if (!name) { input.setCustomValidity('Enter a contract name.'); input.reportValidity(); return; }
             const result = await withStatus('Creating\u2026', () => api.createContract({ name }, context));
             if (!result) return;
+            const source = environmentSourceOf(context.environment);
+            const line = saveStatusLine(result, source, {
+              successText: `Created ${result.dir}`,
+              unchangedText: `The contract at ${result.dir} already matches the reviewed source.`,
+            });
+            if (!mutationComplete(result)) {
+              owner.status = { message: line.text, tone: line.tone };
+              if (viewStates.isCurrent(ticket)) {
+                setStatus(line.text, line.tone);
+                if (line.pending) await resolveUnsavedCommit(line.pending, source, { owner, context, ticket, operation: 'contract-create' });
+              }
+              return;
+            }
             if (!viewStates.isCurrent(ticket)) return;
             closeModal();
             const refreshed = await withStatus('Refreshing contracts\u2026', async () => {
@@ -868,7 +882,7 @@ function openCreateContract() {
                 return { contracts, catalog };
               } catch (err) {
                 throw new Error(
-                  `Created ${result.dir}, but could not refresh the workspace catalog. ${err.message} Reopen this workspace to refresh the lists; do not create this contract again.`,
+                  `The contract at ${result.dir} is confirmed, but the workspace catalog could not be refreshed. ${err.message} Reopen this workspace to refresh the lists; do not create this contract again.`,
                   { cause: err }
                 );
               }
@@ -877,7 +891,7 @@ function openCreateContract() {
             state.contracts = refreshed.contracts;
             state.catalog = refreshed.catalog;
             render();
-            if (await selectContract(result.id)) setStatus(`Created ${result.dir}`, 'ok');
+            if (await selectContract(result.id)) setStatus(line.text, line.tone);
           }, { key: `create-contract:${context.environment.id}` }),
         },
         'Create'
@@ -1241,7 +1255,7 @@ function showPolicyReview(review, preview) {
           // lock while the previous policy save is still running.
           onclick: guardedHandler(async () => {
             if (owner.reviewEpoch !== epoch) { setStatus('The draft or shared branch head changed. Review this policy again before saving.', 'error'); return; }
-            const preserved = captureContractEdits(owner);
+            const document = owner.current, submittedChanges = structuredClone(owner.policyChanges);
             const result = await withStatus('Saving\u2026', () => withLocalConflict(review, () =>
               overwrite ? api.saveLocalOverwrite(preview) : api.savePolicy(payload, context)));
             if (!result) return;
@@ -1251,20 +1265,26 @@ function showPolicyReview(review, preview) {
             }
             const source = environmentSourceOf(context.environment);
             const line = saveStatusLine(result, source);
-            if (line.pending) {
+            if (!mutationComplete(result)) {
               owner.status = { message: line.text, tone: line.tone };
               if (viewStates.isCurrent(ticket)) {
-                closeModal();
                 setStatus(line.text, line.tone);
-                await resolveUnsavedCommit(line.pending, source, review);
+                if (line.pending) await resolveUnsavedCommit(line.pending, source, review);
               }
               return;
             }
-            if (owner.policyRaw === raw && JSON.stringify(owner.policyChanges) === JSON.stringify(preserved.policyChanges)) {
+            if (owner.current !== document || owner.contract?.policy !== policy) {
+              owner.status = { message: line.text, tone: line.tone };
+              if (viewStates.isCurrent(ticket)) setStatus(line.text, line.tone);
+              return;
+            }
+            const preserved = captureContractEdits(owner);
+            if (owner.policyRaw === raw && JSON.stringify(owner.policyChanges) === JSON.stringify(submittedChanges)) {
               owner.policyRaw = null;
               owner.policyChanges = {};
-              owner.policyPreview = null;
-            }
+              invalidatePolicyPreview(owner);
+            } else retainQuarantinedDraft(owner, captureContractEdits(owner),
+              'An approved policy save completed while this draft changed. The newer draft is retained for explicit reconciliation.');
             if (!viewStates.isCurrent(ticket)) return;
             closeModal();
             await loadContract(
@@ -1377,7 +1397,6 @@ async function commitSave(review) {
     setStatus('The draft changed after preview. Review the current draft before saving.', 'error');
     return;
   }
-  const preserved = captureContractEdits(owner);
   const result = await withStatus('Saving\u2026', () =>
     withLocalConflict(review, () => review.localOverwrite ? api.saveLocalOverwrite(review.localOverwrite) :
       api.save(document.path, operations, document.hash, document.nativeIdentity, context))
@@ -1391,24 +1410,23 @@ async function commitSave(review) {
   const source = environmentSourceOf(context.environment);
   const line = saveStatusLine(result, source);
 
-  if (line.pending) {
-    // The commit exists but is on no branch, and Citadel will not invent one.
-    //
-    // The draft is deliberately kept and the document is not reloaded. Under the
-    // old auto-rescue this was safe, because the work had a home; now it does
-    // not, so clearing the draft and reloading would show the branch's old
-    // content with the user's edits apparently gone — the exact failure this
-    // whole change exists to prevent. The commit SHA is the safety net for the
-    // repository; the retained draft is the safety net for the editor.
+  if (!mutationComplete(result)) {
+    // A pending or unknown outcome must not consume the draft. A known proposed
+    // commit may receive another branch only through the existing user decision.
     owner.status = { message: line.text, tone: line.tone };
     if (viewStates.isCurrent(ticket)) {
-      closeModal();
       setStatus(line.text, line.tone);
-      await resolveUnsavedCommit(line.pending, source, review);
+      if (line.pending) await resolveUnsavedCommit(line.pending, source, review);
     }
     return;
   }
 
+  if (owner.current !== document) {
+    owner.status = { message: line.text, tone: line.tone };
+    if (viewStates.isCurrent(ticket)) setStatus(line.text, line.tone);
+    return;
+  }
+  const preserved = captureContractEdits(owner);
   if (JSON.stringify(owner.operations) === JSON.stringify(operations)) {
     owner.operations = [];
     await workspaceRegistry.removeDraft(context.environment.id, document.path);
@@ -1440,7 +1458,7 @@ async function commitSave(review) {
  * are still in the editor.
  */
 async function resolveUnsavedCommit(pending, source, review) {
-  const { owner, context, document, ticket } = review;
+  const { owner, context, ticket } = review;
   await new Promise((resolve) => {
     const name = h('input', {
       class: 'ctl',
@@ -1468,13 +1486,18 @@ async function resolveUnsavedCommit(pending, source, review) {
       );
       if (!outcome) return;
       const created = describeCreatedBranch(outcome, source, pending.intendedBranch);
-      if (configurationOf(context.environment).format === 'terraform' || review.policy) {
-        owner.status = { message: `${created.message} This workspace still targets ${source.workingBranch}; its draft is retained. Attach a new workspace to edit the new branch.`, tone: 'info' };
-      } else {
-        owner.operations = [];
-        await workspaceRegistry.removeDraft(context.environment.id, document.path);
-        owner.status = { message: created.message, tone: 'ok' };
+      if (!created) {
+        const message = 'The branch outcome is not confirmed. Keep this action and inspect the named branch before another attempt.';
+        owner.status = { message, tone: 'warn' };
+        if (viewStates.isCurrent(ticket)) {
+          problem.textContent = message;
+          problem.hidden = false;
+          setStatus(message, 'warn');
+        }
+        return;
       }
+      const target = review.operation === 'environment-copy' ? 'The destination workspace' : 'This workspace';
+      owner.status = { message: `${created.message} ${target} still targets ${source.workingBranch}; editor drafts and the pending action are retained. Attach a new workspace to edit the new branch.`, tone: created.tone };
       if (viewStates.isCurrent(ticket)) {
         dismissDialog(true);
         render();
@@ -1547,7 +1570,7 @@ async function addWorkspaceInApp(projectId = null) {
  * in `history-entry.mjs` so it can be exercised without a DOM.
  */
 async function openHistory() {
-  const context = activeWorkspace(), ticket = viewStates.ticket();
+  const context = activeWorkspace(), owner = state, ticket = viewStates.ticket();
   const result = await withStatus('Loading history\u2026', () => api.history(context));
   if (!result || !viewStates.isCurrent(ticket)) return;
   const transactions = Array.isArray(result) ? result : result.transactions || result.items || [];
@@ -1665,7 +1688,7 @@ async function openHistory() {
                 entry.canUndo
                   ? h('button', {
                        class: 'btn btn-sm btn-danger-ghost',
-                      onclick: async () => {
+                      onclick: guardedHandler(async () => {
                         const creation = entry.isCreation;
                          if (
                            !(await confirmDialog({
@@ -1680,27 +1703,39 @@ async function openHistory() {
                              }),
                            }))
                          ) return;
+                         if (!viewStates.isCurrent(ticket)) return;
                          const result = await withStatus('Backing up current source and restoring\u2026', () =>
                            api.restoreTransaction(entry.id, context)
                         );
-                        if (!result || !viewStates.isCurrent(ticket)) return;
+                        if (!result) return;
+                        const source = environmentSourceOf(context.environment);
+                        const line = saveStatusLine(result, source, { successText: creation
+                          ? `Removed the committed ${entry.nativeCreation ? 'native input file' : 'contract'} creation ${result.transactionId}.`
+                          : `Restored through new transaction ${result.commit || result.transactionId}.` });
+                        if (!mutationComplete(result)) {
+                          owner.status = { message: line.text, tone: line.tone };
+                          if (viewStates.isCurrent(ticket)) {
+                            setStatus(line.text, line.tone);
+                            if (line.pending) await resolveUnsavedCommit(line.pending, source, { owner, context, ticket, operation: 'history-restore' });
+                          }
+                          return;
+                        }
+                        if (!viewStates.isCurrent(ticket)) return;
+                        const preserved = captureContractEdits(owner);
                         closeModal();
                         if (creation && !entry.nativeCreation) {
                           state.contracts = await withStatus('Refreshing contracts\u2026', () =>
-                            api.contracts()
+                            api.contracts(context)
                           );
                           const fallback = state.contracts.contracts?.find((item) => item.isTemplate);
                           if (fallback) await selectContract(fallback.id);
+                        } else if (owner.contractId && owner.contract) {
+                          await loadContract(owner.contractId, preserved);
                         } else if (state.current) {
-                          await loadDocument(state.current.path);
+                          await loadDocument(state.current.path, { preserve: true });
                         }
-                        setStatus(
-                          creation
-                            ? `Removed the committed ${entry.nativeCreation ? 'native input file' : 'contract'} creation ${result.transactionId}.`
-                            : `Restored through new transaction ${result.transactionId}.`,
-                          'ok'
-                        );
-                      },
+                        if (viewStates.isCurrent(ticket)) setStatus(line.text, line.tone);
+                      }, { key: `history-restore:${context.environment.id}:${entry.id}` }),
                     }, entry.isCreation ? 'Undo creation' : 'Restore prior')
                   : null
               );
@@ -1713,7 +1748,7 @@ async function openHistory() {
 }
 
 async function openEnvironmentCompare(environments) {
-  const context = activeWorkspace(), ticket = viewStates.ticket(), document = state.current;
+  const context = activeWorkspace(), owner = state, ticket = viewStates.ticket(), document = state.current;
   if (!state.current?.path?.endsWith('.bicepparam')) {
     setStatus('Open a parameter file before comparing environments.', 'info');
     return;
@@ -1788,7 +1823,7 @@ async function openEnvironmentCompare(environments) {
             }, 'Back'),
             h('button', {
               class: 'btn btn-primary',
-              onclick: async () => {
+              onclick: guardedHandler(async () => {
                 const copied = await withStatus('Backing up and copying\u2026', () =>
                   api.copyParameters(
                     targetId,
@@ -1799,11 +1834,25 @@ async function openEnvironmentCompare(environments) {
                     context
                   )
                 );
-                if (!copied || !viewStates.isCurrent(ticket)) return;
+                if (!copied) return;
+                const targetContext = { projectId: context.projectId, environment: targetEnvironment };
+                const source = environmentSourceOf(targetEnvironment);
+                const line = saveStatusLine(copied, source, {
+                  successText: `Copied ${names.length} parameters in transaction ${copied.commit || copied.transactionId}.`,
+                });
+                if (!mutationComplete(copied)) {
+                  owner.status = { message: line.text, tone: line.tone };
+                  if (viewStates.isCurrent(ticket)) {
+                    setStatus(line.text, line.tone);
+                    if (line.pending) await resolveUnsavedCommit(line.pending, source, { owner, context: targetContext, ticket, operation: 'environment-copy' });
+                  }
+                  return;
+                }
+                if (!viewStates.isCurrent(ticket)) return;
                 session.release();
                 closeModal();
-                setStatus(`Copied ${names.length} parameters in transaction ${copied.transactionId}.`, 'ok');
-              },
+                setStatus(line.text, line.tone);
+              }, { key: `environment-copy:${targetId}:${document.path}` }),
             }, 'Back up target & copy')
           ]
         );

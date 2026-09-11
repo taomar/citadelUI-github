@@ -76,6 +76,11 @@ export class SourceMutationCoordinator extends MutationCoordinator {
     return coordinator.commit(files, { ...options, context });
   }
 
+  async validateRequest(files, options = {}) {
+    const { coordinator, context } = this.select(options);
+    return coordinator.validateRequest(files, { ...options, context });
+  }
+
   async history(options = {}) {
     const { coordinator, context } = this.select(options);
     return coordinator.history({ ...options, context });

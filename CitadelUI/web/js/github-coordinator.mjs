@@ -1,6 +1,8 @@
 import { MutationCoordinator } from './mutation-coordinator.mjs';
 import { notifyGitHubHead } from './github-head-state.mjs';
-import { sha256 } from '../../shared/source-scope.mjs';
+import { sha256, MAX_SOURCE_BYTES, MAX_COMMIT_FILES } from '../../shared/source-scope.mjs';
+import { mutationComplete, withMutationOutcome } from '../../shared/mutation-outcome.mjs';
+import { assertGitHubRequestBudget } from '../../shared/github-request-budget.mjs';
 
 function toBase64(bytes) {
   let binary = '';
@@ -39,10 +41,49 @@ export class GitHubCommitCoordinator extends MutationCoordinator {
     return `/api/github/workspaces/${encodeURIComponent(context.environment.id)}`;
   }
 
-  async commit(files, options = {}) {
+  async requestMutation(context, operation, body) {
+    const encoded = JSON.stringify(body);
+    if (operation === 'commits') assertGitHubRequestBudget(encoded);
+    let result;
+    try {
+      result = await this.request(`${this.base(context)}/${operation}`, {
+        method: 'POST', body: encoded,
+      });
+    } catch (error) {
+      if (!error.indeterminate && Number.isInteger(error.status) &&
+          (error.status < 500 || ['SAVE_NOT_APPLIED', 'AUDIT_UNAVAILABLE'].includes(error.code))) throw error;
+      result = {
+        applied: null, indeterminate: true, transactionId: body.transactionId,
+        commit: error.commit || null, branch: context.environment.source?.workingBranch,
+        warnings: [`${error.message} The GitHub mutation outcome is not confirmed. Keep this action and inspect History or reopen the workspace before another attempt.`],
+        ...(error.commit ? { unresolved: { kind: 'outcome-unknown', commit: error.commit,
+          intendedBranch: context.environment.source?.workingBranch } } : {}),
+      };
+    }
+    const outcome = withMutationOutcome({ transactionId: body.transactionId, ...result });
+    if (outcome.outcome === 'indeterminate' && !outcome.warnings?.length) {
+      outcome.warnings = ['GitHub did not return a confirmed mutation outcome. Keep this action and inspect History before another attempt.'];
+    }
+    if (mutationComplete(outcome)) {
+      notifyGitHubHead(context.environment, outcome.head || outcome.commit || outcome.equivalentCommit);
+      context.provider.reset();
+    }
+    return outcome;
+  }
+
+  async prepareRequest(files, options = {}) {
     const context = this.resolve(options);
     const provider = context.provider;
-    await options.validateBeforeWrite?.();
+    if (!Array.isArray(files) || !files.length || files.length > MAX_COMMIT_FILES) {
+      throw new Error('A change set of 1 to 64 files is required.');
+    }
+    let contentBytes = 0;
+    for (const file of files) {
+      if (!(file.after instanceof Uint8Array) || file.after.byteLength > MAX_SOURCE_BYTES) {
+        throw Object.assign(new Error('Each source must contain at most 8 MiB of reviewed bytes.'), { code: 'SOURCE_TOO_LARGE' });
+      }
+      contentBytes += 4 * Math.ceil(file.after.byteLength / 3);
+    }
     const head = await provider.workspaceHead();
     if (options.expectedHead && options.expectedHead !== head) throw new Error('The shared GitHub branch head changed after review. Your draft is preserved; review it against the new head.');
     const payload = [];
@@ -58,41 +99,39 @@ export class GitHubCommitCoordinator extends MutationCoordinator {
         blobSha: create ? null : entry.sha,
         beforeHash: create ? null : file.beforeHash,
         mode: create ? undefined : entry.mode,
-        after: toBase64(file.after),
+        after: '',
       });
     }
-    const result = await this.request(`${this.base(context)}/commits`, {
-      method: 'POST',
-      body: JSON.stringify({
+    const body = {
         action: options.action || 'parameter-edit',
         expectedHead: head,
         transactionId: globalThis.crypto.randomUUID(),
         files: payload,
-        ...(options.nativeProof ? { nativeProof: options.nativeProof, nativeIdentity: options.nativeIdentity } : {}),
-      }),
-    });
-    if (result.applied !== false && !result.unresolved) notifyGitHubHead(context.environment, result.commit);
-    provider.reset();
+        ...(options.nativeProof ? { nativeProof: options.nativeProof } : {}),
+        ...(options.nativeIdentity ? { nativeIdentity: options.nativeIdentity } : {}),
+    };
+    const budget = assertGitHubRequestBudget(body, contentBytes);
+    return { context, body, budget };
+  }
+
+  async validateRequest(files, options = {}) {
+    return (await this.prepareRequest(files, options)).budget;
+  }
+
+  async commit(files, options = {}) {
+    await options.validateBeforeWrite?.();
+    const { context, body } = await this.prepareRequest(files, options);
+    body.files.forEach((file, index) => { file.after = toBase64(files[index].after); });
+    const result = await this.requestMutation(context, 'commits', body);
+    const plannedFiles = await Promise.all(files.map(async (file) => ({
+      ...(result.files || []).find((entry) => entry.alias === file.alias),
+      alias: file.alias, hash: await sha256(file.after),
+    })));
     return {
-      transactionId: result.transactionId,
-      commit: result.commit,
-      baseCommit: result.baseCommit,
-      branch: result.branch,
-      // The save landed. A later fast-forward by someone else is normal
-      // collaboration, surfaced as a warning rather than a failure.
-      movedAfterSave: Boolean(result.movedAfterSave),
-      // Anything the server could not confirm *after* the commit landed. These
-      // never mean "retry"; they mean "applied, with something to know".
-      headUnknown: Boolean(result.headUnknown),
-      // Present when the intended branch would not take the commit. The commit
-      // exists and is reachable by SHA, but Citadel has created no ref for it —
-      // it does not create branches the user did not ask for — so this carries
-      // the decision rather than a destination.
-      unresolved: result.unresolved || null,
-      applied: result.applied !== false,
-      alreadyApplied: Boolean(result.alreadyApplied),
+      ...result,
       warnings: result.warnings || [],
-      files: await Promise.all(files.map(async (file) => ({ alias: file.alias, hash: await sha256(file.after) }))),
+      files: mutationComplete(result) ? plannedFiles : [],
+      ...(!mutationComplete(result) ? { plannedFiles } : {}),
     };
   }
 
@@ -108,12 +147,7 @@ export class GitHubCommitCoordinator extends MutationCoordinator {
       method: 'POST',
       body: JSON.stringify({ commit, branch }),
     });
-    return {
-      branch: result.branch,
-      commit: result.commit,
-      created: Boolean(result.created),
-      unlogged: Boolean(result.unlogged),
-    };
+    return result;
   }
 
   async history(options = {}) {
@@ -154,16 +188,11 @@ export class GitHubCommitCoordinator extends MutationCoordinator {
    */
   async revert(commit, options = {}) {
     const context = this.resolve(options);
-    const result = await this.request(`${this.base(context)}/reverts`, {
-      method: 'POST',
-      body: JSON.stringify({
+    const result = await this.requestMutation(context, 'reverts', {
         commit,
         transactionId: globalThis.crypto.randomUUID(),
-      }),
     });
-    if (result.applied !== false && !result.unresolved) notifyGitHubHead(context.environment, result.commit);
-    context.provider.reset();
-    return result;
+    return mutationComplete(result) ? result : { ...result, plannedFiles: result.files || [], files: [] };
   }
 
   /**

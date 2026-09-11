@@ -30,6 +30,7 @@ import { MigrationError } from '../shared/migration-input.mjs';
 import { SNAPSHOT_ENDPOINT, SNAPSHOT_LIMITS } from '../shared/migration-snapshot.mjs';
 import { GitHubRoutes } from './github/routes.mjs';
 import { GitHubAuditStore } from './github/audit.mjs';
+import { MAX_GITHUB_COMMIT_REQUEST_BYTES as GITHUB_COMMIT_BODY_LIMIT } from '../shared/source-scope.mjs';
 import {
   applyPolicyChanges,
   CONTENT_SAFETY_CATEGORIES,
@@ -52,14 +53,6 @@ const PRODUCTION_CHECKOUT_DATA_ROOT = resolve(here, '..', '.data');
 const DEFAULT_ALLOWED_HOST = process.env.CITADEL_ALLOWED_HOST || PRODUCTION_ALLOWED_HOST;
 const JSON_BODY_LIMIT = 2 * 1024 * 1024;
 const BACKUP_BODY_LIMIT = 32 * 1024 * 1024;
-/**
- * GitHub commit bodies carry base64-encoded sources, so the advertised 8 MiB
- * source limit needs roughly 4/3 for base64 plus JSON framing. Without this the
- * transport would reject a file the product says it supports. The aggregate
- * decoded size stays bounded by the per-file and per-change-set limits enforced
- * in the change-set validator.
- */
-const GITHUB_COMMIT_BODY_LIMIT = 12 * 1024 * 1024;
 
 /**
  * The activity actions a browser may append.
