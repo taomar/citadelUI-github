@@ -11,6 +11,7 @@ import { validateNativeValues } from '../shared/terraform/schema.mjs';
 import { configurationOf } from '../shared/workspace-configuration.mjs';
 import { environmentSourceOf } from '../web/js/registry.mjs';
 import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
+import { createDocumentActions } from '../web/js/document-action.mjs';
 import { pauseEditorForLoad } from '../web/js/editor-load.mjs';
 import { captureDialogStatus } from '../web/js/dialog.mjs';
 import { hasParameterInputs } from '../web/js/contract-edit-state.mjs';
@@ -58,12 +59,16 @@ variable "password" { type = string
     policyRaw: null, tab: 'params', reviewEpoch: 0 };
   const viewStates = new WorkspaceViewState(() => state); viewStates.activate(f.context);
   const calls = [], statuses = [], dialogs = [];
+  const setStatus = (message, tone) => { if (message) statuses.push({ message, tone }); };
+  const documentActions = createDocumentActions({
+    views: viewStates, currentOwner: () => state, setStatus,
+  });
   const scope = { state, viewStates, editorTransition: null, h, mount, structuredClone, classifyValidation, validateDocument, previewDocument,
-    captureDialogStatus, hasParameterInputs, document: globalThis.document, Event: globalThis.Event,
+    captureDialogStatus, hasParameterInputs, documentActions, document: globalThis.document, Event: globalThis.Event,
     validateNativeValues, configurationOf, environmentSourceOf,
     activeWorkspace: () => f.context, currentWriteContext: () => ({ format: 'terraform' }),
     pendingCount: () => state.operations.length, els: { tbActions: actions, workspace },
-    setStatus: (message, tone) => { if (message) statuses.push({ message, tone }); },
+    setStatus,
     reportClientError: (error) => { calls.push({ error: error.code }); },
     guardedHandler: (action) => action, openWorkspaceSettings() {}, discardAllPending() {},
     withLocalConflict: (_review, action) => action(), showLocalOverwrite() {},

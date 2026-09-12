@@ -11,7 +11,7 @@ import { createEditorDocumentSession } from '../web/js/editor-document-session.m
 import { previewDocument, queueOperation } from '../web/js/preview.mjs';
 import { captureContractEdits, clearEditorPending, editorPendingCount, restoreContractEdits } from '../web/js/contract-edit-state.mjs';
 import { retainQuarantinedDraft, restoreQuarantinedDrafts, invalidatePolicyPreview } from '../web/js/contract-edit-state.mjs';
-import { hasParameterInputs } from '../web/js/contract-edit-state.mjs';
+import { hasParameterInputs, setParameterInput } from '../web/js/contract-edit-state.mjs';
 import { captureDialogStatus } from '../web/js/dialog.mjs';
 import { initializeNativeParser } from '../shared/terraform/parser.mjs';
 import { assertNativeDraft, sameNativeDraftBinding } from '../shared/terraform/drafts.mjs';
@@ -187,7 +187,7 @@ test('a field-commit repaint updates editor content without detaching the area n
   sidebar.append(target); dom.root.append(sidebar, workspace);
   const calls = [];
   const state = { current: { params: [{ name: 'label', value: 'old' }] }, operations: [], reviewEpoch: 0 };
-  const context = { state, queueOperation, els: { sidebar, workspace, shell: { dataset: { workspace: 'active' } } },
+  const context = { state, queueOperation, hasParameterInputs, setParameterInput, els: { sidebar, workspace, shell: { dataset: { workspace: 'active' } } },
     editorTransition: null, setStatus() {}, persistParameterDraft: async () => calls.push('persist'),
     preserveEditorFocus: (_root, action) => action(),
     renderSidebar: () => { throw new Error('Area navigation must remain mounted during the field commit.'); },

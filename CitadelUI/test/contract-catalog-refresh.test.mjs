@@ -6,6 +6,7 @@ import { loadDialogModule, readText } from './_dom-stub.mjs';
 import { h, mount } from '../web/js/dom.mjs';
 import { guardedHandler } from '../web/js/single-flight.mjs';
 import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
+import { createDocumentActions } from '../web/js/document-action.mjs';
 import { reportClientError } from '../web/js/diagnostics-client.mjs';
 import { environmentSourceOf } from '../web/js/registry.mjs';
 import { saveStatusLine } from '../web/js/save-resolution.mjs';
@@ -67,6 +68,9 @@ async function fixture({ failure = null, pauseCatalog = null, cancelSelection = 
     state.status = message ? { message, tone } : null;
     if (message) statuses.push({ message, tone });
   };
+  const documentActions = createDocumentActions({
+    views: viewStates, currentOwner: () => state, setStatus,
+  });
   const api = {
     async createContract({ name }, context) {
       assert.equal(context, workspace);
@@ -93,7 +97,7 @@ async function fixture({ failure = null, pauseCatalog = null, cancelSelection = 
     },
   };
   view = runInNewContext(`${handlers}\n({ openCreateContract, renderSidebar, contractList });`, {
-    state, api, h, mount, render, guardedHandler, viewStates, reportClientError, activeWorkspace: () => workspace,
+    state, api, h, mount, render, guardedHandler, viewStates, documentActions, reportClientError, activeWorkspace: () => workspace,
     environmentSourceOf, saveStatusLine, mutationComplete,
     captureDialogStatus: dom.captureDialogStatus,
     COMPACT_NAV: { matches: false }, els: { sidebar },
