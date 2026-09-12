@@ -48,6 +48,13 @@ add distinctly named regression files; the reviewer owns the specified existing
 VM test-adapter repairs. No two workers edit a shared source or test file.
 MAIN owns this plan, integration and directly related documentation.
 
+The user also requested Bicep and Terraform SVG icons. MAIN owns the original
+assets in `CitadelUI/web/icons/`, the shared `formatIcon` renderer and its focused
+tests. The existing shell, workspace and export owners integrate the same
+decorative icons beside visible format labels; there is no additional worker.
+These are original format symbols, not official vendor marks. Unknown formats
+must not be presented as Bicep or Terraform.
+
 ## Implementation decisions
 
 ### Professional desktop shell
@@ -63,6 +70,14 @@ Keep command heights consistent at 1280, 1440 and 1920 desktop widths, make
 workspace/file identity intelligible, and use a practical explorer rail.
 Search results must update without replacing the focused input. Disambiguate
 contract labels without renaming source files.
+
+F14 also requires unique discovery identities for flat contract files: changing
+the label alone does not fix opening the wrong source. The shell owner has a
+narrow additional grant for `pathContract` and `contractMetadata` in
+`CitadelUI/shared/citadel-core.mjs`. Non-main files retain their full relative
+filename in the identity; conventional `main.bicepparam` folder identities and
+the canonical template remain compatible. Deferred and parsed discovery must
+agree, and mutation/undo/delete safety must remain intact.
 
 ### Explicit input and operation state
 
