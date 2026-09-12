@@ -1223,6 +1223,8 @@ CitadelUI/
       github-setup.mjs repository and branch selection panel
       workspace-catalog.mjs
                        saved-workspace catalogue and guided attach flow
+      workspace-catalog-list.mjs
+                       supplied-row catalogue rendering, without state ownership
       activity.mjs     browser half of the redacted activity log
       transaction-client.mjs
                        browser half of verified backup-before-write

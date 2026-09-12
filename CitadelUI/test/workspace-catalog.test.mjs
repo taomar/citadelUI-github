@@ -41,6 +41,7 @@ test('native catalog rows expose format and selected units independently of tran
 
 const styles = readFileSync(new URL('../web/css/components.css', import.meta.url), 'utf8');
 const catalogSource = readFileSync(new URL('../web/js/workspace-catalog.mjs', import.meta.url), 'utf8');
+const catalogListSource = readFileSync(new URL('../web/js/workspace-catalog-list.mjs', import.meta.url), 'utf8');
 const contextSource = readFileSync(new URL('../web/js/workspace-context.mjs', import.meta.url), 'utf8');
 
 function githubEnvironment(overrides = {}) {
@@ -881,12 +882,12 @@ test('the table stacks into labelled blocks at a phone width', () => {
   // Specificity has to match the wide rule, or end-alignment survives the stack.
   assert.match(narrow, /\.catalog-table td:last-child:not\(\[colspan\]\) \{\s*text-align: start;/);
   // Every cell carries the label the stacked layout reveals.
-  const cells = catalogSource.match(/h\(\s*'td',\s*\{[^}]*\}/gs) || [];
+  const cells = `${catalogSource}\n${catalogListSource}`.match(/h\(\s*'td',\s*\{[^}]*\}/gs) || [];
   const unlabelled = cells.filter((cell) => !cell.includes('data-label') && !cell.includes('colspan'));
   assert.deepEqual(unlabelled, [], 'a table cell has no data-label to show when stacked');
   // The action buttons are one grid item. Placed straight into the cell they
   // become cells of their own, and every second button lands under the label.
-  assert.match(catalogSource, /\{ 'data-label': 'Actions' \},\s*\n\s*h\('div', \{ class: 'catalog-actions' \}/);
+  assert.match(catalogListSource, /\{ 'data-label': 'Actions' \},\s*\n\s*h\('div', \{ class: 'catalog-actions' \}/);
   assert.ok(styles.includes('@media (max-width: 30rem)'), 'no 320px rule');
 });
 
@@ -921,7 +922,7 @@ test('the catalogue is reachable and announced without sight', () => {
   assert.match(catalogSource, /'aria-label': 'Search saved workspaces'/);
   assert.match(catalogSource, /'aria-label': 'Filter by source'/);
   assert.match(catalogSource, /'aria-label': 'Filter by status'/);
-  assert.match(catalogSource, /'aria-label': 'Saved workspaces table'/);
+  assert.match(catalogListSource, /'aria-label': 'Saved workspaces table'/);
   assert.match(catalogSource, /'aria-label': 'Add workspace progress'/);
   assert.match(catalogSource, /'aria-current': position === index \? 'step' : null/);
   assert.match(catalogSource, /'aria-expanded': String\(open_\)/);
@@ -931,9 +932,9 @@ test('the catalogue is reachable and announced without sight', () => {
   assert.match(catalogSource, /class: 'field-error catalog-error', role: 'alert'/);
   assert.match(catalogSource, /class: 'catalog-progress', role: 'status', 'aria-live': 'polite'/);
   // A horizontally scrollable region is focusable, so it is reachable by keyboard.
-  assert.match(catalogSource, /class: 'catalog-scroller',\s*\n\s*tabindex: '0'/);
+  assert.match(catalogListSource, /class: 'catalog-scroller',\s*\n\s*tabindex: '0'/);
   // The actions column header is named for a screen reader even though the
   // sighted header is empty.
-  assert.match(catalogSource, /class: 'sr-only' \}, 'Actions'/);
+  assert.match(catalogListSource, /class: 'sr-only' \}, 'Actions'/);
   assert.match(styles, /\.sr-only \{[^}]*clip-path: inset\(50%\);/s);
 });
