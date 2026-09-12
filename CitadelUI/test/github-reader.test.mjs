@@ -86,6 +86,7 @@ test('H4 Git reader: facades retain the same functions and private helpers stay 
   const signatures = {
     branchHead: 4, requireBranchHead: 4, loadTree: 4, treeIndex: 4,
     resolveEntry: 6, readBlob: 4, readSourceBlob: 7, lookupPath: 5,
+    isReachable: 5,
   };
   assert.deepEqual(Object.keys(reader).sort(), [...Object.keys(signatures), 'encodePath'].sort());
   for (const [name, arity] of Object.entries(signatures)) {

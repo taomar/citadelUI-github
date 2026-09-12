@@ -46,6 +46,21 @@ export async function requireBranchHead(client, token, fullName, branch) {
   return head;
 }
 
+/**
+ * Is `candidate` an ancestor of, or equal to, the branch head?
+ *
+ * A commit on some other branch is still fetchable by SHA, so reachability from
+ * the selected working branch is what makes an undo legitimate.
+ */
+export async function isReachable(client, token, fullName, branch, candidate) {
+  const ref = validateBranchName(branch);
+  const { data } = await client.request(
+    `/repos/${fullName}/commits?sha=${encodeURIComponent(ref)}&per_page=100`,
+    { token }
+  );
+  return (Array.isArray(data) ? data : []).some((entry) => entry.sha === candidate);
+}
+
 async function commitTreeSha(client, token, fullName, commitSha) {
   const { data } = await client.request(
     `/repos/${fullName}/git/commits/${validateCommitSha(commitSha)}`,
