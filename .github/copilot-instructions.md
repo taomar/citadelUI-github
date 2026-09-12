@@ -65,6 +65,10 @@ conflicting instructions instead of silently choosing between them.
 - Keep dependency-blocked tasks in the MAIN's backlog, not waiting sessions.
 - Maintain a concise ledger of worker/session IDs, task and attempt IDs,
   scope, state, processed results, and next action.
+- Distinguish dispatched, observed-running, reported, awaiting
+  acceptance/integration, blocked and closed. Assignment or dispatch
+  acknowledgement is not observed execution; MAIN being busy does not
+  establish worker progress.
 
 ### Durable result delivery
 
@@ -72,17 +76,21 @@ conflicting instructions instead of silently choosing between them.
   JSON path outside all Git worktrees. Confirm both sessions can access
   it. Outside its owned worktree, authorize the worker to write only its
   assigned report, execution-receipt and artifact paths.
+- For each real future assignment, resolve MAIN's actual app session ID
+  from the app and provide it with the assigned result path in the kickoff.
+  Do not infer the recipient from a worker name or a historical MAIN.
 - Every worker must publish and read back its report BEFORE ending its
   turn or calling `task_complete`. A normal chat reply is not sufficient.
 - Reports must include run, worker, task, attempt and result IDs;
-  completed/blocked/failed state; actual output; artifact paths;
+  source identity; completed/blocked/failed state; actual output; artifact paths;
   acceptance-check outcomes; remaining work; and ownership release.
 - Use a new attempt/result identity for substantive follow-ups.
   Preserve earlier reports instead of overwriting needed evidence.
-- On notification, read the assigned report. Do not depend on chat
-  history indexing or on every mode producing a normal final reply.
-- Validate run, worker, task, attempt and result IDs against the ledger.
-  Reject mismatched, stale, incomplete, or invalid reports.
+- Read assigned reports through the bounded reconciliation below, even
+  when no idle notification arrived. Do not depend on chat-history indexing
+  or on every mode producing a normal final reply.
+- Validate run, worker, task, attempt, result and source identities against
+  the ledger. Reject mismatched, stale, incomplete, or invalid reports.
 - If an idle/terminal worker's publication is missing or invalid, perform
   one bounded read-only retrieval from its known result or public
   completion source.
@@ -115,26 +123,83 @@ conflicting instructions instead of silently choosing between them.
 - Receipts are transition evidence, not a status feed. They must not create
   extra status messages or weaken the notification and no-loop rules.
 
-### Notifications and no-loop rules
+### Result handoff and bounded reconciliation (result-handoff-v2)
 
-- Use one automatic notification channel throughout the worker's
-  lifecycle, including blocked and resumed turns.
-- Disable automatic reply-back instructions. Workers must not also send
-  manual progress/completion callbacks or acknowledgement messages.
+- Reconcile actual owned-worker activity and their assigned saved-result
+  files now, on MAIN resumptions/user requests, on result/lifecycle events,
+  and before yielding with unfinished work. Each reconciliation is one
+  bounded pass over known workers, not a polling loop or a search through
+  entire histories. Consume an existing outcome without waiting for its
+  notification.
+- After saving and reading back a completed, blocked or failed result for
+  a real future assignment, the worker sends exactly ONE compact
+  `RESULT_READY` callback to the supplied MAIN app session ID using
+  `send_session_message` with `delivery_mode: "immediate"`. Include the
+  actual task/attempt IDs, outcome state and assigned report path, then end
+  the worker turn. No progress callbacks and no acknowledgement from MAIN.
+- Native idle notifications are secondary hints. Route them and
+  `RESULT_READY` through the same reconciliation path. Disable automatic
+  reply-back instructions so they do not duplicate the explicit callback.
+  Do not repeatedly resend after uncertain delivery.
 - Map notification aliases to recorded worker IDs before acting.
-- Process each distinct result once. A resumed worker's new result is
-  not a duplicate just because it has the same worker/task identity.
-- Ignore duplicate results and late notifications for archived workers.
-  Never wake, reopen, or recreate workers because of those notifications.
+- Deduplicate the task outcome, not unfinished MAIN acceptance,
+  integration, reuse or cleanup. Result seen is not task closed. A resumed
+  worker's new attempt/result is not a duplicate merely because it has the
+  same worker/task identity.
+- Ignore duplicate deliveries and late notifications for archived workers
+  without suppressing unfinished MAIN work. Never wake, reopen, or recreate
+  workers for those events, or wake completed workers to backfill callbacks.
 - Idle is not completion. Follow-ups must carry a concrete unblock,
   decision, correction, or authorized task.
+- Immediately process existing outcomes, perform required acceptance and
+  integration, reuse eligible idle workers for ready authorized tasks, and
+  safely archive genuinely unneeded workers. One blocker must not hold
+  independent work. Do not wait for another "continue", the whole batch or
+  a free worker slot when acceptance or cleanup is already possible.
 - No orchestration polling, heartbeats, timers, repeated history searches,
   acknowledgement chains, recurring monitoring jobs, or repeated
-  "continue" messages.
-- While workers run, do bounded independent work. When no action remains,
-  END YOUR TURN and wait for the configured notification.
-- If notification/result delivery is unavailable, report that blocker
-  explicitly rather than claiming background coordination will continue.
+  "continue" messages. Do not add receipt infrastructure, policy workers or
+  administrative broadcasts to implement this one-time handoff correction.
+- While workers run, do bounded independent work. Yield only after the
+  approved queue is complete or every remaining action is genuinely
+  blocked by active work or an exact dependency/decision. All workers idle
+  with pending work is not a reason to claim "waiting for workers"; name
+  the actual handoff, delivery or authorization fault.
+- This policy does not repair the app's event transport. If no event can
+  reach MAIN, report that platform limitation rather than promising
+  unattended progress.
+
+### Guarded recovery boundary (not installation authority)
+
+An event-driven code bridge requires separate authorization. Do not create a
+sixth LLM supervisor, periodic timer, repeated prompt or application-project
+infrastructure as a substitute. Before any recovery wake, an authorized bridge
+must verify all of these:
+
+- The exact opted-in MAIN and active, approved scope.
+- Fresh responsive idle state, with no active turn or foreground/tool operation.
+- Not paused, stopped, cancelled or archived.
+- No pending user input, permission, plan, authentication or quota decision.
+- A current actionable registered result, MAIN handoff or ready task, not
+  merely elapsed time or an idle worker.
+- Matching task/attempt/source identity, not stale, handled or cancelled.
+- No existing queued, sending or unacknowledged wake, or prior user/steering input.
+- Dependencies, ownership and capacity permit the action. A full five-worker
+  pool must not suppress result acceptance or cleanup.
+- A fresh recheck immediately before sending; any unknown or changed state blocks.
+
+The bridge must persist and deduplicate pending events, claim at most one wake,
+and preserve uncertain delivery without blind retries. It must never unpause
+queues, approve prompts, kill/restart processes or perform project work.
+An LLM must not invent host snapshots or bypass missing gates. Do not claim
+these protections are enforced until the code and host adapter exist and have
+been verified.
+
+Reported local status at this update: the guarded-wake deterministic guard and
+durable SQLite outbox passed 36 local fake-host tests. The live Copilot adapter
+and event-source binding are not implemented or activated. Those local tests
+do not establish live enforcement. This policy update installs none of them;
+live recovery integration still requires separate approval.
 
 ### Verify actual work
 
