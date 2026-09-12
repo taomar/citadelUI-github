@@ -36,6 +36,9 @@ gates and data-safety restrictions.
 
 - Use named, visible child sessions and isolated worktrees. Keep one writer per
   owned scope. MAIN reviews and integrates in its own worktree.
+- When creating workers, explicitly pass any user-requested `model` and
+  `reasoning_effort`. Do not assume inheritance or silently substitute defaults.
+  If a required setting cannot be established, state that limitation.
 - Assign each task once, with its required source revision, bounded scope,
   acceptance criteria and an accessible result-file path outside the worktree.
   Include MAIN's actual app session ID and the completion-handoff instructions.
