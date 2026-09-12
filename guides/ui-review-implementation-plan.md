@@ -34,6 +34,22 @@ not overall product acceptance or the nine external/manual limits.
 The acceptance record is `ui-coverage-main-acceptance-01.json` in MAIN's
 artifact directory.
 
+Inputs/export is independently reviewed and accepted locally at `569ef21`.
+This covers F02/F04/F08/F10, the shared invalid-field helper and its export
+callers, exact numeric drafts, explanation normalization and export stage
+position. MAIN also checked the actual reviewed ZIP bytes and retained coverage.
+The ordinary editor's R04 first-invalid-field consumer remains a shell gate,
+not a producer-only success. The detailed scoped disposition is
+`ui-input-export-main-acceptance-01.json`.
+
+The shell has returned the preserved candidate `f5b5b3d`, including its 25
+owned changed paths and unchanged producer prerequisites. Its own changes
+proceed to independent review without waiting for the four recovery and three
+policy/model corrections. Those corrections, two reported structural test
+expectations and final combined desktop acceptance remain separate gates.
+The initial recovery and policy/model candidates are not accepted by their
+presence in the shell's review candidate.
+
 The original report, screenshots, exact results and unsuccessful attempts remain
 preserved outside worktrees in:
 
