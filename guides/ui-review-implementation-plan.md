@@ -43,14 +43,18 @@ on shell source `f5b5b3d`, not inferred from producer-only tests. It remains a
 regression gate for the corrected composition. The input disposition is
 `ui-input-export-main-acceptance-01.json`.
 
-The independent review of shell candidate `f5b5b3d` is complete. Six follow-up
-findings require correction: SH01 skip-link navigation, SH02 breakpoint IME
+The independent review of shell candidate `f5b5b3d` identified six follow-up
+findings: SH01 skip-link navigation, SH02 breakpoint IME
 composition, SH03 notification focus, SH04 retired filter callbacks, SH05
 obsolete-source attribution and SH06 humanized-label collisions. The original
-shell owner receives one bounded correction task, not six separate workers.
-The shell owner also has the narrow model mutation-ownership correction
-`MODEL-FOCUS-R01-01`, returned by the separate app-consumer review. Recovery is
-integrated locally; app-focus and final combined acceptance remain separate gates.
+shell owner returned their correction together with the separately assigned
+`MODEL-FOCUS-R01-01` at exact candidate `da51017`. MAIN verified its five unchanged
+prerequisite incorporations and two manual commits over `d9a564b`. Only the app,
+new shell regression file and appended model-mutation tests differ; all original
+26 model-focus cases remain byte-identical. The writer handoff is closed.
+Independent shell and model re-reviews are assigned to two released workers.
+Recovery is integrated locally; app-focus and final combined acceptance remain
+separate gates.
 The initial recovery and policy/model candidates are not accepted by their
 presence in the shell's review candidate.
 
@@ -61,8 +65,9 @@ The actual app focus-owner consumer at `54358bd` completed independent review.
 Its narrow focus delta is regression-free in the exercised scope, but retained
 model mutation callbacks can still create a draft while Raw or read-only export
 owns the workspace. This predates that delta and remains an unmet assigned
-criterion, not an accepted exception. The sole shell/app writer owns the
-correction; component acceptance is not completed app integration.
+criterion, not an accepted exception. Its correction has returned in `da51017`
+and is under independent re-review; component acceptance is not completed app
+integration.
 The component disposition is `ui-policy-model-main-acceptance-01.json`.
 
 The three shell test adaptations are accepted at endpoint `2a9afd5`: actual
@@ -95,6 +100,12 @@ The run has 2,391 entries, 2,346 passes, ten failures and 35 skips. Eight
 non-fixture failures are assigned to the reused reviewer for classification
 against accepted MAIN; they are not assumed to be old or dismissed as obsolete.
 This comparison does not replace corrected-shell or final desktop acceptance.
+MAIN's independent full returned-candidate replay has 2,429 entries, 2,384
+passes, the same ten failing case names, 35 skips and no cancellations.
+All 18 shell correction, 26 original model-focus and 20 new model-mutation
+cases pass. All 769 candidate source files remain unchanged. The failure-name
+comparison does not replace the assigned cause classification or independent
+desktop reviews, and the candidate is not yet integrated into MAIN.
 
 The original report, screenshots, exact results and unsuccessful attempts remain
 preserved outside worktrees in:
@@ -143,17 +154,17 @@ an explicit app consumer: a stable model-viewer focus token across context and
 mount rebuilding. That two-file consumer was assigned to the released policy
 owner while the shell follow-up had no manual product-edit grant.
 
-The consumer writer and reviewer have now released `54358bd`. Only the shell
-correction worker may write the app for SH01-SH06 and `MODEL-FOCUS-R01-01`.
-The latter has an explicit narrow grant for editable-view mutation admission
-and preserved/additional `ui-model-focus-integration.test.mjs` cases. Its other
-precisely listed HTML/helper and test changes do not overlap a read-only reviewer.
-Its candidate may
-incorporate the complete unchanged policy correction, `54358bd` app consumer
-and `432a360` recovery correction over accepted test endpoint `2a9afd5`, recording
-each mapping and a clean baseline before its own fixes. Recovery is separately
-accepted; the app mutation criterion remains open. This bounded composition is
-not approval of the shell successor or final MAIN integration, and no mutable
+The consumer writer and reviewer released `54358bd` before the shell correction
+received sole app ownership for SH01-SH06 and `MODEL-FOCUS-R01-01`. Its narrow
+additional test grant preserved all original model-focus cases. The shell writer
+has now also released `da51017`; no concurrent app/test writer remains.
+The two current candidate reviews and baseline classification are read-only.
+
+The returned candidate incorporates the complete unchanged policy correction,
+`54358bd` app consumer and `432a360` recovery correction over accepted test
+endpoint `2a9afd5`, preserving each mapping and the clean `d9a564b` baseline.
+Recovery is separately accepted. The returned shell and app mutation corrections
+still require independent acceptance and compatible MAIN integration; no mutable
 worker checkout is copied.
 
 The user also requested Bicep and Terraform SVG icons. MAIN owns the original
