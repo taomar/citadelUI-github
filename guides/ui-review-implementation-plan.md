@@ -90,6 +90,16 @@ coverage candidate, load the actual production helpers and retain every
 assertion. The reviewer has read-only product-review scope during this work;
 there is no concurrent test writer.
 
+After the original shell writer released `f5b5b3d`, its follow-up is limited to
+unchanged recovery-correction incorporation and the two migration/catalog
+structural test adapters. The returned policy correction `4dec00c` also needs
+an explicit app consumer: a stable model-viewer focus token across context and
+mount rebuilding. MAIN transfers only that `app.mjs` slice and the new
+`ui-model-focus-integration.test.mjs` to the released policy owner. The shell
+follow-up has no manual product-edit grant, so these assignments do not overlap.
+Both correction candidates and the new consumer still require independent
+review; source composition alone is not acceptance.
+
 The user also requested Bicep and Terraform SVG icons. MAIN owns the original
 assets in `CitadelUI/web/icons/`, the shared `formatIcon` renderer and its focused
 tests. The existing shell, workspace and export owners integrate the same
