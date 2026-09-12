@@ -5,7 +5,7 @@ Read the applicable handover for the accepted source and remaining work.
 
 ## Delivery-first, reuse-first orchestration
 
-Completion protocol: `result-handoff-v2`.
+Instruction revision: `result-handoff-v4` (action-owned result intake).
 
 These rules govern orchestration alongside existing repository instructions.
 Preserve the user's latest scope, model settings, required reviews, approval
@@ -16,9 +16,15 @@ gates and data-safety restrictions.
 - Deliver the user's approved project queue, not coordination machinery.
   Approval of that queue is standing authority to execute its next ready tasks
   without another "continue" prompt.
+- Process already-returned current results before optional policy maintenance.
+  When a policy change is explicitly requested, make its bounded edit without
+  treating "instructions updated" as completion of pending project work.
 - A worker, task or phase finishing does not finish MAIN's overall job.
   Cancelled, speculative, deferred or unapproved handover items are not authority
   to expand the work.
+- A status question does not revoke standing queue authority. Answer it briefly
+  and continue the next authorized action unless the user explicitly pauses or
+  redirects the work.
 - Only a session explicitly designated MAIN coordinates workers. Workers own
   one bounded assignment at a time and must not create more workers or hidden
   helpers. Reading this file does not turn a worker into MAIN.
@@ -47,15 +53,32 @@ gates and data-safety restrictions.
   new path. Preserve the earlier evidence. If recovery fails, report a specific
   blocker rather than waiting indefinitely for an already-finished turn.
 
-### Reconcile actual state, not an old status label
+### Change-driven reconciliation
 
-On MAIN resumption, a user request (including "status"), a result/lifecycle
-notification, and before yielding with unfinished work, make one bounded
-reconciliation of owned workers and their assigned current result paths:
+Choose the read scope from the event or decision. Do not sweep the whole worker
+pool for every message, callback or tool response.
 
-- Read a fresh activity snapshot for the known owned sessions, at most five.
-  Check their current saved results even if no idle notification arrived.
-  Do not search whole histories or ask workers for status.
+- On a new `RESULT_READY`, read the matching current task/attempt report and
+  update that task's outcome. Do not inspect every other worker or its history.
+- On a relevant native idle/failure hint, refresh only the affected facts needed
+  to act. Ignore already-handled hints without rereading unchanged workers;
+  unfinished MAIN acceptance/integration/cleanup still remains actionable.
+- On resumption, a current-status request, or a suspected missing handoff, use
+  one shared `get_sessions_status` snapshot for the known owned workers and
+  reconcile relevant current outcomes. Consume saved results even if notices
+  were missed. Do not follow the snapshot with a `get_session` call per worker.
+- Use `get_session` only for missing identity/path/metadata or a necessary
+  safety fact not already established. If it omits a required fact, use one
+  appropriate alternative source or report the gap; do not repeat that same
+  unsupported read hoping it becomes useful.
+- Reuse recorded outcomes and still-current metadata for pending actions.
+  Refresh when a new attempt, relevant state/source change or fresh safety
+  requirement makes that necessary. An informational question alone does not
+  require a worker sweep when no current activity claim is needed.
+- A read-only tool response is an observation, not new worker progress.
+  It must not trigger another read by itself or restart a reconciliation cycle.
+- Preserve fresh checks immediately before reuse or archival. Reducing redundant
+  reads is not permission to act on stale ownership or activity information.
 - Distinguish queued, dispatched, observed-running, reported, awaiting
   acceptance/integration, blocked and closed. Report running only when supported
   by a current activity observation. Preserve unknown or delivery-unconfirmed
@@ -65,14 +88,14 @@ reconciliation of owned workers and their assigned current result paths:
 - Result seen is not task closed. Keep outstanding acceptance, integration,
   reuse or cleanup actions until actually completed. Deduplicating a notification
   must not discard those unfinished MAIN actions.
-- This is a finite reconciliation at real decision points, not a timed or
-  repeated polling loop. Use the existing ledger and report files.
+- After inspection, perform the concrete next action or identify the blocker.
+  Do not substitute another unchanged read for that action.
 
 ### MAIN's mandatory progress cycle
 
-1. Reconcile and process available results, whether or not their idle notices
-   arrived. Finish necessary acceptance or local integration. A blocked task
-   must not hold independent completed work.
+1. Use the event-specific read rules above and process available results,
+   whether or not their idle notices arrived. Finish necessary acceptance or
+   local integration. A blocked task must not hold independent completed work.
 2. Close the previous assignment, then immediately REUSE a suitable idle worker
    for the next ready, compatible, already-authorized task. Keep its session ID;
    give it a concrete new task/attempt, source revision, scope and result path.
@@ -96,11 +119,37 @@ change only within the existing project permission and after checking ownership.
 Otherwise state the exact decision or dependency needed and advance other
 independent work. Do not bypass explicit user restrictions or required reviews.
 
+### Every returned result requires a MAIN disposition
+
+A current terminal report transfers the next-action responsibility to MAIN.
+Do not leave that attempt labelled running or wait for its worker to finish again.
+
+- A completed candidate starts MAIN acceptance: inspect the necessary changes,
+  run the required targeted checks, and arrange any required independent review.
+  If a review is required, identify the assigned reviewer and exact candidate;
+  if none is assigned, assign it within authority/capacity or state that constraint.
+- A blocked/failed result requires a concrete resolving action, a scoped
+  correction, or one precise user decision. Record what is blocked and who owns
+  the next action, then advance independent work.
+- Keep code acceptance, source integration, worker ownership release and
+  archival eligibility separate. A release is not automatic acceptance; an
+  archive-only host-state question does not automatically block safe review or
+  integration of an otherwise eligible preserved candidate.
+- If a required host fact cannot be established, use one appropriate
+  authoritative source or ask the necessary specific question. Do not repeatedly
+  ask a finished worker to perform the same unsupported release check.
+- Keep the unfinished MAIN action in the existing task map. A read receipt,
+  callback deduplication or "result received" note is not a disposition by itself.
+  Before yielding, no returned result may be orphaned without an actual next
+  action or a named external dependency.
+
 ### When MAIN may yield
 
-Before yielding, make one bounded reconciliation of known outcomes and the
-approved queue. If acceptance, integration, an authorized unblock, reuse, ready
-dispatch or eligible cleanup is actionable, perform it.
+Before yielding, check recorded outcomes and the approved queue for actionable
+work. If a worker could have finished since the last observation or handoff state
+is stale/unknown, make one fresh missing-handoff check; do not run a second
+unchanged sweep merely because the turn is ending. If acceptance, integration,
+an authorized unblock, reuse, dispatch or eligible cleanup is ready, perform it.
 
 End the turn only when:
 
@@ -127,12 +176,13 @@ worker operation.
   immediate delivery. Include actual task/attempt identifiers, outcome state
   and the saved report path; do not send the full report or progress chatter.
   Then end the worker turn. Never guess IDs or send placeholder values.
-- MAIN does not acknowledge this message. It reconciles and acts: acceptance,
-  integration, a concrete correction, reuse or eligible cleanup.
+- MAIN does not acknowledge this message. It consumes the affected result and
+  acts: acceptance, integration, a concrete correction, reuse or eligible cleanup.
 - This explicit result callback replaces the earlier blanket prohibition on
   completion callbacks. Native idle/failure notifications may remain enabled
   as secondary lifecycle hints, but are not the only result-delivery mechanism.
-  Handle both through the same reconciliation path.
+  Handle both through the change-driven rules and the same task/outcome map,
+  not as two independent triggers for full-worker sweeps.
 - For app-created workers, keep `coordinate_with_creator: false` to avoid an
   additional implicit reply-back instruction. `notify_on_idle: "always"` may
   provide lifecycle hints; it is not evidence that a handoff was delivered.
@@ -148,6 +198,21 @@ worker operation.
 - Instructions cannot repair the app's event transport or wake a session when
   no event is delivered. Report that platform limitation instead of claiming
   uninterrupted background advancement.
+
+#### Apply the handoff contract to existing assignments
+
+Updating MAIN's policy does not rewrite instructions already sent to workers.
+
+- For workers already finished/idle, consume their current saved outcomes now.
+  Do not wake them merely to backfill a callback or repeat finished execution.
+- For a still-running real attempt that demonstrably lacks completion routing
+  or still forbids callbacks, send one narrowly scoped routing correction:
+  continue the same task, save the existing assigned result, then send one
+  `RESULT_READY` to the supplied MAIN ID. Do not restart work or change its scope.
+- Do not send that correction to attempts already configured correctly.
+  This is a necessary delivery correction, not a policy broadcast or status ping.
+- Include the completion contract explicitly in every new/reused assignment;
+  do not assume an old worker checkout automatically inherited MAIN's edit.
 
 ### Safe archival
 
