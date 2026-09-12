@@ -1,0 +1,138 @@
+# Desktop UI improvement plan
+
+## Decision and source
+
+The user authorized implementation of the UI review's findings and
+recommendations on 12 September 2026, with compatible changes combined into
+single sessions. This supersedes the review-only restriction for this queue.
+The work remains desktop-only and limited to the Citadel Control Plane.
+
+The reviewed application revision is
+`08fa39d4fac540ccfa43b5f1260a7330179c6bbe`. The subsequent MAIN revision
+`fbd68b136a49d1d7cf7671ac36b5adaf5c486c9f` changes orchestration instructions,
+not the application. Workers start from the commit containing this plan.
+
+The first review is accepted as actionable evidence, not exhaustive
+verification: 22 components, 477 control/action/state families, 16 findings
+and 10 recommendations. Twenty-two feasible interactions still need executable
+coverage; nine external/manual gaps remain explicit. The existing full-suite
+run had 24 failures, not all independently established as pre-existing.
+
+The original report, screenshots, exact results and unsuccessful attempts remain
+preserved outside worktrees in:
+
+```text
+C:\Users\tarekomar\.copilot\session-state\ed142fd6-9404-4a29-b26b-cdf31a456e67\files\ui-functional-ux-review-01.artifacts
+```
+
+MAIN's acceptance is recorded in `ui-review-main-evidence-validation-02.json`
+in the parent artifact directory. It checks preserved files, source references,
+physical execution records and actual ZIP bytes. The first validator's overly
+strict per-case source-pin assumption is preserved separately and explained.
+
+## Five consolidated workstreams
+
+Four implementation sessions and the reused independent reviewer share the
+work. These are compatible groups, not one session per finding.
+
+| Workstream | Findings and recommendations | Product ownership |
+| --- | --- | --- |
+| Inputs and export | F02 unchanged export drafts; F04 blank integers; F08 export review position; F10 explanation artifacts. R04 validity and draft semantics; export portions of R05; field portions of R09/R10. | `fields.mjs`, `native-controls.mjs`, `editor-focus.mjs`, `paramview.mjs`, `explain.mjs`, `dom.mjs`, `terraform-export-controls.mjs`, `terraform-export-view.mjs`, and `terraform-export.css`. |
+| Shell and navigation | F01 search/caret; F06 draft-owner prompts; F09 stale notifications; F12 command hierarchy; F14 contract labels; F16 PR labels. R01/R02/R03; shell, save and History portions of R05/R09/R10; shared presentation for R08. | `app.mjs`, `editor-document-session.mjs`, `document-action.mjs`, `history-entry.mjs`, `dialog.mjs`, `index.html`, `app.css`, and `components.css`. |
+| Workspace and recovery | F03 removed connections; F05 catalog/diagnostics focus; F11 snapshot identity; F15 missing-source recovery. R07/R08; setup, migration and recovery portions of R05; diagnostics portions of R09/R10. | Catalog/list, workspace activation/context/settings, GitHub setup, owner gate, local-source import UI, migration wizard/snapshot/value view, diagnostics page, `debug.html` and `debug.css`. |
+| Policy and model editors | F07 recognized-but-hidden policy value; F13 destructive action names. R06 complex forms and the corresponding R04/R09 requirements. | `policyview.mjs`, `policynav.mjs`, `llmview.mjs`, `llmschema.mjs`, and `CitadelUI/shared/policy.mjs`. |
+| Independent coverage and regression | Close the 22 executable coverage gaps; repair directly related stale UI test adapters without weakening their assertions; independently review product candidates and integrated desktop behavior. | Test-only work and external review artifacts. No product edits and no self-approval of its test changes. |
+
+The task assignments enumerate exact file ownership. Implementation sessions
+add distinctly named regression files; the reviewer owns the specified existing
+VM test-adapter repairs. No two workers edit a shared source or test file.
+MAIN owns this plan, integration and directly related documentation.
+
+## Implementation decisions
+
+### Professional desktop shell
+
+Use the existing zero-dependency application and Fluent-aligned tokens, not a
+new framework or an Azure Portal clone. Separate a restrained persistent
+identity/settings band from contextual workspace, document and source/write-ref
+information. Keep Review & save stable and primary. Group existing experimental
+commands under Tools without changing eligibility, consent or write behavior.
+Do not invent SSO, cloud search, multi-account support or deployment status.
+
+Keep command heights consistent at 1280, 1440 and 1920 desktop widths, make
+workspace/file identity intelligible, and use a practical explorer rail.
+Search results must update without replacing the focused input. Disambiguate
+contract labels without renaming source files.
+
+### Explicit input and operation state
+
+Blank is not zero. Preserve unfinished invalid input and show a field-level
+reason; do not silently reinterpret it as omitted, null or a valid number.
+Unchanged input and undo-to-original must not leave an invisible blocking draft.
+Keep native numeric lexemes and literal policy escaping intact.
+
+Cross-document prompts identify the actual draft owner and discard scope.
+Review stages bring their heading and summary into view; Back preserves the
+appropriate prior-stage state. Supersede only resolved operation errors, not
+unrelated or still-active failures. Never present pending or indeterminate
+outcomes as success.
+
+### Safe recovery and readable complex forms
+
+A removed connection must lead to explicit validated reattachment, not silent
+binding to a different connection. Missing files must produce actionable
+guidance without reconstructing them or losing retained drafts. Snapshot labels
+must distinguish time/source/ref or revision and file count.
+
+Group model and policy inputs by identity, endpoint/authentication,
+deployment/capacity and lifecycle. Keep advanced fields discoverable. A
+recognized but unsupported guided value stays visible as inspect-only with a
+reason rather than being coerced or hidden. Destructive controls have
+target-specific accessible names and predictable focus after removal.
+
+## Acceptance and sequencing
+
+1. Close and preserve the original review handoff, then reuse its suitable idle
+   session for concrete coverage and regression work. Start the four disjoint
+   implementation bundles from the same pinned source. Five occupied sessions
+   is the ceiling, including completed candidates awaiting review or cleanup.
+2. Each bundle reproduces its findings, adds focused regressions, implements
+   the complete in-scope behavior and returns a preserved candidate commit.
+   Work outside the assigned ownership boundary requires a concrete MAIN
+   integration request, not edits to another worker's files.
+3. MAIN inspects each returned candidate and runs targeted baseline/candidate
+   comparisons. The independent reviewer receives an exact product candidate
+   for review and executable checks; MAIN independently reviews its test
+   changes. No self-review or completion label substitutes for acceptance.
+4. Integrate compatible accepted changes as they become available. Shared
+   validation/navigation interfaces and the final visual token application
+   receive combined checks before final acceptance. One blocked bundle does
+   not hold independent acceptance or ready work.
+5. Verify the integrated desktop workflows, native typing/caret/focus,
+   dialogs/menus, errors/recovery, source-byte preservation and representative
+   screenshots. Account for every F01-F16 and R01-R10 outcome, including
+   remaining manual work, in the final report and documentation.
+
+Use the repository's complete quoted test glob from `CitadelUI` with bounded
+selectors and a fresh owned TEMP/TMP. Preserve existing failure evidence;
+do not weaken source/ownership/write-safety checks to obtain a green run.
+Synthetic OPFS and simulated GitHub behavior do not prove real OS-picker,
+credential-vault, cloud, live-GitHub or real-folder durability behavior.
+
+Human Narrator, high-contrast, zoom/DPI and real-service UAT remain explicit
+operator work where automation cannot establish the result. Do not claim
+formal accessibility compliance or deployed resource correctness.
+
+## Boundaries
+
+No push, PR publication, deployment, production mutation, credential/account
+change, gateway product-data edit or `CitadelSamples` work is authorized.
+Cancelled resource/model refresh, optional refactors and recovery/watchdog
+infrastructure remain excluded. Existing review, ownership, consent,
+single-flight and archival gates remain in force.
+
+Each actual assignment gets a fresh durable result path and exactly one
+`RESULT_READY` callback to MAIN after publication and read-back. There are no
+progress pings, timers, extra supervisors or new receipt/audit infrastructure.
+Accepted artifacts are preserved before cleanup; only the owning worker changes
+its worktree, and a session slot is released only after successful archival.
