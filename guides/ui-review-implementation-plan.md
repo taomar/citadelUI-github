@@ -44,11 +44,33 @@ not a producer-only success. The detailed scoped disposition is
 
 The shell has returned the preserved candidate `f5b5b3d`, including its 25
 owned changed paths and unchanged producer prerequisites. Its own changes
-proceed to independent review without waiting for the four recovery and three
-policy/model corrections. Those corrections, two reported structural test
-expectations and final combined desktop acceptance remain separate gates.
+remain under independent review. Recovery correction, app focus integration
+and final combined desktop acceptance remain separate gates; the accepted
+component correction and test adaptations are recorded below.
 The initial recovery and policy/model candidates are not accepted by their
 presence in the shell's review candidate.
+
+Policy/model component correction `4dec00c` is now independently reviewed and
+accepted for all three correction findings. Complete policy representations,
+byte-preserving guided edits and component-scoped model focus are covered.
+The actual app focus-owner consumer remains a separate implementation and review
+gate; this component acceptance is not a completed app integration. The scoped
+disposition is `ui-policy-model-main-acceptance-01.json`.
+
+The three shell test adaptations are accepted at endpoint `2a9afd5`: actual
+migration-command execution, bootstrap-safe breakpoint behavior and the exact
+pending-status contract. MAIN independently replayed that composed endpoint
+without weakening existing assertions. This is test-only acceptance, not
+approval of the underlying shell or recovery candidates, and integration is
+still pending their product gates. The disposition is
+`ui-shell-adapters-main-acceptance-01.json`.
+
+Recovery review of `4bfd600` returned one remaining WR03 correction: a registry
+failure inside actual local-provider construction still receives incorrect
+folder/file recovery guidance. MAIN verified that boundary and reused the
+released recovery owner for a narrow activation/regression correction. The
+other three findings passed the review's scoped scenarios, but the new recovery
+candidate still needs independent review and MAIN acceptance.
 
 The original report, screenshots, exact results and unsuccessful attempts remain
 preserved outside worktrees in:
@@ -97,8 +119,9 @@ an explicit app consumer: a stable model-viewer focus token across context and
 mount rebuilding. MAIN transfers only that `app.mjs` slice and the new
 `ui-model-focus-integration.test.mjs` to the released policy owner. The shell
 follow-up has no manual product-edit grant, so these assignments do not overlap.
-Both correction candidates and the new consumer still require independent
-review; source composition alone is not acceptance.
+The policy component correction is accepted separately. The recovery correction
+and new app consumer retain their independent review gates; source composition
+alone is not acceptance.
 
 The user also requested Bicep and Terraform SVG icons. MAIN owns the original
 assets in `CitadelUI/web/icons/`, the shared `formatIcon` renderer and its focused
