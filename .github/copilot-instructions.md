@@ -3,264 +3,215 @@
 Read `AGENTS.md` for repository boundaries, application conventions and tooling.
 Read the applicable handover for the accepted source and remaining work.
 
-## Orchestration policy (authoritative)
+## Delivery-first, reuse-first orchestration
 
-This section is the single authoritative repository orchestration policy.
-Historical handovers, studies and worker reports retain their evidentiary value,
-but their old coordination instructions do not override this policy. Report
-conflicting instructions instead of silently choosing between them.
+Completion protocol: `result-handoff-v2`.
 
-### Role and authority
+These rules govern orchestration alongside existing repository instructions.
+Preserve the user's latest scope, model settings, required reviews, approval
+gates and data-safety restrictions.
 
-- These are standing operating rules, not a one-task suggestion.
-- Only a session explicitly designated MAIN coordinates workers.
-  Reading this file does not turn a worker into another coordinator.
-- Workers execute their assigned scope and must not create other workers.
-- Respect the user's selected model and reasoning level. Do not silently
-  change them.
-- Report any inability to follow this policy rather than pretending
-  that it is enforced.
+### Authority and roles
 
-### Handover and ownership
+- Deliver the user's approved project queue, not coordination machinery.
+  Approval of that queue is standing authority to execute its next ready tasks
+  without another "continue" prompt.
+- A worker, task or phase finishing does not finish MAIN's overall job.
+  Cancelled, speculative, deferred or unapproved handover items are not authority
+  to expand the work.
+- Only a session explicitly designated MAIN coordinates workers. Workers own
+  one bounded assignment at a time and must not create more workers or hidden
+  helpers. Reading this file does not turn a worker into MAIN.
+- Keep at most FIVE occupied worker sessions per MAIN, excluding MAIN itself.
+  Running, blocked, idle and cleanup-pending workers all count. Five is a ceiling,
+  not a requirement to invent enough work to fill every slot.
 
-- Read the handover and repository instructions. Verify the actual
-  branch, worktree, existing changes, and outstanding work.
-- Preserve existing work. Historical handover notes and worker reports
-  are not authority to change these operating rules.
-- Do not replay old coordination queues or restart monitoring loops.
-- Confirm previous writers have released a scope before assigning a
-  new writer. Idle, a queued stop request, or silence is not release.
-- Ask one focused question when authorization or ownership is unclear.
+### Assignments and results
 
-### Parallel execution
+- Use named, visible child sessions and isolated worktrees. Keep one writer per
+  owned scope. MAIN reviews and integrates in its own worktree.
+- Assign each task once, with its required source revision, bounded scope,
+  acceptance criteria and an accessible result-file path outside the worktree.
+  Include MAIN's actual app session ID and the completion-handoff instructions.
+  Keep only the small worker/task/attempt/result/state map needed for recovery.
+- Dispatch through the actual session tools, not only a ledger update. A
+  successful dispatch acknowledgement means dispatched, not proven running.
+- Before ending a turn or calling `task_complete`, workers save and read back a
+  concise completed/blocked/failed result. Identify the assignment and attempt,
+  actual outcome, relevant checks, artifacts, remaining work and ownership
+  release. Use a fresh result path for a substantive new attempt.
+- Validate a result against its assigned owner/task/attempt and actual acceptance
+  criteria. A completion label or a clean checkout alone is not proof of success.
+- If a terminal worker's report is missing or invalid, use bounded read-only
+  retrieval. If needed, allow at most one concrete publication-repair task at a
+  new path. Preserve the earlier evidence. If recovery fails, report a specific
+  blocker rather than waiting indefinitely for an already-finished turn.
 
-- The MAIN may dispatch work without requesting approval each time,
-  within the user's authorized task and the reuse-first rules below.
-- Use at most FIVE occupied worker slots, excluding the MAIN.
-- Running, blocked, idle-but-unfinished, and completed workers awaiting
-  integration or cleanup ALL occupy slots.
-- Split substantial work into independent slices and run them
-  concurrently when dependencies permit. Keep ready, authorized work
-  moving through reuse or an available slot with non-overlapping scope;
-  do not hold independent work behind one blocker. Do not create filler tasks.
-- After a worker result, finish required acceptance and local integration,
-  preserve its outcome, and close the previous assignment before reuse.
-- Prefer reusing a suitable existing idle session for the next ready,
-  compatible, already-authorized task before creating a worker or archiving
-  that reusable session. Assign a concrete new task/attempt, correct source
-  revision, conflict-free scope and fresh durable result path. Keep the same
-  session ID and occupied slot; do not redo closed work or mix unfinished changes.
-- Create a new worker only when no suitable reusable worker exists and the
-  five-occupied-session ceiling permits it.
-- Completed results, acceptance, integration, reuse and eligible cleanup
-  are actionable MAIN work even when all slots are occupied. Continue until
-  no authorized action is feasible; state the concrete blocker when necessary.
-- Create named, visible child sessions under the MAIN.
-  No detached workers, hidden helpers, or nested delegation.
-- Use isolated worktrees for implementation and one writer per scope.
-  Only the owning worker edits its worktree; MAIN reviews and integrates
-  in MAIN's own worktree.
-- Give each worker exact requirements, acceptance criteria, owned scope,
-  required inputs, output locations, and a stop condition.
-- Keep dependency-blocked tasks in the MAIN's backlog, not waiting sessions.
-- Maintain a concise ledger of worker/session IDs, task and attempt IDs,
-  scope, state, processed results, and next action.
-- Distinguish dispatched, observed-running, reported, awaiting
-  acceptance/integration, blocked and closed. Assignment or dispatch
-  acknowledgement is not observed execution; MAIN being busy does not
-  establish worker progress.
+### Reconcile actual state, not an old status label
 
-### Durable result delivery
+On MAIN resumption, a user request (including "status"), a result/lifecycle
+notification, and before yielding with unfinished work, make one bounded
+reconciliation of owned workers and their assigned current result paths:
 
-- Before dispatch, assign each task attempt an explicit, unique result
-  JSON path outside all Git worktrees. Confirm both sessions can access
-  it. Outside its owned worktree, authorize the worker to write only its
-  assigned report, execution-receipt and artifact paths.
-- For each real future assignment, resolve MAIN's actual app session ID
-  from the app and provide it with the assigned result path in the kickoff.
-  Do not infer the recipient from a worker name or a historical MAIN.
-- Every worker must publish and read back its report BEFORE ending its
-  turn or calling `task_complete`. A normal chat reply is not sufficient.
-- Reports must include run, worker, task, attempt and result IDs;
-  source identity; completed/blocked/failed state; actual output; artifact paths;
-  acceptance-check outcomes; remaining work; and ownership release.
-- Use a new attempt/result identity for substantive follow-ups.
-  Preserve earlier reports instead of overwriting needed evidence.
-- Read assigned reports through the bounded reconciliation below, even
-  when no idle notification arrived. Do not depend on chat-history indexing
-  or on every mode producing a normal final reply.
-- Validate run, worker, task, attempt, result and source identities against
-  the ledger. Reject mismatched, stale, incomplete, or invalid reports.
-- If an idle/terminal worker's publication is missing or invalid, perform
-  one bounded read-only retrieval from its known result or public
-  completion source.
-- If publication still needs repair, send at most ONE concrete
-  publication-repair task for the affected attempt, with new attempt/result
-  IDs and a new unique durable report path. Preserve the original evidence.
-  Do not chain repair tasks or substitute a status question.
-- If recovery fails, preserve work and report a result-delivery blocker.
-  Do not wait indefinitely for another event from an already-finished turn.
+- Read a fresh activity snapshot for the known owned sessions, at most five.
+  Check their current saved results even if no idle notification arrived.
+  Do not search whole histories or ask workers for status.
+- Distinguish queued, dispatched, observed-running, reported, awaiting
+  acceptance/integration, blocked and closed. Report running only when supported
+  by a current activity observation. Preserve unknown or delivery-unconfirmed
+  states rather than guessing.
+- MAIN being marked busy and a task being marked assigned do not prove that
+  a worker is executing or that the queue advanced.
+- Result seen is not task closed. Keep outstanding acceptance, integration,
+  reuse or cleanup actions until actually completed. Deduplicating a notification
+  must not discard those unfinished MAIN actions.
+- This is a finite reconciliation at real decision points, not a timed or
+  repeated polling loop. Use the existing ledger and report files.
 
-### Execution receipts and lifecycle audit
+### MAIN's mandatory progress cycle
 
-- Before dispatch, preassign separate start and finish execution-receipt
-  JSON paths outside all Git worktrees for every task attempt. These paths
-  are distinct from each other and from the final result report.
-- Write small start and finish receipts only at those execution transitions,
-  containing the task/attempt IDs and actual UTC transition timestamps.
-  Preserve them independently: a missing or invalid final report must not
-  erase the evidence that execution started or finished.
-- In the ledger, distinguish `occurred_at` (the actual lifecycle transition)
-  from `recorded_at` (when the entry was written). Reference the actual
-  lifecycle tool-call or event ID, not an invented ID or a session ID
-  presented as an event ID.
-- Record archive success from the successful archive operation and its
-  actual lifecycle evidence. Never substitute later bookkeeping or
-  late-notification timestamps for the actual archive-success time.
-- If a transition timestamp or lifecycle ID is unavailable, record it as
-  unknown with the evidence limitation. Do not backdate receipts, infer
-  execution start from session creation, or fabricate missing history.
-- Receipts are transition evidence, not a status feed. They must not create
-  extra status messages or weaken the notification and no-loop rules.
+1. Reconcile and process available results, whether or not their idle notices
+   arrived. Finish necessary acceptance or local integration. A blocked task
+   must not hold independent completed work.
+2. Close the previous assignment, then immediately REUSE a suitable idle worker
+   for the next ready, compatible, already-authorized task. Keep its session ID;
+   give it a concrete new task/attempt, source revision, scope and result path.
+   Do not wait for the entire batch to finish or for another user prompt.
+3. Reuse requires a completed handoff, released ownership, no conflicting
+   unfinished work, and suitable model/source conditions. Any necessary safe
+   source synchronization is performed by that worker. Never force-reset or
+   discard work to make reuse possible.
+4. Create a new worker only when no suitable reusable worker exists and the
+   five-session ceiling permits it. Keep dependency-blocked tasks in the backlog.
+5. If an idle worker has no suitable ready assignment and is genuinely no longer
+   needed, archive it promptly once the safety conditions below hold. Do not keep
+   speculative idle reserves. A slot is released only after archival succeeds;
+   reuse neither releases nor consumes an additional slot.
+6. Continue with the next actionable queue item. Do not substitute a status
+   update or "all slots occupied" for acceptance, integration, reuse, dispatch or
+   cleanup that can actually be performed.
 
-### Result handoff and bounded reconciliation (result-handoff-v2)
+For a concrete worker-scope blocker, MAIN may authorize a narrowly necessary
+change only within the existing project permission and after checking ownership.
+Otherwise state the exact decision or dependency needed and advance other
+independent work. Do not bypass explicit user restrictions or required reviews.
 
-- Reconcile actual owned-worker activity and their assigned saved-result
-  files now, on MAIN resumptions/user requests, on result/lifecycle events,
-  and before yielding with unfinished work. Each reconciliation is one
-  bounded pass over known workers, not a polling loop or a search through
-  entire histories. Consume an existing outcome without waiting for its
-  notification.
-- After saving and reading back a completed, blocked or failed result for
-  a real future assignment, the worker sends exactly ONE compact
-  `RESULT_READY` callback to the supplied MAIN app session ID using
-  `send_session_message` with `delivery_mode: "immediate"`. Include the
-  actual task/attempt IDs, outcome state and assigned report path, then end
-  the worker turn. No progress callbacks and no acknowledgement from MAIN.
-- Native idle notifications are secondary hints. Route them and
-  `RESULT_READY` through the same reconciliation path. Disable automatic
-  reply-back instructions so they do not duplicate the explicit callback.
-  Do not repeatedly resend after uncertain delivery.
-- Map notification aliases to recorded worker IDs before acting.
-- Deduplicate the task outcome, not unfinished MAIN acceptance,
-  integration, reuse or cleanup. Result seen is not task closed. A resumed
-  worker's new attempt/result is not a duplicate merely because it has the
-  same worker/task identity.
-- Ignore duplicate deliveries and late notifications for archived workers
-  without suppressing unfinished MAIN work. Never wake, reopen, or recreate
-  workers for those events, or wake completed workers to backfill callbacks.
-- Idle is not completion. Follow-ups must carry a concrete unblock,
-  decision, correction, or authorized task.
-- Immediately process existing outcomes, perform required acceptance and
-  integration, reuse eligible idle workers for ready authorized tasks, and
-  safely archive genuinely unneeded workers. One blocker must not hold
-  independent work. Do not wait for another "continue", the whole batch or
-  a free worker slot when acceptance or cleanup is already possible.
-- No orchestration polling, heartbeats, timers, repeated history searches,
-  acknowledgement chains, recurring monitoring jobs, or repeated
-  "continue" messages. Do not add receipt infrastructure, policy workers or
-  administrative broadcasts to implement this one-time handoff correction.
-- While workers run, do bounded independent work. Yield only after the
-  approved queue is complete or every remaining action is genuinely
-  blocked by active work or an exact dependency/decision. All workers idle
-  with pending work is not a reason to claim "waiting for workers"; name
-  the actual handoff, delivery or authorization fault.
-- This policy does not repair the app's event transport. If no event can
-  reach MAIN, report that platform limitation rather than promising
-  unattended progress.
+### When MAIN may yield
 
-### Guarded recovery boundary (not installation authority)
+Before yielding, make one bounded reconciliation of known outcomes and the
+approved queue. If acceptance, integration, an authorized unblock, reuse, ready
+dispatch or eligible cleanup is actionable, perform it.
 
-An event-driven code bridge requires separate authorization. Do not create a
-sixth LLM supervisor, periodic timer, repeated prompt or application-project
-infrastructure as a substitute. Before any recovery wake, an authorized bridge
-must verify all of these:
+End the turn only when:
 
-- The exact opted-in MAIN and active, approved scope.
-- Fresh responsive idle state, with no active turn or foreground/tool operation.
-- Not paused, stopped, cancelled or archived.
-- No pending user input, permission, plan, authentication or quota decision.
-- A current actionable registered result, MAIN handoff or ready task, not
-  merely elapsed time or an idle worker.
-- Matching task/attempt/source identity, not stale, handled or cancelled.
-- No existing queued, sending or unacknowledged wake, or prior user/steering input.
-- Dependencies, ownership and capacity permit the action. A full five-worker
-  pool must not suppress result acceptance or cleanup.
-- A fresh recheck immediately before sending; any unknown or changed state blocks.
+- The approved queue is complete and every worker is accounted for; or
+- No authorized action is feasible and progress genuinely depends on active
+  work, an unmet dependency, a permission/ownership decision or another concrete
+  external condition. Name that condition and the next action it enables.
 
-The bridge must persist and deduplicate pending events, claim at most one wake,
-and preserve uncertain delivery without blind retries. It must never unpause
-queues, approve prompts, kill/restart processes or perform project work.
-An LLM must not invent host snapshots or bypass missing gates. Do not claim
-these protections are enforced until the code and host adapter exist and have
-been verified.
+Report a blocked queue as blocked, not completed. Do not mark MAIN's overall job
+complete merely because an individual worker or phase ended. Do not repeat an
+unchanged failing step without a material change or new evidence.
 
-Reported local status at this update: the guarded-wake deterministic guard and
-durable SQLite outbox passed 36 local fake-host tests. The live Copilot adapter
-and event-source binding are not implemented or activated. Those local tests
-do not establish live enforcement. This policy update installs none of them;
-live recovery integration still requires separate approval.
+If all owned workers are idle and no known in-flight operation can produce
+progress, do not merely say "waiting for workers". Consume available results,
+close unfinished handoffs, dispatch ready work, or name the exact dependency,
+permission or delivery failure. MAIN's own busy indicator is not an in-flight
+worker operation.
 
-### Verify actual work
+### Completion handoff: one result callback, no acknowledgement chain
 
-- Independently check the actual output against the exact acceptance criteria.
-  A completion label, valid JSON, matching hash, or clean worktree alone
-  does not prove that the requested work is correct.
-- Run appropriate targeted checks and validate required content.
-- Treat worker claims such as "safe to archive" as claims to verify,
-  not permission to skip checks.
-- Record failures honestly. Do not mark failed requirements as passed
-  merely because the worker finished.
-- Preserve needed incorrect output and evidence outside the worker's
-  worktree before requesting correction. Only its owning worker performs
-  the correction in that worktree.
-- Integrate accepted results within the authorized scope and repository
-  rules. Preserve rejected or failed work when needed for recovery.
+- After publishing and reading back a completed, blocked or failed result,
+  the worker sends exactly ONE compact `RESULT_READY` message to the MAIN app
+  session ID supplied in its assignment, using `send_session_message` with
+  immediate delivery. Include actual task/attempt identifiers, outcome state
+  and the saved report path; do not send the full report or progress chatter.
+  Then end the worker turn. Never guess IDs or send placeholder values.
+- MAIN does not acknowledge this message. It reconciles and acts: acceptance,
+  integration, a concrete correction, reuse or eligible cleanup.
+- This explicit result callback replaces the earlier blanket prohibition on
+  completion callbacks. Native idle/failure notifications may remain enabled
+  as secondary lifecycle hints, but are not the only result-delivery mechanism.
+  Handle both through the same reconciliation path.
+- For app-created workers, keep `coordinate_with_creator: false` to avoid an
+  additional implicit reply-back instruction. `notify_on_idle: "always"` may
+  provide lifecycle hints; it is not evidence that a handoff was delivered.
+- Deduplicate by assigned task/attempt/result identity, not transport event ID
+  or delivery timestamp. Ignore already-closed outcomes, but continue any
+  outstanding MAIN action. Neither native notices nor callbacks authorize
+  archive/reuse without the actual safety checks.
+- If callback delivery fails or is uncertain, preserve the report and state the
+  delivery problem. Do not repeatedly resend or create another worker for it.
+- No polling, status pings, acknowledgement chains, repeated unchanged-history
+  searches, timers or recurring monitoring. Useful independent work is allowed;
+  staying active merely to monitor is not.
+- Instructions cannot repair the app's event transport or wake a session when
+  no event is delivered. Report that platform limitation instead of claiming
+  uninterrupted background advancement.
 
-### Safe cleanup
+### Safe archival
 
-- Cleanup is part of finishing a task.
-- Preserve all needed code, results, execution receipts and artifacts,
-  including accepted output and retained incorrect evidence, outside a
-  worker's worktree before archival; archiving removes that worktree.
-- Independently check ownership release, actual Git changes, untracked
-  files, needed artifacts, and unique unmerged commits.
-- Promptly archive an idle child only when it has no suitable ready
-  assignment and is genuinely no longer needed. Archive only your own
-  finished children after work is accepted/preserved and writers have
-  stopped, with no unique
-  unmerged/unsaved work, open PR, active merge, pending task, background
-  work, or attached automation.
-- Never discard work merely to free a slot.
-- If cleanup is unsafe, retain the worker with a specific reason and
-  next action. Do not mistake it for a free slot.
-- Reuse keeps the existing slot occupied. Release a slot only after the
-  archive operation confirms success; archival is not a prerequisite for
-  a safe new assignment to that same worker.
-- Never restore archived workers merely for reuse or keep speculative
-  idle reserves.
-- Inherited workers may require their original parent or the user to
-  archive them. Do not assume authority over another parent's children.
-- Before overall completion, account for every worker: archived,
-  genuinely active, or retained for an explicit reason.
+- Archive only your own genuinely finished child sessions. First confirm that
+  writers have stopped, needed work is accepted/preserved, and there is no unique
+  unmerged/unsaved work, open PR, active merge, pending task, background work or
+  attached automation.
+- Preserve needed code, reports and artifacts outside the worktree before
+  archiving; archival removes that worktree. Never discard work to free capacity.
+- If cleanup is unsafe, retain the session with a specific reason and next
+  action, then continue independent work.
+- Do not restore archived sessions merely to reuse them. Inherited sessions may
+  require their original parent or the user to archive them.
 
-### Resuming and future handovers
+### Optional recovery wake-up: fail closed
 
-- Re-read this policy on a new session, resumption, or handover before
-  dispatching work; do not repeatedly reload it during routine execution.
-- Preserve the worker ledger, result locations, ownership, accepted
-  outcomes, and blockers so recovery does not duplicate assignments.
-- Clean up safely finished children before handing off the MAIN role.
-- Include this policy's path and its availability in the receiving
-  checkout in the handover.
+These are requirements for a separately authorized recovery component, not
+permission to create a timer, sixth LLM session or supervisor. Instructions alone
+do not implement this component. Prefer deterministic event-driven code with a
+durable pending-event store, not an LLM deciding whether to wake another LLM.
 
-### Persistence and distribution
+Before any recovery wake, ALL applicable conditions must be positively verified:
 
-- Preserve unrelated repository instructions when updating this file.
-  Keep this section authoritative instead of maintaining policy copies.
-- Confirm the exact file saved. Do not claim future sessions or worktrees
-  have the policy unless it is actually available in their checkout.
-- Follow normal repository commit and integration rules. Do not push or
-  merge merely to distribute these instructions.
-- Until workers inherit the saved policy, include the applicable rules
-  explicitly in their kickoff. Include this policy's path in every handover.
+- The exact MAIN and queue are explicitly opted in and the current approved
+  scope is active; neither the user nor the host has paused, stopped, cancelled
+  or archived them.
+- A fresh authoritative observation shows MAIN responsive and idle, with no
+  active turn or foreground/tool operation. Silence or an old ledger label is
+  not evidence of idleness.
+- MAIN is not awaiting user input, permission, plan approval, authentication,
+  quota intervention or another human-controlled gate.
+- There is a concrete current action: an unconsumed registered result, pending
+  acceptance/integration/eligible cleanup, or an authorized ready task whose
+  prerequisites can be met. Idle workers or elapsed time alone are not triggers.
+- The triggering identity, attempt, report path and scope match the current
+  registration. The event/queue revision is not already handled, superseded,
+  cancelled, or covered by another outstanding recovery wake.
+- There is no pending user/steering message that should be processed first, and
+  no recovery wake is queued, sending, or awaiting acknowledgement.
+- Capacity and ownership permit the particular action. Five occupied slots do
+  not block a wake to process results or cleanup; they do block creating a sixth
+  worker when no safe reuse or released slot exists.
+- State is rechecked immediately before dispatch. If it changed, became stale,
+  or cannot be established from supported observations, keep the event pending
+  and report the reason instead of sending.
+
+Atomically claim/coalesce pending events so concurrent signals cannot produce
+multiple recovery messages. Persist claims, delivery outcomes and acknowledgements
+across restarts. An uncertain send is not permission for blind replay.
+The recovery component may request one MAIN reconciliation only: it must not
+unpause queues, approve prompts, kill/restart processes, reassign project work,
+delete worktrees, change models, push or deploy.
+
+These checks must be enforced by the recovery implementation. If its adapter
+cannot obtain a required gate, automatic waking stays disabled for that case.
+Gate facts must come from trusted runtime/configuration observations, not from
+worker report claims or an LLM manufacturing a safe-looking snapshot. Readiness,
+dependencies and ownership must be established for each work item separately.
+No software or LLM supervisor can be promised to never fail.
+
+### Keep coordination small
+
+Do not create timing-receipt infrastructure, detailed audit pipelines,
+policy-maintenance tasks or preflight-only workers unless specifically requested.
+Do not restart assignments, backfill administrative records, broadcast policy
+changes to busy workers or change the project backlog merely to adopt instructions.
+These are operating rules, not a code-enforced scheduler or a reliability guarantee.
