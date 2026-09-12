@@ -27,7 +27,7 @@
 
 import { h } from './dom.mjs';
 import { picker } from './picker.mjs';
-import { editorField } from './editor-focus.mjs';
+import { editorField, inputFeedback } from './editor-focus.mjs';
 import { exactNumber, isExactNumber } from '../../shared/terraform/parser.mjs';
 import {
   APIC_LOCATION_VALUES,
@@ -340,7 +340,7 @@ function comboControl(value, allowed, commit, secure, schema) {
 // Number inputs do not expose their incomplete text through .value.
 const incompleteNumbers = new WeakMap();
 
-function draftControl(input, path, ctx, onChange) {
+export function draftControl(input, path, ctx, onChange) {
   const key = JSON.stringify(path);
   const controls = ctx.inputOwner && incompleteNumbers.get(ctx.inputOwner);
   const retained = ctx.inputDraft?.(path);
@@ -377,6 +377,49 @@ function draftControl(input, path, ctx, onChange) {
   return input;
 }
 
+export function numberInputProblem(input, { integer = false } = {}) {
+  if (input.validity?.badInput) return input.validationMessage || 'Enter a complete number. Its unfinished text has not been applied.';
+  if (input.value.trim() === '') return 'Enter a number. Blank input is not zero or an omitted value.';
+  const value = Number(input.value);
+  if (!Number.isFinite(value)) return 'Enter a finite number.';
+  if (integer && !Number.isInteger(value)) return 'Enter a whole number, not a fraction.';
+  if (integer && !Number.isSafeInteger(value)) return 'Enter a whole number within the exact supported integer range.';
+  if (integer) {
+    // Number can round a fractional spelling to an integer, including to zero.
+    const parts = /^[+-]?(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(input.value);
+    if (!parts || input.value.length > 1024) return 'Enter a whole decimal number within the supported input length.';
+    const fraction = parts[2] || '', digits = parts[1] + fraction;
+    const tail = /0*$/.exec(digits)[0].length;
+    if (/[1-9]/.test(digits) && BigInt(parts[3] || '0') - BigInt(fraction.length) + BigInt(tail) < 0n) {
+      return 'Enter a whole number, not a fraction.';
+    }
+  }
+  const min = input.min ?? input.getAttribute('min'), max = input.max ?? input.getAttribute('max');
+  if (min !== null && min !== undefined && min !== '' && value < Number(min)) return `Enter a number of ${min} or more.`;
+  if (max !== null && max !== undefined && max !== '' && value > Number(max)) return `Enter a number of ${max} or less.`;
+  return '';
+}
+
+function validatedNumber(input, path, ctx, read) {
+  const feedback = inputFeedback(input);
+  const validate = () => {
+    const result = read(input);
+    feedback.set(result.message || '');
+    return result;
+  };
+  input.addEventListener('input', validate);
+  const control = draftControl(input, path, ctx, () => {
+    const result = validate();
+    if (!result.message) ctx.onChange(path, result.value);
+    else ctx.onInputDraft?.(path, {
+      value: input.value, badInput: Boolean(input.validity?.badInput), validationMessage: result.message,
+    });
+  });
+  const currentFeedback = inputFeedback(control);
+  currentFeedback.set(ctx.inputDraft?.(path)?.validationMessage || '');
+  return { control, feedback: currentFeedback.node };
+}
+
 /**
  * Rule 1, in one function: the declared type decides, the expression does not.
  * The branches are ordered by type -- bool, int, enum, secret, long, string --
@@ -388,16 +431,18 @@ function scalarControl(value, path, ctx, schema) {
   const type = schema && schema.type;
   const label = valueLabel(path, schema);
   if (ctx.native && (schema?.type === 'number' || isExactNumber(value))) {
-    const input = draftControl(h('input', { class: 'ctl ctl-native-number', type: 'text', inputmode: 'decimal',
+    const input = validatedNumber(h('input', { class: 'ctl ctl-native-number', type: 'text', inputmode: 'decimal',
       value: isExactNumber(value) ? value.__tfNumber : String(value), 'aria-label': label,
-    }), path, ctx, (event) => {
+      autocomplete: 'off', spellcheck: false,
+    }), path, ctx, (control) => {
       try {
-        const next = exactNumber(event.target.value, schema?.syntax);
-        event.target.setCustomValidity('');
-        commit(next);
-      } catch (error) { event.target.setCustomValidity(error.message); event.target.reportValidity(); }
+        return { value: exactNumber(control.value, schema?.syntax) };
+      } catch (error) {
+        if (!error.code?.startsWith('NATIVE_')) throw error;
+        return { message: error.message };
+      }
     });
-    return namedControl(input, label, path);
+    return namedControl(h('div', { class: 'combo' }, input.control, input.feedback), label, path);
   }
 
   // A boolean is a switch, whatever shape it arrives in. `bool(readEnvironment
@@ -429,18 +474,15 @@ function scalarControl(value, path, ctx, schema) {
   // consumes. Written back in the shape it was read.
   if (typeof value === 'number' || (type === 'int' && typeof value === 'string')) {
     const numeric = typeof value === 'number';
-    return namedControl(withBounds(
-      draftControl(h('input', {
-        class: 'ctl ctl-num',
-        type: 'number',
-        inputmode: 'numeric',
-        value: String(value),
-      }), path, ctx, (event) => {
-        if (event.target.validity?.badInput) { event.target.reportValidity(); return; }
-        commit(numeric ? Number(event.target.value) : event.target.value);
-      }),
-      schema
-    ), label, path);
+    const input = validatedNumber(h('input', {
+      class: 'ctl ctl-num', type: 'number', inputmode: 'numeric',
+      value: String(value), step: type === 'int' ? '1' : 'any',
+    }), path, ctx, (control) => ({
+      message: numberInputProblem(control, { integer: type === 'int' }),
+      value: numeric && control.value !== '' ? Number(control.value) : control.value,
+    }));
+    return namedControl(h('div', { class: 'combo' },
+      withBounds(input.control, schema), input.feedback), label, path);
   }
 
   if (schema && Array.isArray(schema.allowedValues) && schema.allowedValues.length) {

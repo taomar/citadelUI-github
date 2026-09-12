@@ -18,6 +18,8 @@
  * strobe; keyboard opens are immediate, because focus is deliberate.
  */
 
+import { mount } from './dom.mjs';
+
 const OPEN_DELAY = 140;
 const CLOSE_DELAY = 90;
 const GAP = 8;
@@ -84,9 +86,7 @@ function show(trigger) {
   if (current && current !== trigger) current.removeAttribute('aria-describedby');
   current = trigger;
 
-  body.replaceChildren();
-  const content = render();
-  if (content) body.append(...(Array.isArray(content) ? content : [content]));
+  mount(body, render());
 
   // Position from a clean slate: a stale left/top from the previous trigger
   // would let the panel measure against the wrong edge and mis-flip.
@@ -156,9 +156,7 @@ if (typeof document !== 'undefined') {
     // Only swallow the key when a popover is actually open, so Escape keeps
     // working for the pickers and dialogs elsewhere in the app.
     e.stopPropagation();
-    const trigger = current;
     hide();
-    trigger.blur();
   });
 
   // A re-render can replace the trigger node while its popover is open, which

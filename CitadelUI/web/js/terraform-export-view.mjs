@@ -1,9 +1,11 @@
 import { h, mount } from './dom.mjs';
+import { formatIcon } from './format-icon.mjs';
 import { reportClientError } from './diagnostics-client.mjs';
 import { confirmDialog } from './dialog.mjs';
 import { renderParamDocument, renderOutlineNav } from './paramview.mjs';
 import { exportControlContext } from './terraform-export-controls.mjs';
-import { editorField, preserveEditorFocus } from './editor-focus.mjs';
+import { draftControl, numberInputProblem } from './fields.mjs';
+import { editorField, preserveEditorFocus, inputFeedback, focusEditorControl } from './editor-focus.mjs';
 import { EXPORT_STATUS } from '../../shared/terraform-export.mjs';
 import { hclLiteral, TerraformExportError } from '../../shared/terraform-literals.mjs';
 
@@ -69,12 +71,15 @@ export async function openTerraformExport({
   const previousMode = surface.shell.dataset.workspace;
   const previousRail = surface.shell.dataset.rail;
   const previousPath = surface.breadcrumb?.textContent;
+  const previousScroll = surface.workspace.scrollTop;
   const opener = document.activeElement;
   const body = h('div', { class: 'tf-export-workspace' });
   const footer = h('div', { class: 'tb-command-set' });
   const expandedByArea = new Map();
   const fieldDrafts = new Map();
   const errors = new Map();
+  const inputOwner = {};
+  const mappingPositions = new Map();
   let areaId = 'deployment';
   let view = null;
   let review = null;
@@ -86,6 +91,10 @@ export async function openTerraformExport({
   let focused = null;
   let actionName = '';
   let inputSequence = 0;
+  let nextScroll = null;
+  let focusProblem = false;
+  let readiness = null;
+  let painting = false;
 
   const expanded = () => {
     if (!expandedByArea.has(areaId)) expandedByArea.set(areaId, new Map());
@@ -93,11 +102,13 @@ export async function openTerraformExport({
   };
   const controls = new Map();
   const remember = (key, node) => { controls.set(key, node); node.dataset.exportFocus = key; return node; };
-  const button = (label, handler, { disabled = false, primary = false, key = label } = {}) =>
+  const button = (label, handler, { disabled = false, primary = false, fieldAction = false, key = label } = {}) =>
     remember(key, h('button', {
       type: 'button', class: primary ? 'btn btn-primary' : 'btn', disabled: busy || disabled,
       'aria-busy': busy && actionName === key ? 'true' : null,
-      onclick: () => { if (!busy) return handler(); },
+      // A field action must not lose its click when blur commits and replaces it.
+      onpointerdown: (event) => { if (fieldAction && event.button === 0) event.preventDefault(); },
+      onclick: () => { if (!busy && !closed && !painting) return handler(); },
     }, busy && actionName === key ? `${label}...` : label));
 
   function renderKeepingFocus(key) {
@@ -123,12 +134,21 @@ export async function openTerraformExport({
         message = error instanceof TerraformExportError ? error.message :
           `Export did not complete: ${error.message || 'Source or download setup failed. Retry after correcting it.'}`;
         review = null;
+        if (!focusProblem) { focused = 'export-notice'; nextScroll = 0; }
       } finally {
         busy = false; actionName = '';
         if (!closed) {
           view = session.view();
           render();
-          controls.get(focused)?.focus({ preventScroll: true });
+          if (nextScroll !== null) { surface.workspace.scrollTop = nextScroll; nextScroll = null; }
+          if (focusProblem) {
+            if (!focusEditorControl(controls.get(focused))) {
+              surface.workspace.scrollTop = 0;
+              controls.get('export-notice')?.focus({ preventScroll: true });
+            }
+            focusProblem = false;
+          }
+          else controls.get(focused)?.focus({ preventScroll: true });
         }
       }
     })();
@@ -136,27 +156,127 @@ export async function openTerraformExport({
   }
 
   const currentArea = () => view?.areas.find((entry) => entry.id === areaId);
+  const mappingKey = () => `${areaId}:${currentArea()?.path || ''}`;
+  const rememberMappingPosition = () => {
+    if (!review) mappingPositions.set(mappingKey(), surface.workspace.scrollTop);
+  };
+  const draftCount = (area) => [...new Set([...fieldDrafts.keys(), ...errors.keys()])]
+    .filter((key) => key.startsWith(`${area.id}:${area.path}:`)).length;
+  const areaStatus = (area) => !area.included ? 'Excluded' : area.error ? 'Source unavailable' :
+    !area.configurations.length ? 'No saved configuration' : !area.path ? 'Choose saved configuration' :
+    draftCount(area) ? `${draftCount(area)} unfinished input${draftCount(area) === 1 ? '' : 's'}` :
+    area.projection?.blockers.length ? `${area.projection.blockers.length} to resolve` : 'Ready';
+  function updateInputStatus() {
+    if (!view) return;
+    for (const area of view.areas) {
+      const status = controls.get(`area:${area.id}`)?.querySelector('.area-sub');
+      const text = areaStatus(area);
+      if (status && status.textContent !== text) status.textContent = text;
+    }
+    const drafts = view.areas.filter((area) => area.included).reduce((count, area) => count + draftCount(area), 0);
+    const text = drafts
+      ? `Finish or revert ${drafts} export-only input${drafts === 1 ? '' : 's'} before review.`
+      : view.ready ? 'All included settings are ready for byte review.'
+        : `${view.blockers} blocking setting${view.blockers === 1 ? '' : 's'}. No partial settings export.`;
+    if (readiness && readiness.textContent !== text) readiness.textContent = text;
+  }
+
+  function blockingInput() {
+    for (const area of view.areas.filter((entry) => entry.included)) {
+      const prefix = `${area.id}:${area.path}:`;
+      const key = [...fieldDrafts.keys(), ...errors.keys()].find((entry) => entry.startsWith(prefix));
+      if (!key) continue;
+      const spec = [...(area.projection?.rows || []), ...(area.projection?.extras || [])]
+        .flatMap((row) => row.inputs || []).find((input) => `${prefix}${input.key}` === key);
+      const draft = fieldDrafts.get(key);
+      return { area, key, label: spec?.label || key.slice(prefix.length),
+        reason: !spec ? 'This saved source no longer offers this input. Exit export to discard the retained export-only inputs, then reopen the saved source.' :
+          errors.get(key) || draft?.validationMessage ||
+          (draft?.composing ? 'Finish composing this value before review.' : 'Finish or revert this input before review.') };
+    }
+    return null;
+  }
 
   function inputField(spec, row) {
     const area = currentArea();
-    const key = `${areaId}:${area.path}:${spec.key}`;
+    const key = `${area.id}:${area.path}:${spec.key}`;
     const hasValue = Object.hasOwn(area.choices, spec.key);
     const committed = hasValue ? area.choices[spec.key] : spec.default;
-    const draft = fieldDrafts.has(key) ? fieldDrafts.get(key) : committed;
     const inputId = `tf-input-${++inputSequence}`;
+    let control;
+    let feedback;
+    const ownsInput = () => !closed && !busy && !painting && control?.isConnected &&
+      currentArea()?.id === area.id && currentArea()?.path === area.path;
     const update = (value) => {
+      if (!ownsInput()) return;
       try {
-        session.setInput(areaId, spec.key, value);
+        session.setInput(area.id, spec.key, value);
         errors.delete(key); fieldDrafts.delete(key); review = null;
         view = session.view();
         renderKeepingFocus(key);
       } catch (error) {
         reportClientError(error, 'app.terraform-export', { module: '/js/terraform-export-view.mjs' });
+        fieldDrafts.set(key, { value: control.value, badInput: Boolean(control.validity?.badInput), validationMessage: error.message });
         errors.set(key, error.message);
         renderKeepingFocus(key);
       }
     };
-    let control;
+    const read = (input) => {
+      if (spec.type === 'int') {
+        const problem = numberInputProblem(input, { integer: true });
+        if (problem) throw new TerraformExportError('input', problem);
+        return Number(input.value);
+      }
+      if (['array', 'object'].includes(spec.type)) {
+        let value;
+        try { value = JSON.parse(input.value); }
+        catch (error) {
+          if (!(error instanceof SyntaxError)) throw error;
+          throw new TerraformExportError('input', `Enter a JSON ${spec.type}, not Bicep or Terraform expressions.`);
+        }
+        if (spec.type === 'array' ? !Array.isArray(value) : value === null || Array.isArray(value) || typeof value !== 'object') {
+          throw new TerraformExportError('input', `Enter a JSON ${spec.type}. Null and other value types are not ${spec.type} inputs.`);
+        }
+        return value;
+      }
+      return input.value;
+    };
+    const editableText = (input) => {
+      const message = inputFeedback(input);
+      const validate = () => {
+        try {
+          const value = read(input);
+          errors.delete(key); message.set('');
+          return { value };
+        } catch (error) {
+          if (!(error instanceof TerraformExportError)) throw error;
+          errors.set(key, error.message); message.set(error.message);
+          return { error: error.message };
+        }
+      };
+      input.addEventListener('input', () => { if (ownsInput()) validate(); });
+      return draftControl(input, ['terraform', area.id, area.path, spec.key], {
+        inputOwner, inputDraft: () => fieldDrafts.get(key),
+        onInputDraft: (_path, draft) => {
+          if (!ownsInput()) return;
+          if (draft) fieldDrafts.set(key, draft);
+          else { fieldDrafts.delete(key); errors.delete(key); message.set(''); }
+          const revert = controls.get(`${key}:revert`);
+          if (revert) revert.hidden = !fieldDrafts.has(key) && !errors.has(key);
+          updateInputStatus();
+        },
+      }, () => {
+        if (!ownsInput()) return;
+        const result = validate();
+        if (!result.error) update(result.value);
+        else {
+          fieldDrafts.set(key, {
+            value: input.value, badInput: Boolean(input.validity?.badInput), validationMessage: result.error,
+          });
+          updateInputStatus();
+        }
+      });
+    };
     if (spec.confirmation) {
       control = h('input', { type: 'checkbox', checked: committed === true, disabled: busy, onchange: (event) => update(event.target.checked ? true : undefined) });
     } else if (spec.fixed) {
@@ -167,44 +287,47 @@ export async function openTerraformExport({
         class: 'ctl', disabled: busy,
         onchange: (event) => update(event.target.value === '' ? undefined : spec.type === 'bool' ? event.target.value === 'true' : event.target.value),
       }, h('option', { value: '' }, 'Choose a value'), values.map((value) => h('option', { value: String(value) }, String(value))));
-      control.value = draft === undefined ? '' : String(draft);
+      control.value = committed === undefined ? '' : String(committed);
     } else if (['array', 'object'].includes(spec.type)) {
-      control = h('textarea', {
+      control = editableText(h('textarea', {
         class: 'ctl tf-json-input', rows: 4, disabled: busy, spellcheck: false,
-        value: typeof draft === 'string' ? draft : draft === undefined ? '' : JSON.stringify(draft, null, 2),
-        oninput: (event) => fieldDrafts.set(key, event.target.value),
-        onchange: (event) => {
-          try { update(JSON.parse(event.target.value)); }
-          catch (error) {
-            if (!(error instanceof SyntaxError)) throw error;
-            errors.set(key, 'Enter literal JSON data of the declared type, not Bicep or Terraform expressions.');
-            renderKeepingFocus(key);
-          }
-        },
-      });
+        value: committed === undefined ? '' : JSON.stringify(committed, null, 2),
+      }));
     } else {
-      control = h('input', {
+      control = editableText(h('input', {
         class: 'ctl', type: spec.type === 'int' ? 'number' : 'text', autocomplete: 'off', spellcheck: false,
-        disabled: busy, value: draft ?? '', min: spec.min, max: spec.max,
-        oninput: (event) => fieldDrafts.set(key, event.target.value),
-        onchange: (event) => update(spec.type === 'int' ? (event.target.value === '' ? undefined : Number(event.target.value)) : event.target.value),
-      });
+        disabled: busy, value: String(committed ?? ''), min: spec.min, max: spec.max,
+      }));
     }
     control.id = inputId;
     control.setAttribute('aria-label', `${spec.source ? 'Export-only source value' : 'Terraform input'} ${spec.label}${spec.confirmation ? ` for ${row.source}` : ''}`);
     if (!spec.fixed) {
+      control.disabled = busy;
       remember(key, control);
-      editorField(control, ['terraform', areaId, area.path, spec.key]);
+      editorField(control, ['terraform', area.id, area.path, spec.key]);
+      feedback = inputFeedback(control);
+      feedback.set(errors.get(key) || fieldDrafts.get(key)?.validationMessage ||
+        (hasValue && row.status === 'input' && row.inputs.length === 1
+          ? row.notes.find((note) => note.status === 'input')?.reason : '') || '');
     }
     const defaultAction = spec.acceptDefault && !hasValue
-      ? button('Use displayed default', () => update(structuredClone(spec.default)), { key: `${key}:default` }) : null;
+      ? button('Use displayed default', () => update(structuredClone(spec.default)), { key: `${key}:default`, fieldAction: true }) : null;
+    const revert = !spec.fixed ? button('Revert input', () => {
+      errors.delete(key); fieldDrafts.delete(key);
+      renderKeepingFocus(key);
+    }, { key: `${key}:revert`, fieldAction: true }) : null;
+    if (revert) {
+      revert.hidden = !fieldDrafts.has(key) && !errors.has(key);
+      revert.setAttribute('aria-label', `Revert input for ${spec.label}`);
+    }
     return h('div', { class: 'tf-input-row' },
       h(spec.fixed ? 'div' : 'label', spec.fixed ? {} : { for: inputId }, spec.confirmation ? `${spec.label} for ${row.source}` : spec.label,
         h('span', { class: 'hint' }, spec.source ? ' Export-only; Bicep stays unchanged' : ' Export only')),
-      h('div', { class: 'tf-input-control' }, control, defaultAction,
-        hasValue ? h('span', { class: 'hint' }, 'Explicit value') : null),
+      h('div', { class: 'tf-input-control' }, control, defaultAction, revert,
+        hasValue ? h('span', { class: 'hint' }, 'Explicit value') :
+          spec.acceptDefault && !spec.fixed ? h('span', { class: 'hint' }, 'Displayed default; not yet accepted') : null),
       spec.reason ? h('p', { class: 'hint' }, spec.reason) : null,
-      errors.has(key) ? h('p', { class: 'field-error', role: 'alert' }, errors.get(key)) : null);
+      feedback?.node);
   }
 
   function rowNotes(row, { nested = true } = {}) {
@@ -240,9 +363,13 @@ export async function openTerraformExport({
     const box = h('details', { class: 'tf-service-inputs', open: disclosureState.get(`extra:${service}`) ?? false },
       h('summary', {}, `${service} export-only choices${needed ? ` (${needed} need input)` : ''}`),
       defaults.length ? button(`Use displayed ${service} defaults`, () => {
-        for (const spec of defaults) if (!Object.hasOwn(currentArea().choices, spec.key)) session.setInput(areaId, spec.key, structuredClone(spec.default));
+        for (const spec of defaults) if (!Object.hasOwn(currentArea().choices, spec.key)) {
+          session.setInput(areaId, spec.key, structuredClone(spec.default));
+          const key = `${areaId}:${currentArea().path}:${spec.key}`;
+          fieldDrafts.delete(key); errors.delete(key);
+        }
         view = session.view(); review = null; renderKeepingFocus(`defaults:${service}`);
-      }, { key: `defaults:${service}` }) : null,
+      }, { key: `defaults:${service}`, fieldAction: true }) : null,
       extras.map((row) => h('div', { class: 'tf-extra' },
         h('div', { class: 'tf-mapping-head' }, badge(row.status), code(row.source)),
         row.inputs.length ? row.inputs.map((spec) => inputField(spec, row)) : row.notes.map((entry) => h('p', { class: 'hint' }, entry.reason)),
@@ -305,6 +432,7 @@ export async function openTerraformExport({
       onchange: (event) => run(`source:${area.id}`, async () => {
         review = null;
         await session.select(area.id, { path: event.target.value || null });
+        nextScroll = 0;
       }),
     }, h('option', { value: '' }, sourceCount ? `Choose one saved ${area.label} configuration` : 'No saved parameter configurations'),
     area.configurations.map((path) => h('option', { value: path }, path)));
@@ -314,11 +442,13 @@ export async function openTerraformExport({
     return h('div', { class: 'sheetwrap tf-export-preview' },
       h('div', { class: 'sheet-sticky' },
         h('header', { class: 'sheet-strip' },
-          h('div', { class: 'strip-top' }, h('h2', { class: 'strip-title', tabindex: -1, id: 'tf-export-heading' }, `${area.label} - Terraform export`),
+          h('div', { class: 'strip-top' }, h('h2', { class: 'strip-title tf-format-heading', tabindex: -1, id: 'tf-export-heading' },
+            formatIcon('terraform'), `${area.label} - Terraform export`),
             h('span', { class: 'chip chip-note' }, 'Experimental / saved source')),
           h('p', { class: 'hint tf-caption' }, 'The Bicepparam controls show proposed Terraform values, with exact target names and mapping status at each setting. Differences from saved Bicep are noted locally. Only explicit export-only inputs are editable.')),
         nav),
-      h('div', { class: 'tf-source-selection' }, h('label', {}, 'Saved source', selector),
+      h('div', { class: 'tf-source-selection' }, h('label', {},
+        area.path?.endsWith('.bicepparam') ? formatIcon('bicep') : null, 'Saved source', selector),
         h('p', { class: sourceCount ? 'hint tf-source-hint' : 'field-warning tf-source-hint' }, sourceHint),
         area.path ? h('p', { class: 'hint tf-output-path tf-selected-source' }, 'Source file: ', code(area.path)) : null,
         h('p', { class: 'hint' }, area.included
@@ -335,7 +465,8 @@ export async function openTerraformExport({
 
   function reviewScreen() {
     return h('section', { class: 'tf-review' },
-      h('h2', { tabindex: -1, id: 'tf-review-heading' }, 'Review Terraform ZIP'),
+      remember('review-heading', h('h2', { class: 'tf-format-heading', tabindex: -1, id: 'tf-review-heading' },
+        formatIcon('terraform'), 'Review Terraform ZIP')),
       h('p', {}, `Exactly ${review.files.length} variable file${review.files.length === 1 ? '' : 's'}, ${review.size} bytes. No wrapper directory, module files, source files, reports or extra policies.`),
       h('p', { class: 'hint' }, 'Approval downloads these bytes only. It does not write a repository, deploy resources, migrate state, or prove resource identity/parity. Source and policy hashes are re-read immediately before download.'),
       review.files.map((file) => h('details', { class: 'tf-review-file', open: true },
@@ -361,6 +492,7 @@ export async function openTerraformExport({
     window.removeEventListener('keydown', shortcut, true);
     window.removeEventListener('beforeunload', unload);
     for (const { node, children } of previous) mount(node, children);
+    surface.workspace.scrollTop = previousScroll;
     if (previousMode === undefined) delete surface.shell.dataset.workspace;
     else surface.shell.dataset.workspace = previousMode;
     if (previousRail === undefined) delete surface.shell.dataset.rail;
@@ -375,25 +507,45 @@ export async function openTerraformExport({
 
   function render() {
     if (closed) return;
+    // Native change can fire before a replaced input is reported disconnected.
+    painting = true;
+    try { renderContent(); }
+    finally { painting = false; }
+  }
+
+  function renderContent() {
     controls.clear();
     inputSequence = 0;
     mount(footer,
       button('Exit export', requestExit),
-      button('Reload saved source', () => run('Reload saved source', async () => { review = null; await session.reload(); })),
-      review ? button('Back to mapping', () => { session.revise(); review = null; renderKeepingFocus('Review ZIP'); })
-        : button('Review ZIP', () => run('Review ZIP', async () => {
-          const prefixes = view.areas.filter((area) => area.included).map((area) => `${area.id}:${area.path}:`);
-          if ([...fieldDrafts.keys(), ...errors.keys()].some((key) => prefixes.some((prefix) => key.startsWith(prefix)))) {
-            throw new TerraformExportError('input', 'Finish or correct the export-only field being edited in an included configuration before review.');
-          }
-          review = await session.review();
-          focused = 'Approve & export ZIP';
-        }), { primary: true, disabled: !view?.ready }),
+      button('Reload saved source', () => {
+        rememberMappingPosition();
+        return run('Reload saved source', async () => {
+          review = null; await session.reload(); nextScroll = mappingPositions.get(mappingKey()) || 0;
+        });
+      }),
+      review ? button('Back to mapping', () => {
+        session.revise(); review = null; renderKeepingFocus('Review ZIP');
+        surface.workspace.scrollTop = mappingPositions.get(mappingKey()) || 0;
+      })
+        : button('Review ZIP', () => {
+          rememberMappingPosition();
+          return run('Review ZIP', async () => {
+            const problem = blockingInput();
+            if (problem) {
+              areaId = problem.area.id; focused = problem.key; focusProblem = true;
+              errors.set(problem.key, problem.reason);
+              throw new TerraformExportError('input', `${problem.area.label}: ${problem.label}. ${problem.reason}`);
+            }
+            review = await session.review();
+            focused = 'review-heading'; nextScroll = 0;
+          });
+        }, { primary: true, disabled: !view?.ready }),
       review ? button('Approve & export ZIP', () => run('Approve & export ZIP', async () => {
         await session.approveAndExport(review.id, download);
         review = null; tone = 'ok';
         message = 'ZIP download requested with the exact reviewed bytes. No repository files were written.';
-        focused = 'Review ZIP';
+        focused = 'Review ZIP'; nextScroll = 0;
       }), { primary: true }) : null);
     if (!view) {
       mount(body, h('section', { class: 'tf-notice', role: 'status' }, 'Reading saved source and allowed policy dependencies...'));
@@ -412,22 +564,26 @@ export async function openTerraformExport({
           type: 'button', class: `area${areaId === area.id ? ' active' : ''}`, disabled: busy,
           'aria-current': areaId === area.id ? 'page' : 'false',
           onclick: () => {
+            rememberMappingPosition();
             if (review) session.revise();
             areaId = area.id; review = null; renderKeepingFocus(`area:${area.id}`);
+            surface.workspace.scrollTop = mappingPositions.get(mappingKey()) || 0;
           },
         }, h('span', { class: 'area-title' }, area.label),
-        h('span', { class: 'area-sub' }, !area.included ? 'Excluded' : area.error ? 'Source unavailable' :
-          !area.configurations.length ? 'No saved configuration' : !area.path ? 'Choose saved configuration' :
-          area.projection?.blockers.length ? `${area.projection.blockers.length} to resolve` : 'Ready'))));
+        h('span', { class: 'area-sub' }, areaStatus(area)))));
     })),
     h('div', { class: 'tf-rail-note' }, h('strong', {}, `${view.included} area${view.included === 1 ? '' : 's'} included`),
-      h('p', {}, view.ready ? 'All included settings are ready for byte review.' : `${view.blockers} blocking setting${view.blockers === 1 ? '' : 's'}. No partial settings export.`),
+      readiness = h('p', { role: 'status', 'aria-live': 'polite' }),
       h('p', {}, 'Target ', code(view.contract.revision.slice(0, 12))),
       h('details', {}, h('summary', {}, 'Mapping contract'),
         code(view.contract.version), h('p', {}, view.contract.repository), code(view.contract.revision))));
+    updateInputStatus();
     if (surface.breadcrumb) surface.breadcrumb.textContent = 'Terraform export / saved source';
     mount(body,
-      message ? h('p', { class: `tf-notice ${tone === 'error' ? 'field-error' : tone === 'ok' ? 'tf-success' : 'hint'}`, role: tone === 'error' ? 'alert' : 'status' }, message) : null,
+      message ? remember('export-notice', h('p', {
+        class: `tf-notice ${tone === 'error' ? 'field-error' : tone === 'ok' ? 'tf-success' : 'hint'}`,
+        role: tone === 'error' ? 'alert' : 'status', tabindex: -1,
+      }, message)) : null,
       busy ? h('p', { class: 'tf-notice', role: 'status', 'aria-live': 'polite' }, `${actionName} - please wait. Existing source files stay untouched.`) : null,
       review ? reviewScreen() : mappingScreen(currentArea()));
   }
@@ -449,6 +605,7 @@ export async function openTerraformExport({
   if (surface.rail) mount(surface.rail);
   mount(surface.workspace, body); mount(surface.actions, footer);
   await run('Read saved source', async () => { view = await session.initialize(); });
+  surface.workspace.scrollTop = 0;
   body.querySelector('h2')?.focus({ preventScroll: true });
   return { body, footer, whenIdle: () => pending, get busy() { return busy; }, get closed() { return closed; } };
 }

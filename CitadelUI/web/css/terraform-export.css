@@ -351,3 +351,17 @@
 .terraform-export-mode .tf-notice {
   margin: 0;
 }
+
+.terraform-export-mode .sheet {
+  scroll-behavior: auto;
+}
+
+.tf-input-row [aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.tf-format-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}

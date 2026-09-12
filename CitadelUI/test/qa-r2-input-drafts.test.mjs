@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { installDom } from './_dom-stub.mjs';
 import { renderValue } from '../web/js/fields.mjs';
+import { focusEditorControl } from '../web/js/editor-focus.mjs';
 import { pauseEditorForLoad } from '../web/js/editor-load.mjs';
 import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
 import { exactNumber } from '../shared/terraform/parser.mjs';
@@ -177,7 +178,7 @@ function appInput(f) {
   const viewStates = new WorkspaceViewState(() => f.state);
   viewStates.activate({ environment: { id: 'c1-input', source: { kind: 'local' } } });
   const scope = {
-    state: f.state, viewStates, document, Event, hasParameterInputs, editorPendingCount, pauseEditorForLoad,
+    state: f.state, viewStates, document, Event, hasParameterInputs, editorPendingCount, pauseEditorForLoad, focusEditorControl,
     pendingByDocument: new Map(), editorTransition: null,
     els: { workspace, editorLoading: notice },
     window: { addEventListener: (type, listener) => listeners.set(type, listener) },
