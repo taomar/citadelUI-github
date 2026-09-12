@@ -1,7 +1,7 @@
 import { BrowserDirectoryProvider } from './directory-provider.mjs';
 import { browserCapabilities, environmentSourceOf } from './registry.mjs';
 import { registrySync, workspaceRegistry as registry } from './registry-sync.mjs';
-import { workspaceActivation, scanProvider, assertSupportedScan } from './workspace-activation.mjs';
+import { workspaceActivation, createWorkspaceReattachment, withSourceUnavailable, scanProvider, assertSupportedScan } from './workspace-activation.mjs';
 import { createWorkspaceAttachment } from './workspace-attachment.mjs';
 import { confirmDialog, promptDialog } from './dialog.mjs';
 import { createProvider } from './source-factory.mjs';
@@ -46,6 +46,17 @@ const workspaceAttachment = createWorkspaceAttachment({
   status: attachGitHubStatus,
   abandon: abandonGitHubAttachment,
   scan: scanProvider,
+});
+
+const workspaceReattachment = createWorkspaceReattachment({
+  registry, sync: registrySync,
+  connections: {
+    status: () => githubSessions.status(),
+    list: listConnections,
+    generation: () => githubSessions.generation,
+    isCurrent: (generation) => githubSessions.isCurrent(generation),
+  },
+  repositories: { get: getGitHubRepository, check: checkGitHubCompatibility },
 });
 
 export const syncRegistryMetadata = registrySync.syncRegistryMetadata;
@@ -275,6 +286,10 @@ function catalogActions() {
       setConnectionPersistence(profileId, persist),
     disconnectConnection: (profileId) => disconnectConnection(profileId),
     removeConnection: (profileId) => removeConnection(profileId),
+    reviewReattachment: workspaceReattachment.review,
+    commitReattachment: workspaceReattachment.commit,
+    revalidateReattachment: workspaceReattachment.revalidate,
+    pendingReattachment: workspaceReattachment.pending,
 
     async promptLabel({ title, message, value }) {
       const values = await promptDialog({
@@ -297,7 +312,12 @@ function catalogActions() {
      * the common case after a container restart is one click rather than a
      * detour through the connections table.
      */
-    openEnvironment: workspaceActivation.openEnvironment,
+    async openEnvironment(environment) {
+      if (workspaceReattachment.pending?.(environment.id)) {
+        throw Object.assign(new Error('This workspace has an unconfirmed connection reattachment. Open its pending review in Workspaces and confirm that same connection before opening.'), { code: 'REATTACH_SYNC_PENDING' });
+      }
+      return workspaceActivation.openEnvironment(environment);
+    },
 
     /**
      * Bring a workspace back into a usable state, then open it.
@@ -311,30 +331,22 @@ function catalogActions() {
       const source = environmentSourceOf(environment);
       if (source.kind === 'github') {
         onProgress('Reconnecting GitHub\u2026');
-        // A record migrated from v3 has no recorded connection. This is the
-        // moment the documented binding happens: the connection the user is
-        // actually holding is written onto the environment, once, so every later
-        // open and every commit is attributed to it rather than to whatever
-        // session happens to be live.
-        let target = environment;
-        if (!source.connectionProfileId) {
-          const current = await githubSessions.restore().catch(() => null);
-          if (!current?.profileId) {
-            throw new Error(
-              'Connect a GitHub connection first, then reconnect this workspace to bind it to that connection.'
-            );
-          }
-          target = await registry.updateEnvironment(environment.id, {
-            source: { ...source, connectionProfileId: current.profileId },
-          });
-          await syncRegistryMetadata();
+        if (!source.connectionProfileId || !connections.some((profile) => profile.id === source.connectionProfileId)) {
+          throw withSourceUnavailable(new Error('Use Reattach connection on this workspace to explicitly review a replacement connection and the exact retained source.'),
+            environment, { kind: 'connection' });
         }
-        await workspaceActivation.ensureGitHubSessionFor(environmentSourceOf(target), { connections });
-        return actions.openEnvironment(target);
+        await workspaceActivation.ensureGitHubSessionFor(source, { connections });
+        return actions.openEnvironment(environment);
       }
       onProgress('Choose the Citadel folder\u2026');
       let handle = await registry.getHandle(environment.id);
-      if (!handle) handle = await globalThis.showDirectoryPicker({ mode: 'readwrite' });
+      if (!handle) {
+        try { handle = await globalThis.showDirectoryPicker({ mode: 'readwrite' }); }
+        catch (error) {
+          if (error.name === 'AbortError') throw error;
+          throw withSourceUnavailable(error, environment, { kind: 'permission' });
+        }
+      }
       const localPath = validateLocalPath(source.localPath || handle.name);
       await registry.reconnectEnvironment(environment.id, handle, localPath);
       return actions.openEnvironment(environment);

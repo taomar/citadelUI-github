@@ -463,6 +463,7 @@ export function createGitHubPanel(options = {}) {
   }
 
   function renderConnections() {
+    const selected = connectionSelect.value;
     connectionSelect.replaceChildren(
       element('option', { value: '' }, 'Add a new connection\u2026'),
       ...savedConnections.map((profile) =>
@@ -473,6 +474,7 @@ export function createGitHubPanel(options = {}) {
         )
       )
     );
+    if (savedConnections.some((profile) => profile.id === selected)) connectionSelect.value = selected;
     connectionSelect.hidden = savedConnections.length === 0;
     persistInput.disabled = !vaultAvailable;
   }
@@ -848,6 +850,7 @@ export function createGitHubPanel(options = {}) {
       class: 'btn btn-sm',
       type: 'button',
       onclick: async () => {
+        const ownedFocus = document.activeElement === disconnectButton;
         try {
           const result = sessions ? await sessions.disconnect() : await disconnect();
           selection.reset();
@@ -856,6 +859,10 @@ export function createGitHubPanel(options = {}) {
               ? 'That GitHub session had already expired. The token is not in server memory.'
               : 'Disconnected from GitHub. The token was erased from server memory.'
           );
+          render();
+          if (ownedFocus && (document.activeElement === document.body || document.activeElement === disconnectButton)) {
+            (tokenInput.disabled ? connectButton : tokenInput).focus({ preventScroll: true });
+          }
         } catch (error) {
           // The credential may still be live, so the session id is deliberately
           // kept and the failure is shown rather than swallowed.

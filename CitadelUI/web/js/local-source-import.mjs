@@ -108,11 +108,18 @@ export function openLocalSourceImport(options) {
     finally { closing = false; }
   }
   function present(title, body, buttons, focus) {
-    showDialog(title, h('div', { class: 'catalog-dialog local-source-import' }, body),
+    const stage = title === 'Review local import' ? 2 : title === 'Name the new local project' ? 1 : 0;
+    const heading = h('h3', { tabindex: '-1' }, ['Choose a read-only source', 'Choose the local destination', 'Review source and destination'][stage]);
+    showDialog(title, h('div', { class: 'catalog-dialog local-source-import' },
+      h('ol', { class: 'catalog-steps', 'aria-label': 'Local import progress' },
+        ['Source', 'Destination', 'Review and import'].map((label, index) => h('li', {
+          class: `catalog-step${index === stage ? ' catalog-step-current' : index < stage ? ' catalog-step-done' : ''}`,
+          'aria-current': index === stage ? 'step' : null,
+        }, label))), heading, body),
       buttons, {
         stack: Boolean(options.stack && !presented),
         replaceTop: Boolean(options.stack && presented),
-        initialFocus: focus,
+        initialFocus: stage === 2 ? heading : focus,
         preventDismiss: () => {
           if (allowDismiss) return false;
           if (busy) {

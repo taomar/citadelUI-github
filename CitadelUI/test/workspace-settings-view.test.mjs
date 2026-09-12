@@ -70,6 +70,36 @@ test('settings view: a profile-backed account is connected without a legacy conn
   assert.equal(disconnects, 1);
 });
 
+test('settings view: connection completion selects the replacement action for dialog autofocus and stays single-flight', async () => {
+  const host = h('main');
+  document.body.append(host);
+  let release;
+  let calls = 0;
+  const wait = new Promise((resolve) => { release = resolve; });
+  const root = createGitHubConnectionSummary({ login: 'fixture-owner' }, {
+    connect: () => assert.fail('already connected'),
+    disconnect: async () => {
+      calls++;
+      await wait;
+      host.replaceChildren(createGitHubConnectionSummary(null, { connect: () => {}, disconnect: () => {} }));
+    },
+  });
+  host.append(root);
+  const old = button(root, 'Disconnect GitHub');
+  old.focus();
+  const complete = old.listeners.get('click')[0]();
+  old.click();
+  assert.equal(calls, 1);
+  assert.equal(old.disabled, true);
+  release();
+  await complete;
+  const next = button(host, 'Connect GitHub');
+  assert.equal(document.activeElement, next);
+  assert.equal(next.hasAttribute('autofocus'), true, 'the shared dialog scheduled focus resolves to this action');
+  assert.equal(next.disabled, false);
+  host.remove();
+});
+
 test('settings view: saved credentials are not described as memory-only and disconnected action remains usable', () => {
   const saved = createGitHubConnectionSummary({
     login: 'fixture-owner', persisted: true,

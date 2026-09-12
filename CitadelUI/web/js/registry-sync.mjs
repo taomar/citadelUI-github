@@ -1,11 +1,35 @@
-import { WorkspaceRegistry } from './registry.mjs';
+import { WorkspaceRegistry, environmentSourceOf } from './registry.mjs';
 import { localRequest } from './local-api.mjs';
+import { configurationKey } from '../../shared/workspace-configuration.mjs';
+
+export function registryEnvironmentIdentity(environment, { connection = true } = {}) {
+  const source = environmentSourceOf(environment);
+  return JSON.stringify([
+    environment?.id, environment?.projectId, source.kind,
+    source.kind === 'local' ? [source.folderName, source.localPath] : [
+      source.repositoryId, source.fullName, source.sourceBranch, source.workingBranch,
+      source.writeMode, source.branchChoice, connection ? source.connectionProfileId : null,
+    ],
+    configurationKey(environment?.configuration),
+  ]);
+}
+
+function assertReviewedEnvironments(environments, reviewed, code) {
+  for (const expected of reviewed) {
+    const matches = Array.isArray(environments) ? environments.filter((item) => item.id === expected.id) : [];
+    if (matches.length !== 1 || registryEnvironmentIdentity(matches[0]) !== expected.identity) {
+      throw Object.assign(new Error('The registry no longer matches the reviewed workspace identity. Keep the pending review and inspect the current saved workspace before retrying.'), { code });
+    }
+  }
+}
 
 export function createRegistrySync({ registry, request }) {
   let registryAuthority = null;
 
-  async function syncRegistryMetadata(removals = {}, scope = null) {
+  async function syncRegistryMetadata(removals = {}, scope = null, { reviewedEnvironments = [] } = {}) {
     if (!registryAuthority) throw new Error('Registry metadata has not been reconciled.');
+    // Capture the caller's identity before yielding to the shared local snapshot.
+    const reviewed = reviewedEnvironments.map((item) => ({ id: item.id, identity: registryEnvironmentIdentity(item) }));
     const snapshot = await registry.metadataSnapshot();
     const removedProjectIds = removals.removedProjectIds || [];
     const removedEnvironmentIds = removals.removedEnvironmentIds || [];
@@ -19,6 +43,7 @@ export function createRegistrySync({ registry, request }) {
       (item) => !removedEnvironments.has(item.id) && !removedProjects.has(item.projectId) &&
         (!scope || scope.environmentIds.includes(item.id))
     );
+    assertReviewedEnvironments(environments, reviewed, 'REGISTRY_REVIEW_CHANGED');
     const remote = await request('/api/registry', {
       method: 'PUT',
       body: JSON.stringify({
@@ -30,6 +55,7 @@ export function createRegistrySync({ registry, request }) {
         removedEnvironmentIds,
       }),
     });
+    assertReviewedEnvironments(remote.environments || [], reviewed, 'REGISTRY_CONFIRMATION_MISMATCH');
     registryAuthority = { epoch: remote.epoch, revision: remote.revision };
     return remote;
   }

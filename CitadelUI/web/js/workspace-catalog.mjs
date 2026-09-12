@@ -31,6 +31,7 @@
  * any of them.
  */
 import { h, mount } from './dom.mjs';
+import { formatIcon } from './format-icon.mjs';
 import { renderWorkspaceCatalogList } from './workspace-catalog-list.mjs';
 import { reportClientError } from './diagnostics-client.mjs';
 import { showDialog, dismissDialog, confirmDialog } from './dialog.mjs';
@@ -44,6 +45,8 @@ import { createRepositoryProgress } from './repository-progress.mjs';
 import { openLocalSourceImport } from './local-source-import.mjs';
 import { createConfiguration, configurationOf } from '../../shared/workspace-configuration.mjs';
 
+const pendingReattachmentViews = new WeakMap();
+
 function newRepositoryCreationState(accountId = null) {
   return {
     accountId, name: '', sourceUrl: DEFAULT_REPOSITORY_SOURCE,
@@ -51,17 +54,15 @@ function newRepositoryCreationState(accountId = null) {
   };
 }
 
-/**
- * The status vocabulary, in the order of how much attention a row deserves.
- *
- * One word per row. A row that needs two words needs a different word.
- */
+// Stable filter categories; row labels and next actions describe the exact state.
 export const WORKSPACE_STATUS = Object.freeze({
   ready: { label: 'Ready', chip: 'chip-ok' },
   reconnect: { label: 'Reconnect', chip: 'chip-warn' },
   stale: { label: 'Stale', chip: 'chip-neutral' },
   missing: { label: 'Missing', chip: 'chip-danger' },
   incompatible: { label: 'Incompatible', chip: 'chip-danger' },
+  unavailable: { label: 'Unavailable', chip: 'chip-warn' },
+  pending: { label: 'Confirmation pending', chip: 'chip-warn' },
 });
 
 /**
@@ -71,11 +72,9 @@ export const WORKSPACE_STATUS = Object.freeze({
  * would make the catalogue slow to paint and, worse, would make every row's
  * meaning depend on whether a request happened to succeed.
  */
-export function workspaceStatus(environment, { connections = [], hasHandle = null } = {}) {
+export function workspaceStatus(environment, { connections = [], hasHandle = null, pendingReattachment = null } = {}) {
+  if (pendingReattachment) return 'pending';
   const source = environmentSourceOf(environment);
-  if (environment.compatibility === 'invalid-citadel-root' || environment.compatibility === 'unavailable') {
-    return 'incompatible';
-  }
   if (source.kind === 'github') {
     // A record migrated from v3 has no recorded account identity, so it cannot
     // be attributed to a connection without guessing. It reconnects instead.
@@ -83,15 +82,63 @@ export function workspaceStatus(environment, { connections = [], hasHandle = nul
     const profile = connections.find((item) => item.id === source.connectionProfileId) || null;
     if (!profile) return 'missing';
     if (!isConnectionLive(profile) && !isConnectionResumable(profile)) return 'reconnect';
+    if (environment.compatibility === 'invalid-citadel-root') return 'incompatible';
+    if (environment.compatibility === 'unavailable') return 'unavailable';
     return source.validatedAt ? 'ready' : 'stale';
   }
   if (hasHandle === false) return 'missing';
+  if (environment.compatibility === 'invalid-citadel-root') return 'incompatible';
+  if (environment.compatibility === 'unavailable') return 'unavailable';
   if (environment.permission !== 'granted') return 'reconnect';
   return environment.lastScannedAt ? 'ready' : 'stale';
 }
 
+export function workspaceRecovery(environment, options = {}) {
+  const source = environmentSourceOf(environment);
+  const status = workspaceStatus(environment, options);
+  const native = configurationOf(environment).format === 'terraform';
+  if (status === 'pending') return {
+    label: 'Confirmation pending', action: 'reattach', actionLabel: 'Review pending reattachment',
+    guidance: 'Reopen the retained review to confirm or revalidate the same selected connection. Staged metadata is not permission to open this workspace.',
+  };
+  if (source.kind === 'github' && (!source.connectionProfileId || status === 'missing')) {
+    return {
+      label: source.connectionProfileId ? 'Missing connection' : 'Connection not assigned',
+      action: 'reattach', actionLabel: native ? 'Review recovery' : 'Reattach connection',
+      guidance: native
+        ? 'Native source and connection identity cannot be transferred. Review the retained workspace before attaching a separate one.'
+        : 'Choose and validate a connection for this exact repository and its retained refs. Drafts and history stay with this workspace.',
+    };
+  }
+  if (source.kind === 'github' && status === 'reconnect') return {
+    label: 'Needs credentials', action: 'credentials', actionLabel: 'Reconnect credentials',
+    guidance: 'Restore this named connection with a token for its recorded account, then retry this workspace.',
+  };
+  if (source.kind === 'local' && status === 'missing') return {
+    label: 'Unavailable folder', action: native ? 'native-folder' : 'reconnect', actionLabel: native ? 'Review recovery' : 'Reconnect folder',
+    guidance: native
+      ? 'The original native folder handle is missing. Its identity cannot be proven by selecting a look-alike folder; retained drafts and history cannot be transferred.'
+      : 'Select the original Citadel folder explicitly. The displayed local path alone does not grant browser access.',
+  };
+  if (source.kind === 'local' && status === 'reconnect') return {
+    label: 'Folder permission needed', action: 'reconnect', actionLabel: 'Reconnect folder',
+    guidance: 'Allow access to the original browser-selected folder. This does not create or restore missing files.',
+  };
+  if (status === 'incompatible') return {
+    label: 'Incompatible source', action: 'retry', actionLabel: 'Retry source check',
+    guidance: 'Inspect the existing source and required configuration files outside Citadel, then retry. Missing files will not be recreated.',
+  };
+  if (status === 'unavailable') return {
+    label: 'Source unavailable', action: 'retry', actionLabel: 'Retry source check',
+    guidance: source.kind === 'github'
+      ? 'Check access and the retained repository/ref outside Citadel, then retry. No alternate ref is selected automatically.'
+      : 'Check that the original folder and files are available, then retry. Retained drafts do not authorize recreating missing files.',
+  };
+  return { label: WORKSPACE_STATUS[status].label, action: 'open', actionLabel: 'Open', guidance: '' };
+}
+
 /** The row model the table renders, and the one the filters operate on. */
-export function workspaceRow(environment, { project, connections = [], hasHandle = null } = {}) {
+export function workspaceRow(environment, { project, connections = [], hasHandle = null, pendingReattachment = null } = {}) {
   const source = environmentSourceOf(environment);
   const configuration = configurationOf(environment);
   const native = configuration.format === 'terraform';
@@ -101,12 +148,14 @@ export function workspaceRow(environment, { project, connections = [], hasHandle
       : null;
   return {
     environment,
+    pendingReattachment,
     project: project || null,
     source,
     connection,
     kind: source.kind,
     label: environment.label,
     projectLabel: project?.label || '',
+    configurationFormat: configuration.format,
     formatLabel: native ? `Terraform (${configuration.units.length} ${configuration.units.length === 1 ? 'unit' : 'units'})` : 'Bicep',
     location: source.kind === 'github' ? source.fullName : source.folderName,
     detail: source.kind === 'github' ? source.localPath || null : source.localPath || null,
@@ -116,7 +165,8 @@ export function workspaceRow(environment, { project, connections = [], hasHandle
       ? [...new Set(configuration.units.map((unit) => ({ deployment: 'Azure Deployment', llm: 'LLM Onboarding', access: 'Access Contracts' })[unit.area]))]
       : source.kind === 'github' ? source.capabilities || [] : [],
     connectionName: connection?.name || (source.kind === 'github' ? 'Not connected' : ''),
-    status: workspaceStatus(environment, { connections, hasHandle }),
+    status: workspaceStatus(environment, { connections, hasHandle, pendingReattachment }),
+    recovery: workspaceRecovery(environment, { connections, hasHandle, pendingReattachment }),
     lastOpenedAt: environment.lastOpenedAt || null,
     lastValidatedAt:
       source.kind === 'github' ? source.validatedAt || null : environment.lastScannedAt || null,
@@ -133,6 +183,7 @@ function haystack(row) {
     row.branch,
     row.workingBranch,
     row.connectionName,
+    row.recovery?.label,
     ...row.capabilities,
   ]
     .filter(Boolean)
@@ -357,6 +408,18 @@ export function presentWorkspaceCatalog(options) {
     let busy = false;
     let unsubscribe = null;
 
+    function retainedReattachments() {
+      const owner = actions.commitReattachment || actions;
+      if (!pendingReattachmentViews.has(owner)) pendingReattachmentViews.set(owner, new Map());
+      return pendingReattachmentViews.get(owner);
+    }
+
+    function pendingReattachment(environmentId) {
+      return typeof actions.pendingReattachment === 'function'
+        ? actions.pendingReattachment(environmentId)
+        : retainedReattachments().get(environmentId) || null;
+    }
+
     /** Stop listening once a workspace is open; the catalogue is gone. */
     function settle(workspace) {
       unsubscribe?.();
@@ -391,8 +454,39 @@ export function presentWorkspaceCatalog(options) {
     const root = h('section', { class: 'workspace-catalog', 'aria-label': 'Citadel workspaces' });
     // The dialog retains this opener while a catalogue refresh may repaint its surroundings.
     const addWorkspaceButton = h('button', {
-      class: 'btn btn-primary', type: 'button', onclick: () => startAddWorkspace(),
+      id: 'catalog-add-workspace', class: 'btn btn-primary', type: 'button', onclick: () => startAddWorkspace(),
     });
+
+    function captureFocus() {
+      const control = document.activeElement;
+      if (!root.contains(control) || !control.id) return null;
+      const disclosure = control.closest('details');
+      return {
+        id: control.id, start: control.selectionStart, end: control.selectionEnd, direction: control.selectionDirection,
+        disclosure: disclosure?.open ? disclosure.querySelector('summary')?.id : null,
+      };
+    }
+
+    function restoreFocus(saved, fallback = false) {
+      if (!saved || document.getElementById('modal')?.open || !root.isConnected) return;
+      let control = document.getElementById(saved.id);
+      if (!control || control.disabled || !root.contains(control)) {
+        if (!fallback) return;
+        control = document.getElementById('catalog-title');
+      }
+      const disclosure = control?.closest('details');
+      const summary = disclosure?.querySelector('summary');
+      if (disclosure && !disclosure.open && control !== summary) {
+        if (saved.disclosure === summary?.id) disclosure.open = true;
+        else control = summary;
+      }
+      if (control === document.activeElement) return;
+      control?.focus({ preventScroll: true });
+      if (document.activeElement !== control && summary?.isConnected) summary.focus({ preventScroll: true });
+      if (document.activeElement === control && control?.id === saved.id && Number.isInteger(saved.start) && Number.isInteger(saved.end)) {
+        control.setSelectionRange?.(saved.start, saved.end, saved.direction);
+      }
+    }
 
     function persist() {
       savePreferences({
@@ -405,7 +499,7 @@ export function presentWorkspaceCatalog(options) {
       });
     }
 
-    async function guard(work, message) {
+    async function guard(work, message, focused = captureFocus()) {
       if (busy) return null;
       busy = true;
       say(banner, '');
@@ -415,12 +509,15 @@ export function presentWorkspaceCatalog(options) {
         return await work();
       } catch (error) {
         reportClientError(error, 'app.workspace', { module: '/js/workspace-catalog.mjs' });
-        say(banner, error?.message || String(error));
+        say(banner, [error?.message || String(error), error?.sourceUnavailable?.guidance].filter(Boolean).join(' '));
         return null;
       } finally {
         busy = false;
         say(progress, '');
+        const current = document.activeElement;
+        const restoreAction = current === document.body || current?.id === 'catalog-title' || current?.id === focused?.id;
         render();
+        if (restoreAction) restoreFocus(focused, true);
       }
     }
 
@@ -429,7 +526,7 @@ export function presentWorkspaceCatalog(options) {
         const [projects, environments, connectionState, activity] = await Promise.all([
           actions.listProjects(),
           actions.listEnvironments(),
-          actions.listConnections().catch(() => ({ profiles: [], vault })),
+          actions.listConnections(),
           actions.listActivity().catch(() => []),
         ]);
         connections = connectionState?.profiles || [];
@@ -446,6 +543,7 @@ export function presentWorkspaceCatalog(options) {
               project: byId.get(environment.projectId),
               connections,
               hasHandle,
+              pendingReattachment: pendingReattachment(environment.id),
             });
           })
         );
@@ -460,6 +558,7 @@ export function presentWorkspaceCatalog(options) {
 
     /** Open a workspace, closing the catalogue by resolving the promise. */
     function open(row) {
+      if (pendingReattachment(row.environment.id)) return reconnect(row);
       return guard(async () => {
         const workspace = await actions.openEnvironment(row.environment);
         if (workspace) settle(workspace);
@@ -468,6 +567,25 @@ export function presentWorkspaceCatalog(options) {
     }
 
     function reconnect(row) {
+      if (busy) return null;
+      const pendingReview = pendingReattachment(row.environment.id);
+      if (pendingReview || row.recovery?.action === 'reattach' || row.recovery?.action === 'native-folder') {
+        runWorkspaceReattachment({
+          environment: row.environment, connections, vault, actions, pendingReview,
+          onDone: async ({ environment, open: shouldOpen, pending } = {}) => {
+            await refresh();
+            if (pending) say(banner, 'Connection reattachment was left pending server confirmation. The local metadata is retained; no source files or refs changed. Use Review pending reattachment on this workspace to confirm or revalidate the same connection before opening.');
+            if (shouldOpen && environment) open(workspaceRow(environment, { connections }));
+          },
+          onNewWorkspace: () => startAddWorkspace(row.environment.projectId),
+        });
+        return;
+      }
+      if (row.recovery?.action === 'credentials' && row.connection) {
+        openReconnectDialog(row.connection);
+        return;
+      }
+      if (row.recovery?.action === 'retry') return open(row);
       return guard(async () => {
         const workspace = await actions.reconnectEnvironment(row.environment, {
           connections,
@@ -479,6 +597,7 @@ export function presentWorkspaceCatalog(options) {
     }
 
     async function rename(row) {
+      const focused = captureFocus();
       const label = await actions.promptLabel({
         title: `Rename ${row.label}`,
         message: 'Workspace names are unique inside a project.',
@@ -488,10 +607,11 @@ export function presentWorkspaceCatalog(options) {
       await guard(async () => {
         await actions.renameEnvironment(row.environment, label);
         await refresh();
-      }, 'Renaming\u2026');
+      }, 'Renaming\u2026', focused);
     }
 
     async function detach(row) {
+      const focused = captureFocus();
       const confirmed = await confirmDialog({
         title: `Detach ${row.label}?`,
         message:
@@ -505,7 +625,7 @@ export function presentWorkspaceCatalog(options) {
       await guard(async () => {
         await actions.detachEnvironment(row.environment);
         await refresh();
-      }, 'Detaching\u2026');
+      }, 'Detaching\u2026', focused);
     }
 
     // ---- connections ------------------------------------------------------
@@ -518,6 +638,7 @@ export function presentWorkspaceCatalog(options) {
             'button',
             {
               class: 'btn btn-sm btn-primary',
+              id: `catalog-connection-${profile.id}-primary`,
               type: 'button',
               disabled: busy,
               onclick: () =>
@@ -535,6 +656,7 @@ export function presentWorkspaceCatalog(options) {
             'button',
             {
               class: 'btn btn-sm btn-primary',
+              id: `catalog-connection-${profile.id}-primary`,
               type: 'button',
               disabled: busy,
               onclick: () => openReconnectDialog(profile),
@@ -548,6 +670,7 @@ export function presentWorkspaceCatalog(options) {
             'button',
             {
               class: 'btn btn-sm',
+              id: `catalog-connection-${profile.id}-primary`,
               type: 'button',
               disabled: busy,
               onclick: () =>
@@ -565,9 +688,11 @@ export function presentWorkspaceCatalog(options) {
           'button',
           {
             class: 'btn btn-sm',
+            id: `catalog-connection-${profile.id}-rename`,
             type: 'button',
             disabled: busy,
             onclick: async () => {
+              const focused = captureFocus();
               const name = await actions.promptLabel({
                 title: `Rename ${profile.name}`,
                 message: 'Connection names are unique on this device.',
@@ -577,7 +702,7 @@ export function presentWorkspaceCatalog(options) {
               await guard(async () => {
                 await actions.renameConnection(profile.id, name);
                 await refresh();
-              }, 'Renaming\u2026');
+              }, 'Renaming\u2026', focused);
             },
           },
           'Rename'
@@ -588,16 +713,18 @@ export function presentWorkspaceCatalog(options) {
           'button',
           {
             class: 'btn btn-sm btn-danger-ghost',
+            id: `catalog-connection-${profile.id}-remove`,
             type: 'button',
             disabled: busy,
             onclick: async () => {
+              const focused = captureFocus();
               const attached = rows.filter((row) => row.connection?.id === profile.id);
               const confirmed = await confirmDialog({
                 title: `Remove ${profile.name}?`,
                 message: attached.length
                   ? `${attached.length} saved workspace${
                       attached.length === 1 ? '' : 's'
-                    } reached GitHub through this connection. They stay in the catalogue and will ask to be reconnected. No branch is deleted and no token is revoked.`
+                    } reached GitHub through this connection. They stay in the catalogue with their drafts and history. Bicep workspaces offer reviewed connection reattachment; native workspaces keep their immutable connection identity. No branch is deleted and no token is revoked.`
                   : 'The saved credential for this connection is deleted from this device. No branch is deleted and no token is revoked.',
                 confirmLabel: 'Remove connection',
                 tone: 'danger',
@@ -606,7 +733,7 @@ export function presentWorkspaceCatalog(options) {
               await guard(async () => {
                 await actions.removeConnection(profile.id);
                 await refresh();
-              }, 'Removing\u2026');
+              }, 'Removing\u2026', focused);
             },
           },
           'Remove'
@@ -732,6 +859,9 @@ export function presentWorkspaceCatalog(options) {
     }
 
     function openReconnectDialog(profile) {
+      if (busy) return;
+      const focused = captureFocus();
+      let reconnecting = false;
       const token = h('input', {
         id: 'catalog-reconnect-token',
         class: 'ctl',
@@ -754,19 +884,28 @@ export function presentWorkspaceCatalog(options) {
           class: 'btn btn-primary',
           type: 'button',
           onclick: async () => {
+            if (reconnecting) return;
+            reconnecting = true;
             const value = token.value;
             token.value = '';
             submit.disabled = true;
+            submit.setAttribute('aria-busy', 'true');
             try {
               await actions.reconnectConnection(profile.id, {
                 token: value,
                 persist: persistInput.checked,
               });
+              reconnecting = false;
               dismissDialog(true);
               await refresh();
+              if (document.activeElement === document.body) restoreFocus(focused, true);
             } catch (failure) {
               say(error, failure?.message || String(failure));
+              token.focus();
+            } finally {
+              reconnecting = false;
               submit.disabled = false;
+              submit.removeAttribute('aria-busy');
             }
           },
         },
@@ -802,7 +941,7 @@ export function presentWorkspaceCatalog(options) {
           h('button', { class: 'btn', type: 'button', onclick: () => dismissDialog(false) }, 'Cancel'),
           submit,
         ],
-        { initialFocus: token }
+        { initialFocus: token, preventDismiss: () => reconnecting, onDismiss: () => { token.value = ''; } }
       );
     }
 
@@ -816,6 +955,7 @@ export function presentWorkspaceCatalog(options) {
             'button',
             {
               class: 'btn btn-sm btn-primary',
+              id: `catalog-workspace-${row.environment.id}-primary`,
               type: 'button',
               disabled: busy,
               onclick: () => open(row),
@@ -836,33 +976,44 @@ export function presentWorkspaceCatalog(options) {
             'button',
             {
               class: 'btn btn-sm btn-primary',
+              id: `catalog-workspace-${row.environment.id}-primary`,
               type: 'button',
               disabled: busy,
               onclick: () => reconnect(row),
             },
-            'Reconnect'
+            row.recovery.actionLabel
           )
         );
       }
-      controls.push(
-        h(
-          'button',
-          { class: 'btn btn-sm', type: 'button', disabled: busy, onclick: () => rename(row) },
-          'Edit'
-        )
-      );
-      controls.push(
-        h(
-          'button',
-          {
-            class: 'btn btn-sm btn-danger-ghost',
-            type: 'button',
-            disabled: busy,
-            onclick: () => detach(row),
-          },
-          'Detach'
-        )
-      );
+      const disclosure = h('details', { class: 'catalog-row-actions' });
+      const summary = h('summary', {
+        id: `catalog-workspace-${row.environment.id}-actions`, class: 'btn btn-sm',
+        'aria-label': `Actions for ${row.label}`, 'aria-disabled': String(busy),
+        onclick: (event) => { if (busy) event.preventDefault(); },
+      }, 'Actions');
+      const selectAction = (action) => {
+        if (busy) return;
+        disclosure.open = false;
+        summary.focus({ preventScroll: true });
+        action(row);
+      };
+      disclosure.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape' || !disclosure.open) return;
+        event.preventDefault();
+        event.stopPropagation();
+        disclosure.open = false;
+        summary.focus({ preventScroll: true });
+      });
+      disclosure.append(summary, h('div', { class: 'catalog-actions' },
+        h('button', {
+          id: `catalog-workspace-${row.environment.id}-edit`, class: 'btn btn-sm', type: 'button', disabled: busy,
+          'aria-label': `Rename ${row.label}`, onclick: () => selectAction(rename),
+        }, 'Rename'),
+        h('button', {
+          id: `catalog-workspace-${row.environment.id}-detach`, class: 'btn btn-sm btn-danger-ghost', type: 'button', disabled: busy,
+          'aria-label': `Detach ${row.label}`, onclick: () => selectAction(detach),
+        }, 'Detach')));
+      controls.push(disclosure);
       return controls;
     }
 
@@ -872,7 +1023,9 @@ export function presentWorkspaceCatalog(options) {
         'button',
         {
           class: `btn btn-link catalog-sort${activeKey ? ' catalog-sort-active' : ''}`,
+          id: `catalog-sort-${key}`,
           type: 'button',
+          disabled: busy,
           'aria-sort': activeKey ? (view.direction === 'asc' ? 'ascending' : 'descending') : 'none',
           onclick: () => {
             if (activeKey) view.direction = view.direction === 'asc' ? 'desc' : 'asc';
@@ -881,7 +1034,7 @@ export function presentWorkspaceCatalog(options) {
               view.direction = 'asc';
             }
             persist();
-            render();
+            renderList();
           },
         },
         label,
@@ -897,7 +1050,11 @@ export function presentWorkspaceCatalog(options) {
         renderSortButton: sortButton,
         renderSourceBadge: sourceBadge,
         renderChip: chip,
-        renderStatus: (status) => chip(WORKSPACE_STATUS[status].label, WORKSPACE_STATUS[status].chip),
+        renderStatus: (status, row) => {
+          const badge = chip(row.recovery.label, WORKSPACE_STATUS[status].chip);
+          if (row.recovery.guidance) badge.setAttribute('title', row.recovery.guidance);
+          return badge;
+        },
         formatTime: (value) => relativeTime(value, now()),
         renderRowActions: workspaceActions,
         onClearFilters: () => {
@@ -906,6 +1063,7 @@ export function presentWorkspaceCatalog(options) {
           view.status = 'all';
           persist();
           render();
+          document.getElementById('catalog-search')?.focus({ preventScroll: true });
         },
       });
     }
@@ -917,6 +1075,8 @@ export function presentWorkspaceCatalog(options) {
         type: 'search',
         value: view.search,
         placeholder: 'Search workspaces, repositories and branches',
+        name: 'workspace-search',
+        autocomplete: 'off',
         'aria-label': 'Search saved workspaces',
         oninput: (event) => {
           view.search = event.target.value;
@@ -978,6 +1138,7 @@ export function presentWorkspaceCatalog(options) {
           'button',
           {
             class: 'btn btn-quiet catalog-activity-toggle',
+            id: 'catalog-activity-toggle',
             type: 'button',
             'aria-expanded': String(open_),
             'aria-controls': 'catalog-activity-list',
@@ -1025,25 +1186,28 @@ export function presentWorkspaceCatalog(options) {
 
     function renderList() {
       if (!listHost) return render();
+      const focused = captureFocus();
       const visible = filterWorkspaces(rows, view);
       resultCount.textContent = `${visible.length} of ${rows.length}`;
       mount(listHost, catalogList(visible));
+      restoreFocus(focused);
       return undefined;
     }
 
     function render() {
+      const focused = captureFocus();
       const restoreAddFocus = document.activeElement === addWorkspaceButton;
       const addLabel = rows.length ? 'Add workspace' : 'Add your first workspace';
       if (addWorkspaceButton.textContent !== addLabel) addWorkspaceButton.textContent = addLabel;
       addWorkspaceButton.disabled = busy;
       const visible = filterWorkspaces(rows, view);
-      resultCount = h('span', { class: 'hint catalog-result-count' }, `${visible.length} of ${rows.length}`);
+      resultCount = h('span', { class: 'hint catalog-result-count', role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true' }, `${visible.length} of ${rows.length}`);
       listHost = h('div', { class: 'catalog-list' });
       mount(root,
         h(
           'header',
           { class: 'catalog-head' },
-          h('h1', {}, 'Citadel workspaces'),
+          h('h1', { id: 'catalog-title', tabindex: '-1' }, 'Citadel workspaces'),
           h(
             'p',
             { class: 'hint' },
@@ -1121,14 +1285,16 @@ export function presentWorkspaceCatalog(options) {
         activityPanel()
       );
       mount(listHost, catalogList(visible));
+      restoreFocus(focused, true);
       if (restoreAddFocus && !document.getElementById('modal')?.open && addWorkspaceButton.isConnected) {
         addWorkspaceButton.focus({ preventScroll: true });
       }
       return undefined;
     }
 
-    function startAddWorkspace() {
+    function startAddWorkspace(projectId = null) {
       runAddWorkspace({
+        projectId,
         actions,
         connections,
         vault,
@@ -1144,6 +1310,166 @@ export function presentWorkspaceCatalog(options) {
           if (existing) open(existing);
         },
       });
+    }
+
+    function runWorkspaceReattachment({ environment, connections, vault, actions, onDone, onNewWorkspace, pendingReview = null }) {
+      if (pendingReview) environment = { ...environment, label: pendingReview.workspace || environment.label, source: pendingReview.source || environment.source };
+      const source = environmentSourceOf(environment);
+      const native = configurationOf(environment).format === 'terraform';
+      const state = {
+        step: pendingReview ? 'review' : 'connection', profileId: pendingReview?.profileId || '',
+        name: '', consent: Boolean(pendingReview), review: pendingReview, completed: null,
+        pending: Boolean(pendingReview), busy: false, message: '',
+      };
+      const profiles = [...connections];
+      let closed = false;
+      let credential = null;
+      const clearCredential = () => { if (credential) credential.value = ''; };
+      const finish = (open = false) => {
+        if (closed) return;
+        clearCredential();
+        closed = true;
+        onDone?.({ environment: state.completed, open, pending: state.pending });
+      };
+      const close = () => { if (!state.busy) dismissDialog(false); };
+      const summary = (label, value) => h('div', { class: 'catalog-summary-row' }, h('dt', {}, label), h('dd', {}, value));
+      async function run(work) {
+        if (state.busy || closed) return;
+        state.busy = true;
+        state.message = '';
+        render();
+        try { await work(); }
+        catch (error) {
+          reportClientError(error, 'app.workspace', { module: '/js/workspace-catalog.mjs' });
+          state.message = error?.message || String(error);
+          if (error?.code === 'REATTACH_SYNC_PENDING') state.pending = true;
+        } finally {
+          state.busy = false;
+          if (state.pending && state.review) retainedReattachments().set(environment.id, state.review);
+          else if (state.completed) retainedReattachments().delete(environment.id);
+          if (!closed) render();
+        }
+      }
+      function render() {
+        clearCredential();
+        const heading = h('h3', { id: 'workspace-reattach-stage', tabindex: '-1' },
+          native ? 'Retained native workspace' : state.step === 'connection' ? 'Choose and validate'
+            : state.step === 'review' ? 'Confirm the retained source' : 'Connection reattached.');
+        const error = h('p', { class: 'field-error catalog-error', role: 'alert', hidden: !state.message }, state.message);
+        const content = h('div', { class: 'catalog-form' }, heading,
+          h('dl', { class: 'catalog-summary' },
+            summary('Workspace', environment.label),
+            summary('Format', h('span', { class: 'format-label' },
+              formatIcon(configurationOf(environment).format), native ? 'Terraform' : 'Bicep')),
+            summary(source.kind === 'github' ? 'Repository' : 'Folder', h('code', {}, source.fullName || source.folderName)),
+            source.kind === 'github' ? summary('Repository ID', String(source.repositoryId)) : null,
+            source.kind === 'github' ? summary('Source ref', h('code', {}, source.sourceBranch)) : null,
+            source.kind === 'github' ? summary('Write ref (unchanged)', h('code', {}, source.workingBranch)) : null),
+          h('p', { class: 'hint' }, 'The existing workspace, retained drafts and history stay in place. No source file or repository ref is created, restored or changed by connection recovery.'),
+          error);
+        const buttons = [h('button', { class: 'btn', type: 'button', disabled: state.busy, onclick: close }, state.completed ? 'Done' : state.pending ? 'Close with pending reattachment' : 'Cancel')];
+        let initialFocus = heading;
+        if (native) {
+          content.append(h('p', {}, source.kind === 'github'
+            ? 'Native workspace connection identity is immutable. A removed connection cannot be replaced on this workspace without changing its ownership policy.'
+            : 'The original native folder handle is unavailable. A new handle cannot prove it owns the retained drafts and history.'),
+          h('p', { class: 'hint' }, 'Keep this workspace while preserving any retained work. Add a separate workspace only with a new intentional source binding. Existing file ownership checks still apply; this does not transfer drafts or history.'));
+          if (onNewWorkspace) buttons.push(h('button', { class: 'btn', type: 'button', onclick: () => {
+            dismissDialog(false);
+            onNewWorkspace();
+          } }, 'Add separate workspace'));
+        } else if (state.step === 'connection') {
+          const selected = profiles.find((profile) => profile.id === state.profileId);
+          const newConnection = state.profileId === 'new';
+          const credentialNeeded = newConnection || selected && !isConnectionLive(selected) && !isConnectionResumable(selected);
+          const choice = h('select', {
+            id: 'workspace-reattach-connection', class: 'ctl', disabled: state.busy,
+            onchange: (event) => { state.profileId = event.target.value; state.consent = false; state.message = ''; render(); },
+          }, h('option', { value: '' }, 'Choose a connection explicitly'),
+          profiles.map((profile) => h('option', { value: profile.id }, `${profile.name} (@${profile.accountLogin})`)),
+          h('option', { value: 'new' }, 'Create a new named connection'));
+          choice.value = state.profileId;
+          const name = h('input', {
+            id: 'workspace-reattach-name', class: 'ctl', autocomplete: 'off', maxlength: 80, value: state.name, disabled: state.busy,
+            oninput: (event) => { state.name = event.target.value; },
+          });
+          const token = h('input', {
+            id: 'workspace-reattach-token', name: 'reattachment-token', class: 'ctl', type: 'password',
+            autocomplete: 'off', spellcheck: false, disabled: state.busy,
+          });
+          credential = token;
+          const persist = h('input', { id: 'workspace-reattach-persist', type: 'checkbox', disabled: state.busy || !vault.available });
+          const consent = h('input', {
+            id: 'workspace-reattach-consent', type: 'checkbox', checked: state.consent, disabled: state.busy,
+            onchange: () => { state.consent = consent.checked; validate.disabled = state.busy || !state.profileId || !state.consent; },
+          });
+          const validate = h('button', {
+            class: 'btn btn-primary', type: 'button', disabled: state.busy || !state.profileId || !state.consent,
+            onclick: () => {
+              if (!state.profileId || !state.consent || state.busy) return;
+              const value = token.value;
+              token.value = '';
+              return run(async () => {
+                let account;
+                if (newConnection) {
+                  if (!state.name.trim()) throw new Error('Name the replacement connection before validating.');
+                  account = await actions.createConnection({ name: state.name.trim(), token: value, persist: persist.checked });
+                  if (!account?.profileId) throw new Error('The new connection was not confirmed. Choose and validate it again.');
+                  state.profileId = account.profileId;
+                  profiles.push(account.profile || { id: account.profileId, name: state.name.trim(), accountId: account.accountId, accountLogin: account.login, status: 'session' });
+                } else if (credentialNeeded) {
+                  account = await actions.reconnectConnection(selected.id, { token: value, persist: persist.checked });
+                } else account = await actions.useConnection(selected.id);
+                if (account?.profileId !== state.profileId) throw new Error('The chosen connection changed. Validate it again.');
+                state.review = await actions.reviewReattachment(environment, state.profileId);
+                state.step = 'review';
+              });
+            },
+          }, state.busy ? 'Validating connection and source\u2026' : 'Validate connection and source');
+          content.append(
+            field('workspace-reattach-connection', 'Replacement connection', choice),
+            h('p', { class: 'hint' }, 'The removed connection does not retain an account identity here. The next step identifies and validates the account you explicitly choose; it does not assume it is the former account.'),
+            ...(newConnection ? [field('workspace-reattach-name', 'Connection name', name)] : []),
+            ...(credentialNeeded ? [githubTokenField('workspace-reattach-token', 'GitHub token', token),
+              field('workspace-reattach-persist', CONNECTION_PERSISTENCE_LABEL, persist,
+                vault.available ? 'Optional. The server stores the credential encrypted.' : 'No credential key is available. This connection is session-only.')] : []),
+            field('workspace-reattach-consent', 'Allow Citadel to read this exact repository and its retained refs to validate the selected connection.', consent));
+          buttons.push(validate);
+          initialFocus = state.message && credentialNeeded ? token : choice;
+        } else if (state.step === 'review') {
+          const reviewed = state.review;
+          content.append(h('dl', { class: 'catalog-summary' },
+            summary('Replacement connection', reviewed.profileName),
+            summary('Validated account', `@${reviewed.login} (ID ${reviewed.accountId})`),
+            ...reviewed.refs.map((ref) => summary(`Validated ref: ${ref.branch}`, h('code', {}, ref.head)))),
+          h('p', {}, 'Confirm only the connection change. Citadel revalidates this account and both retained refs immediately before updating workspace metadata. If a ref moves, validate and review again.'));
+          if (state.pending) content.append(h('p', { class: 'notice warn', role: 'status' },
+            'The local connection change is staged, but server confirmation is pending. Retry the same confirmation, or revalidate this same connection if a ref moved. Closing retains the staged metadata; it does not undo or confirm the change.'));
+          buttons.push(h('button', { class: 'btn', type: 'button', disabled: state.busy || state.pending, onclick: () => {
+            state.step = 'connection'; state.review = null; state.message = ''; render();
+          } }, 'Back'),
+          ...(state.pending ? [h('button', { class: 'btn', type: 'button', disabled: state.busy, onclick: () => run(async () => {
+            state.review = await actions.revalidateReattachment(reviewed);
+          }) }, 'Revalidate this connection')] : []),
+          h('button', { class: 'btn btn-primary', type: 'button', disabled: state.busy, onclick: () => run(async () => {
+            state.completed = await actions.commitReattachment(reviewed);
+            state.pending = false;
+            state.step = 'done';
+          }) }, state.busy ? 'Confirming reattachment\u2026' : state.pending ? 'Retry confirmation' : 'Reattach this workspace'));
+        } else {
+          content.append(h('p', { role: 'status' }, 'Connection reattached. The server confirmed this workspace metadata. Retained drafts still require normal source freshness checks and review before saving. No deployment ran.'));
+          buttons.push(h('button', { class: 'btn btn-primary', type: 'button', onclick: () => {
+            dismissDialog(true); finish(true);
+          } }, 'Open workspace'));
+        }
+        showDialog(native ? 'Workspace recovery' : state.step === 'review' ? 'Review connection reattachment'
+          : state.step === 'done' ? 'Reattachment outcome' : 'Reattach workspace connection',
+        h('div', { class: 'catalog-dialog', 'aria-busy': String(state.busy) }, content), buttons, {
+          initialFocus, preventDismiss: () => state.busy,
+          onDismiss: (result) => { if (result !== true) finish(false); },
+        });
+      }
+      render();
     }
 
     mount(container, root);
@@ -1317,7 +1643,7 @@ export function runAddWorkspace(options) {
       h(
         'div',
         { class: 'catalog-choice' },
-        h('label', { class: 'field' }, 'Configuration format', format),
+        h('label', { class: 'field' }, h('span', { class: 'format-label' }, formatIcon(state.format), ' Configuration format '), format),
         h('p', { class: 'hint' }, 'Format and source are independent. A saved GitHub connection can serve either format; each local workspace needs a separate repository folder.'),
         h(
           'button',
@@ -2380,6 +2706,7 @@ export function runAddWorkspace(options) {
 
   function reviewStep() {
     const error = alertLine();
+    const heading = h('h3', { tabindex: '-1' }, 'Review workspace identity and write target');
     const summary = (term, value) => h('div', { class: 'catalog-summary-row' }, h('dt', {}, term), h('dd', {}, value));
     // Real stages, driven by the attachment workflow's own await boundaries.
     // The region carries the spinner on the running step, a checkmark on each
@@ -2470,13 +2797,15 @@ export function runAddWorkspace(options) {
       h(
         'div',
         { class: 'catalog-form' },
+        heading,
         h(
           'dl',
           { class: 'catalog-summary' },
           summary('Project', state.projectId ? actions.projectName(state.projectId) : state.projectLabel),
           summary('Workspace', state.environmentLabel),
           summary('Source', state.kind === 'github' ? 'GitHub repository' : 'Local folder'),
-          summary('Format', state.format === 'terraform' ? 'Terraform (native HCL/JSON inputs)' : 'Bicep / Citadel'),
+          summary('Format', h('span', { class: 'format-label' }, formatIcon(state.format),
+            state.format === 'terraform' ? 'Terraform (native HCL/JSON inputs)' : 'Bicep / Citadel')),
           ...(state.configuration?.units || []).map((unit) => summary('Native unit', h('code', {}, `${unit.rootAlias || '.'} -> ${unit.valueAlias}`))),
           state.kind === 'github'
             ? summary('Repository', h('code', {}, selection.repository?.fullName || ''))
@@ -2517,7 +2846,7 @@ export function runAddWorkspace(options) {
         error
       ),
       [backButton(state.format === 'terraform' ? 'native' : 'details'), attach],
-      attach
+      heading
     );
   }
 

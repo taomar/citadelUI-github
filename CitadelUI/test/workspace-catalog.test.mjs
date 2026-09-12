@@ -145,20 +145,27 @@ test('a local workspace is Missing when its folder handle is gone', () => {
   );
   assert.equal(
     workspaceStatus(localEnvironment({ compatibility: 'unavailable' }), { hasHandle: true }),
-    'incompatible'
+    'unavailable'
   );
 });
 
-test('every status has a word and a chip, and none of them is two words of hedging', () => {
+test('every status has an explicit label and chip, including pending confirmation', () => {
   assert.deepEqual(Object.keys(WORKSPACE_STATUS).sort(), [
     'incompatible',
     'missing',
+    'pending',
     'ready',
     'reconnect',
     'stale',
+    'unavailable',
   ]);
   for (const [key, meta] of Object.entries(WORKSPACE_STATUS)) {
-    assert.match(meta.label, /^[A-Z][a-z]+$/, key);
+    if (key === 'pending') {
+      assert.equal(meta.label, 'Confirmation pending');
+      assert.equal(meta.chip, 'chip-warn');
+    } else {
+      assert.match(meta.label, /^[A-Z][a-z]+$/, key);
+    }
     assert.match(meta.chip, /^chip-/, key);
   }
 });

@@ -1,5 +1,5 @@
 .debug-content {
-  max-width: 96rem;
+  max-width: 88rem;
   padding-block: var(--sp-7) var(--sp-8);
   gap: var(--sp-7);
 }
@@ -8,6 +8,34 @@
 .debug-section {
   display: grid;
   gap: var(--sp-4);
+}
+
+.debug-section {
+  padding: var(--sp-6);
+  border: 1px solid var(--rule);
+  border-radius: var(--sp-2);
+  min-width: 0;
+}
+
+.debug-skip {
+  position: fixed;
+  inset-block-start: var(--sp-4);
+  inset-inline-start: var(--sp-4);
+  z-index: 100;
+  padding: var(--sp-4) var(--sp-5);
+  color: var(--ink-1);
+  background: var(--band);
+  transform: translateY(-200%);
+}
+
+.debug-skip:focus {
+  transform: none;
+}
+
+.debug-content :focus-visible,
+.debug-skip:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
 }
 
 .debug-content h1,
@@ -71,6 +99,7 @@
   gap: var(--sp-4) var(--sp-6);
   margin: 0;
   font-size: var(--t-body);
+  font-variant-numeric: tabular-nums;
 }
 
 .debug-timing dt {
@@ -116,7 +145,13 @@
   border-collapse: collapse;
   text-align: left;
   font-size: var(--t-body);
+  table-layout: fixed;
 }
+
+.debug-table th:first-child { width: 12%; }
+.debug-table th:nth-child(2) { width: 22%; }
+.debug-table th:last-child { width: 7%; }
+.debug-table td { overflow-wrap: anywhere; }
 
 .debug-table th,
 .debug-table td {

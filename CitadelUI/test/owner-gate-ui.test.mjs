@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { installDom } from './_dom-stub.mjs';
+import { installDom, readText } from './_dom-stub.mjs';
 import { requireOwnerSession } from '../web/js/owner-gate.mjs';
 
 for (const [code, field, clearsPassword] of [
@@ -58,6 +58,7 @@ for (const [code, field, clearsPassword] of [
     assert.equal(await session, 'synthetic-session');
     assert.equal(target.getAttribute('aria-invalid'), null);
     assert.equal(dom.root.querySelector('.gate'), null);
+    assert.equal(password.value, '', 'accepted credentials are cleared before removing the gate');
     assert.equal(shell.inert, false, 'the workspace becomes interactive only after acceptance');
   });
 }
@@ -86,6 +87,8 @@ test('the centered owner card carries the Citadel mark and submits once while vi
   assert.equal(password.type, 'password');
   assert.equal(password.autocomplete, 'new-password');
   assert.equal(document.activeElement, username);
+  assert.match(readText(panel), /single owner account/);
+  assert.match(readText(panel), /no second account or password reset/);
   const submit = dom.root.querySelector('.gate-submit');
   assert.ok(submit.classList.contains('btn-primary'));
   const listener = dom.root.querySelector('form').listeners.get('submit')[0];
@@ -110,4 +113,7 @@ test('an unavailable owner keeps the frame locked and offers no credential form'
   assert.equal(dom.root.querySelector('.gate-brand').getAttribute('aria-label'), 'Citadel Control Panel');
   assert.equal(dom.root.querySelector('input'), null);
   assert.equal(dom.root.querySelector('button'), null);
+  assert.equal(document.activeElement, dom.root.querySelector('.gate-title'));
+  assert.match(readText(dom.root), /inspect the existing data volume and backups/);
+  assert.doesNotMatch(readText(dom.root), /Redeploy with fresh state to claim/);
 });

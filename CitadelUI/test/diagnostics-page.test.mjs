@@ -87,11 +87,39 @@ test('diagnostics: page starts off, has an accessible switch, safe readable erro
   assert.equal(f.downloads.length, 1);
   assert.equal(f.downloads[0].kind, 'final');
   assert.match(readText(f.ui.root), /Report download requested/);
+  button(f.ui.root, 'Clear report').focus();
   button(f.ui.root, 'Clear report').click();
   await settle();
   assert.equal(f.confirmations[0].title, 'Clear the captured report?');
   assert.equal(f.store.status().capture, null);
   assert.equal(f.ui.root.querySelectorAll('tr').length, 1);
+  assert.equal(document.activeElement, toggle);
+  assert.equal(toggle.disabled, false);
+  assert.match(readText(f.ui.root), /Report cleared/);
+});
+
+test('diagnostics: report repaint preserves expanded guidance and focused summary without stealing later focus', async (t) => {
+  const f = pageFixture(t);
+  const { capture } = f.store.setEnabled(true, null);
+  const event = clientDiagnostic({ code: 'INVALID_CONTENT' }, 'app.action', 'handled');
+  f.store.ingest(capture.id, [event], 0);
+  await f.client.refresh();
+  let help = f.ui.root.querySelector('.debug-event-help');
+  help.open = true;
+  help.querySelector('summary').focus();
+  f.clock.advance(1000);
+  f.store.ingest(capture.id, [event], 0);
+  await f.client.refresh();
+  help = f.ui.root.querySelector('.debug-event-help');
+  assert.equal(help.open, true);
+  assert.equal(document.activeElement, help.querySelector('summary'));
+  const refresh = button(f.ui.root, 'Refresh');
+  refresh.focus();
+  f.clock.advance(1000);
+  f.store.ingest(capture.id, [event], 0);
+  await f.client.refresh();
+  assert.equal(document.activeElement, refresh);
+  assert.equal(f.ui.root.querySelector('.debug-event-help').open, true);
 });
 
 test('diagnostics: replacing a report requires consent, countdown converges on expiry and failed controls stay honest', async (t) => {

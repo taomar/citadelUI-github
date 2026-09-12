@@ -1280,6 +1280,15 @@ test('migration UI restores keyboard focus to recreated area and file selection 
   assert.equal(document.activeElement, find(wizard.body, (node) => node.dataset?.sourceId === source.dataset.sourceId));
 });
 
+test('migration UI finished prepared-list loads clear their progress message', async () => {
+  const { wizard } = await open();
+  assert.equal(wizard.busy, false);
+  assert.doesNotMatch(readText(wizard.body), /Loading prepared sources/);
+  await press(wizard, 'reload-prepared');
+  assert.equal(wizard.busy, false);
+  assert.doesNotMatch(readText(wizard.body), /Loading retained source copies/);
+});
+
 test('migration UI starts each stage at its identities and keeps same-stage action focus', async () => {
   const { wizard } = await open();
   await pair(wizard);
@@ -1291,8 +1300,63 @@ test('migration UI starts each stage at its identities and keeps same-stage acti
   wizard.body.parentElement.scrollTop = 400;
   await press(wizard, 'preview');
   assert.equal(wizard.body.parentElement.scrollTop, 0);
+  assert.equal(document.activeElement, wizard.body.querySelector('.migration-stage-heading'));
+  assert.equal(document.activeElement.isConnected, true);
+  await press(wizard, 'back');
+  assert.equal(wizard.body.parentElement.scrollTop, 400);
+  assert.equal(document.activeElement, button(wizard, 'preview'));
 });
 
+test('migration UI surface review has a connected stage heading and independent mapping Back position', async (t) => {
+  const dialog = await loadDialogModule();
+  const previousWindow = globalThis.window;
+  globalThis.window = new EventTarget();
+  t.after(() => { globalThis.window = previousWindow; });
+  const harness = migrationHarness();
+  const shell = document.createElement('div');
+  const workspace = document.createElement('main');
+  const areas = document.createElement('nav');
+  const actions = document.createElement('div');
+  const rail = document.createElement('aside');
+  shell.append(areas, workspace, actions, rail);
+  document.body.append(shell);
+  const previous = document.createElement('p');
+  previous.textContent = 'Original workspace content';
+  workspace.append(previous);
+  const wizard = await openMigrationWizard({
+    session: harness.session, chooseDirectory: async () => harness.donorRoot,
+    surface: { shell, workspace, areas, actions, rail },
+    confirm: async () => true,
+  });
+  try {
+    await press(wizard, 'choose-folder');
+    find(areas, (node) => node.dataset?.action === 'area-deployment').click();
+    input(wizard, 'Destination parameter file', TARGET);
+    const source = find(wizard.body, (node) => node.dataset?.sourceId);
+    source.checked = true;
+    source.dispatch('change');
+    await press(wizard, 'map');
+    const heading = wizard.body.querySelector('.migration-stage-heading');
+    assert.equal(heading.isConnected, true);
+    assert.equal(document.activeElement, heading);
+    workspace.scrollTop = 360;
+    await press(wizard, 'preview');
+    assert.equal(workspace.scrollTop, 0);
+    assert.equal(document.activeElement, wizard.body.querySelector('.migration-stage-heading'));
+    const review = wizard.body.querySelector('.migration-review');
+    const target = wizard.body.querySelector('.migration-target-preview');
+    assert(review && target);
+    assert.equal(find(wizard.body, (node) => node === review || node === target), review,
+      'The review summary must precede the longer target form.');
+    await press(wizard, 'back');
+    assert.equal(workspace.scrollTop, 360);
+    assert.equal(document.activeElement, button(wizard, 'preview'));
+    assert.equal(harness.api.trace.length, 0);
+    assert.equal(harness.targetTrace.some((entry) => entry.startsWith('write:')), false);
+    await press(wizard, 'close');
+    assert.equal(workspace.children[0], previous);
+  } finally { shell.remove(); dialog.closeDialog(); }
+});
 test('migration UI opens native source pickers synchronously within the triggering user action', async () => {
   const harness = migrationHarness();
   let inGesture = false;

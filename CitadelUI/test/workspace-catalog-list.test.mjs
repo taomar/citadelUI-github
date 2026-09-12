@@ -79,7 +79,7 @@ function environments() {
   ];
 }
 
-async function catalog({ rows = environments(), preferences = {} } = {}) {
+async function catalog({ rows = environments(), preferences = {}, hasHandle = async (id) => id !== 'beta' } = {}) {
   const calls = [], saved = [], contexts = [];
   const state = { rows, released: 0, settled: false };
   const profiles = [{ id: 'profile-one', name: 'Profile & Name', status: 'session', accountLogin: 'synthetic' }];
@@ -94,7 +94,7 @@ async function catalog({ rows = environments(), preferences = {} } = {}) {
     },
     listConnections: async () => ({ profiles, vault: { available: false } }),
     listActivity: async () => [],
-    hasHandle: async (id) => id !== 'beta',
+    hasHandle,
     createSelection: () => new RepositorySelection({ listRepositories: async () => ({ repositories: [] }) }),
     openEnvironment: async (environment) => {
       calls.push({ action: 'open', environment });
@@ -134,9 +134,9 @@ test('V7 catalog list: table structure, row facts and action wrappers match incu
   assert.equal(headings.at(-1).children[0].className, 'sr-only');
   const rows = workspaceRows(f.container);
   assert.deepEqual(rows.map((row) => row.children.map(readText)), [
-    ['Alpha localProject A \u00b7 Bicep', 'Local folder', 'alpha', '\u2014', '\u2014', '\u2014', 'Ready', '2 minutes ago', 'OpenEditDetach'],
-    ['Beta localProject B \u00b7 Terraform (1 unit)', 'Local folder', 'beta', '\u2014', '\u2014', 'Access Contracts', 'Missing', 'Never', 'ReconnectEditDetach'],
-    ['Gamma GitHubProject A \u00b7 Bicep', 'GitHub', 'synthetic/repo', 'release', 'Profile & Name', 'LLM OnboardingAccess Contracts', 'Ready', 'Unknown', 'OpenEditDetach'],
+    ['Alpha localProject A \u00b7 Bicep', 'Local folder', 'alpha', '\u2014', '\u2014', '\u2014', 'Ready', '2 minutes ago', 'OpenActionsRenameDetach'],
+    ['Beta localProject B \u00b7 Terraform (1 unit)', 'Local folder', 'beta', '\u2014', '\u2014', 'Access Contracts', 'Unavailable folder', 'Never', 'Review recoveryActionsRenameDetach'],
+    ['Gamma GitHubProject A \u00b7 Bicep', 'GitHub', 'synthetic/repo', 'SourcereleaseWrites: pending/gamma', 'Profile & Name', 'LLM OnboardingAccess Contracts', 'Ready', 'Unknown', 'OpenActionsRenameDetach'],
   ]);
   for (const row of rows) {
     assert.deepEqual(row.children.map((cell) => cell.getAttribute('data-label')),
@@ -230,23 +230,27 @@ test('V7 catalog list: Clear filters preserves sort and activity while retaining
   button(f.container, 'Source \u2191').click();
   assert.deepEqual(labels(f.container), ['Beta local', 'Alpha local', 'Gamma GitHub']);
   assert.equal(f.saved.at(-1).direction, 'desc');
-  assert.equal(button(f.container, 'Source \u2193').getAttribute('aria-sort'), 'descending');
+  assert.equal(button(f.container, 'Source \u2193').parentElement.getAttribute('aria-sort'), 'descending');
 });
 
 for (const action of ['open', 'reconnect']) {
   test(`V7 catalog list: ${action} keeps canonical row authority and rejects stale-button reentry while busy`, async () => {
-    const f = await catalog(), pending = deferred();
+    const records = environments();
+    if (action === 'reconnect') records[1].permission = 'prompt';
+    const f = await catalog({ rows: records, hasHandle: async () => true }), pending = deferred();
     f.state[action] = () => pending.promise;
     const selected = f.state.rows[action === 'open' ? 0 : 1];
     const row = workspaceRows(f.container)[action === 'open' ? 0 : 1];
-    const invoke = button(row, action === 'open' ? 'Open' : 'Reconnect');
+    const invoke = button(row, action === 'open' ? 'Open' : 'Reconnect folder');
     invoke.click();
     assert.equal(f.calls.length, 1);
     assert.equal(f.calls[0].environment, selected);
     if (action === 'reconnect') assert.equal(f.calls[0].options.connections, f.profiles);
     assert.equal(addButton(f.container).disabled, true);
-    assert(all(f.container, (node) => node.classList.contains('catalog-actions'))
-      .every((node) => node.children.every((control) => control.disabled)));
+    assert(all(f.container, (node) => node.tagName === 'BUTTON' && node.closest('.catalog-actions'))
+      .every((control) => control.disabled));
+    assert(all(f.container, (node) => node.tagName === 'SUMMARY' && node.id.endsWith('-actions'))
+      .every((control) => control.getAttribute('aria-disabled') === 'true'));
     invoke.click();
     assert.equal(f.calls.length, 1);
     assert.equal(f.state.settled, false);

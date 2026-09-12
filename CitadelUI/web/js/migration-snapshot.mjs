@@ -11,6 +11,30 @@ async function requestSource(request, path, options) {
   try { return await request(path, options); } catch (error) { throw snapshotFailure(error); }
 }
 
+export function migrationSnapshotPresentation(snapshot, siblings = []) {
+  const source = snapshot.source;
+  const id = String(snapshot.id || '');
+  const shortId = id.slice(0, 8);
+  const identity = siblings.some((other) => other.id !== id && String(other.id).startsWith(shortId)) ? id : shortId;
+  const date = new Date(snapshot.createdAt);
+  const capturedAt = Number.isFinite(date.getTime())
+    ? new Intl.DateTimeFormat(undefined, {
+      year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+      fractionalSecondDigits: 3, timeZoneName: 'short',
+    }).format(date) : 'Capture time unavailable';
+  const provenance = source?.provenance;
+  const origin = provenance
+    ? `${safeLabel(provenance.repository)} @ ${safeLabel(provenance.ref)} (${String(provenance.commit).slice(0, 12)})`
+    : source?.kind === 'local-files' ? 'Selected local files' : source?.kind === 'local-folder' ? 'Local folder' : 'Source unavailable';
+  const files = Number.isSafeInteger(snapshot.files)
+    ? `${snapshot.files} ${snapshot.files === 1 ? 'file' : 'files'}` : 'File count unavailable';
+  return {
+    label: safeLabel(source?.label || 'Unavailable source'),
+    detail: `${capturedAt} \u00b7 ${origin} \u00b7 ${files} \u00b7 Capture ${identity || 'unavailable'}`,
+    id,
+  };
+}
+
 export class MigrationSnapshots {
   constructor({ request = localRequest, registry } = {}) {
     this.request = request;

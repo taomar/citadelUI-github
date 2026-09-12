@@ -1,4 +1,5 @@
 import { h, mount } from './dom.mjs';
+import { formatIcon } from './format-icon.mjs';
 import { reportClientError } from './diagnostics-client.mjs';
 import { showDialog, dismissDialog, confirmDialog } from './dialog.mjs';
 import { renderDiff } from './diff.mjs';
@@ -8,6 +9,7 @@ import { MIGRATION_AREAS } from './migration-session.mjs';
 import { MigrationError, migrationMessage, migrationParameterKey, safeLabel } from '../../shared/migration-input.mjs';
 import { migrationQuantity as quantity, migrationRowVisible, migrationSelectionSummary, renderMigrationModels, renderMigrationValue } from './migration-value-view.mjs';
 import { renderMigrationTargetPreview } from './migration-target-preview.mjs';
+import { migrationSnapshotPresentation } from './migration-snapshot.mjs';
 
 const STATUS = Object.freeze({
   copy: 'Accepted replacement',
@@ -56,6 +58,8 @@ function contextNode(destination, target = null) {
       summaryRow(destination.remote ? 'Repository' : 'Local folder',
         h('code', {}, destination.remote ? destination.location : destination.folder)),
       destination.remote ? summaryRow('Branch', h('code', {}, destination.branch)) : null,
+      target?.alias?.endsWith('.bicepparam') ? summaryRow('Format',
+        h('span', { class: 'format-label' }, formatIcon('bicep'), 'Bicep')) : null,
       target ? summaryRow('Parameter file', h('code', {}, safeLabel(target.alias))) : null),
     h('details', {},
       h('summary', { class: 'hint' }, 'Destination details'),
@@ -108,6 +112,8 @@ export async function openMigrationWizard({
   const notice = h('p', { class: 'catalog-progress migration-notice', role: 'status', 'aria-live': 'polite' });
   let step = 'donor';
   let renderedScreen = null;
+  let pendingStageFocus = null;
+  let mappingPosition = null;
   let sourceKind = '';
   let accessMode = 'public';
   let connection = sourceConnection;
@@ -162,11 +168,12 @@ export async function openMigrationWizard({
     'aria-describedby': 'migration-source-token-hint',
   });
 
-  function action(label, handler, { primary = false, disabled = false, key = label, className = '' } = {}) {
+  function action(label, handler, { primary = false, disabled = false, key = label, className = '', describedBy = null } = {}) {
     const button = h('button', {
       type: 'button', class: `${primary ? 'btn btn-primary' : 'btn'} ${className}`.trim(),
       disabled: busy || disabled, dataset: { action: key },
       'aria-busy': busy && busyAction === key ? 'true' : null,
+      'aria-describedby': describedBy,
       onclick: (event) => {
         if (busy) return pending;
         busyAction = key;
@@ -195,7 +202,7 @@ export async function openMigrationWizard({
     return {
       session, step, selectedIds, targetAlias, view, preview, result, filter, mappingScope,
       heldMappingRows, candidateChoices, backendChoices, expandedRows,
-      additionalSources, otherSourceId, message, failed, pairingOriginal,
+      additionalSources, otherSourceId, message, failed, pairingOriginal, mappingPosition,
       scrollTop: body.parentElement?.scrollTop || 0,
       focus: [...decisionControls, ...pairingControls, ...actionControls]
         .find(([, control]) => control === document.activeElement)?.[0] || null,
@@ -209,14 +216,14 @@ export async function openMigrationWizard({
       filter: '', mappingScope: 'differences', heldMappingRows: new Set(),
       candidateChoices: new Map(), backendChoices: new Map(), expandedRows: new Map(),
       additionalSources: new Map(), otherSourceId: '', message: '', failed: false,
-      pairingOriginal: null, scrollTop: 0, focus: null,
+      pairingOriginal: null, mappingPosition: null, scrollTop: 0, focus: null,
     };
   }
 
   function restoreReview(saved) {
     ({ session, step, selectedIds, targetAlias, view, preview, result, filter, mappingScope,
       heldMappingRows, candidateChoices, backendChoices, expandedRows, additionalSources,
-      otherSourceId, message, failed, pairingOriginal } = saved);
+      otherSourceId, message, failed, pairingOriginal, mappingPosition } = saved);
   }
 
   function saveAreaReview() {
@@ -540,7 +547,9 @@ export async function openMigrationWizard({
           donorRevision?.repository ? h('small', { class: 'hint' }, `${donorRevision.refType}: ${donorRevision.refType === 'commit' ? donorRevision.commit : safeLabel(donorRevision.ref)}`) : null),
         h('p', {}, h('strong', {}, 'Target (new) · values to keep or update'),
           h('span', {}, `${session.destination.project} › ${session.destination.workspace}`),
-          target ? h('small', { class: 'hint' }, safeLabel(target.alias)) : null)),
+          target ? h('small', { class: 'hint' },
+            target.alias.endsWith('.bicepparam') ? h('span', { class: 'format-label' }, formatIcon('bicep'), 'Bicep \u00b7 ') : null,
+            safeLabel(target.alias)) : null)),
       h('p', { class: 'hint' }, session.destination.remote
         ? 'Preview/export only. No remote writes or commits.'
         : 'Local apply is available after review. The old source is never written.'),
@@ -576,7 +585,7 @@ export async function openMigrationWizard({
     decisionControls.clear();
     pairingControls.clear();
     const selectedTarget = view?.target || targets.find((target) => target.alias === targetAlias);
-    const heading = h('h3', { tabindex: -1 }, {
+    const heading = h('h3', { tabindex: -1, class: 'migration-stage-heading' }, {
       donor: sourceKind === 'github' ? 'GitHub source' : 'Choose a source',
       pair: 'Choose source configuration',
       map: 'Select old values to import',
@@ -592,7 +601,7 @@ export async function openMigrationWizard({
     const content = step === 'donor' ? renderSourceChoice()
       : step === 'pair' ? renderPairing()
       : step === 'map' ? surface ? renderTargetWorkspace(targetForm) : renderMapping()
-        : step === 'review' ? surface ? h('div', {}, renderTargetWorkspace(targetForm), renderReview()) : renderReview()
+        : step === 'review' ? surface ? h('div', {}, renderReview(), renderTargetWorkspace(targetForm)) : renderReview()
           : h('section', { class: 'migration-result' },
             h('p', {}, `${result.copied} reviewed parameter replacement${result.copied === 1 ? '' : 's'} applied to the displayed local destination.`),
             h('p', {}, 'Transaction receipt: ', h('code', {}, safeLabel(result.transactionId))),
@@ -603,6 +612,7 @@ export async function openMigrationWizard({
     const steps = ['donor', 'pair', 'map', 'review'];
     const position = step === 'done' ? steps.length : steps.indexOf(step);
     const panel = h('div', { class: 'migration-area-panel' },
+      heading,
       surface ? null : h('ol', { class: 'catalog-steps', 'aria-label': 'Migration progress' },
         ['Source', 'Files', 'Mapping', 'Review'].map((label, index) =>
           h('li', {
@@ -611,7 +621,7 @@ export async function openMigrationWizard({
           }, label))),
       migrationContext(selectedTarget),
       donor && step !== 'donor' ? renderTargetNavigation() : null,
-      surface && ['map', 'review'].includes(step) ? null : heading, notice, content, renderReportHistory(),
+      notice, content, renderReportHistory(),
     );
     mount(body, surface ? panel : donor && step !== 'donor'
       ? h('div', { class: 'migration-area-layout' }, renderAreaNavigation(), panel) : panel);
@@ -659,17 +669,25 @@ export async function openMigrationWizard({
     } else if (step === 'map') {
       actions.push(
         action('Change file pairing', editPairing, { key: 'pair' }),
-        action(surface ? 'Review migration' : `Preview ${quantity(migrationSelectionSummary(view.rows).changes, 'change')}`, () => run('Rechecking selected values, files and workspace…', async () => {
-          preview = await session.previewSelected();
-          view = session.view();
-          rememberReport();
-          step = 'review';
-          message = '';
-        }), { primary: true, key: 'preview' }),
+        action(surface ? 'Review migration' : `Preview ${quantity(migrationSelectionSummary(view.rows).changes, 'change')}`, () => {
+          mappingPosition = { scrollTop: body.parentElement?.scrollTop || 0, focus: 'preview' };
+          return run('Rechecking selected values, files and workspace…', async () => {
+            preview = await session.previewSelected();
+            view = session.view();
+            rememberReport();
+            step = 'review';
+            message = '';
+          });
+        }, { primary: true, key: 'preview' }),
       );
     } else if (step === 'review') {
       actions.push(
-        action('Back to mapping', () => { step = 'map'; render(); }, { key: 'back' }),
+        action('Back to mapping', () => {
+          step = 'map';
+          pendingStageFocus = null;
+          render(mappingPosition?.focus || 'preview');
+          if (body.parentElement) body.parentElement.scrollTop = mappingPosition?.scrollTop || 0;
+        }, { key: 'back' }),
       );
       if (!session.destination.remote) {
         actions.push(action(surface ? 'Apply selected values' : `Apply ${quantity(preview.report.summary.changeCount, 'change')}`, () => run('Awaiting explicit local-apply confirmation…', async () => {
@@ -701,15 +719,21 @@ export async function openMigrationWizard({
     mount(footer, surface ? h('strong', { class: 'chip chip-warn' }, 'Migration preview (Experimental)') : null,
       selection ? h('p', { class: 'migration-footer-summary', role: 'status' },
       `${quantity(selection.selected, 'value')} selected · ${quantity(selection.changes, 'change')}${selection.alreadyCurrent ? ` · ${selection.alreadyCurrent} already same` : ''}`) : null, actions);
-    if (focusRow) (decisionControls.get(focusRow) || pairingControls.get(focusRow) || actionControls.get(focusRow) || sourceControls.get(focusRow))?.focus({ preventScroll: true });
-    else if (!sameScreen) requestAnimationFrame(() => {
-      heading.focus({ preventScroll: true });
+    renderedScreen = screen;
+    if (!sameScreen) pendingStageFocus = screen;
+    if (focusRow) {
+      pendingStageFocus = null;
+      (decisionControls.get(focusRow) || pairingControls.get(focusRow) || actionControls.get(focusRow) || sourceControls.get(focusRow))?.focus({ preventScroll: true });
+    } else if (pendingStageFocus === screen) requestAnimationFrame(() => {
+      if (closed || renderedScreen !== screen || pendingStageFocus !== screen) return;
+      const currentHeading = body.querySelector('.migration-stage-heading');
+      currentHeading?.focus({ preventScroll: true });
       if (body.parentElement) body.parentElement.scrollTop = 0;
+      pendingStageFocus = null;
     });
     else if (!busy) actionControls.get(returnActionFocus || focusedAction)?.focus({ preventScroll: true });
     if (sameScreen && scroller && Number.isFinite(scrollTop)) scroller.scrollTop = scrollTop;
     if (!busy) returnActionFocus = null;
-    renderedScreen = screen;
     saveAreaReview();
   }
 
@@ -725,21 +749,26 @@ export async function openMigrationWizard({
       }), { key: 'reload-prepared' }),
       preparedSources.length ? h('section', { class: 'catalog-form', 'aria-label': 'Prepared sources' },
         h('h4', {}, 'Prepared sources'),
-        preparedSources.map((source) => h('div', { class: 'catalog-form-actions' },
-          h('span', { class: 'hint' }, source.source?.label || 'Unavailable source',
-            ` · ${source.status}${source.id === donor?.id ? ' · current' : ''}`),
+        preparedSources.map((source) => {
+          const presentation = migrationSnapshotPresentation(source, preparedSources);
+          return h('div', { class: 'catalog-form-actions' },
+          h('div', {},
+            h('strong', {}, presentation.label),
+            h('p', { class: 'hint', id: `migration-snapshot-${source.id}`, title: presentation.id }, presentation.detail),
+            h('span', { class: 'chip chip-neutral' }, `${source.status}${source.id === donor?.id ? ' · current' : ''}`)),
           source.status === 'complete' ? action('Use prepared source', () => run('Opening the prepared source…', async () => {
             if (source.id === donor?.id && sourceReturn) { returnToSource(); return; }
             await readSourceInventory(await sourceSession.openPreparedSource(source.id), donorGeneration);
-          }), { key: `use-prepared-${source.id}` }) : null,
+          }), { key: `use-prepared-${source.id}`, describedBy: `migration-snapshot-${source.id}` }) : null,
           action('Delete retained copy', () => run('Confirming source deletion…', async () => {
             if (!await confirm({
-              title: 'Delete this prepared source?', message: `Delete ${source.source?.label || 'this unavailable capture'} from private application storage? This cannot be undone.`,
+              title: 'Delete this prepared source?', message: `Delete ${presentation.label} (${presentation.detail}) from private application storage? This cannot be undone.`,
               confirmLabel: 'Delete retained copy', cancelLabel: 'Keep source',
             })) return;
             await sourceSession.deletePreparedSource(source.id);
             preparedSources = await sourceSession.preparedSources();
-          }), { key: `delete-prepared-${source.id}`, disabled: source.id === donor?.id })))) : null,
+          }), { key: `delete-prepared-${source.id}`, disabled: source.id === donor?.id, describedBy: `migration-snapshot-${source.id}` }));
+        })) : null,
       h('div', { class: 'catalog-choice' },
         choice('Local folder', 'Read parameter files from a checked-out folder on this machine.',
           () => pick('folder'), 'choose-folder', !chooseDirectory),
@@ -1478,6 +1507,7 @@ export async function openMigrationWizard({
       try {
         render();
         await work();
+        if (message === label) message = '';
       }
       catch (error) {
         if (error?.name === 'AbortError') message = 'Selection cancelled. Nothing was written.';

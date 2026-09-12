@@ -147,6 +147,7 @@ export function requireOwnerSession() {
     const title = document.createElement('h1');
     title.className = 'gate-title';
     title.id = 'gate-title';
+    title.tabIndex = -1;
 
     const blurb = document.createElement('p');
     blurb.className = 'gate-blurb';
@@ -164,24 +165,27 @@ export function requireOwnerSession() {
     panel.append(brand, title, blurb, form);
     overlay.append(panel);
 
-    /**
-     * A container whose owner record cannot be read is not a container anyone
-     * can sign in to, and it must not be offered as a fresh one either. Saying
-     * so plainly is the whole recovery instruction: redeploy.
-     */
+    // An unreadable owner record must never be offered as a fresh claim.
     if (state === 'unavailable') {
       title.textContent = 'This container cannot be opened';
       blurb.textContent =
-        'The owner record on the data volume is missing or unreadable, so this container cannot verify who owns it. Redeploy with fresh state to claim it again.';
+        'The owner record on the data volume is missing or unreadable. This instance cannot verify its owner. Ask the instance administrator to inspect the existing data volume and backups before making changes; do not replace retained state just to retry sign-in.';
       document.body.append(overlay);
+      title.focus();
       return;
     }
 
     const claiming = state === 'unclaimed';
     title.textContent = claiming ? 'Create the owner account' : 'Sign in';
     blurb.textContent = claiming
-      ? 'This container has no owner yet. The account you create now is the only account it will ever have — there is no second user and no password reset, so keep the password somewhere safe. Recovering it means redeploying with fresh state.'
-      : 'Sign in with the owner account created when this container first started.';
+      ? 'Create the single owner account for this Citadel instance. These credentials protect workspace settings and retained application data.'
+      : 'Use the owner account created for this Citadel instance. This is an instance sign-in, not Microsoft or GitHub sign-in.';
+    const scope = document.createElement('p');
+    scope.className = 'gate-hint';
+    scope.id = 'gate-scope';
+    scope.textContent = 'One owner only. There is no second account or password reset. Keep the owner credentials safe; creating fresh instance state is not a way to preserve or recover existing owner data.';
+    panel.replaceChildren(brand, title, blurb, scope, form);
+    overlay.setAttribute('aria-describedby', 'gate-scope');
 
     const username = field(form, {
       id: 'gate-username',
@@ -189,6 +193,7 @@ export function requireOwnerSession() {
       type: 'text',
       autocomplete: 'username',
     });
+    username.spellcheck = false;
     const password = field(form, {
       id: 'gate-password',
       label: 'Password',
@@ -220,6 +225,7 @@ export function requireOwnerSession() {
           { username: username.value, password: password.value }
         );
         keepToken(body.sessionToken);
+        password.value = '';
         overlay.remove();
         if (appShell) appShell.inert = shellWasInert;
         resolve(body.sessionToken);

@@ -84,6 +84,9 @@ test('local import UI: explicit source, pinned commit and destination confirmati
   await click('Prepare source and continue');
   assert.match(readText(document.getElementById('modal')), /Name the new local project/);
   await details();
+  assert.equal(document.activeElement.tagName, 'H3');
+  assert.equal(readText(document.activeElement), 'Review source and destination');
+  assert.equal(document.activeElement.isConnected, true);
   const text = readText(document.getElementById('modal'));
   assert(text.includes(fixture.fixture.github.sourceHead));
   assert(text.includes('citadel-v1'));

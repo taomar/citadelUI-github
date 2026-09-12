@@ -48,33 +48,53 @@ findings require correction: SH01 skip-link navigation, SH02 breakpoint IME
 composition, SH03 notification focus, SH04 retired filter callbacks, SH05
 obsolete-source attribution and SH06 humanized-label collisions. The original
 shell owner receives one bounded correction task, not six separate workers.
-Recovery, app-focus and final combined acceptance remain separate gates.
+The shell owner also has the narrow model mutation-ownership correction
+`MODEL-FOCUS-R01-01`, returned by the separate app-consumer review. Recovery is
+integrated locally; app-focus and final combined acceptance remain separate gates.
 The initial recovery and policy/model candidates are not accepted by their
 presence in the shell's review candidate.
 
 Policy/model component correction `4dec00c` is now independently reviewed and
 accepted for all three correction findings. Complete policy representations,
 byte-preserving guided edits and component-scoped model focus are covered.
-The actual app focus-owner consumer has returned at `54358bd` and is under
-separate independent review; this component acceptance is not a completed app
-integration. The scoped disposition is `ui-policy-model-main-acceptance-01.json`.
+The actual app focus-owner consumer at `54358bd` completed independent review.
+Its narrow focus delta is regression-free in the exercised scope, but retained
+model mutation callbacks can still create a draft while Raw or read-only export
+owns the workspace. This predates that delta and remains an unmet assigned
+criterion, not an accepted exception. The sole shell/app writer owns the
+correction; component acceptance is not completed app integration.
+The component disposition is `ui-policy-model-main-acceptance-01.json`.
 
 The three shell test adaptations are accepted at endpoint `2a9afd5`: actual
 migration-command execution, bootstrap-safe breakpoint behavior and the exact
 pending-status contract. MAIN independently replayed that composed endpoint
 without weakening existing assertions. This is test-only acceptance, not
-approval of the underlying shell or recovery candidates, and integration is
-still pending their product gates. The disposition is
+approval of the underlying shell or recovery candidates. The pending-status
+adapter is now integrated with recovery; the two shell-only adapters still
+await their compatible application source. The disposition is
 `ui-shell-adapters-main-acceptance-01.json`.
 
-The remaining WR03 provider/registry classification correction has returned at
-`432a360`, a two-file successor to `4bfd600`. The original independent reviewer
-is rechecking that exact correction while preserving the earlier WR01/WR02/WR04
-evidence and limits. Writer release does not approve the candidate.
+Recovery through `432a360` is independently accepted and integrated locally.
+WR03 now preserves registry/provider-construction failures without claiming
+folder or file recovery is needed. WR01/WR02/WR04 retain their reviewed evidence
+and limits. MAIN checked all 23 integrated paths, the exact partial status-test
+adaptation, the unchanged 15-case composed recipe and the full 27-case R3,
+34-case correction and 29-case recovery groups. The six remaining selection
+failures also fail on pre-integration MAIN `3938bf1`, with matching causes;
+this is not an all-green application claim. The detailed dispositions are
+`ui-recovery-main-acceptance-02.json` and
+`ui-recovery-main-integration-01/acceptance.json`.
 
 MAIN verified the returned source identities, scopes and preservation, then
 reused three idle workers for the shell correction and two independent reviews.
 `ui-returned-candidates-main-intake-02.json` records the exact handoffs.
+
+MAIN also recorded an isolated full Node baseline at the exact pre-correction
+composition `d9a564b`: all 768 source files match the immutable Git object.
+The run has 2,391 entries, 2,346 passes, ten failures and 35 skips. Eight
+non-fixture failures are assigned to the reused reviewer for classification
+against accepted MAIN; they are not assumed to be old or dismissed as obsolete.
+This comparison does not replace corrected-shell or final desktop acceptance.
 
 The original report, screenshots, exact results and unsuccessful attempts remain
 preserved outside worktrees in:
@@ -123,14 +143,18 @@ an explicit app consumer: a stable model-viewer focus token across context and
 mount rebuilding. That two-file consumer was assigned to the released policy
 owner while the shell follow-up had no manual product-edit grant.
 
-The consumer writer has now released `54358bd`. Only the shell correction worker
-may write the app for SH01-SH06; its precisely listed optional HTML/helper and
-test changes do not overlap either read-only reviewer. Its candidate may
+The consumer writer and reviewer have now released `54358bd`. Only the shell
+correction worker may write the app for SH01-SH06 and `MODEL-FOCUS-R01-01`.
+The latter has an explicit narrow grant for editable-view mutation admission
+and preserved/additional `ui-model-focus-integration.test.mjs` cases. Its other
+precisely listed HTML/helper and test changes do not overlap a read-only reviewer.
+Its candidate may
 incorporate the complete unchanged policy correction, `54358bd` app consumer
 and `432a360` recovery correction over accepted test endpoint `2a9afd5`, recording
-each mapping and a clean baseline before its own fixes. Those exact app/recovery
-candidates are reviewed separately. This bounded composition is not approval
-or MAIN integration, and no mutable worker checkout is copied.
+each mapping and a clean baseline before its own fixes. Recovery is separately
+accepted; the app mutation criterion remains open. This bounded composition is
+not approval of the shell successor or final MAIN integration, and no mutable
+worker checkout is copied.
 
 The user also requested Bicep and Terraform SVG icons. MAIN owns the original
 assets in `CitadelUI/web/icons/`, the shared `formatIcon` renderer and its focused

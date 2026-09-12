@@ -24,8 +24,10 @@ export async function downloadDebugReport(report) {
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
-const when = (value) => value ? `${value.slice(0, 10)} ${value.slice(11, 19)} UTC` : 'Not started';
-const time = (value) => `${value.slice(11, 19)} UTC`;
+const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium', timeZone: 'UTC' });
+const timeFormat = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'UTC' });
+const when = (value) => value ? `${dateFormat.format(new Date(value))} UTC` : 'Not started';
+const time = (value) => `${timeFormat.format(new Date(value))} UTC`;
 const countdown = (ms) => {
   const seconds = Math.ceil(ms / 1000);
   return `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;
@@ -47,6 +49,7 @@ export function mountDebugPage(container, {
   const deadline = h('dd');
   const stopped = h('dd');
   const toggle = h('input', {
+    id: 'debug-capture-switch',
     type: 'checkbox', role: 'switch', disabled: true,
     'aria-label': 'Instance-wide debugging', 'aria-describedby': 'debug-scope debug-window',
     onchange: () => {
@@ -59,11 +62,15 @@ export function mountDebugPage(container, {
           confirmLabel: 'Replace and start capture', cancelLabel: 'Keep report',
         }))) return;
         await client.setEnabled(enabled, expectedId);
+        actionStatus.textContent = enabled
+          ? 'Capture started for this server instance. Reproduce the issue in the application; the automatic deadline is fixed.'
+          : 'Capture stopped. The final report remains available for local download.';
+        actionStatus.hidden = false;
       }, 'Capture could not be changed. Refresh its status and retry.');
     },
   });
   const downloadButton = h('button', {
-    type: 'button', class: 'btn btn-primary', disabled: true,
+    id: 'debug-download', type: 'button', class: 'btn btn-primary', disabled: true,
     onclick: () => run(async () => {
       await download(await client.download());
       actionStatus.textContent = 'Report download requested. Share the JSON file manually; Citadel has not uploaded it.';
@@ -71,7 +78,7 @@ export function mountDebugPage(container, {
     }, 'The debug report could not be downloaded. Retry. Nothing has been shared.', downloadButton),
   }, 'Download debug report');
   const clearButton = h('button', {
-    type: 'button', class: 'btn', disabled: true,
+    id: 'debug-clear', type: 'button', class: 'btn btn-danger-ghost', disabled: true,
     onclick: () => {
       const expectedId = client.state?.capture?.id || null;
       return run(async () => {
@@ -81,11 +88,13 @@ export function mountDebugPage(container, {
           confirmLabel: 'Clear report', cancelLabel: 'Keep report',
         }))) return;
         await client.clear(expectedId);
+        actionStatus.textContent = 'Report cleared from server memory. Capture is off. Previously downloaded files remain on your device.';
+        actionStatus.hidden = false;
       }, 'The report could not be cleared. Refresh its status and retry.', clearButton);
     },
   }, 'Clear report');
   const refreshButton = h('button', {
-    type: 'button', class: 'btn',
+    id: 'debug-refresh', type: 'button', class: 'btn',
     onclick: () => run(() => client.refresh(), 'Diagnostic status could not be refreshed.', refreshButton),
   }, 'Refresh');
   const reportKind = h('span', { class: 'debug-report-kind' });
@@ -99,10 +108,11 @@ export function mountDebugPage(container, {
       .map((label) => h('th', { scope: 'col' }, label)))), rows);
   const root = h('div', { class: 'sheetwrap debug-content' },
     h('header', { class: 'debug-heading' },
-      h('h1', {}, 'Diagnostic capture'),
+      h('h1', { id: 'debug-title', tabindex: '-1' }, 'Diagnostic capture'),
       h('p', { id: 'debug-scope' }, 'This applies to the whole Citadel server instance, not just this tab. Reproduce the problem in the application while capture is on.')),
     problem, delivery,
     h('section', { class: 'debug-section', 'aria-label': 'Capture controls' },
+      h('h2', {}, 'Capture controls'),
       h('div', { class: 'debug-capture-bar' },
         h('label', { class: 'toggle debug-toggle' }, toggle,
           h('span', { class: 'toggle-track', 'aria-hidden': 'true' }),
@@ -146,13 +156,20 @@ export function mountDebugPage(container, {
       busy = false;
       button.removeAttribute('aria-busy');
       render();
-      button.focus();
+      const active = document.activeElement;
+      if (!document.getElementById('modal')?.open &&
+          (active === document.body || active === button)) {
+        (button.disabled ? !toggle.disabled ? toggle : refreshButton : button).focus({ preventScroll: true });
+      }
     }
   }
 
   function renderRows(report) {
     const key = report ? JSON.stringify([report.capture?.id, report.counts.received, report.counts.stored, report.counts.deduplicated]) : null;
     if (key === rowKey) return;
+    const active = document.activeElement;
+    const focused = rows.contains(active) ? active.getAttribute('data-debug-event') : null;
+    const expanded = new Set([...rows.querySelectorAll('details')].filter((node) => node.open).map((node) => node.getAttribute('data-debug-event')));
     rowKey = key;
     const ordered = (report?.events || []).map((event) => ({ event, explanation: diagnosticGuidance(event) }))
       .sort((left, right) => Number(left.explanation.level === 'info') - Number(right.explanation.level === 'info') ||
@@ -173,13 +190,17 @@ export function mountDebugPage(container, {
             event.exception !== 'UnknownError' ? event.exception : null,
           ].filter(Boolean).join(' / ') || 'No recognized application code or exception class'),
           h('p', { class: 'debug-event-meaning' }, explanation.meaning),
-          h('details', { class: 'debug-event-help' },
-            h('summary', {}, 'Suggested next step'),
+          h('details', { class: 'debug-event-help', open: expanded.has(String(event.id)), 'data-debug-event': String(event.id) },
+            h('summary', { 'data-debug-event': String(event.id) }, 'Suggested next step'),
             h('p', {}, explanation.next)),
           event.module ? h('code', { class: 'debug-event-detail' }, `${event.line ? 'Location' : 'Reporting module'} ${event.module}${event.line ? `:${event.line}` : ''}${event.column ? `:${event.column}` : ''}`) : null,
           event.correlationId ? h('code', { class: 'debug-event-detail' }, `Correlation ${event.correlationId}`) : null),
         h('td', {}, event.occurrences));
     }));
+    if (focused && !document.getElementById('modal')?.open) {
+      const replacement = [...rows.querySelectorAll('summary')].find((node) => node.getAttribute('data-debug-event') === focused);
+      (replacement || refreshButton).focus({ preventScroll: true });
+    }
   }
 
   function render() {
@@ -207,7 +228,7 @@ export function mountDebugPage(container, {
       const value = state?.counts;
       counts.textContent = value
         ? `${value.stored} / ${LIMITS.records} records; ${value.eventBytes.toLocaleString()} / ${LIMITS.eventBytes.toLocaleString()} event bytes. ${value.received} received; ${value.deduplicated} repeats grouped.`
-        : 'Reading the retained report...';
+        : !client.connected ? 'Report status is unavailable. Refresh to reconnect.' : 'Reading the retained report...';
       omitted.hidden = !value || !(value.omitted || value.clientQueueOmitted || value.rejectedBatches);
       if (value) omitted.textContent = `${value.omitted} server omissions (${value.omittedByCapacity} capacity, ${value.omittedByRate} rate); ${value.clientQueueOmitted} browser queue/send omissions reported; ${value.rejectedBatches} rejected batches. The report is incomplete.`;
       delivery.textContent = client.issues.map((code) => DIAGNOSTIC_ISSUES[code]).filter(Boolean).join(' ');

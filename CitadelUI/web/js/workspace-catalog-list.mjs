@@ -1,4 +1,5 @@
 import { h } from './dom.mjs';
+import { formatIcon } from './format-icon.mjs';
 
 /** List markup only; the catalog retains models, controls and action authority. */
 export function renderWorkspaceCatalogList({
@@ -6,6 +7,12 @@ export function renderWorkspaceCatalogList({
   renderSortButton, renderSourceBadge, renderChip, renderStatus,
   formatTime, renderRowActions, onClearFilters,
 }) {
+  const sortHeader = (key, label) => {
+    const button = renderSortButton(key, label);
+    const direction = button.getAttribute('aria-sort');
+    button.removeAttribute('aria-sort');
+    return h('th', { scope: 'col', 'aria-sort': direction }, button);
+  };
   if (!rows.length) {
     if (hasWorkspaces) {
       return h(
@@ -49,14 +56,14 @@ export function renderWorkspaceCatalogList({
         h(
           'tr',
           {},
-          h('th', { scope: 'col' }, renderSortButton('label', 'Workspace')),
-          h('th', { scope: 'col' }, renderSortButton('source', 'Source')),
+          sortHeader('label', 'Workspace'),
+          sortHeader('source', 'Source'),
           h('th', { scope: 'col' }, 'Repository or folder'),
           h('th', { scope: 'col' }, 'Branch'),
           h('th', { scope: 'col' }, 'Connection'),
           h('th', { scope: 'col' }, 'Capabilities'),
-          h('th', { scope: 'col' }, renderSortButton('status', 'Status')),
-          h('th', { scope: 'col' }, renderSortButton('opened', 'Last opened')),
+          sortHeader('status', 'Status'),
+          sortHeader('opened', 'Last opened'),
           h('th', { scope: 'col' }, h('span', { class: 'sr-only' }, 'Actions'))
         )
       ),
@@ -71,7 +78,11 @@ export function renderWorkspaceCatalogList({
               'td',
               { 'data-label': 'Workspace' },
               h('span', { class: 'otable-link' }, row.label),
-              h('small', { class: 'hint' }, [row.projectLabel, row.formatLabel].filter(Boolean).join(' \u00b7 '))
+              h('small', { class: 'hint' }, row.projectLabel,
+                row.projectLabel && row.formatLabel ? ' \u00b7 ' : null,
+                row.formatLabel ? h('span', { class: 'format-label' },
+                  ['bicep', 'terraform'].includes(row.configurationFormat) ? formatIcon(row.configurationFormat) : null,
+                  row.formatLabel) : null)
             ),
             h('td', { 'data-label': 'Source' }, renderSourceBadge(row.kind)),
             h(
@@ -82,7 +93,12 @@ export function renderWorkspaceCatalogList({
             h(
               'td',
               { class: 'otable-path', 'data-label': 'Branch' },
-              row.branch ? h('code', {}, row.branch) : h('span', { class: 'hint' }, '\u2014')
+              row.branch ? [
+                h('small', { class: 'hint' }, 'Source'),
+                h('code', {}, row.branch),
+                row.workingBranch && row.workingBranch !== row.branch
+                  ? h('small', { class: 'hint' }, 'Writes: ', h('code', {}, row.workingBranch)) : null,
+              ] : h('span', { class: 'hint' }, '\u2014')
             ),
             h(
               'td',
@@ -105,7 +121,7 @@ export function renderWorkspaceCatalogList({
             h(
               'td',
               { 'data-label': 'Status' },
-              renderStatus(row.status)
+              renderStatus(row.status, row)
             ),
             h('td', { 'data-label': 'Last opened' }, formatTime(row.lastOpenedAt)),
             // Keep the action buttons in one grid item for the stacked layout.

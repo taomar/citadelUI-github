@@ -1,6 +1,8 @@
 import { h } from './dom.mjs';
 import { connectionStatusLabel } from './github-connections.mjs';
 
+let connectionFocusRequest = null;
+
 function field(label, control, hint = null) {
   return h('label', { class: 'catalog-field', for: control.getAttribute('id') },
     h('span', { class: 'catalog-field-label' }, label),
@@ -50,13 +52,38 @@ export function createEnvironmentForm({ labelInput, pathInput, addButton, create
 
 export function createGitHubConnectionSummary(account, { connect, disconnect }) {
   const persistent = account?.persisted || account?.profile?.status === 'persistent';
+  const focusRequested = connectionFocusRequest &&
+    (document.activeElement === connectionFocusRequest || document.activeElement === document.body);
+  let pending = false;
+  const action = h('button', {
+    id: 'settings-github-action', class: 'btn btn-sm', type: 'button',
+    autofocus: focusRequested ? '' : null,
+    onclick: async () => {
+      if (pending) return;
+      pending = true;
+      const ownedFocus = document.activeElement === action;
+      if (ownedFocus) connectionFocusRequest = action;
+      action.disabled = true;
+      action.setAttribute('aria-busy', 'true');
+      try { await (account ? disconnect() : connect()); }
+      finally {
+        if (connectionFocusRequest === action) connectionFocusRequest = null;
+        pending = false;
+        action.disabled = false;
+        action.removeAttribute('aria-busy');
+      }
+      if (ownedFocus && (document.activeElement === document.body || document.activeElement === action)) {
+        const replacement = document.getElementById('settings-github-action');
+        if (replacement && !replacement.disabled) replacement.focus({ preventScroll: true });
+      }
+    },
+  }, account ? 'Disconnect GitHub' : 'Connect GitHub');
   return h('div', { class: 'settings-connection-summary' },
     h('div', { class: 'catalog-form-actions' },
       h('span', { class: `chip ${account ? 'chip-ok' : 'chip-warn'}` },
         account ? `GitHub connected as ${account.login}` : 'GitHub not connected'),
       account ? h('span', { class: 'hint' }, connectionStatusLabel(persistent ? 'persistent' : 'session')) : null,
-      h('button', { class: 'btn btn-sm', type: 'button', onclick: account ? disconnect : connect },
-        account ? 'Disconnect GitHub' : 'Connect GitHub')
+      action
     ),
     h('p', { class: 'hint' }, account
       ? persistent
