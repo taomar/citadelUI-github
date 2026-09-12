@@ -1148,6 +1148,8 @@ CitadelUI/
     credentials.mjs    optional envelope-encrypted credential store
     activity.mjs       bounded, redacted governance activity log
     transactions.mjs   backup, journal, audit, retention, recovery
+    transaction-manifest.mjs
+                       pure validation, manifest projection and hash serialization
     diagnostics.mjs    fixed-window, bounded memory-only instance capture
     diagnostics-routes.mjs
                        owner-protected capture/report APIs
