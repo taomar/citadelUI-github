@@ -7,7 +7,7 @@ import { sha256, sourceExtension } from '../../shared/source-scope.mjs';
 import { MAIN_PATH, LLM_PATH, contractRootOf, isContractAlias } from '../../shared/source-plan.mjs';
 import { excludedMigrationSource as excludedSource } from '../../shared/migration-source-scope.mjs';
 import { documentFromText, primaryCapabilities } from '../../shared/citadel-core.mjs';
-import { deploymentPresentation, sectionNavTitle } from './paramview.mjs';
+import { deploymentPresentation, sectionNavTitle } from './deployment-presentation.mjs';
 import { MigrationSnapshots } from './migration-snapshot.mjs';
 import { SNAPSHOT_LIMITS } from '../../shared/migration-snapshot.mjs';
 

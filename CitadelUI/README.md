@@ -1212,7 +1212,9 @@ CitadelUI/
       activity.mjs     browser half of the redacted activity log
       transaction-client.mjs
                        browser half of verified backup-before-write
-      paramview.mjs    sections and parameter rows
+      paramview.mjs    sections, parameter rows and presentation facade
+      deployment-presentation.mjs
+                       pure deployment grouping, visibility and section titles
       llmview.mjs      guided LLM backend editor
       llmschema.mjs    provider, model and validation knowledge
       policyview.mjs   APIM policy editor
