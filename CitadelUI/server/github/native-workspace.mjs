@@ -2,8 +2,8 @@ import { configurationKey, unitForAlias, workspaceScope } from '../../shared/wor
 import { assertNativeFileSafe, decodeNativeBytes, nativeDependencyProof, nativeDocument, readUnitSchema } from '../../shared/terraform/workspace.mjs';
 import { nativeError } from '../../shared/terraform/parser.mjs';
 import { validateNativeAfter, validateNativeTransactionProof } from '../../shared/terraform/review.mjs';
-import { githubScanProvider } from './compatibility.mjs';
-import { loadTree, readBlob } from './workspace.mjs';
+import { githubScanProvider } from './scan-provider.mjs';
+import { loadTree, readBlob } from './git-reader.mjs';
 
 export async function validateNativeChangeSet(client, token, options, changes, head) {
   const configuration = options.configuration;

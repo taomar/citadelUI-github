@@ -1155,7 +1155,12 @@ CitadelUI/
       api.mjs          fixed-host api.github.com client
       sessions.mjs     in-memory credential sessions, never persisted
       repositories.mjs repository/ref validation and source-tree filtering
-      workspace.mjs    tree, blob, atomic commit, history, inverse commit
+      git-reader.mjs   read-only branch, tree, blob and exact-path access
+      scan-provider.mjs
+                       pinned read-only discovery provider
+      compatibility.mjs
+                       structural compatibility and scan facade
+      workspace.mjs    atomic commit, history, inverse commit and read facades
       routes.mjs       same-origin GitHub routes
   shared/
     citadel-core.mjs   provider-neutral discovery and document behavior

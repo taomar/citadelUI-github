@@ -33,19 +33,15 @@ import {
 } from './repositories.mjs';
 import {
   assertAction,
-  branchHead,
   commitChangeSet,
   createCommitBranch,
   ensureWorkingBranch,
   inspectCommit,
   loadHistory,
-  loadTree,
-  readBlob,
-  readSourceBlob,
   readSubscriptionId,
-  requireBranchHead,
   revertCommit,
 } from './workspace.mjs';
+import { branchHead, loadTree, readBlob, readSourceBlob, requireBranchHead } from './git-reader.mjs';
 import {
   readSubscriptionIdFromText,
   validateSubscriptionId,
@@ -62,7 +58,7 @@ import { RepositoryCreationService } from './repository-creation.mjs';
 import { LocalSourceImportService } from './local-import.mjs';
 import { assertNoWritableOverlap, configurationKey, configurationOf, nativeInventoryAlias, unitForAlias, validateConfiguration, workspaceScope } from '../../shared/workspace-configuration.mjs';
 import { assertNativeDependencySafe, assertNativeFileSafe, decodeNativeBytes, readUnitSchema } from '../../shared/terraform/workspace.mjs';
-import { githubScanProvider } from './compatibility.mjs';
+import { githubScanProvider } from './scan-provider.mjs';
 
 const SESSION_HEADER = 'x-citadel-github-session';
 
