@@ -6,6 +6,8 @@ import { installDom, loadDialogModule } from './_dom-stub.mjs';
 import { h } from '../web/js/dom.mjs';
 import { pauseEditorForLoad } from '../web/js/editor-load.mjs';
 import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
+import { createDocumentActions } from '../web/js/document-action.mjs';
+import { createEditorDocumentSession } from '../web/js/editor-document-session.mjs';
 import { previewDocument, queueOperation } from '../web/js/preview.mjs';
 import { captureContractEdits, clearEditorPending, editorPendingCount, restoreContractEdits } from '../web/js/contract-edit-state.mjs';
 import { retainQuarantinedDraft, restoreQuarantinedDrafts, invalidatePolicyPreview } from '../web/js/contract-edit-state.mjs';
@@ -54,7 +56,7 @@ async function fixture(t, { choice = 'preserve', failure = null, pause = 'source
   dom.root.append(...Object.values(els));
   const durable = new Map(), statuses = [], calls = [], frames = [], started = deferred(), release = deferred();
   let held = false, active = f.context;
-  const scope = { document: globalThis.document, structuredClone, Map, h, pauseEditorForLoad,
+  const scope = { document: globalThis.document, structuredClone, Map, h, pauseEditorForLoad, createEditorDocumentSession,
     captureDialogStatus, hasParameterInputs, Event: globalThis.Event,
     captureContractEdits, clearEditorPending, editorPendingCount, restoreContractEdits, configurationOf,
     retainQuarantinedDraft, restoreQuarantinedDrafts, invalidatePolicyPreview,
@@ -101,6 +103,10 @@ async function fixture(t, { choice = 'preserve', failure = null, pause = 'source
   state.open.set('retained-section', true);
   scope.viewStates = new WorkspaceViewState(() => state);
   scope.state = scope.viewStates.activate(f.context);
+  scope.documentActions = createDocumentActions({
+    views: scope.viewStates, currentOwner: () => scope.state, setStatus: scope.setStatus,
+  });
+  vm.runInNewContext(section('const editorDocuments =', 'const els ='), scope);
   scope.render = () => {
     const document = previewDocument(scope.state.current, scope.state.operations);
     els.workspace.replaceChildren(

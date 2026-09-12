@@ -1181,6 +1181,10 @@ CitadelUI/
     css/               design tokens and component styles
     js/
       app.mjs          shell, projects/environments, routing, review and save
+      document-action.mjs
+                       existing view ownership and per-document notice helpers
+      editor-document-session.mjs
+                       staged document loading through the shell's load gate
       workspace-service.mjs
                        source workflows, validation, byte assembly and budgets
       parameter-copy-plan.mjs

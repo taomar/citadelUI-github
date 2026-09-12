@@ -9,6 +9,8 @@ import { renderPolicy } from '../web/js/policyview.mjs';
 import { setRawPolicyDraft } from '../web/js/policy-edit-state.mjs';
 import { captureDialogStatus } from '../web/js/dialog.mjs';
 import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
+import { createDocumentActions } from '../web/js/document-action.mjs';
+import { createEditorDocumentSession } from '../web/js/editor-document-session.mjs';
 import * as edits from '../web/js/contract-edit-state.mjs';
 import { configurationOf } from '../shared/workspace-configuration.mjs';
 import { applyPolicyChanges, readPolicyControls, POLICY_VARIABLES } from '../shared/policy.mjs';
@@ -66,7 +68,7 @@ function fixture() {
   const els = { shell: { dataset: { workspace: 'active' } }, workspace: dom.node('main'),
     sidebar: dom.node('nav'), contextRail: dom.node('aside'), tbActions: dom.node('header'), editorLoading: dom.node() };
   dom.root.append(els.workspace, els.sidebar, els.contextRail, els.tbActions, els.editorLoading);
-  const scope = { structuredClone, Map, h, mount, pauseEditorForLoad, ...edits, setRawPolicyDraft, renderPolicy,
+  const scope = { structuredClone, Map, h, mount, pauseEditorForLoad, ...edits, setRawPolicyDraft, renderPolicy, createEditorDocumentSession,
     captureDialogStatus, Event: globalThis.Event,
     configurationOf, document: globalThis.document, els, pendingByDocument: new Map(),
     editorTransition: null, documentGeneration: 0, policyPreviewToken: 0,
@@ -119,6 +121,10 @@ function fixture() {
     }
   };
   scope.state = scope.viewStates.activate(active); seed(scope.state);
+  scope.documentActions = createDocumentActions({
+    views: scope.viewStates, currentOwner: () => scope.state, setStatus: scope.setStatus,
+  });
+  vm.runInNewContext(section('const editorDocuments =', 'const els ='), scope);
   scope.render = () => {
     if (els.shell.dataset.workspace === 'active' && scope.state.contract) scope.renderContractsArea({});
     scope.editorTransition?.pause.refresh();
