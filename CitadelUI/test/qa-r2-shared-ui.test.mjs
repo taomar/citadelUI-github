@@ -8,7 +8,7 @@ import { guardedHandler } from '../web/js/single-flight.mjs';
 import { createDocumentActions } from '../web/js/document-action.mjs';
 import { historyEntry } from '../web/js/history-entry.mjs';
 import { environmentSourceOf } from '../web/js/registry.mjs';
-import { saveStatusLine } from '../web/js/save-resolution.mjs';
+import { compareUrl, saveStatusLine } from '../web/js/save-resolution.mjs';
 import { mutationComplete } from '../shared/mutation-outcome.mjs';
 import * as edits from '../web/js/contract-edit-state.mjs';
 
@@ -22,7 +22,7 @@ const statusSource = section('async function withStatus(', '/* -----------------
 const historySource = section('async function openHistory()', 'async function openEnvironmentCompare(');
 
 test('R2-06 PR comparisons require two actual distinct branches and retain proper branch encoding', () => {
-  const scope = { environmentSourceOf };
+  const scope = { environmentSourceOf, compareUrl };
   vm.runInNewContext(section('function pullRequestUrl(', 'import { createEnvironmentOperation'), scope);
   const environment = (sourceBranch, workingBranch) => ({ source: {
     kind: 'github', fullName: 'synthetic/repository', sourceBranch, workingBranch,
@@ -33,6 +33,35 @@ test('R2-06 PR comparisons require two actual distinct branches and retain prope
   assert.equal(scope.pullRequestUrl(environment(undefined, 'review')), null);
   assert.equal(scope.pullRequestUrl(environment('main', 'review/ui')),
     'https://github.com/synthetic/repository/compare/main...review%2Fui?expand=1');
+  assert.equal(scope.pullRequestUrl(environment('feature/\u03a9#100%', 'review/a+b')),
+    'https://github.com/synthetic/repository/compare/feature%2F%CE%A9%23100%25...review%2Fa%2Bb?expand=1');
+  assert.equal(scope.pullRequestUrl(environment('', 'review')), null);
+  assert.equal(scope.pullRequestUrl(environment('main', '')), null);
+  assert.equal(scope.pullRequestUrl({ source: { kind: 'local', folderName: 'synthetic' } }), null);
+  assert.equal(scope.pullRequestUrl({}), null);
+  assert.equal(scope.pullRequestUrl(null), null);
+});
+
+test('L2 PR URL reuse: projection and distinct-branch admission precede the shared formatter', () => {
+  const calls = [];
+  const scope = { environmentSourceOf, compareUrl: (...args) => {
+    calls.push(args);
+    return 'formatted-comparison';
+  } };
+  vm.runInNewContext(section('function pullRequestUrl(', 'import { createEnvironmentOperation'), scope);
+  const source = { kind: 'github', fullName: 'synthetic/repository', sourceBranch: 'main', workingBranch: 'review/ui' };
+  assert.equal(scope.pullRequestUrl({ source }), 'formatted-comparison');
+  assert.deepEqual(calls, [['synthetic/repository', 'main', 'review/ui']]);
+  for (const branches of [
+    { sourceBranch: 'main', workingBranch: 'main' },
+    { sourceBranch: undefined },
+    { workingBranch: undefined },
+  ]) assert.equal(scope.pullRequestUrl({ source: { ...source, ...branches } }), null);
+  assert.equal(calls.length, 1);
+  const failure = new Error('Source projection failed');
+  scope.environmentSourceOf = () => { throw failure; };
+  assert.throws(() => scope.pullRequestUrl({}), (error) => error === failure);
+  assert.equal(calls.length, 1);
 });
 
 async function fixture() {

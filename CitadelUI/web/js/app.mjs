@@ -55,7 +55,7 @@ import { historyEntry } from './history-entry.mjs';
 import { createCompareSession } from './compare-session.mjs';
 import { openMigrationWizard } from './migration-wizard.mjs';
 import { openTerraformExport } from './terraform-export-view.mjs';
-import { describeCreatedBranch, saveStatusLine } from './save-resolution.mjs';
+import { compareUrl, describeCreatedBranch, saveStatusLine } from './save-resolution.mjs';
 import { mutationComplete } from '../../shared/mutation-outcome.mjs';
 import { refNameProblem } from '../../shared/git-refs.mjs';
 import { configurationOf } from '../../shared/workspace-configuration.mjs';
@@ -78,8 +78,7 @@ import { githubBranchKey, githubHeadEvents } from './github-head-state.mjs';
 function pullRequestUrl(environment) {
   const source = environmentSourceOf(environment);
   if (!source.sourceBranch || !source.workingBranch || source.sourceBranch === source.workingBranch) return null;
-  const compare = `${encodeURIComponent(source.sourceBranch)}...${encodeURIComponent(source.workingBranch)}`;
-  return `https://github.com/${source.fullName}/compare/${compare}?expand=1`;
+  return compareUrl(source.fullName, source.sourceBranch, source.workingBranch);
 }
 import { createEnvironmentOperation } from './settings-operation.mjs';
 import { createEnvironmentForm, createGitHubConnectionSummary, createWorkspaceSettingsView } from './workspace-settings-view.mjs';
