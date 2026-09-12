@@ -38,24 +38,26 @@ Inputs/export is independently reviewed and accepted locally at `569ef21`.
 This covers F02/F04/F08/F10, the shared invalid-field helper and its export
 callers, exact numeric drafts, explanation normalization and export stage
 position. MAIN also checked the actual reviewed ZIP bytes and retained coverage.
-The ordinary editor's R04 first-invalid-field consumer remains a shell gate,
-not a producer-only success. The detailed scoped disposition is
+The ordinary editor's R04 first-invalid-field consumer is independently verified
+on shell source `f5b5b3d`, not inferred from producer-only tests. It remains a
+regression gate for the corrected composition. The input disposition is
 `ui-input-export-main-acceptance-01.json`.
 
-The shell has returned the preserved candidate `f5b5b3d`, including its 25
-owned changed paths and unchanged producer prerequisites. Its own changes
-remain under independent review. Recovery correction, app focus integration
-and final combined desktop acceptance remain separate gates; the accepted
-component correction and test adaptations are recorded below.
+The independent review of shell candidate `f5b5b3d` is complete. Six follow-up
+findings require correction: SH01 skip-link navigation, SH02 breakpoint IME
+composition, SH03 notification focus, SH04 retired filter callbacks, SH05
+obsolete-source attribution and SH06 humanized-label collisions. The original
+shell owner receives one bounded correction task, not six separate workers.
+Recovery, app-focus and final combined acceptance remain separate gates.
 The initial recovery and policy/model candidates are not accepted by their
 presence in the shell's review candidate.
 
 Policy/model component correction `4dec00c` is now independently reviewed and
 accepted for all three correction findings. Complete policy representations,
 byte-preserving guided edits and component-scoped model focus are covered.
-The actual app focus-owner consumer remains a separate implementation and review
-gate; this component acceptance is not a completed app integration. The scoped
-disposition is `ui-policy-model-main-acceptance-01.json`.
+The actual app focus-owner consumer has returned at `54358bd` and is under
+separate independent review; this component acceptance is not a completed app
+integration. The scoped disposition is `ui-policy-model-main-acceptance-01.json`.
 
 The three shell test adaptations are accepted at endpoint `2a9afd5`: actual
 migration-command execution, bootstrap-safe breakpoint behavior and the exact
@@ -65,12 +67,14 @@ approval of the underlying shell or recovery candidates, and integration is
 still pending their product gates. The disposition is
 `ui-shell-adapters-main-acceptance-01.json`.
 
-Recovery review of `4bfd600` returned one remaining WR03 correction: a registry
-failure inside actual local-provider construction still receives incorrect
-folder/file recovery guidance. MAIN verified that boundary and reused the
-released recovery owner for a narrow activation/regression correction. The
-other three findings passed the review's scoped scenarios, but the new recovery
-candidate still needs independent review and MAIN acceptance.
+The remaining WR03 provider/registry classification correction has returned at
+`432a360`, a two-file successor to `4bfd600`. The original independent reviewer
+is rechecking that exact correction while preserving the earlier WR01/WR02/WR04
+evidence and limits. Writer release does not approve the candidate.
+
+MAIN verified the returned source identities, scopes and preservation, then
+reused three idle workers for the shell correction and two independent reviews.
+`ui-returned-candidates-main-intake-02.json` records the exact handoffs.
 
 The original report, screenshots, exact results and unsuccessful attempts remain
 preserved outside worktrees in:
@@ -112,16 +116,21 @@ coverage candidate, load the actual production helpers and retain every
 assertion. The reviewer has read-only product-review scope during this work;
 there is no concurrent test writer.
 
-After the original shell writer released `f5b5b3d`, its follow-up is limited to
+After the original shell writer released `f5b5b3d`, its first follow-up was limited to
 unchanged recovery-correction incorporation and the two migration/catalog
-structural test adapters. The returned policy correction `4dec00c` also needs
+structural test adapters. The returned policy correction `4dec00c` also needed
 an explicit app consumer: a stable model-viewer focus token across context and
-mount rebuilding. MAIN transfers only that `app.mjs` slice and the new
-`ui-model-focus-integration.test.mjs` to the released policy owner. The shell
-follow-up has no manual product-edit grant, so these assignments do not overlap.
-The policy component correction is accepted separately. The recovery correction
-and new app consumer retain their independent review gates; source composition
-alone is not acceptance.
+mount rebuilding. That two-file consumer was assigned to the released policy
+owner while the shell follow-up had no manual product-edit grant.
+
+The consumer writer has now released `54358bd`. Only the shell correction worker
+may write the app for SH01-SH06; its precisely listed optional HTML/helper and
+test changes do not overlap either read-only reviewer. Its candidate may
+incorporate the complete unchanged policy correction, `54358bd` app consumer
+and `432a360` recovery correction over accepted test endpoint `2a9afd5`, recording
+each mapping and a clean baseline before its own fixes. Those exact app/recovery
+candidates are reviewed separately. This bounded composition is not approval
+or MAIN integration, and no mutable worker checkout is copied.
 
 The user also requested Bicep and Terraform SVG icons. MAIN owns the original
 assets in `CitadelUI/web/icons/`, the shared `formatIcon` renderer and its focused
