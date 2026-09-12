@@ -70,10 +70,11 @@ The actual app focus-owner consumer at `54358bd` completed independent review.
 The original Raw/read-only export mutation finding is independently resolved
 at `da51017`. Re-review found a separate shared object-batch quarantine/painting
 gap, `MODEL-FOCUS-R02-01`. Its precise correction returned at `e697985`, retaining
-the entire prior 46-case file and adding twelve batch cases. MAIN verified the
-source, evidence and preservation and closed the writer handoff. Independent
-model review-03 now reviews that frozen candidate; component acceptance is not
-completed app integration.
+the entire prior 46-case file and adding twelve batch cases. Independent model
+review-03 approves that frozen candidate. MAIN verified the exact source,
+runtime bodies, preserved evidence and all 58 consumer outcomes, then replayed
+those consumers and the mandatory cancellation itself. No model/batch finding
+remains; compatible application integration is still pending.
 The component disposition is `ui-policy-model-main-acceptance-01.json`.
 
 The three shell test adaptations are accepted at endpoint `2a9afd5`: actual
@@ -182,9 +183,11 @@ A prepared late addendum was never sent after its guard found the completed
 batch result. That completed task was not reopened.
 The released original app-consumer owner now has sole app ownership for the
 two remaining SH05/SH06 corrections, with bounded additions only to
-`ui-shell-corrections.test.mjs`. The original model reviewer independently reads
+`ui-shell-corrections.test.mjs`. The original model reviewer independently reviewed
 frozen `e697985`; the complete 58-case model test file is not writable by the
-shell follow-up. Diagnostics and baseline-classification handoffs are closed.
+shell follow-up. The model review is complete and accepted, as are Diagnostics
+and baseline-classification handoffs. The remaining shell successor still needs
+its independent review before final compatible integration.
 
 The returned candidate incorporates the complete unchanged policy correction,
 `54358bd` app consumer and `432a360` recovery correction over accepted test
