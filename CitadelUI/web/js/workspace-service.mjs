@@ -6,7 +6,7 @@ import {
   relativeAlias,
   resolveAlias,
 } from '../../shared/citadel-core.mjs';
-import { activeWorkspace, workspaceRegistry } from './workspace-context.mjs';
+import { activeWorkspace, workspaceRegistry } from './workspace-activation.mjs';
 import { LocalTransactionCoordinator } from './mutation-coordinator.mjs';
 import { createProvider } from './source-factory.mjs';
 import { configurationKey, configurationOf } from '../../shared/workspace-configuration.mjs';

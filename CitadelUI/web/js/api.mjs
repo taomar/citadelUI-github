@@ -1,7 +1,7 @@
 import { createTransactionCommit } from './transaction-client.mjs';
 import { WorkspaceService } from './workspace-service.mjs';
 import { localRequest as request } from './local-api.mjs';
-import { SourceMutationCoordinator } from './source-factory.mjs';
+import { createProvider, SourceMutationCoordinator } from './source-factory.mjs';
 import { activeWorkspace, workspaceRegistry } from './workspace-context.mjs';
 import { MigrationSession } from './migration-session.mjs';
 import { TerraformExportSession } from './terraform-export-session.mjs';
@@ -14,7 +14,15 @@ const coordinator = new SourceMutationCoordinator({
   contextProvider: activeWorkspace,
 });
 
-const workspace = new WorkspaceService({ request, coordinator });
+const workspace = new WorkspaceService({
+  request,
+  coordinator,
+  contextProvider: activeWorkspace,
+  registry: workspaceRegistry,
+  createProvider: (environment) => createProvider(environment, {
+    getHandle: (id) => workspaceRegistry.getHandle(id),
+  }),
+});
 
 export const api = {
   createTerraformExportSession: (options = {}) => new TerraformExportSession({
