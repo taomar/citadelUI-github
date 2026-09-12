@@ -52,8 +52,13 @@ shell owner returned their correction together with the separately assigned
 prerequisite incorporations and two manual commits over `d9a564b`. Only the app,
 new shell regression file and appended model-mutation tests differ; all original
 26 model-focus cases remain byte-identical. The writer handoff is closed.
-Independent shell and model re-reviews are assigned to two released workers.
-Recovery is integrated locally; app-focus and final combined acceptance remain
+The independent shell re-review now accepts SH01-SH04 in scope. Two narrower
+gaps remain: an already-visible generic source error loses its evidence after
+replacement-source success, and independently suffixed contract labels can
+still collide. These are `UI-SHELL-CORR-R01-01` and `UI-SHELL-CORR-R01-02`;
+neither report alleges wrong-source writes or lost source bytes. The fresh
+`UI-shell-final-corrections` task starts from preserved candidate `e697985`.
+Recovery is integrated locally; model and final combined acceptance remain
 separate gates.
 The initial recovery and policy/model candidates are not accepted by their
 presence in the shell's review candidate.
@@ -62,12 +67,13 @@ Policy/model component correction `4dec00c` is now independently reviewed and
 accepted for all three correction findings. Complete policy representations,
 byte-preserving guided edits and component-scoped model focus are covered.
 The actual app focus-owner consumer at `54358bd` completed independent review.
-Its narrow focus delta is regression-free in the exercised scope, but retained
-model mutation callbacks can still create a draft while Raw or read-only export
-owns the workspace. This predates that delta and remains an unmet assigned
-criterion, not an accepted exception. Its correction has returned in `da51017`
-and is under independent re-review; component acceptance is not completed app
-integration.
+The original Raw/read-only export mutation finding is independently resolved
+at `da51017`. Re-review found a separate shared object-batch quarantine/painting
+gap, `MODEL-FOCUS-R02-01`. Its precise correction returned at `e697985`, retaining
+the entire prior 46-case file and adding twelve batch cases. MAIN verified the
+source, evidence and preservation and closed the writer handoff. Independent
+model review-03 now reviews that frozen candidate; component acceptance is not
+completed app integration.
 The component disposition is `ui-policy-model-main-acceptance-01.json`.
 
 The three shell test adaptations are accepted at endpoint `2a9afd5`: actual
@@ -97,15 +103,29 @@ reused three idle workers for the shell correction and two independent reviews.
 MAIN also recorded an isolated full Node baseline at the exact pre-correction
 composition `d9a564b`: all 768 source files match the immutable Git object.
 The run has 2,391 entries, 2,346 passes, ten failures and 35 skips. Eight
-non-fixture failures are assigned to the reused reviewer for classification
-against accepted MAIN; they are not assumed to be old or dismissed as obsolete.
+non-fixture failures have been independently classified against accepted MAIN:
+six are prior registry/structural-test disagreements, one is the newly mismatched
+Diagnostics entry contract and one is a Windows full temporary-path limit.
+The six prior disagreements remain outside this correction. The unchanged
+receiver passes with a measured 252-character path instead of the failing 265;
+no product, infrastructure or OS setting was changed.
 This comparison does not replace corrected-shell or final desktop acceptance.
 MAIN's independent full returned-candidate replay has 2,429 entries, 2,384
 passes, the same ten failing case names, 35 skips and no cancellations.
 All 18 shell correction, 26 original model-focus and 20 new model-mutation
 cases pass. All 769 candidate source files remain unchanged. The failure-name
-comparison does not replace the assigned cause classification or independent
-desktop reviews, and the candidate is not yet integrated into MAIN.
+comparison is supplemented by that cause classification and the returned
+independent desktop review; the candidate is not yet integrated into MAIN.
+
+Diagnostics test/documentation alignment `af36085` is independently accepted
+in its four-path scope. It retains the supported header entry, public owner
+bootstrap, protected APIs and all existing capture/transport controls. MAIN
+verified all original bootstrap assertions and eight other server tests
+unchanged, then replayed the exact candidate. All ten required server/cancellation
+cases and 25 additional shared-diagnostic cases pass; the two known fixture
+admissions remain. Current MAIN has no Diagnostics header entry, so this accepted
+test/docs change must integrate with its compatible shell source rather than
+creating an inconsistent intermediate application.
 
 The original report, screenshots, exact results and unsuccessful attempts remain
 preserved outside worktrees in:
@@ -157,8 +177,14 @@ owner while the shell follow-up had no manual product-edit grant.
 The consumer writer and reviewer released `54358bd` before the shell correction
 received sole app ownership for SH01-SH06 and `MODEL-FOCUS-R01-01`. Its narrow
 additional test grant preserved all original model-focus cases. The shell writer
-has now also released `da51017`; no concurrent app/test writer remains.
-The two current candidate reviews and baseline classification are read-only.
+subsequently released `da51017` and the separate batch correction `e697985`.
+A prepared late addendum was never sent after its guard found the completed
+batch result. That completed task was not reopened.
+The released original app-consumer owner now has sole app ownership for the
+two remaining SH05/SH06 corrections, with bounded additions only to
+`ui-shell-corrections.test.mjs`. The original model reviewer independently reads
+frozen `e697985`; the complete 58-case model test file is not writable by the
+shell follow-up. Diagnostics and baseline-classification handoffs are closed.
 
 The returned candidate incorporates the complete unchanged policy correction,
 `54358bd` app consumer and `432a360` recovery correction over accepted test
