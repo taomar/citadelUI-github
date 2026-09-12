@@ -10,13 +10,29 @@ The work remains desktop-only and limited to the Citadel Control Plane.
 The reviewed application revision is
 `08fa39d4fac540ccfa43b5f1260a7330179c6bbe`. The subsequent MAIN revision
 `fbd68b136a49d1d7cf7671ac36b5adaf5c486c9f` changes orchestration instructions,
-not the application. Workers start from the commit containing this plan.
+not the application. Initial implementation assignments started from
+`4fd705771a96fa033ae4b3ec48edc39743a91766`; each later assignment names its
+own exact review or integration source.
 
 The first review is accepted as actionable evidence, not exhaustive
 verification: 22 components, 477 control/action/state families, 16 findings
-and 10 recommendations. Twenty-two feasible interactions still need executable
+and 10 recommendations. It left 22 feasible interactions without executable
 coverage; nine external/manual gaps remain explicit. The existing full-suite
 run had 24 failures, not all independently established as pre-existing.
+
+The coverage follow-through is accepted locally at `f4754d8`. All 22 controls
+now have executable evidence. The initial oracle recorded 21 verified controls
+and the settled policy-outline mismatch `COV-POLICY-01`. Follow-up native evidence
+confirmed the existing reading-position behavior: `aria-current` tracks the
+reading band, while the saved destination and heading focus describe the
+explicit jump. MAIN retains these separate contracts rather than pinning the
+reading marker. The earlier failed-oracle evidence remains preserved; both
+contracts must be checked with the final shell. MAIN independently reviewed
+the nine test/fixture changes and
+replayed their Node and native desktop checks. This closes the coverage handoff,
+not overall product acceptance or the nine external/manual limits.
+The acceptance record is `ui-coverage-main-acceptance-01.json` in MAIN's
+artifact directory.
 
 The original report, screenshots, exact results and unsuccessful attempts remain
 preserved outside worktrees in:
@@ -47,6 +63,16 @@ The task assignments enumerate exact file ownership. Implementation sessions
 add distinctly named regression files; the reviewer owns the specified existing
 VM test-adapter repairs. No two workers edit a shared source or test file.
 MAIN owns this plan, integration and directly related documentation.
+
+After the coverage handoff was accepted and its writer released, the shell
+owner received a narrow integration grant for VM dependency wiring and realistic
+header/DOM context in `mutation-caller-outcomes.test.mjs`,
+`native-classification.test.mjs`, `native-navigation.test.mjs` and
+`contract-catalog-refresh.test.mjs`, plus delimiter/dependency wiring only in
+`test\fixtures\ui-review\shell-harness.mjs`. It must first incorporate the accepted
+coverage candidate, load the actual production helpers and retain every
+assertion. The reviewer has read-only product-review scope during this work;
+there is no concurrent test writer.
 
 The user also requested Bicep and Terraform SVG icons. MAIN owns the original
 assets in `CitadelUI/web/icons/`, the shared `formatIcon` renderer and its focused
@@ -116,17 +142,21 @@ target-specific accessible names and predictable focus after removal.
    Work outside the assigned ownership boundary requires a concrete MAIN
    integration request, not edits to another worker's files.
 3. MAIN inspects each returned candidate and runs targeted baseline/candidate
-   comparisons. The independent reviewer receives an exact product candidate
+   comparisons. An independent reviewer receives an exact product candidate
    for review and executable checks; MAIN independently reviews its test
-   changes. No self-review or completion label substitutes for acceptance.
+   changes. Released implementation workers can be reused to review another
+   owner's immutable candidate after their producer handoff closes; final
+   code acceptance and integration remain separate MAIN gates. No self-review
+   or completion label substitutes for acceptance.
 4. Integrate compatible accepted changes as they become available. Shared
    validation/navigation interfaces and the final visual token application
    receive combined checks before final acceptance. One blocked bundle does
    not hold independent acceptance or ready work.
 5. Verify the integrated desktop workflows, native typing/caret/focus,
    dialogs/menus, errors/recovery, source-byte preservation and representative
-   screenshots. Account for every F01-F16 and R01-R10 outcome, including
-   remaining manual work, in the final report and documentation.
+   screenshots. Account for every F01-F16 and R01-R10 outcome, the follow-through
+   finding `COV-POLICY-01`, and remaining manual work in the final report and
+   documentation.
 
 Use the repository's complete quoted test glob from `CitadelUI` with bounded
 selectors and a fresh owned TEMP/TMP. Preserve existing failure evidence;
