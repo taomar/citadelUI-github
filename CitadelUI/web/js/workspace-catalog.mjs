@@ -31,6 +31,7 @@
  * any of them.
  */
 import { h, mount } from './dom.mjs';
+import { renderWorkspaceCatalogList } from './workspace-catalog-list.mjs';
 import { reportClientError } from './diagnostics-client.mjs';
 import { showDialog, dismissDialog, confirmDialog } from './dialog.mjs';
 import { environmentSourceOf } from './registry.mjs';
@@ -888,132 +889,25 @@ export function presentWorkspaceCatalog(options) {
       );
     }
 
-    function workspaceTable(visible) {
-      return h(
-        'div',
-        {
-          class: 'catalog-scroller',
-          tabindex: '0',
-          role: 'group',
-          'aria-label': 'Saved workspaces table',
+    function catalogList(visible) {
+      return renderWorkspaceCatalogList({
+        rows: visible,
+        hasWorkspaces: rows.length > 0,
+        addWorkspaceButton,
+        renderSortButton: sortButton,
+        renderSourceBadge: sourceBadge,
+        renderChip: chip,
+        renderStatus: (status) => chip(WORKSPACE_STATUS[status].label, WORKSPACE_STATUS[status].chip),
+        formatTime: (value) => relativeTime(value, now()),
+        renderRowActions: workspaceActions,
+        onClearFilters: () => {
+          view.search = '';
+          view.source = 'all';
+          view.status = 'all';
+          persist();
+          render();
         },
-        h(
-          'table',
-          { class: 'otable catalog-table' },
-          h(
-            'thead',
-            {},
-            h(
-              'tr',
-              {},
-              h('th', { scope: 'col' }, sortButton('label', 'Workspace')),
-              h('th', { scope: 'col' }, sortButton('source', 'Source')),
-              h('th', { scope: 'col' }, 'Repository or folder'),
-              h('th', { scope: 'col' }, 'Branch'),
-              h('th', { scope: 'col' }, 'Connection'),
-              h('th', { scope: 'col' }, 'Capabilities'),
-              h('th', { scope: 'col' }, sortButton('status', 'Status')),
-              h('th', { scope: 'col' }, sortButton('opened', 'Last opened')),
-              h('th', { scope: 'col' }, h('span', { class: 'sr-only' }, 'Actions'))
-            )
-          ),
-          h(
-            'tbody',
-            {},
-            visible.map((row) =>
-              h(
-                'tr',
-                { class: 'catalog-row' },
-                h(
-                  'td',
-                  { 'data-label': 'Workspace' },
-                  h('span', { class: 'otable-link' }, row.label),
-                  h('small', { class: 'hint' }, [row.projectLabel, row.formatLabel].filter(Boolean).join(' \u00b7 '))
-                ),
-                h('td', { 'data-label': 'Source' }, sourceBadge(row.kind)),
-                h(
-                  'td',
-                  { class: 'otable-path', 'data-label': 'Repository or folder' },
-                  h('code', {}, row.location || 'Not recorded')
-                ),
-                h(
-                  'td',
-                  { class: 'otable-path', 'data-label': 'Branch' },
-                  row.branch ? h('code', {}, row.branch) : h('span', { class: 'hint' }, '\u2014')
-                ),
-                h(
-                  'td',
-                  { class: 'catalog-connection-cell', 'data-label': 'Connection' },
-                  row.kind === 'github'
-                    ? h(
-                        'span',
-                        { class: row.connection ? '' : 'hint' },
-                        row.connection ? row.connection.name : 'Not connected'
-                      )
-                    : h('span', { class: 'hint' }, '\u2014')
-                ),
-                h(
-                  'td',
-                  { class: 'catalog-capabilities', 'data-label': 'Capabilities' },
-                  row.capabilities.length
-                    ? row.capabilities.map((capability) => chip(capability, 'chip-neutral'))
-                    : h('span', { class: 'hint' }, '\u2014')
-                ),
-                h(
-                  'td',
-                  { 'data-label': 'Status' },
-                  chip(WORKSPACE_STATUS[row.status].label, WORKSPACE_STATUS[row.status].chip)
-                ),
-                h('td', { 'data-label': 'Last opened' }, relativeTime(row.lastOpenedAt, now())),
-                // The buttons are one grid item, not three. Placed directly in
-                // the cell they become cells of their own, and the stacked
-                // layout drops every second one under the row label.
-                h(
-                  'td',
-                  { 'data-label': 'Actions' },
-                  h('div', { class: 'catalog-actions' }, workspaceActions(row))
-                )
-              )
-            )
-          )
-        )
-      );
-    }
-
-    function emptyWorkspaces(filtered) {
-      if (rows.length && !filtered.length) {
-        return h(
-          'div',
-          { class: 'catalog-empty' },
-          h('p', {}, 'No workspace matches this search.'),
-          h(
-            'button',
-            {
-              class: 'btn',
-              type: 'button',
-              onclick: () => {
-                view.search = '';
-                view.source = 'all';
-                view.status = 'all';
-                persist();
-                render();
-              },
-            },
-            'Clear filters'
-          )
-        );
-      }
-      return h(
-        'div',
-        { class: 'catalog-empty' },
-        h('p', {}, 'No workspaces yet.'),
-        h(
-          'p',
-          { class: 'hint' },
-          'A workspace is one Citadel repository — a local folder, or a GitHub repository on a branch you choose. Once attached it appears here and opens in one click.'
-        ),
-        addWorkspaceButton
-      );
+      });
     }
 
     function filters() {
@@ -1133,7 +1027,7 @@ export function presentWorkspaceCatalog(options) {
       if (!listHost) return render();
       const visible = filterWorkspaces(rows, view);
       resultCount.textContent = `${visible.length} of ${rows.length}`;
-      mount(listHost, visible.length ? workspaceTable(visible) : emptyWorkspaces(visible));
+      mount(listHost, catalogList(visible));
       return undefined;
     }
 
@@ -1226,7 +1120,7 @@ export function presentWorkspaceCatalog(options) {
         ),
         activityPanel()
       );
-      mount(listHost, visible.length ? workspaceTable(visible) : emptyWorkspaces(visible));
+      mount(listHost, catalogList(visible));
       if (restoreAddFocus && !document.getElementById('modal')?.open && addWorkspaceButton.isConnected) {
         addWorkspaceButton.focus({ preventScroll: true });
       }
