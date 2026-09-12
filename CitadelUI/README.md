@@ -1165,6 +1165,7 @@ CitadelUI/
   shared/
     citadel-core.mjs   provider-neutral discovery and document behavior
     source-scope.mjs   one definition of the editable source boundary
+    label-key.mjs      shared label projection; validation stays with callers
     subscription-env.mjs
                        byte-preserving AZURE_SUBSCRIPTION_ID patcher
     policy.mjs         pure APIM policy parser/editor
@@ -1180,6 +1181,10 @@ CitadelUI/
     css/               design tokens and component styles
     js/
       app.mjs          shell, projects/environments, routing, review and save
+      workspace-service.mjs
+                       source workflows, validation, byte assembly and budgets
+      parameter-copy-plan.mjs
+                       pure ordered selection and copy operations
       registry.mjs     IndexedDB labels, metadata, drafts, retained handles
       directory-provider.mjs
                        selected-folder I/O and exclusion boundary

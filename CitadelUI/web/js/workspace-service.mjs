@@ -17,6 +17,7 @@ import { assertNativeDraft, sameNativeDraftBinding } from '../../shared/terrafor
 import { environmentSourceOf } from './registry.mjs';
 import { encodeSourceText } from '../../shared/source-text.mjs';
 import { mutationComplete, withMutationOutcome } from '../../shared/mutation-outcome.mjs';
+import { parameterCopyPlan } from './parameter-copy-plan.mjs';
 import {
   applyPolicyChanges,
   assertBalancedXml,
@@ -750,15 +751,8 @@ export class WorkspaceService {
     if (names.some((name) => !definitions[name] || definitions[name].secure)) {
       throw new Error('Secure or untyped parameters cannot be copied between environments.');
     }
-    const selected = comparison.parameters.filter(
-      (parameter) => names.includes(parameter.name) && parameter.status === 'different'
-    );
+    const { selected, operations, changed } = parameterCopyPlan(comparison.parameters, names);
     if (!selected.length) throw new Error('No compatible differences were selected.');
-    const operations = selected.map((parameter) => ({
-      op: 'set',
-      path: [parameter.name],
-      value: parameter.source,
-    }));
     const after = previewDocumentText(comparison.destination.text, operations);
     const bytes = encodeSourceText(after, comparison.destination);
     return this.commitFiles([
@@ -767,7 +761,7 @@ export class WorkspaceService {
         before: comparison.destination.bytes,
         beforeHash: expectedTargetHash,
         after: bytes,
-        changed: selected.map((parameter) => parameter.name),
+        changed,
       },
     ], {
       action: 'environment-copy',
@@ -782,13 +776,8 @@ export class WorkspaceService {
     if (names.some((name) => !definitions[name] || definitions[name].secure)) {
       throw new Error('Secure or untyped parameters cannot be copied between environments.');
     }
-    const selected = comparison.parameters.filter(
-      (parameter) => names.includes(parameter.name) && parameter.status === 'different'
-    );
-    const after = previewDocumentText(
-      comparison.destination.text,
-      selected.map((parameter) => ({ op: 'set', path: [parameter.name], value: parameter.source }))
-    );
+    const { operations, changed } = parameterCopyPlan(comparison.parameters, names);
+    const after = previewDocumentText(comparison.destination.text, operations);
     const bytes = encodeSourceText(after, comparison.destination);
     if (after !== comparison.destination.text) await this.coordinator.validateRequest?.([{
       alias: comparison.targetAlias, beforeHash: comparison.destination.hash, after: bytes,
@@ -797,7 +786,7 @@ export class WorkspaceService {
       before: comparison.destination.text,
       after,
       changed: after !== comparison.destination.text,
-      selected: selected.map((parameter) => parameter.name),
+      selected: changed,
       sourceHash: expectedSourceHash,
       targetHash: comparison.destination.hash,
       targetLabel: comparison.target.environment.label,
