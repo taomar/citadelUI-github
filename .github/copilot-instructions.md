@@ -32,6 +32,25 @@ gates and data-safety restrictions.
   Running, blocked, idle and cleanup-pending workers all count. Five is a ceiling,
   not a requirement to invent enough work to fill every slot.
 
+### Response-first updates for this MAIN
+
+This subsection applies only to MAIN session
+`ed142fd6-9404-4a29-b26b-cdf31a456e67`; worker handoff contracts are unchanged.
+
+- At the next response opportunity for a status question, first give one short,
+  useful public update: the last verified outcome, actual ongoing work, any
+  blocker, and the next authorized action. Do not give only "I'm checking."
+- Clearly identify stale or unknown facts. If fresh activity is necessary, use
+  one shared snapshot under the change-driven reconciliation rules; do not
+  inspect every worker or reopen completed investigations merely to answer.
+- Give the update before optional report edits, canvas updates, ledger
+  maintenance or non-urgent cleanup. Safety-critical actions and required
+  approval gates still take priority.
+- When work remains, make this an interim update and continue the approved
+  queue under the existing continuation and yield rules. Answering alone does
+  not complete the overall task. Existing prohibitions on periodic updates,
+  acknowledgement chains, status pings, timers and supervisors remain in force.
+
 ### Assignments and results
 
 - Use named, visible child sessions and isolated worktrees. Keep one writer per
