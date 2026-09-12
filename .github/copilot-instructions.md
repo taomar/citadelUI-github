@@ -34,15 +34,27 @@ conflicting instructions instead of silently choosing between them.
 
 ### Parallel execution
 
-- The MAIN may create workers without requesting approval each time,
-  within the user's authorized task.
+- The MAIN may dispatch work without requesting approval each time,
+  within the user's authorized task and the reuse-first rules below.
 - Use at most FIVE occupied worker slots, excluding the MAIN.
 - Running, blocked, idle-but-unfinished, and completed workers awaiting
   integration or cleanup ALL occupy slots.
 - Split substantial work into independent slices and run them
   concurrently when dependencies permit. Keep ready, authorized work
-  moving whenever a safely available slot and non-overlapping scope allow;
-  do not leave it waiting for unrelated work. Do not create filler tasks.
+  moving through reuse or an available slot with non-overlapping scope;
+  do not hold independent work behind one blocker. Do not create filler tasks.
+- After a worker result, finish required acceptance and local integration,
+  preserve its outcome, and close the previous assignment before reuse.
+- Prefer reusing a suitable existing idle session for the next ready,
+  compatible, already-authorized task before creating a worker or archiving
+  that reusable session. Assign a concrete new task/attempt, correct source
+  revision, conflict-free scope and fresh durable result path. Keep the same
+  session ID and occupied slot; do not redo closed work or mix unfinished changes.
+- Create a new worker only when no suitable reusable worker exists and the
+  five-occupied-session ceiling permits it.
+- Completed results, acceptance, integration, reuse and eligible cleanup
+  are actionable MAIN work even when all slots are occupied. Continue until
+  no authorized action is feasible; state the concrete blocker when necessary.
 - Create named, visible child sessions under the MAIN.
   No detached workers, hidden helpers, or nested delegation.
 - Use isolated worktrees for implementation and one writer per scope.
@@ -148,15 +160,20 @@ conflicting instructions instead of silently choosing between them.
   worker's worktree before archival; archiving removes that worktree.
 - Independently check ownership release, actual Git changes, untracked
   files, needed artifacts, and unique unmerged commits.
-- Automatically archive only your own finished children when writers
-  have stopped, needed work is preserved, and there is no unique
+- Promptly archive an idle child only when it has no suitable ready
+  assignment and is genuinely no longer needed. Archive only your own
+  finished children after work is accepted/preserved and writers have
+  stopped, with no unique
   unmerged/unsaved work, open PR, active merge, pending task, background
   work, or attached automation.
 - Never discard work merely to free a slot.
 - If cleanup is unsafe, retain the worker with a specific reason and
   next action. Do not mistake it for a free slot.
-- Release a slot only after the archive operation confirms success, then
-  start the next independent ready task.
+- Reuse keeps the existing slot occupied. Release a slot only after the
+  archive operation confirms success; archival is not a prerequisite for
+  a safe new assignment to that same worker.
+- Never restore archived workers merely for reuse or keep speculative
+  idle reserves.
 - Inherited workers may require their original parent or the user to
   archive them. Do not assume authority over another parent's children.
 - Before overall completion, account for every worker: archived,
