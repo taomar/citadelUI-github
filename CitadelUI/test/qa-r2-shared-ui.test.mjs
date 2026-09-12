@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { loadDialogModule, readText } from './_dom-stub.mjs';
 import { h } from '../web/js/dom.mjs';
 import { guardedHandler } from '../web/js/single-flight.mjs';
+import { createDocumentActions } from '../web/js/document-action.mjs';
 import { historyEntry } from '../web/js/history-entry.mjs';
 import { environmentSourceOf } from '../web/js/registry.mjs';
 import { saveStatusLine } from '../web/js/save-resolution.mjs';
@@ -68,6 +69,9 @@ async function fixture() {
       deployments: async () => { calls.push(['catalog']); return nextCatalog; },
     },
   };
+  scope.documentActions = createDocumentActions({
+    views: scope.viewStates, currentOwner: () => scope.state, setStatus: scope.setStatus,
+  });
   vm.runInNewContext(statusSource + '\n' + historySource, scope);
   const undo = async () => {
     await scope.openHistory();
