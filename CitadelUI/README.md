@@ -1188,6 +1188,7 @@ CitadelUI/
     css/               design tokens and component styles
     js/
       app.mjs          shell, projects/environments, routing, review and save
+      api.mjs          explicit service context, registry and provider composition
       document-action.mjs
                        existing view ownership and per-document notice helpers
       editor-document-session.mjs
@@ -1197,6 +1198,14 @@ CitadelUI/
       parameter-copy-plan.mjs
                        pure ordered selection and copy operations
       registry.mjs     IndexedDB labels, metadata, drafts, retained handles
+      registry-sync.mjs
+                       one registry bootstrap, authority and metadata mirror
+      workspace-activation.mjs
+                       retained/open/reconnect and the single active generation
+      workspace-attachment.mjs
+                       distinct Local and Git attachment/recovery protocols
+      workspace-context.mjs
+                       UI composition and existing workspace facades
       directory-provider.mjs
                        selected-folder I/O and exclusion boundary
       github-provider.mjs
