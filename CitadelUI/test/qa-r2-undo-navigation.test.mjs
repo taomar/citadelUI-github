@@ -10,6 +10,7 @@ import { h, mount, clear } from '../web/js/dom.mjs';
 import { renderValue } from '../web/js/fields.mjs';
 import { guardedHandler } from '../web/js/single-flight.mjs';
 import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
+import { createDocumentActions } from '../web/js/document-action.mjs';
 import { historyEntry } from '../web/js/history-entry.mjs';
 import { environmentSourceOf } from '../web/js/registry.mjs';
 import { saveStatusLine } from '../web/js/save-resolution.mjs';
@@ -96,6 +97,9 @@ async function fixture(t, { holdResult = false } = {}) {
       deployments: () => { calls.push(['catalog']); return local.service.deployments(); },
     },
   };
+  scope.documentActions = createDocumentActions({
+    views: viewStates, currentOwner: () => scope.state, setStatus: scope.setStatus,
+  });
   vm.runInNewContext(handlers, scope);
   for (const [method, kind] of [['renderSidebar', 'sidebar'], ['renderContextRail', 'rail']]) {
     const render = scope[method];

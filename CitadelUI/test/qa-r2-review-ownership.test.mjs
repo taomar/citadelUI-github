@@ -6,6 +6,7 @@ import { loadDialogModule, readText } from './_dom-stub.mjs';
 import { h } from '../web/js/dom.mjs';
 import { guardedHandler } from '../web/js/single-flight.mjs';
 import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
+import { createDocumentActions } from '../web/js/document-action.mjs';
 import { environmentSourceOf } from '../web/js/registry.mjs';
 import { saveStatusLine } from '../web/js/save-resolution.mjs';
 import { mutationComplete } from '../shared/mutation-outcome.mjs';
@@ -70,6 +71,9 @@ async function fixture() {
     scope.state.status = message ? { message, tone } : null;
     statuses.push(scope.state.status);
   };
+  scope.documentActions = createDocumentActions({
+    views: scope.viewStates, currentOwner: () => scope.state, setStatus: scope.setStatus,
+  });
   const press = async (text) => {
     const button = dom.modal.querySelectorAll('button').find((node) => readText(node) === text);
     assert(button, text);

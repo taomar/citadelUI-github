@@ -64,6 +64,8 @@ import { assertNonsecretValues, validateNativeValues } from '../../shared/terraf
 import { NATIVE_WIRING_NOTICE, NATIVE_LOCAL_CREATION_NOTICE } from '../../shared/terraform/workspace.mjs';
 import { nativeEditContext, nativeReadonlyPolicy } from './native-controls.mjs';
 import { WorkspaceViewState } from './workspace-view-state.mjs';
+import { createDocumentActions } from './document-action.mjs';
+import { createEditorDocumentSession } from './editor-document-session.mjs';
 import { openRegisteredWorkspace, addRegisteredWorkspace } from './workspace-context.mjs';
 import { githubBranchKey, githubHeadEvents } from './github-head-state.mjs';
 
@@ -91,7 +93,6 @@ import {
   setParameterInput,
   restoreContractEdits,
   retainQuarantinedDraft,
-  restoreQuarantinedDrafts,
   discardQuarantinedDraft,
   invalidatePolicyPreview,
   policyPreviewIdentity,
@@ -151,6 +152,44 @@ const viewStates = new WorkspaceViewState(createEditorState);
 let state = createEditorState();
 let documentGeneration = 0;
 let editorTransition = null;
+
+const documentActions = createDocumentActions({ views: viewStates, currentOwner: () => state, setStatus });
+const editorDocuments = createEditorDocumentSession({
+  views: viewStates,
+  currentOwner: () => state,
+  contextProvider: () => activeWorkspace(),
+  documents: {
+    contract: (id, context) => api.contract(id, context),
+    accessContractTargets: (context) => api.accessContractTargets(context),
+    deployment: (path, context) => api.deployment(path, context),
+    onboardedModels: () => api.onboardedModels(),
+    policyVariables: () => api.policyVariables(),
+    validateDocument: (doc) => validateDocument(doc),
+    documentFindings: (doc) => documentFindings(doc),
+  },
+  drafts: {
+    restoreParameterDraft: (doc, owner) => restoreParameterDraft(doc, owner),
+    restoreStashedPending: () => restoreStashedPending(),
+  },
+  loadGate: {
+    run: (message, action, transition) => withEditorLoad(message, action, transition),
+    nextGeneration: () => ++documentGeneration,
+    isCurrentGeneration: (generation) => generation === documentGeneration,
+  },
+  publish: {
+    withStatus: (message, action) => withStatus(message, action),
+    setStatus: (message, tone) => setStatus(message, tone),
+    render: () => render(),
+    refreshPolicyPreview: () => refreshPolicyPreview(),
+    restoreDocumentNotice: () => restoreDocumentNotice(),
+    frame: (action) => requestAnimationFrame(action),
+    restoreView(remembered) {
+      els.workspace.scrollTop = remembered.scrollTop;
+      const control = [...els.workspace.querySelectorAll('[data-editor-focus]')].find((node) => node.dataset.editorFocus === remembered.focus);
+      if (control && !control.disabled && control.getClientRects().length) control.focus({ preventScroll: true });
+    },
+  },
+});
 
 const els = {};
 const COMPACT_NAV = window.matchMedia('(max-width: 48rem)');
@@ -354,36 +393,19 @@ async function withStatus(message, fn) {
 }
 
 function captureDocumentAction(owner = state) {
-  return { owner, document: owner.current, contract: owner.contract,
-    generation: owner.documentGeneration, ticket: viewStates.ticket() };
+  return documentActions.captureDocumentAction(owner);
 }
 
 function ownsDocumentAction(action) {
-  return state === action.owner && viewStates.isCurrent(action.ticket) &&
-    action.owner.current === action.document && action.owner.contract === action.contract &&
-    action.owner.documentGeneration === action.generation;
+  return documentActions.ownsDocumentAction(action);
 }
 
 function retainDocumentNotice(action, message, tone, outcome = false) {
-  const { owner, document, contract, generation } = action;
-  const path = document?.path || contract?.policy?.path;
-  const notice = { message, tone, outcome };
-  if (path) {
-    owner.documentNotices ||= new Map();
-    // A reload error must not erase a confirmed source outcome awaiting its owner.
-    if (outcome || !owner.documentNotices.get(path)?.outcome) owner.documentNotices.set(path, notice);
-  }
-  if (owner.current === document && owner.contract === contract && owner.documentGeneration === generation) {
-    owner.status = notice;
-  }
-  if (ownsDocumentAction(action)) setStatus(message, tone);
+  return documentActions.retainDocumentNotice(action, message, tone, outcome);
 }
 
 function restoreDocumentNotice() {
-  const path = state.current?.path, notice = state.documentNotices?.get(path);
-  if (!notice) return;
-  state.documentNotices.delete(path);
-  setStatus(notice.message, notice.tone);
+  return documentActions.restoreDocumentNotice();
 }
 
 /* -------------------------------------------------------------- operations */
@@ -1008,79 +1030,7 @@ function openCreateContract() {
 }
 
 async function loadContract(id, preserved = null, preserveOptions = undefined, transition = null) {
-  return withEditorLoad('Opening contract. Editing is paused until loading finishes.', async () => {
-    const owner = state, ticket = viewStates.ticket(), generation = ++documentGeneration, context = activeWorkspace();
-    owner.documentGeneration = generation;
-    const loaded = await withStatus('Loading contract\u2026', async () => {
-      const [contract, accessTargets] = await Promise.all([api.contract(id, context), api.accessContractTargets(context)]);
-      if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return null;
-      const draftState = { workspaceId: owner.workspaceId, workspaceKey: owner.workspaceKey,
-        quarantinedDrafts: new Map([...owner.quarantinedDrafts].filter(([path]) => path === contract.param.path)) };
-      const operations = await restoreParameterDraft(contract.param, draftState);
-      return { contract, accessTargets, operations, draftState };
-    });
-    if (!loaded || !viewStates.isCurrent(ticket) || generation !== documentGeneration) return false;
-    const { contract, accessTargets, operations, draftState } = loaded;
-    state.contractId = id;
-    state.contract = contract;
-    state.accessTargets = accessTargets;
-    state.current = contract.param;
-    state.baselineValidation = validateDocument(contract.param);
-    restoreQuarantinedDrafts(state, draftState);
-    if (state.quarantinedDraft) setStatus(state.quarantinedDraft.reason, 'error');
-    state.operations = operations;
-    state.parameterInputs = {};
-    state.inputScope = {};
-    state.policyChanges = {};
-    state.policyRaw = null;
-    invalidatePolicyPreview(state);
-    const remembered = state.documentViews.get(contract.param.path);
-    state.open = new Map(remembered?.open || []);
-    if (remembered) state.tab = remembered.tab;
-    if (preserved) {
-      const conflicts = restoreContractEdits(state, preserved, preserveOptions);
-      if (conflicts.length) {
-        retainQuarantinedDraft(state, preserved, `Pending edits are quarantined because source changed: ${conflicts.join(', ')}.`);
-        setStatus(
-          `Pending edits could not be reapplied because source changed: ${conflicts.join(', ')}.`,
-          'error'
-        );
-      }
-    } else {
-      restoreStashedPending();
-    }
-    if (state.policyRaw === null && Object.keys(state.policyChanges).length) await refreshPolicyPreview();
-    if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return false;
-    render();
-    restoreDocumentNotice();
-    if (remembered) requestAnimationFrame(() => {
-      if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return;
-      els.workspace.scrollTop = remembered.scrollTop;
-      const control = [...els.workspace.querySelectorAll('[data-editor-focus]')].find((node) => node.dataset.editorFocus === remembered.focus);
-      if (control && !control.disabled && control.getClientRects().length) control.focus({ preventScroll: true });
-    });
-
-    // The onboarded-model list only shapes a suggestion, so it is fetched after
-    // the contract is on screen rather than made a precondition for showing it.
-    if (!state.onboardedModels.length) {
-      try {
-        const [{ models }, specs] = await Promise.all([
-          api.onboardedModels(),
-          api.policyVariables(),
-        ]);
-        if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return true;
-        state.onboardedModels = models || [];
-        state.policyVariables = specs.variables || [];
-        state.throttleSpecs = specs.throttles || null;
-        state.semanticCacheSpec = specs.semanticCache || null;
-        state.contentSafetySpec = specs.contentSafety || null;
-        render();
-      } catch {
-        if (state === owner) state.onboardedModels = [];
-      }
-    }
-    return true;
-  }, transition);
+  return editorDocuments.loadContract(id, preserved, preserveOptions, transition);
 }
 
 async function selectContract(id, options = {}) {
@@ -3600,53 +3550,7 @@ function rememberDocumentView() {
 }
 
 async function loadDocument(path, { preserve = false, selection = null, transition = null } = {}) {
-  return withEditorLoad('Opening document. Editing is paused until loading finishes.', async () => {
-    const owner = state, ticket = viewStates.ticket(), generation = ++documentGeneration, context = activeWorkspace();
-    owner.documentGeneration = generation;
-    const pending = preserve ? captureContractEdits(owner) : null;
-    const previousIdentity = owner.current?.nativeIdentity;
-    const loaded = await withStatus('Loading\u2026', async () => {
-      const doc = await api.deployment(path, context);
-      if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return null;
-      const draftState = { workspaceId: owner.workspaceId, workspaceKey: owner.workspaceKey,
-        quarantinedDrafts: new Map([...owner.quarantinedDrafts].filter(([path]) => path === doc.path)) };
-      const draft = await restoreParameterDraft(doc, draftState);
-      return { doc, draft, draftState };
-    });
-    if (!loaded || !viewStates.isCurrent(ticket) || generation !== documentGeneration) return false;
-    const { doc, draft, draftState } = loaded;
-    if (selection) Object.assign(owner, selection);
-    state.current = doc;
-    restoreQuarantinedDrafts(owner, draftState);
-    if (owner.quarantinedDraft) setStatus(owner.quarantinedDraft.reason, 'error');
-    state.baselineValidation = documentFindings(doc);
-    state.operations = draft;
-    state.parameterInputs = {};
-    state.inputScope = {};
-    state.policyChanges = {};
-    state.policyRaw = null;
-    invalidatePolicyPreview(state);
-    if (pending && (pending.operations.length || hasParameterInputs(pending))) {
-      if (pending.parameterHash === doc.hash && (!doc.nativeIdentity || sameNativeDraftBinding(previousIdentity, doc.nativeIdentity))) {
-        state.operations = pending.operations;
-        state.parameterInputs = structuredClone(pending.parameterInputs || {});
-      } else retainQuarantinedDraft(state, pending, 'The file or its native schema/dependencies changed while this workspace was inactive. Its pending draft is retained, not applied to the new source.');
-    }
-    restoreStashedPending();
-    const remembered = state.documentViews.get(path);
-    state.open = new Map(remembered?.open || []);
-    if (remembered) state.tab = remembered.tab;
-    if (state.tab === 'policy') state.tab = 'params';
-    render();
-    restoreDocumentNotice();
-    if (remembered) requestAnimationFrame(() => {
-      if (!viewStates.isCurrent(ticket) || generation !== documentGeneration) return;
-      els.workspace.scrollTop = remembered.scrollTop;
-      const control = [...els.workspace.querySelectorAll('[data-editor-focus]')].find((node) => node.dataset.editorFocus === remembered.focus);
-      if (control && !control.disabled && control.getClientRects().length) control.focus({ preventScroll: true });
-    });
-    return true;
-  }, transition);
+  return editorDocuments.loadDocument(path, { preserve, selection, transition });
 }
 
 async function selectArea(id, options = {}) {

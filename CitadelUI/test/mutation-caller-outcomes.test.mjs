@@ -9,6 +9,8 @@ import { citadelRepositoryFiles } from './_citadel-fixture.mjs';
 import { h } from '../web/js/dom.mjs';
 import { guardedHandler, mutations } from '../web/js/single-flight.mjs';
 import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
+import { createDocumentActions } from '../web/js/document-action.mjs';
+import { createEditorDocumentSession } from '../web/js/editor-document-session.mjs';
 import { createCompareSession } from '../web/js/compare-session.mjs';
 import { historyEntry } from '../web/js/history-entry.mjs';
 import { environmentSourceOf, environmentLocation } from '../web/js/registry.mjs';
@@ -133,6 +135,9 @@ async function fixture(initial, { local = false, context: attachedContext = null
   vm.runInNewContext(handlers, scope);
   scope.viewStates = new WorkspaceViewState(scope.createEditorState);
   scope.state = scope.viewStates.activate(context);
+  scope.documentActions = createDocumentActions({
+    views: scope.viewStates, currentOwner: () => scope.state, setStatus: scope.setStatus,
+  });
   Object.assign(scope.state, {
     area: 'access-contracts', current: { path: MAIN, hash: 'source-hash' }, contractId: 'current-contract',
     contracts: { root: ROOT, parent: 'contracts', contracts: [] }, catalog: { files: [{ path: MAIN }] },
@@ -515,6 +520,8 @@ for (const kind of ['parameter', 'policy']) {
       throw new Error('Synthetic confirmed-save source reload failure');
     };
     f.scope.api.accessContractTargets = async () => ({});
+    f.scope.createEditorDocumentSession = createEditorDocumentSession;
+    vm.runInNewContext(section('const editorDocuments =', 'const els ='), f.scope);
     vm.runInNewContext(section('async function loadContract(', 'async function selectContract('), f.scope);
     const current = f.state.current;
     await f.press(await f.begin(kind));
