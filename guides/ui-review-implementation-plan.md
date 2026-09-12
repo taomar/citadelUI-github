@@ -151,6 +151,10 @@ binding to a different connection. Missing files must produce actionable
 guidance without reconstructing them or losing retained drafts. Snapshot labels
 must distinguish time/source/ref or revision and file count.
 
+Unconfirmed reattachment has the explicit `Confirmation pending` label and
+warning chip, not Ready. Its status contract adds the exact `pending` category
+without weakening the labels or chip requirements for existing states.
+
 Group model and policy inputs by identity, endpoint/authentication,
 deployment/capacity and lifecycle. Keep advanced fields discoverable. A
 recognized but unsupported guided value stays visible as inspect-only with a
