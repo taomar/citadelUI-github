@@ -14,6 +14,11 @@ class StubNode {
     this.listeners = new Map();
     this.dataset = {};
     this.style = {};
+    Object.defineProperty(this.style, 'setProperty', {
+      configurable: true,
+      writable: true,
+      value(name, value) { this[name] = String(value); },
+    });
     this.className = '';
     this.textContent = '';
     this.parentElement = null;

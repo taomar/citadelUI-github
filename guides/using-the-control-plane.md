@@ -4,10 +4,11 @@ Citadel edits Bicep/Citadel configuration and native Terraform inputs in
 independent workspaces. Changes remain drafts until you review and save.
 It does not run Terraform, deploy resources or manage state.
 
-This guide describes application source `4379522c`. Native workspaces and timed
-diagnostics were local-only at this documentation revision; a clone of older
-published `main` does not include them. See the
-[version prerequisite](../README.md#start-with-a-clone) before installation.
+This guide and its refreshed screenshots describe the reviewed desktop/tag UI
+on `taomar-citadel-orchestrator`, not an older `main` checkout or running image.
+Use the [delivery-branch checkout](../README.md#start-with-a-clone) or an
+operator-supplied image built from that reviewed source. Publishing the branch
+does not update an existing installation.
 Screenshots use synthetic files, labels and endpoints, not deployed services.
 
 | Start here | Task |
@@ -17,6 +18,7 @@ Screenshots use synthetic files, labels and endpoints, not deployed services.
 | [Native Terraform](#native-terraform-workspaces) | Select roots and operator value files |
 | [Open a saved workspace](#open-a-saved-workspace) | Resume an existing editing profile |
 | [The three areas](#the-three-areas) | Work with Bicep configuration and policy |
+| [Resource tags](#resource-tags) | Stage source-defined literal Bicep tag additions, edits and removals |
 | [Reviewing and saving](#reviewing-and-saving) | Confirm the destination and handle conflicts |
 | [Migration](#migrate-citadel-configuration) | Bring older values into current Bicep templates |
 | [Terraform export](#export-to-terraform) | Download Terraform inputs from saved Bicep values |
@@ -34,7 +36,7 @@ browser profile to retain folder permissions.
    and continue**. The first person to claim it becomes its only owner.
 3. On an existing instance, choose **Sign in** with that owner's credentials.
 
-![Empty first-use form with Create owner and continue](../docs/images/01-first-run-owner.png)
+![Empty first-use owner form in an isolated example instance](../docs/images/01-first-run-owner.png)
 
 There is no second account or password reset. Store the password safely.
 If an established instance unexpectedly asks you to create an owner, stop and
@@ -49,7 +51,7 @@ the page to load the new browser code and sign in with the existing owner.
 Session-only GitHub connections need **Reconnect**. Encrypted saved connections
 can be restored when their original credential key is available.
 
-![Returning-owner Sign in form, with no new-account action](../docs/images/06-sign-in.png)
+![Empty returning-owner Sign in form in the same synthetic instance, with no new-account action](../docs/images/06-sign-in.png)
 
 Keep the original browser origin, profile and local folders. Completed migration
 **Prepared sources** survive in preserved application data. Unsaved editor,
@@ -73,8 +75,8 @@ Choose the flow that matches your task:
 | Edit native Terraform values | **Terraform (native)**, then **Local** or **Existing GitHub Repo** |
 | Make a new local Bicep/Citadel source copy | **Bicep / Citadel > Create local from Citadel source** |
 | Make a new private GitHub Bicep/Citadel repository | **Bicep / Citadel > New GitHub Repo** |
-| Import older configuration values | Open the current Bicep destination, then **Migrate Citadel Configuration (Experimental)** |
-| Convert saved Bicep values to a download | Open the Bicep workspace, then **Export to Terraform (Experimental)** |
+| Import older configuration values | Open the current Bicep destination, then **Tools > Migrate configuration** (Experimental) |
+| Convert saved Bicep values to a download | Open the Bicep workspace, then **Tools > Export Terraform inputs** (Experimental) |
 
 Native editing needs neither a Bicep workspace nor an export first. The two
 starter-copy options are Bicep-only; neither prepares a native Terraform root.
@@ -92,7 +94,7 @@ starter-copy options are Bicep-only; neither prepares a native Terraform root.
    Access template capabilities and reports anything missing.
 6. Review the format, source, names and destination, then choose **Attach workspace**.
 
-![Configuration format set to Terraform, with independent GitHub and Local choices](../docs/images/60-native-format-loading.png)
+![Add workspace with Terraform selected, Local and GitHub choices available, and Bicep starter-copy options disabled](../docs/images/60-native-format-loading.png)
 
 In this repository's Bicep layout, choose the root containing `bicep/infra/`.
 A Terraform attachment instead needs the native layout below. A source folder
@@ -158,7 +160,7 @@ Do not substitute the Bicep names.
 | **Omit; inherit default** / **Omit input** | Remove an eligible supplied value |
 | Unsupported or untyped input | Preserved read-only rather than assigned a guessed type |
 
-![Synthetic native Deployment inputs with a changed unconsumed value, visible warnings and an enabled Review & save action](../docs/images/61-native-deployment.png)
+![Synthetic native Deployment draft showing optional_note and its declared-but-unconsumed advisory](../docs/images/61-native-deployment.png)
 
 **Inputs are not effective runtime state.** Unevaluated validations and
 declared-but-unconsumed inputs remain advisories, including after editing.
@@ -189,7 +191,7 @@ the `.tf` configuration owns that behavior. Use **Inspect shared policy source
 `file()` is not valid in `.tfvars`; the default's `file()` belongs in `.tf`.
 XML checking is tag-balance validation, not APIM runtime validation.
 
-![Synthetic Access service with an embedded policy_xml editor and literal template text](../docs/images/62-native-access-policy.png)
+![Synthetic native Access service with its own policy_xml editor and literal template-looking text](../docs/images/62-native-access-policy.png)
 
 #### Switching and reconnecting
 
@@ -266,7 +268,10 @@ Neither Local flow needs a GitHub token.
    the checkbox, then choose **Import and open workspace**. Keep the destination
    untouched until copying, byte verification and registration finish.
 
-![Local source review showing the pinned public commit and an exact synthetic child-folder destination](../docs/images/04b-local-source-review.png)
+![Local-copy review of a synthetic read-only source, pinned revision and exact example child-folder destination](../docs/images/04b-local-source-review.png)
+
+This example uses an offline synthetic source and destination; its displayed
+commit illustrates the review rather than identifying a live upstream release.
 
 The child becomes the workspace root. This copies the complete snapshot,
 including licenses, scripts, dotfiles and binary assets. It is not a Git clone:
@@ -331,7 +336,13 @@ requires the separate broader permissions described below.
    before editing. Settings and the catalog switch profiles without combining
    their state.
 
-![Synthetic Bicep and Terraform workspaces, with a shared GitHub connection and separate Local folders](../docs/images/63-native-workspace-isolation.png)
+![Synthetic Bicep, native Terraform and export-source workspaces with separate Local folders](../docs/images/63-native-workspace-isolation.png)
+
+The primary row action names the next step, such as **Open**, **Reconnect
+folder** or a connection review. **Actions** holds secondary operations.
+**Confirmation pending** means the retained reattachment still needs
+confirmation or revalidation, not that the workspace is ready. Follow the
+specific reason/action rather than detaching a workspace to clear its status.
 
 GitHub attachment normally creates/reuses `citadel-ui/<environment-id>` from
 the source branch. Direct writes to the selected branch are an explicit opt-in.
@@ -350,14 +361,63 @@ files and semantics, use [Native Terraform workspaces](#native-terraform-workspa
 | LLM Onboarding | `bicep/infra/llm-backend-onboarding/main.bicepparam` | Configure model backends |
 | Access Contracts | `bicep/infra/citadel-access-contracts/` | Configure use cases and their policies |
 
-The area rail selects the guided editors. **All parameter files** exposes the
-other supported parameter files. Review is always separate from editing.
+The **Workspace explorer** selects the guided areas and their files.
+**All parameter files** exposes the other supported files; its search narrows
+that local inventory, not cloud resources. Contract labels retain source context
+so similarly named entries can be distinguished.
+
+The global header contains the workspace chooser, **Diagnostics** and
+**Settings**. Beneath it, the contextual command bar shows the document,
+configuration format, source and actual write destination. **Review & save**
+stays separate from **History**, **Discard** and **Tools**; the menu groups
+**Compare & copy** and the experimental migration/export workflows.
+
+The document strip shows the file path, **Parameters** / **Raw file** modes and
+category tabs. Check that context before editing or confirming a save.
+Draft prompts identify the owning document; navigating to another file does
+not turn an old input or notice into authority to change the new one.
 
 ## Azure Deployment
 
 Parameters are grouped using the source file's sections and comments. Review
 the guidance beside a field rather than assuming another workspace has the
 same defaults.
+
+### Resource tags
+
+For a literal Bicep `tags` object, the rows are the keys actually present in
+your file. The editor does not require or insert `Owner` or `Purpose`; they
+are valid optional names if you choose them. In these root-shaped examples,
+`azd-env-name` and `SecurityControl` come from the source, while `cost-center`
+is an explicit demonstration addition.
+
+1. Open **Azure Deployment > tags** and check the owning file/source.
+2. Edit an existing value in its row, or enter **Tag name** and **Tag value**.
+   Choose **Add tag** to stage the new entry; Enter in either new-entry input
+   also stages it. Typing alone does not add a property. Review cannot save an
+   unfinished addition; stage it or clear both new-entry inputs.
+3. Use the row's **Remove** action to stage a removal. To rename, remove the
+   old key and add the new one. Removing the last key leaves an empty object.
+   If the source already has `tags = {}`, the same add controls are available.
+4. Choose **Review & save**, inspect the destination and proposed source, then
+   **Save changes**. Reopen or reload to read the saved entries.
+5. To undo a completed tag modification, open **History**, choose **Restore
+   prior**, and confirm **Back up and restore**. Restore still checks current
+   source/ownership; it is not a force overwrite or a Git history rewrite.
+
+![Synthetic literal Bicep tags with source-defined entries and cost-center staged before saving](../docs/images/64-resource-tags.png)
+
+Blank or whitespace-only names and exact duplicate names show an inline error
+and do not add a tag. Valid names retain their spelling and case; an empty
+string value is allowed. The editor's representation reserves `__proto__`,
+`__expr`, `__args` and `__tfNumber`; this is not an Azure tag-policy list.
+
+This control is for literal top-level Bicep `tags`, not a whole-object
+expression, every generic object, or a native Terraform map. Existing
+expression-valued entries retain their supported syntax/fallback controls.
+Unchanged source spans, including neighboring expressions and comments, are
+preserved. The UI neither evaluates those expressions nor validates deployed
+provider-specific tagging rules.
 
 ### Feature flags turn capabilities on and off
 
@@ -386,6 +446,10 @@ provider-specific suggestions and still accepts an explicit model ID.
 The editor checks supported required fields, duplicate identities and bounds;
 the routing preview is not a live gateway probe.
 
+Use the picker's search and provider grouping, or enter an explicit model ID.
+Advanced details remain available without treating catalogue suggestions as
+proof that a model is deployed or reachable.
+
 ## Access Contracts
 
 One Bicep contract represents a use case, its subscriptions and policy.
@@ -397,7 +461,9 @@ separate per-contract file.
 
 Policy blocks expose scope, allowed models, budgets, rate limits and other
 supported settings. Raw XML remains available. Cross-file checks can flag a
-policy model that is not onboarded. They do not evaluate APIM expressions.
+policy model that is not onboarded. Advanced/source details retain expressions;
+unsupported guided predicates are inspect-only rather than guessed values.
+Neither the guided preview nor XML checks evaluate APIM expressions.
 
 Editing the Bicep **Template** policy changes the starting point for future
 contracts. Native Access instead edits
@@ -435,14 +501,14 @@ the shown reconciliation/reload instruction rather than blindly retrying:
 the commit may already exist.
 
 **Discard** abandons pending changes without writing the repository. For an
-interrupted save, open **Settings > History** and follow
+interrupted save, open **History** in the command bar or **Settings > History** and follow
 [Backup and recovery](../CitadelUI/BACKUP-RECOVERY.md). Automatic rollback is
 bounded by source identity and ownership; an uncertain result can need explicit
 recovery. Never delete `/data` or overwrite unknown files to clear an error.
 
 ## Migrate Citadel Configuration
 
-Use **Migrate Citadel Configuration (Experimental)** to compare older values
+Use **Tools > Migrate configuration**, under **Experimental**, to compare older values
 with an existing **current Bicep destination**. It is not native Terraform
 editing, Terraform export or source-repository creation. Save or deliberately
 discard ordinary editor work before entering; refused entry keeps your drafts.
@@ -516,13 +582,13 @@ pinned older sample, use the [migration reference](../CitadelUI/README.md#migrat
 
 ## Export to Terraform
 
-**Export to Terraform (Experimental)** downloads fresh Terraform variable files
+**Tools > Export Terraform inputs**, under **Experimental**, downloads fresh Terraform variable files
 from **saved Bicep configuration**. This export workflow is not the native editor,
 a deployment or a Terraform state migration. It does not change the Bicep source,
 attach a Terraform workspace or write to a target repository.
 
 1. Save or deliberately discard ordinary parameter/policy drafts, then open
-   **Export to Terraform (Experimental)**. Refused entry retains drafts.
+   **Tools > Export Terraform inputs**. Refused entry retains drafts.
 2. Use **Include in ZIP** and choose one **Saved source** per included root.
    Select one Access configuration explicitly. Its file may contain multiple
    services, but separate contracts are never merged into one output.
@@ -534,7 +600,7 @@ attach a Terraform workspace or write to a target repository.
 5. Choose **Approve & export ZIP** to download. If the source, template, policy
    or workspace changed, use **Reload saved source** and review again.
 
-![Terraform export using shared Foundry controls and separate export-only inputs](../docs/images/50-terraform-main.png)
+![Synthetic saved-source Terraform export with read-only Foundry controls and separate export-only inputs](../docs/images/50-terraform-main.png)
 
 | Mapping state | Meaning |
 | --- | --- |
@@ -549,7 +615,7 @@ decision; it cannot waive blocked settings within an included area. Empty name
 overrides are not evidence that Terraform will address existing Bicep resources.
 Expand marked backend/model cards to inspect field-level reasons.
 
-![Access export with shared use-case and service controls and read-only policy inspection](../docs/images/53-terraform-access.png)
+![Synthetic Access export for one saved configuration, with read-only service and policy controls](../docs/images/53-terraform-access.png)
 
 The ZIP has **no wrapper directory** and contains only the produced files:
 
@@ -565,7 +631,7 @@ Policy XML is embedded literally as `policy_xml`, with Terraform template
 markers escaped. The archive has no XML extras, reports, modules, providers,
 credentials or state. It is not a complete runnable Terraform repository.
 
-![ZIP byte review with three target-relative files and Approve & export ZIP](../docs/images/52-terraform-zip.png)
+![Synthetic ZIP byte review with three target-relative paths and Approve & export ZIP](../docs/images/52-terraform-zip.png)
 
 **Mapping contract** identifies `citadel-terraform-export-v1`, targeting
 `Azure/terraform-ai-gateway-landing-zone` at
@@ -614,10 +680,10 @@ is not permission to replay confirmed publication.
 
 ## Troubleshooting with /debug
 
-Open the exact **`/debug` route on the same instance**, for example
+Choose **Diagnostics** in the application header to open a new tab, or open
+the exact **`/debug` route on the same instance**, for example
 <http://127.0.0.1:4173/debug> locally, and sign in as the normal owner.
-There is no normal application menu link, and visiting the page does not enable
-capture.
+Visiting the page does not enable capture.
 
 Turn on **Instance-wide debugging**, reproduce the problem, turn it off, then
 choose **Download debug report**. Capture lasts at most a fixed 30 minutes

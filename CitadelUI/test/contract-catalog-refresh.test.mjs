@@ -11,6 +11,10 @@ import { reportClientError } from '../web/js/diagnostics-client.mjs';
 import { environmentSourceOf } from '../web/js/registry.mjs';
 import { saveStatusLine } from '../web/js/save-resolution.mjs';
 import { mutationComplete } from '../shared/mutation-outcome.mjs';
+import { configurationKey, configurationOf } from '../shared/workspace-configuration.mjs';
+import { withSourceUnavailable } from '../web/js/workspace-activation.mjs';
+import { preserveEditorFocus } from '../web/js/editor-focus.mjs';
+import * as edits from '../web/js/contract-edit-state.mjs';
 
 const source = await readFile(new URL('../web/js/app.mjs', import.meta.url), 'utf8');
 function section(start, end) {
@@ -23,6 +27,7 @@ function section(start, end) {
 // production test exports to the self-starting application module.
 const handlers = [
   section('async function withStatus(', '/* -------------------------------------------------------------- operations */'),
+  section('function hasPolicyEdits(', 'function pendingKey('),
   section('function areaButton(', 'async function restoreContract('),
   section('function openCreateContract()', 'async function loadContract('),
   section('async function selectContract(', '/* ------------------------------------------------------------------- policy */'),
@@ -98,6 +103,8 @@ async function fixture({ failure = null, pauseCatalog = null, cancelSelection = 
   };
   view = runInNewContext(`${handlers}\n({ openCreateContract, renderSidebar, contractList });`, {
     state, api, h, mount, render, guardedHandler, viewStates, documentActions, reportClientError, activeWorkspace: () => workspace,
+    ...edits, structuredClone, configurationKey, configurationOf, withSourceUnavailable, preserveEditorFocus,
+    document: globalThis.document, pendingByDocument: new Map(),
     environmentSourceOf, saveStatusLine, mutationComplete,
     captureDialogStatus: dom.captureDialogStatus,
     COMPACT_NAV: { matches: false }, els: { sidebar },

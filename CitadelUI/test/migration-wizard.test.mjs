@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import test, { before, beforeEach, after } from 'node:test';
 import { readFile } from 'node:fs/promises';
+import vm from 'node:vm';
 import { loadDialogModule, readText } from './_dom-stub.mjs';
+import { appSection, shellHarness, activate } from './fixtures/ui-review/shell-harness.mjs';
 import { openMigrationWizard } from '../web/js/migration-wizard.mjs';
+import { formatIcon } from '../web/js/format-icon.mjs';
 import { MIGRATION_AREAS, MigrationSession } from '../web/js/migration-session.mjs';
 import { MigrationError } from '../shared/migration-input.mjs';
 import { CURRENT, LEGACY, SCHEMA, TEMPLATE, deferred, migrationHarness as baseMigrationHarness, MigrationFileHandle, TARGET, useSnapshotTestRequest } from './_migration-fixture.mjs';
@@ -495,18 +498,91 @@ test('migration wizard announces local source read failures and clears the error
   assert.equal(harness.api.trace.length, 0);
 });
 
-test('migration command is gated on an active workspace and protects the existing pending editor flow', async () => {
+test('migration command is gated on an active workspace and protects the existing pending editor flow', async (t) => {
   const app = await readFile(new URL('../web/js/app.mjs', import.meta.url), 'utf8');
   const actions = app.slice(app.indexOf('function renderActions()'), app.indexOf('let setupContext'));
   assert.match(actions, /activeWorkspace\(\)/);
-  assert.match(actions, /const migration = workspace/);
-  assert.match(actions, /'Migrate Citadel Configuration \(Experimental\)'/);
+  assert.match(actions, /workspace \? toolsMenu\(workspace\) : null/);
+  const tools = appSection('function toolsMenu(', 'async function openPendingReview(');
+  assert.match(tools, /role: 'group', 'aria-label': 'Experimental tools'/);
+  assert.match(tools, /item\('Migrate configuration', openParameterMigration, 'open-parameter-migration'\)/);
   assert.doesNotMatch(actions, /Migrate a repo|Migrate repo/);
   const launch = app.slice(app.indexOf('async function openParameterMigration'), app.indexOf('function renderActions()'));
   assert.match(launch, /if \(pendingCount\(\)\)/);
   assert.match(launch, /opening Migrate Citadel Configuration \(Experimental\)\. Your edits have been kept/);
   assert.doesNotMatch(launch, /discardAllPending|removeDraft|stashCurrentPending/);
   assert.match(launch, /current !== context \|\| pendingCount\(\)/);
+
+  const target = migrationHarness(), created = [];
+  const beforeText = (await target.provider.read(TARGET)).text;
+  const f = await shellHarness({
+    context: target.context, state: { current: null },
+    api: { createMigrationSession: (options) => {
+      created.push(options);
+      return new MigrationSession({ ...options, contextProvider: () => target.state.context,
+        registry: target.registry, coordinator: target.coordinator, snapshotRequest: snapshotApp.request });
+    } },
+  });
+  const previousWindow = globalThis.window;
+  globalThis.window = new EventTarget();
+  t.after(() => { globalThis.window = previousWindow; });
+  let workspace = null, wizard;
+  Object.assign(f.scope, {
+    queueMicrotask, formatIcon,
+    activeWorkspace: () => { if (!workspace) throw new Error('No active workspace'); return workspace; },
+    openReview: () => assert.fail('Migration must not invoke an editor save.'),
+    openTerraformExportReview: () => assert.fail('Migration must not invoke export.'),
+    openMigrationWizard: async (options) => {
+      wizard = await openMigrationWizard(options);
+      return wizard;
+    },
+  });
+  vm.runInContext([
+    appSection('function setToolHeaderContext(', 'async function openTerraformExportReview('),
+    appSection('function setGlobalCommandsEnabled(', 'function setConfigurationFormat('),
+    appSection('async function openParameterMigration(', 'let setupContext ='),
+  ].join('\n'), f.scope);
+  const command = (label) => find(f.els.tbActions, (node) => node.tagName === 'BUTTON' && readText(node) === label);
+  f.scope.renderActions();
+  assert.equal(command('Tools'), null);
+  assert.equal(command('Migrate configuration'), null);
+  assert.equal(created.length, 0);
+
+  workspace = target.context;
+  const retained = { ...f.scope.captureContractEdits(f.owner), parameterPath: TARGET,
+    operations: [{ op: 'set', path: ['Count'], value: 9 }] };
+  f.scope.pendingByDocument.set('retained', retained);
+  f.scope.renderActions();
+  await activate(command('Tools'));
+  const menu = find(f.els.tbActions, (node) => node.getAttribute?.('role') === 'menu');
+  assert(menu);
+  assert.equal(menu.hidden, false);
+  await activate(command('Migrate configuration'));
+  assert.equal(wizard, undefined);
+  assert.equal(created.length, 0);
+  assert.equal(f.els.shell.dataset.workspace, 'active');
+  assert.equal(f.scope.pendingByDocument.get('retained'), retained);
+  assert.equal(f.scope.pendingCount(), 1);
+  assert.match(f.statuses.at(-1).message, /Your edits have been kept/);
+  assert.equal(f.calls.some(([name]) => name === 'removeDraft'), false);
+  assert.equal(target.api.trace.length, 0);
+
+  f.scope.pendingByDocument.delete('retained');
+  f.scope.renderActions();
+  await activate(command('Tools'));
+  await activate(command('Migrate configuration'));
+  assert.equal(created.length, 1);
+  assert.equal(created[0].pendingEdits(), false);
+  assert.equal(f.els.shell.dataset.workspace, 'migration');
+  assert(wizard.body.isConnected);
+  assert.match(readText(wizard.footer), /Migration preview \(Experimental\)/);
+  assert.equal(target.api.trace.length, 0);
+  await press(wizard, 'close');
+  assert.equal(f.els.shell.dataset.workspace, 'active');
+  assert.equal(document.activeElement, command('Tools'));
+  assert.equal((await target.provider.read(TARGET)).text, beforeText);
+  assert.equal(target.api.trace.length, 0);
+  assert.equal(f.calls.some(([name]) => name === 'removeDraft'), false);
 });
 
 test('migration documentation uses the Experimental designation without changing section anchors', async () => {

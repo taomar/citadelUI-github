@@ -9,6 +9,10 @@ import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
 import { pauseEditorForLoad } from '../web/js/editor-load.mjs';
 import { captureDialogStatus } from '../web/js/dialog.mjs';
 import { sameNativeDraftBinding } from '../shared/terraform/drafts.mjs';
+import { configurationKey, configurationOf } from '../shared/workspace-configuration.mjs';
+import { mutationComplete } from '../shared/mutation-outcome.mjs';
+import { environmentSourceOf } from '../web/js/registry.mjs';
+import { withSourceUnavailable } from '../web/js/workspace-activation.mjs';
 import * as edits from '../web/js/contract-edit-state.mjs';
 
 const source = (await readFile(new URL('../web/js/app.mjs', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
@@ -57,6 +61,7 @@ function fixture() {
   const validation = [{ severity: 'info', message: 'Contract validation' }];
   const scope = {
     document: globalThis.document, Map, structuredClone, ...edits,
+    configurationKey, configurationOf, environmentSourceOf, withSourceUnavailable, mutationComplete,
     createDocumentActions, createEditorDocumentSession, pauseEditorForLoad, captureDialogStatus, sameNativeDraftBinding,
     els, editorTransition: null, documentGeneration: 40,
     activeWorkspace: () => context,
@@ -454,6 +459,8 @@ for (const retirement of ['none', 'generation', 'ticket', 'disabled', 'hidden'])
     assert.notEqual(f.owner.open, remembered.open);
     assert.deepEqual([...f.owner.open], [...remembered.open]);
     assert.equal(f.owner.tab, 'policy');
+    assert.equal(document.activeElement, f.els.workspace, 'An unremembered document opens at its workspace heading.');
+    document.activeElement = f.dom.root;
     f.els.workspace.scrollTop = 17;
     f.input.setSelectionRange(3, 9, 'backward');
     if (retirement === 'generation') f.scope.documentGeneration += 1;

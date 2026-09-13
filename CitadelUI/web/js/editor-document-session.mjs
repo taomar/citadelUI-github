@@ -29,7 +29,8 @@ export function createEditorDocumentSession({ views, currentOwner, contextProvid
           quarantinedDrafts: new Map([...owner.quarantinedDrafts].filter(([path]) => path === contract.param.path)) };
         const operations = await drafts.restoreParameterDraft(contract.param, draftState);
         return { contract, accessTargets, operations, draftState };
-      });
+      }, { context, path: owner.contracts?.contracts?.find((contract) => contract.id === id)?.paramFile ||
+        (owner.contractId === id ? owner.current?.path : null) });
       if (!loaded || !current(ticket, generation)) return false;
       const { contract, accessTargets, operations, draftState } = loaded;
       owner.contractId = id;
@@ -101,7 +102,7 @@ export function createEditorDocumentSession({ views, currentOwner, contextProvid
           quarantinedDrafts: new Map([...owner.quarantinedDrafts].filter(([path]) => path === doc.path)) };
         const draft = await drafts.restoreParameterDraft(doc, draftState);
         return { doc, draft, draftState };
-      });
+      }, { context, path });
       if (!loaded || !current(ticket, generation)) return false;
       const { doc, draft, draftState } = loaded;
       if (selection) Object.assign(owner, selection);

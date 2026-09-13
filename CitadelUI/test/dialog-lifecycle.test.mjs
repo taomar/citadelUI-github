@@ -43,7 +43,9 @@ test('queued close: immediate reopening keeps the successor content and focus', 
   assert.equal(modal.open, true);
   assert.match(readText(modal), /Source choices/);
   assert.equal(background.inert, true);
-  assert.equal(document.activeElement, next);
+  assert.equal(document.activeElement, document.getElementById(modal.getAttribute('aria-labelledby')));
+  assert.equal(readText(document.activeElement), 'Source choices');
+  assert.equal(next.focused, false, 'Default focus must not skip the new stage summary for its action.');
 });
 
 test('queued close: rapid close/reopen cycles do not let retired focus work run', async (t) => {
@@ -90,6 +92,34 @@ test('queued close: programmatic completion does not become a cancellation callb
   assert.equal(modal.open, false);
   assert.equal(modal.children.length, 0);
   assert.equal(background.inert, false);
+  assert.equal(document.activeElement, opener);
+});
+
+test('queued close: an intentional live focus destination wins over delayed opener restoration', async (t) => {
+  const { showDialog, closeDialog, node, background, opener, flushFrames } = await queuedDialog(t);
+  const destination = node('button');
+  background.append(destination);
+  showDialog('Finishing workflow', node(), [node('button')]);
+  flushFrames();
+  closeDialog();
+  destination.focus();
+  opener.focused = false;
+  await nativeTurn();
+  flushFrames();
+  assert.equal(document.activeElement, destination);
+  assert.equal(opener.focused, false, 'The delayed close must not steal focus from a newly rendered workflow destination.');
+});
+
+test('queued close: a captured temporarily busy opener is restored once it is enabled', async (t) => {
+  const { showDialog, closeDialog, node, opener, flushFrames } = await queuedDialog(t);
+  opener.disabled = true;
+  document.activeElement = document.body;
+  showDialog('Loaded after a busy trigger', node(), [], { returnFocus: opener });
+  flushFrames();
+  opener.disabled = false;
+  closeDialog();
+  await nativeTurn();
+  flushFrames();
   assert.equal(document.activeElement, opener);
 });
 
@@ -163,7 +193,9 @@ test('queued close: a browser focus callback may reopen without losing the new r
   await nativeTurn();
   flushFrames();
   assert.match(readText(modal), /Opened by focus/);
-  assert.equal(document.activeElement, next);
+  assert.equal(document.activeElement, document.getElementById(modal.getAttribute('aria-labelledby')));
+  assert.equal(readText(document.activeElement), 'Opened by focus');
+  assert.equal(next.focused, false);
   // Suppress the emulated browser restoration for the second close: the
   // dialog manager must still retain its own correct restoration target.
   modal.close = nativeClose;
@@ -189,5 +221,7 @@ test('queued close: a synchronous dismissal callback may replace the current fra
   assert.deepEqual(answers, [true]);
   assert.equal(modal.open, true);
   assert.match(readText(modal), /Callback successor/);
-  assert.equal(document.activeElement, next);
+  assert.equal(document.activeElement, document.getElementById(modal.getAttribute('aria-labelledby')));
+  assert.equal(readText(document.activeElement), 'Callback successor');
+  assert.equal(next.focused, false);
 });

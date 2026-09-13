@@ -97,9 +97,11 @@ test('startup does not announce a wait while the catalogue is being read', () =>
   const init = app.slice(app.indexOf("els.shell.dataset.workspace = 'setup'"));
   const upToEnsure = init.slice(0, init.indexOf('await ensureWorkspace()'));
   assert.doesNotMatch(upToEnsure, /setStatus\(/);
-  // It is announced immediately after, where the work really is.
+  // Actual opening is owned by the document-session entry, not catalog browsing.
   const afterEnsure = init.slice(init.indexOf('await ensureWorkspace()'));
-  assert.match(afterEnsure.slice(0, 400), /setStatus\('Opening workspace/);
+  assert.match(afterEnsure.slice(0, 400), /await activateWorkspaceView\(workspace\)/);
+  const activation = app.slice(app.indexOf('async function activateWorkspaceView('), app.indexOf('/**\n * Never leave the sheet empty.'));
+  assert.match(activation, /withEditorLoad\('Opening workspace/);
 });
 
 test('header action colors cover interaction states without recoloring light-page buttons', () => {

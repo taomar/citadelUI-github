@@ -8,13 +8,17 @@ import { classifyValidation, validateDocument } from '../web/js/validation.mjs';
 import { previewDocument } from '../web/js/preview.mjs';
 import { initializeNativeParser } from '../shared/terraform/parser.mjs';
 import { validateNativeValues } from '../shared/terraform/schema.mjs';
-import { configurationOf } from '../shared/workspace-configuration.mjs';
+import { configurationKey, configurationOf } from '../shared/workspace-configuration.mjs';
 import { environmentSourceOf } from '../web/js/registry.mjs';
 import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
 import { createDocumentActions } from '../web/js/document-action.mjs';
 import { pauseEditorForLoad } from '../web/js/editor-load.mjs';
 import { captureDialogStatus } from '../web/js/dialog.mjs';
 import { hasParameterInputs } from '../web/js/contract-edit-state.mjs';
+import * as edits from '../web/js/contract-edit-state.mjs';
+import { withSourceUnavailable } from '../web/js/workspace-activation.mjs';
+import { focusEditorControl } from '../web/js/editor-focus.mjs';
+import { mutationComplete } from '../shared/mutation-outcome.mjs';
 import { nativeConfiguration, nativeLocalFixture, NATIVE_FILES } from './_native-fixture.mjs';
 
 await initializeNativeParser();
@@ -26,6 +30,9 @@ function section(start, end) {
 }
 const handlers = [
   section('function dirtyParams(', 'function pendingCount('),
+  section('function pendingCount(', 'function pendingKey('),
+  section('let openShellMenu =', 'function renderActions('),
+  section('async function openHistory()', 'async function openEnvironmentCompare('),
   section('async function openReview(', 'async function commitSave('),
   section('function renderActions(', '/**\n * Context the masthead'),
   section('async function withStatus(', '/* -------------------------------------------------------------- operations */'),
@@ -64,10 +71,11 @@ variable "password" { type = string
     views: viewStates, currentOwner: () => state, setStatus,
   });
   const scope = { state, viewStates, editorTransition: null, h, mount, structuredClone, classifyValidation, validateDocument, previewDocument,
+    ...edits, configurationKey, withSourceUnavailable, focusEditorControl, mutationComplete, pendingByDocument: new Map(),
     captureDialogStatus, hasParameterInputs, documentActions, document: globalThis.document, Event: globalThis.Event,
     validateNativeValues, configurationOf, environmentSourceOf,
     activeWorkspace: () => f.context, currentWriteContext: () => ({ format: 'terraform' }),
-    pendingCount: () => state.operations.length, els: { tbActions: actions, workspace },
+    els: { tbActions: actions, workspace },
     setStatus,
     reportClientError: (error) => { calls.push({ error: error.code }); },
     guardedHandler: (action) => action, openWorkspaceSettings() {}, discardAllPending() {},

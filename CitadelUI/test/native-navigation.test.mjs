@@ -16,7 +16,11 @@ import { captureDialogStatus } from '../web/js/dialog.mjs';
 import { initializeNativeParser } from '../shared/terraform/parser.mjs';
 import { assertNativeDraft, sameNativeDraftBinding } from '../shared/terraform/drafts.mjs';
 import { assertNonsecretValues, validateNativeValues } from '../shared/terraform/schema.mjs';
-import { configurationOf } from '../shared/workspace-configuration.mjs';
+import { configurationKey, configurationOf } from '../shared/workspace-configuration.mjs';
+import { environmentSourceOf } from '../web/js/registry.mjs';
+import { withSourceUnavailable } from '../web/js/workspace-activation.mjs';
+import { focusEditorControl } from '../web/js/editor-focus.mjs';
+import { mutationComplete } from '../shared/mutation-outcome.mjs';
 import { nativeConfiguration, nativeLocalFixture, NATIVE_FILES } from './_native-fixture.mjs';
 
 await initializeNativeParser();
@@ -52,11 +56,13 @@ async function fixture(t, { choice = 'preserve', failure = null, pause = 'source
   const dom = installDom();
   const els = { workspace: dom.node('main'), sidebar: dom.node('nav'), contextRail: dom.node('aside'),
     tbActions: dom.node('header'), editorLoading: dom.node('div') };
+  els.workspace.blur = () => { if (document.activeElement === els.workspace) document.activeElement = dom.root; };
   els.editorLoading.hidden = true;
   dom.root.append(...Object.values(els));
   const durable = new Map(), statuses = [], calls = [], frames = [], started = deferred(), release = deferred();
   let held = false, active = f.context;
   const scope = { document: globalThis.document, structuredClone, Map, h, pauseEditorForLoad, createEditorDocumentSession,
+    configurationKey, environmentSourceOf, withSourceUnavailable, focusEditorControl, mutationComplete,
     captureDialogStatus, hasParameterInputs, Event: globalThis.Event,
     captureContractEdits, clearEditorPending, editorPendingCount, restoreContractEdits, configurationOf,
     retainQuarantinedDraft, restoreQuarantinedDrafts, invalidatePolicyPreview,

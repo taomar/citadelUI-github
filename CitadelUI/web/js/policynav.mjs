@@ -49,7 +49,7 @@ const STATE_LABEL = {
 const LOAD_BEARING = /\b(maximum|minimum|at least|at most|no more than|most restrictive)\b/i;
 
 function loadBearing(hint) {
-  return hint.classList.contains('hint-warn') || LOAD_BEARING.test(hint.textContent);
+  return hint.classList.contains('hint-warn') || hint.getAttribute('role') === 'note' || LOAD_BEARING.test(hint.textContent);
 }
 
 function attachExplain(el, title, body) {
@@ -221,7 +221,7 @@ function headerCell(baseField, label, kind) {
   return cell;
 }
 
-function bodyCell(fieldEl, kind, label, baseValue, isBase) {
+function bodyCell(fieldEl, kind, label, baseValue, isBase, rowName) {
   // Read before moving: appending the control to the cell empties the field, so
   // asking it for a value afterwards compares every override against "".
   const value = controlValue(fieldEl);
@@ -238,6 +238,10 @@ function bodyCell(fieldEl, kind, label, baseValue, isBase) {
     },
   });
   if (control) {
+    for (const input of control.querySelectorAll('input, select, textarea')) {
+      const name = input.getAttribute('aria-label') || label;
+      if (!name.includes(rowName)) input.setAttribute('aria-label', `${name}: ${rowName}`);
+    }
     cell.append(
       h('div', { class: 'pol-matrix-control' }, control, constraint)
     );
@@ -318,7 +322,8 @@ function buildMatrix(group) {
           kinds[i],
           labels[i],
           !baseValues || isBase ? null : baseValues[i],
-          isBase
+          isBase,
+          rawName
         )
       )
     );
@@ -462,7 +467,7 @@ function blockState(node) {
 function blockTally(node) {
   const chips = node.querySelectorAll('.model-chip').length;
   if (chips) return `${chips}`;
-  const rows = node.querySelectorAll('.pol-sub').length;
+  const rows = node.querySelectorAll(':scope > .pol-sub').length;
   return rows > 1 ? `${rows}` : '';
 }
 
@@ -491,7 +496,7 @@ function indexButton(block, i, select, activeIndex) {
     {
       class: `pnav-link${i === activeIndex ? ' current' : ''} pnav-${block.state}`,
       type: 'button',
-      onclick: () => select(i),
+      onclick: () => select(i, true),
     },
     h('span', { class: 'pnav-label' }, block.title),
     block.tally ? h('span', { class: 'pnav-tally' }, block.tally) : null,
@@ -546,7 +551,10 @@ export function decoratePolicy(policy, ctx) {
     return h(
       'section',
       { class: 'pnav-section', 'data-block': String(i), 'aria-label': b.title },
-      owned || !b.titleNode ? h('h3', { class: 'pnav-section-title' }, b.title) : null,
+      owned || !b.titleNode ? h('h3', {
+        class: 'pnav-section-title', tabIndex: -1,
+        dataset: b.titleNode?.dataset.editorFocus ? { editorFocus: b.titleNode.dataset.editorFocus } : {},
+      }, b.title) : null,
       b.node
     );
   });
@@ -566,11 +574,15 @@ export function decoratePolicy(policy, ctx) {
     });
   }
 
-  function select(i) {
+  function select(i, focus = false) {
     if (ctx && ctx.setOpen) ctx.setOpen(key, i);
     highlight(i);
     const target = sections[i];
     if (!target) return;
+    if (focus) (target.querySelector('.pnav-section-title, .pol-label') || target).focus({ preventScroll: true });
+    // The document strip can wrap, so measure its current height for each jump.
+    const sticky = target.closest('.sheet')?.querySelector('.sheet-sticky');
+    target.style.setProperty('--policy-jump-inset', `${sticky?.getBoundingClientRect().height ?? 0}px`);
     target.scrollIntoView({ block: 'start', behavior: motion() });
   }
 
@@ -601,7 +613,9 @@ export function decoratePolicy(policy, ctx) {
   spy(sections, highlight);
   watchFit(doc);
   fitMatrices(doc);
-  if (activeIndex > 0) requestAnimationFrame(() => select(activeIndex));
+  if (activeIndex > 0) requestAnimationFrame(() => {
+    if (!doc.contains(document.activeElement)) select(activeIndex);
+  });
   return policy;
 }
 

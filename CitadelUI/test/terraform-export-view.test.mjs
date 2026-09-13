@@ -68,24 +68,24 @@ test('integrated export surface preserves typed areas/models, source read-only c
   assert.equal(ui.closed, true);
 });
 
+test('exit restores the entry when the single-flight opener was disabled and browser focus fell to body', async () => {
+  const fixture = setup();
+  const entry = fixture.node('button');
+  entry.dataset.terraformExportEntry = 'true';
+  fixture.surface.actions.append(entry);
+  document.body.focus();
+  const ui = await openTerraformExport({ session: fixture.session, surface: fixture.surface, confirm: async () => true });
+  findButton(ui.footer, 'Exit export').click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(document.activeElement, entry);
+});
+
 test('review/back/approval are real handlers with source scopes, exact label and download failure recovery', async () => {
   const f = setup();
   let downloads = 0;
   const ui = await openTerraformExport({
     session: f.session, surface: f.surface,
     download: async () => { downloads++; throw new Error('Download setup failed'); },
-  });
-
-  test('exit restores the entry when the single-flight opener was disabled and browser focus fell to body', async () => {
-    const fixture = setup();
-    const entry = fixture.node('button');
-    entry.dataset.terraformExportEntry = 'true';
-    fixture.surface.actions.append(entry);
-    document.body.focus();
-    const ui = await openTerraformExport({ session: fixture.session, surface: fixture.surface, confirm: async () => true });
-    findButton(ui.footer, 'Exit export').click();
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(document.activeElement, entry);
   });
   for (const [area, inputs] of Object.entries(fixtureChoices())) for (const [key, value] of Object.entries(inputs)) f.session.setInput(area, key, value);
   // Refresh through a real UI navigation; no approval handler bypass.

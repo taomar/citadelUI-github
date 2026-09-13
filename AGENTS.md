@@ -53,12 +53,32 @@ in `security.test.mjs`. If you see `security.test.mjs` fail, you ran it wrong.
 
 | Suite | Command | Baseline |
 | --- | --- | --- |
-| Control Plane | `cd CitadelUI; node --test "test/*.test.mjs"` | **490 tests, 489 pass** |
+| Control Plane | `cd CitadelUI; node --test "test/*.test.mjs"` | **2,578 entries: 2,535 pass, 8 established failures, 35 skips** |
 | Publish Playground | `cd CitadelSamples/playground; node --test "test/*.test.mjs"` | **181 tests, 180 pass** |
 
-Known failures, both pre-existing and neither yours to fix unless asked:
+The Control Plane baseline was verified on Windows with Node 24.10.0 against
+accepted application source `779d9fd` on 2026-09-13. The full quoted glob ran with
+a loopback-only preload, concurrency 2 and short owned TEMP/TMP/data roots.
+There were no cancellations. All eight failure bodies and all 35 skips matched
+the preceding accepted baseline; this is a qualified result, not a green suite.
+Fixture availability and platform can affect other environments.
+
+Established Control Plane failures, not part of the UI delivery scope:
 
 - `CitadelUI/test/primary-editors.test.mjs` — has failed since the fork.
+- `CitadelUI/test/supplied-repositories.test.mjs` — its external repository
+  fixture directory is unavailable.
+- Six existing registry/source-choice, restore-call and settings-layout
+  structural assertions. Compare the actual failing names and messages with
+  the accepted baseline rather than relying only on the total failure count.
+
+The 35 skips cover 31 infrastructure-template cases, one approved
+public-response-cache case, two Terraform-reference-root cases and one protected
+ARM case. They were not added to hide UI or tag-editor regressions.
+
+The Publish Playground baseline above is unchanged historical evidence; it was
+not rerun for the Control Plane UI delivery. Its known failure remains:
+
 - `CitadelSamples/playground` — `golden: the publish contract writes the notebook's
   exact parameter file`. It writes `runtime/accelerator/...` where the notebook says
   `../bicep/infra/...`. Which is correct is an ownership decision, not a bug fix.

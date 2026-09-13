@@ -1,11 +1,19 @@
 # Local Release and Offline Operation
 
-This documentation describes application source
-`4379522cdf0dbc8048bf45e0dbe0db2aa42cd358`, including native Bicep/Terraform
-workspaces and timed `/debug` capture. At this documentation revision these
-changes are accepted locally, not published on GitHub `main`. An older clone,
-the image's `1.0.0-local` label, or a reused image tag does not identify that
-source. Obtain a reviewed checkout or immutable image from the release operator.
+The reviewed desktop UI, literal Bicep tag editor, native Bicep/Terraform
+workspaces and timed `/debug` capture are delivered on
+[`taomar-citadel-orchestrator`](https://github.com/taomar/citadelUI-github/tree/taomar-citadel-orchestrator),
+not merged into `main`. Follow the
+[delivery-branch checkout](../README.md#start-with-a-clone) and record
+`git rev-parse HEAD` before building. The local application-review baseline
+`779d9fd94390e0c36f655d326b0350b1c07d3d6e` is provenance, not a promise that
+this worker commit can be fetched from GitHub; the published branch identifies
+the delivered source.
+
+Source publication does not build or distribute a container image, replace an
+existing installation, or deploy Azure resources. An older clone, the image's
+`1.0.0-local` label, or a reused image tag does not identify the delivered code.
+Use a reviewed checkout or an immutable image from the release operator.
 
 Local acceptance is not Terraform/provider/cloud deployment proof or a security
 certification. The [deployment guide](../guides/deployment.md) records separate

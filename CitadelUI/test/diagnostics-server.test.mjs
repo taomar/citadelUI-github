@@ -11,7 +11,7 @@ const event = () => clientDiagnostic(Object.assign(new TypeError('never transpor
 const batch = (id, events = [event()]) => ({ captureId: id, events, clientQueueOmitted: 0 });
 const stateChange = (enabled, expectedCaptureId = null) => ({ enabled, expectedCaptureId });
 
-test('diagnostics: /debug is unlinked, bootstraps only the owner gate and shares existing CSS/CSP', async (t) => {
+test('diagnostics: the shell entry reaches the public owner bootstrap and shares existing CSS/CSP', async (t) => {
   const f = await diagnosticServer(t);
   const page = await f.call('/debug', { authenticated: false });
   assert.equal(page.status, 200);
@@ -25,16 +25,39 @@ test('diagnostics: /debug is unlinked, bootstraps only the owner gate and shares
   assert.equal(page.headers['cache-control'], 'no-store');
   assert.equal(page.headers['access-control-allow-origin'], undefined);
   const normal = await f.call('/');
-  assert(!/href=["']\/debug/.test(normal.text));
-  const app = await readFile(new URL('../web/js/app.mjs', import.meta.url), 'utf8');
-  assert(!/href: ['"]\/debug/.test(app));
+  assert.equal(normal.status, 200);
+  const header = normal.text.match(/<header\b[^>]*>[\s\S]*?<\/header>/)?.[0];
+  assert.ok(header, 'the public application bootstrap includes its header');
+  const entries = [...header.matchAll(/<a\b[^>]*\bhref=(["'])(\/debug(?:\.html)?)\1[^>]*>[\s\S]*?<\/a>/g)];
+  assert.equal(entries.length, 1, 'the header has one supported Diagnostics entry');
+  const entry = entries[0][0];
+  assert.match(entry, />\s*Diagnostics\s*<\/a>$/);
+  assert.match(entry, /\baria-label=(["'])Diagnostics \(opens in a new tab\)\1/);
+  assert.match(entry, /\btarget=(["'])_blank\1/);
+  const rel = entry.match(/\brel=(["'])([^"']*)\1/)?.[2].split(/\s+/) || [];
+  assert.ok(rel.includes('noopener'));
+  assert.ok(rel.includes('noreferrer'));
+  const destination = new URL(entries[0][2], f.origin);
+  assert.equal(destination.origin, f.origin);
+  const linkedPage = await f.call(destination.pathname, { authenticated: false });
+  assert.equal(linkedPage.status, 200);
+  assert.equal(linkedPage.text, page.text, 'the entry exposes the same public owner bootstrap, not diagnostic data');
+  assert.equal(linkedPage.headers['content-security-policy'], page.headers['content-security-policy']);
+  assert.equal(linkedPage.headers['cache-control'], 'no-store');
+  assert.equal(linkedPage.headers['access-control-allow-origin'], undefined);
   for (const asset of ['/js/debug.mjs', '/js/debug-page.mjs', '/js/diagnostics-client.mjs', '/shared/diagnostics.mjs', '/css/debug.css']) {
     assert.equal((await f.call(asset, { authenticated: false })).status, 200);
   }
   assert.equal((await f.call('/healthz', { authenticated: false })).status, 200);
   assert.equal(f.diagnostics.status().capture, null, 'neither bootstrap nor assets enable capture');
-  await f.claim();
+  const token = await f.claim();
   assert.match((await f.call('/debug')).text, /name="citadel-auth" content="claimed"/);
+  const claimed = await f.call(destination.pathname, { authenticated: false });
+  assert.equal(claimed.status, 200);
+  assert.match(claimed.text, /name="citadel-auth" content="claimed"/);
+  assert(!claimed.text.includes(token));
+  assert(!claimed.text.includes('correlationId'));
+  assert.equal(f.diagnostics.status().capture, null);
 });
 
 test('diagnostics: every report/control/ingest route requires owner and browser transport; methods stay narrow', async (t) => {

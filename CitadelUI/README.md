@@ -24,6 +24,7 @@ This reference holds the format, storage, transport and parser boundaries.
 
 | Reference | Scope |
 | --- | --- |
+| [Bicep resource tags](#literal-bicep-resource-tags) | Source-defined literal entries, explicit staging and save/restore |
 | [Native Terraform](#native-terraform-workspaces) | Explicit input bindings, source safeguards and offline parser |
 | [Terraform export](#export-to-terraform) | Bicep-to-Terraform ZIP mapping |
 | [Configuration migration](#migrate-citadel-configuration) | Older values into current Bicep targets |
@@ -43,11 +44,12 @@ Requirements:
 - A user-owned directory for durable Citadel UI data.
 
 The examples clone published **main**; no sample branch is needed.
-This reference describes application source
-`4379522cdf0dbc8048bf45e0dbe0db2aa42cd358`. Native workspaces and timed diagnostics
-are accepted local changes at this documentation revision, not published on
-GitHub `main`. Use an operator-supplied reviewed checkout or image to run that
-version; the clone below does not retrieve unpublished commits. See
+The refreshed desktop UI, literal Bicep tag editor and screenshots are delivered
+separately on `taomar-citadel-orchestrator`. For that version, use the
+[delivery-branch checkout](../README.md#start-with-a-clone), skip the clone in
+the shell example below and enter that checkout's `CitadelUI` directory.
+Record its exact commit before building. Source publication does not replace
+an existing image or installation. See
 [release and offline operation](RELEASE.md).
 
 ### PowerShell
@@ -171,8 +173,9 @@ Direct `node server/index.mjs` execution is developer-only.
 
 ## Troubleshooting with a timed debug report
 
-Open `/debug` on the same instance and sign in as the owner. There is no link in
-the normal menus. **Instance-wide debugging** is off by default; enabling it
+Choose **Diagnostics** in the application header to open a new tab, or open
+`/debug` on the same instance. The public bootstrap presents the normal owner
+claim/sign-in flow. **Instance-wide debugging** is off by default; enabling it
 starts a fixed 30-minute capture of safe server/API and connected browser error
 metadata. Closing the page does not stop or extend that window. Already-open
 browser profiles normally discover it within the 5-second polling interval.
@@ -345,8 +348,8 @@ types/default expressions and untyped absent inputs are not silently rewritten.
 
 ## Export to Terraform
 
-**Export to Terraform (Experimental)** is a desktop-only, saved-source workflow
-in the command bar for a Bicep workspace. Bicep and policy XML remain its authoring files; normal
+**Tools > Export Terraform inputs**, under **Experimental**, opens the
+desktop-only, saved-source export workflow in a Bicep workspace. Bicep and policy XML remain its authoring files; normal
 review/save and migration are unchanged. Save or deliberately discard ordinary
 drafts before entering. Across Deployment, LLM Onboarding and Access Contracts,
 the export screen uses the same Bicepparam controls and groups to display the
@@ -401,8 +404,8 @@ for the review/download procedure.
 
 ## Migrate Citadel Configuration
 
-Open the **current Bicep destination workspace** first, then choose **Migrate Citadel Configuration (Experimental)**
-in its command bar. Migration is separate from workspace attachment: an older
+Open the **current Bicep destination workspace** first, then choose
+**Tools > Migrate configuration**, under **Experimental**. Migration is separate from workspace attachment: an older
 donor does not have to pass the current Citadel compatibility signatures and
 never becomes an editable workspace.
 
@@ -822,15 +825,22 @@ capabilities, status and when it was last opened, and each row opens in one
 click. The list is searchable and filterable by source and status; only the
 search text, filters and sort order are remembered, never the list itself.
 
-A row's status is one word:
+The status and primary action describe the current opening or recovery need:
 
 | Status | Meaning |
 | --- | --- |
 | Ready | Openable now. |
-| Reconnect | Needs a credential or folder permission first. |
+| Reconnect | Restore the named connection or retained folder permission first; the row names the required action. |
 | Missing | Its folder handle, or the connection it was attached through, is gone. |
 | Incompatible | The last validation found it is not a Citadel workspace. |
 | Stale | Attached but never validated or scanned. |
+| Unavailable | Source validation or access could not be completed; use the reported retry/recovery action. |
+| Confirmation pending | Reattachment still needs confirmation or revalidation. Staged metadata is not permission to open. |
+
+More specific labels, such as **Folder permission needed** or **Missing
+connection**, explain the same recovery state. **Actions** holds secondary
+workspace operations. Keep the original record when recovering; a native lost
+handle cannot be repaired by transferring its identity to a different folder.
 
 **Detach** removes Citadel's record of a workspace from this device. It never
 deletes a branch, a commit or a file.
@@ -950,6 +960,11 @@ container restarts, so those workspaces stay listed and show **Reconnect** until
 a new session is established. A connection saved with the encrypted option is
 restored by the server on the next start, with no user step.
 
+**Create PR** opens GitHub's comparison page; it does not itself create a pull
+request. **View PR** is used when an existing pull-request URL is known.
+Always distinguish the original source branch from the actual working branch
+shown as the write destination.
+
 ### When an attach loses its answer
 
 Attaching runs six named steps — revalidating the branch, reserving the
@@ -984,6 +999,13 @@ duplicate a commit that had already landed.
 These three area sections describe Bicep/Citadel. For native inputs, use
 [Native Terraform workspaces](#native-terraform-workspaces).
 
+The workspace chooser, **Diagnostics** and **Settings** are in the global
+header. The contextual command bar keeps the owning document, source and write
+destination alongside **History**, **Tools**, **Discard** and a stable
+**Review & save** action. The explorer selects an area/file; the document strip
+shows its full source path, **Parameters** / **Raw file** modes and category
+tabs. Draft prompts name the document whose work needs attention.
+
 `bicep/infra/main.bicepparam` configures the core gateway infrastructure:
 naming, networking, API Management, observability and optional capabilities.
 
@@ -1013,6 +1035,39 @@ injection is enabled. These checks follow Azure's
 [Functions/App Service](https://learn.microsoft.com/azure/azure-functions/functions-networking-options),
 and [Microsoft.App](https://learn.microsoft.com/azure/container-apps/custom-virtual-networks)
 guidance.
+
+### Literal Bicep resource tags
+
+The top-level Bicep `tags` parameter has a key/value editor when its value is a
+literal object, including `{}`. Existing keys and values come from the source.
+There are no required/default `Owner` or `Purpose` entries; those remain valid
+arbitrary names if explicitly chosen by the user.
+
+Edit a value in its row. To add an entry, enter **Tag name** and **Tag value**,
+then choose **Add tag** or press Enter in either new-entry field. Typing alone
+retains an unfinished input, not a property addition; review cannot save it
+until it is staged or both new-entry inputs are cleared. **Remove** stages
+removal of that key. Rename by removing the old key and adding the new one.
+Removing the last entry leaves an empty object rather than deleting `tags`.
+
+Blank/whitespace-only names and exact duplicate names produce visible errors
+without an addition. Valid spelling and case are preserved; empty string values
+are allowed. The editor reserves `__proto__`, `__expr`, `__args` and `__tfNumber`
+for its value/path representation. These are editor constraints, not Azure
+tagging policy. Provider-specific tag rules are not validated or deployed here.
+
+Use ordinary **Review & save**, inspect the exact file/diff, then **Save
+changes**. Reload reads the saved entries. To undo a completed modification,
+use **History > Restore prior**, then confirm **Back up and restore**; current
+source and ownership must still permit the restore. Local restore is a new
+verified transaction; GitHub restore appends an inverse commit.
+
+This is not a whole-object expression evaluator, a generic object-key editor,
+or the native Terraform map workflow. Existing expression-valued entries keep
+their supported syntax controls; adding a neighboring key does not normalize
+untouched expressions, comments or number spellings. Whole-object expressions
+do not gain literal tag add/remove controls. Export's mapped source controls
+remain read-only. See the [tag walkthrough](../guides/using-the-control-plane.md#resource-tags).
 
 ### 2. LLM onboarding
 
@@ -1238,7 +1293,7 @@ CitadelUI/
                        shared fields bound to native names/types/defaults
       diagnostics-client.mjs
                        bounded signed-in browser capture and instance polling
-      debug-page.mjs   unlinked /debug control/report surface
+      debug-page.mjs   header-linked /debug control/report surface
       fields.mjs       generic value controls
   test/
   scripts/             start, stop, status, and local logs

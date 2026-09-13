@@ -12,6 +12,7 @@ import { guardedHandler } from '../web/js/single-flight.mjs';
 import { WorkspaceViewState } from '../web/js/workspace-view-state.mjs';
 import { createDocumentActions } from '../web/js/document-action.mjs';
 import { historyEntry } from '../web/js/history-entry.mjs';
+import { preserveEditorFocus } from '../web/js/editor-focus.mjs';
 import { environmentSourceOf } from '../web/js/registry.mjs';
 import { saveStatusLine } from '../web/js/save-resolution.mjs';
 import { mutationComplete } from '../shared/mutation-outcome.mjs';
@@ -25,6 +26,8 @@ function section(start, end) {
 }
 const handlers = [
   section('async function withStatus(', '/* -------------------------------------------------------------- operations */'),
+  section('function pendingDocuments(', 'function pendingKey('),
+  section('function contractLabel(', 'function contractList('),
   section('function matchesFilter(', '/* ---------------------------------------------------------------- contracts */'),
   section('function contractList()', 'async function restoreContract('),
   section('function renderContextRail()', '/**\n * Keep the rail'),
@@ -71,7 +74,8 @@ async function fixture(t, { holdResult = false } = {}) {
     return true;
   };
   const scope = {
-    structuredClone, Map, h, mount, clear, guardedHandler, ...edits, state, viewStates, els,
+    structuredClone, Map, h, mount, clear, guardedHandler, preserveEditorFocus, ...edits, state, viewStates, els,
+    pendingByDocument: new Map(),
     historyEntry, environmentSourceOf, saveStatusLine, mutationComplete,
     COMPACT_NAV: { matches: false }, SECTIONS_IN_RAIL: { matches: false },
     areaButton: () => h('button', {}, 'Access contracts'), railDoc: () => state.current,
@@ -132,10 +136,10 @@ async function fixture(t, { holdResult = false } = {}) {
     assert.deepEqual(state.contracts.contracts.map(row => row.id), (await local.service.contracts()).contracts.map(row => row.id));
     assert.equal(readText(els.sidebar.querySelectorAll('summary')[1]), `All parameter files (${state.catalog.files.length})`);
     assert(!readText(els.sidebar).includes(created.dir));
-    const renderedDirectories = els.contextRail.querySelectorAll('.contract-name').map(node => node.getAttribute('title'));
-    assert.deepEqual(renderedDirectories, state.contracts.contracts.map(row => row.dir));
-    assert(!renderedDirectories.includes(created.dir));
-    assert(renderedDirectories.includes(beta.dir));
+    const renderedSources = els.contextRail.querySelectorAll('.contract-name').map(node => node.getAttribute('title'));
+    assert.deepEqual(renderedSources, state.contracts.contracts.map(row => row.paramFile));
+    assert(!renderedSources.some(path => path.startsWith(`${created.dir}/`)));
+    assert(renderedSources.includes(`${beta.dir}/main.bicepparam`));
     assert(calls.some(([kind]) => kind === 'sidebar'));
     assert(calls.some(([kind]) => kind === 'rail'));
     assert.equal(calls.filter(([kind]) => kind === 'contracts').length, 1);

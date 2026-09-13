@@ -52,14 +52,19 @@ shell owner returned their correction together with the separately assigned
 prerequisite incorporations and two manual commits over `d9a564b`. Only the app,
 new shell regression file and appended model-mutation tests differ; all original
 26 model-focus cases remain byte-identical. The writer handoff is closed.
-The independent shell re-review now accepts SH01-SH04 in scope. Two narrower
-gaps remain: an already-visible generic source error loses its evidence after
-replacement-source success, and independently suffixed contract labels can
-still collide. These are `UI-SHELL-CORR-R01-01` and `UI-SHELL-CORR-R01-02`;
-neither report alleges wrong-source writes or lost source bytes. The fresh
-`UI-shell-final-corrections` task starts from preserved candidate `e697985`.
-Recovery is integrated locally; model and final combined acceptance remain
-separate gates.
+The first shell re-review accepted SH01-SH04 in scope and identified two narrower
+gaps: an already-visible generic source error lost its evidence after
+replacement-source success, and independently suffixed contract labels could
+still collide. These were `UI-SHELL-CORR-R01-01` and `UI-SHELL-CORR-R01-02`;
+neither report alleged wrong-source writes or lost source bytes. The final
+correction returned at `fd08934` over preserved candidate `e697985`.
+Independent final review on the exact composed `a9195ca` source closes both
+findings. Its unchanged 78-case native recipe passes in full, with SH01-SH04,
+source/draft identity, ZIP bytes and outline behavior retained. MAIN verified
+all 364 sealed review artifacts, source/runtime bindings and the original
+recipes. The disposition is `ui-shell-final-main-acceptance-01.json`.
+Recovery is integrated locally; final combined acceptance remains a separate
+gate.
 The initial recovery and policy/model candidates are not accepted by their
 presence in the shell's review candidate.
 
@@ -128,6 +133,131 @@ admissions remain. Current MAIN has no Diagnostics header entry, so this accepte
 test/docs change must integrate with its compatible shell source rather than
 creating an inconsistent intermediate application.
 
+The pre-styling immutable application composition is `a9195ca`. A test-only successor,
+`d26b693`, moves the unchanged export-exit regression out of an unawaited nested
+test so two active fixtures cannot replace the same global DOM. Independent
+review confirms all ten original tests, their full bodies and 125 assertions
+remain intact; production source is identical to `a9195ca`. The original full-run
+failure and passing narrow replays are preserved rather than presented as a
+deterministic reproduction. The disposition is
+`ui-export-isolation-main-acceptance-01.json`.
+
+MAIN's full `d26b693` run has 2,464 entries, 2,421 passes, eight failures, 35 skips
+and no cancellations. All 58 model consumers, 41 shell corrections, 34
+Diagnostics cases and ten export-view cases plus the exact migration
+cancellation pass. The eight remaining failure bodies match the six established
+registry/structural disagreements and two unavailable fixture admissions;
+all 35 skips are unchanged. All 769 source files remain exact, with no added
+source files. This closes the regression gate, not a globally green-suite claim.
+The record is `ui-final-regression-main-acceptance-02.json`.
+
+The independent desktop integration review on `a9195ca` is complete. It supports
+the exercised behavioral integration, but withholds unconditional desktop
+acceptance for FD01: a policy outline jump focuses the correct heading beneath
+the opaque sticky document header. MAIN verified all 240 sealed artifacts,
+the exact source and all 26 original dispositions. The 76 recorded browser
+checks retain 21 explained reviewer-oracle failures with passing follow-through,
+plus three reproductions of this one real defect. All nine manual limits remain.
+The disposition is `ui-final-desktop-main-intake-01.json`.
+
+On 13 September, the user additionally requested stronger Azure-blue
+menus and more deliberate CSS contrasts. The released original shell/CSS owner
+has a bounded styling task from `d26b693`, limited to the two shared stylesheets
+and an optional dedicated regression. The completed original review and a
+separate independent review of that styling successor are both required before
+final integration. The current styling owner also has the narrow FD01
+correction because the visibility bug depends on the final sticky-header
+geometry. Only policy-jump positioning in `policynav.mjs` and a dedicated new
+regression are added to its CSS scope. Saved explicit jumps and reading-position
+markers remain separate; hiding the sticky header or forcing those markers to
+match is not an acceptable correction. Every path outside `CitadelUI` is
+preserved from current MAIN in the candidate. No image update, push, PR or
+deployment has been performed. After the host restart, the existing local Docker
+container was already healthy at `127.0.0.1:4173`; its image and data mount were
+left unchanged.
+
+The combined styling and FD01 candidate has now returned as `dced69`, in three
+commits over `d26b693`. Its five-path scope contains the two stylesheets, three
+added policy-navigation lines and two new focused test files. MAIN verified
+all 1,491 sealed artifacts and the complete source diff, then independently ran
+the bounded regression selection: 322 entries, 320 passes and the same two
+unavailable-fixture failures. All 771 source files stayed exact. The writer's
+handoff is closed. The independent review has now accepted FD01 with 39 actual
+exposed-heading executions, including both motion settings, wrapped headers,
+bottom clamps and same-document resizes. Its source-bound settled hierarchy,
+label and contrast checks are also supported.
+
+ASR01 is now independently closed on `85188cf`. Three scoped transition rules
+keep the inverse surface and label ink together, including reduced motion.
+The reviewer reproduced all twelve original failures, then passed 36 native
+edge traces and 30 behavior/motion checks on the committed successor. Minimum
+observed enabled-text contrast was 4.723:1 and necessary-boundary contrast
+4.524:1. Palette, geometry, focus ownership and accepted FD01 remained unchanged.
+The failed controls and earlier observer/expectation failures remain preserved,
+not relabelled as successful product checks.
+
+MAIN integrated the exact accepted 44-path UI composition, preserving its newer
+guide and already-applied export test. The full replay exposed one test-double
+gap: the old DOM fixture lacked `style.setProperty`. Test-only successor
+`31320e9` supplies the storage-backed method and a focused regression; no
+production byte or old assertion changed. Its exact-source full run has
+2,489 entries, 2,446 pass, the same eight established failures and 35 skips,
+with no cancellations. All eight failure bodies match after normalizing only
+durations and owned source paths. All 773 source files remained exact.
+
+Tag implementation has returned as `52e2422`. Its first attempt preserved five
+real preview failures for quoted names and ordinary multiple-property edits,
+with no source writes or partial implementation. The successor fixes the
+necessary shared insertion logic alongside the tag controls, preserving quoted
+keys, source newlines and inline comments. It provides no invented defaults or
+one-addition-per-save restriction. All nine original preview cases, 53 focused
+Node cases and 33 producer native checks pass.
+
+Exact combined candidate `68542b8` adds only the two-file DOM correction to that
+seven-path tag implementation. MAIN's full combined replay has 2,542 entries,
+2,499 pass, eight identical established failure bodies and 35 unchanged skips,
+with no cancellations. All 776 source files remained exact. The original model,
+shell, Diagnostics, styling and export cases remain covered.
+
+The first combined independent review accepted the DOM correction and supported
+the tag controls, but blocked that candidate's writer on TAGR01. Blanket newline replacement can
+alter opaque raw expressions, including a parser-derived multiline string
+payload. Two direct/nested source regressions and a payload counterexample are
+preserved. The original writer returned `779d9fd`, a three-path correction over
+`68542b8`: reuse the serializer with backward-compatible newline selection for
+generated scaffolding, never rewrite raw fragments. All 36 new regressions pass;
+the original nine source controls and 96 default serializer outputs stay
+byte-identical. UI, existing tag tests and the DOM correction are unchanged.
+
+MAIN's full corrected-source run has 2,578 entries, 2,535 pass, the same eight
+established failure bodies and 35 unchanged skips, with no cancellations.
+All 777 source files remained exact. Independent review-02 has closed TAGR01
+and approved the corrected combined feature. MAIN integrated exactly the nine
+remaining tag/source/test paths, verified all 776 non-guide entries against
+`779d9fd`, and preserved its newer guide and every outside file byte-for-byte.
+There is no remaining code-acceptance gate.
+
+The user has authorized final delivery after the remaining UI queue, including
+tag editing, is accepted: refresh the documentation and its screenshots, commit
+locally and publish to GitHub. This does not authorize Azure or container
+deployment. Screenshots must show the final accepted UI with clearly identified
+example data, not invented required tags or live credentials.
+
+MAIN accepted and integrated documentation candidate `5dba3c6`: three refreshed
+user/reference documents, ten recaptured UI screenshots and a new tag-editor
+screenshot. MAIN also accepted and integrated one-image successor `bab1c5b`
+for the separate Diagnostics reference, `70-debug-off.png`. All twelve current
+UI screenshots are fresh 1440 by 1000 captures, bound to the accepted production
+source and explicitly synthetic. The Diagnostics image shows the actual default
+OFF/empty state; collection was never activated.
+
+All application and documentation acceptance is complete. The current
+release/version prerequisites identify the delivery-branch checkout rather than
+implying that local worker-candidate commits can be fetched from GitHub.
+The delivery branch is `taomar-citadel-orchestrator`, not `main`: the checked-in
+Azure DevOps pipeline provisions and deploys the gateway on `main`. No deployment,
+main-branch merge or container-image update is part of this delivery.
+
 The original report, screenshots, exact results and unsuccessful attempts remain
 preserved outside worktrees in:
 
@@ -181,20 +311,23 @@ additional test grant preserved all original model-focus cases. The shell writer
 subsequently released `da51017` and the separate batch correction `e697985`.
 A prepared late addendum was never sent after its guard found the completed
 batch result. That completed task was not reopened.
-The released original app-consumer owner now has sole app ownership for the
-two remaining SH05/SH06 corrections, with bounded additions only to
-`ui-shell-corrections.test.mjs`. The original model reviewer independently reviewed
+The released original app-consumer owner completed the two SH05/SH06 corrections,
+with bounded additions only to `ui-shell-corrections.test.mjs`, and released
+ownership. The original model reviewer independently reviewed
 frozen `e697985`; the complete 58-case model test file is not writable by the
-shell follow-up. The model review is complete and accepted, as are Diagnostics
-and baseline-classification handoffs. The remaining shell successor still needs
-its independent review before final compatible integration.
+shell follow-up. The model, Diagnostics, baseline-classification and final shell
+reviews are complete and accepted. The model reviewer was then safely reused
+for the independent test-isolation review, which is also accepted. Final
+desktop review has returned FD01, now routed to the styling owner. Its corrected
+candidate will return to the original UI reviewer for independent acceptance.
 
 The returned candidate incorporates the complete unchanged policy correction,
 `54358bd` app consumer and `432a360` recovery correction over accepted test
 endpoint `2a9afd5`, preserving each mapping and the clean `d9a564b` baseline.
 Recovery is separately accepted. The returned shell and app mutation corrections
-still require independent acceptance and compatible MAIN integration; no mutable
-worker checkout is copied.
+are also independently accepted; compatible MAIN integration still awaits the
+FD01 closure and the newly requested Azure-blue styling acceptance.
+No mutable worker checkout is copied.
 
 The user also requested Bicep and Terraform SVG icons. MAIN owns the original
 assets in `CitadelUI/web/icons/`, the shared `formatIcon` renderer and its focused
@@ -206,6 +339,39 @@ must not be presented as Bicep or Terraform.
 ## Implementation decisions
 
 ### Professional desktop shell
+
+The user-requested Azure-blue follow-up should make menu/navigation identity
+more visible through deliberate deep/light-blue surface and interaction-state
+contrasts, balanced by neutral editor content. Reuse existing tokens and retain
+semantic warning/destructive colors, readable labels and non-color focus/selection
+cues. This is a color/surface pass, not a layout or behavior change. Measure
+rendered contrast and compare open menus, hover, selection and keyboard focus
+at 1280, 1440 and 1920 before independent acceptance.
+
+The user extended this pass to the content heading/file-path treatment, the
+Parameters/Raw file tabs and the parameter-category tab row. Small spacing and
+text-weight refinements are allowed there, with complete long labels and existing
+navigation semantics preserved. Synthetic screenshot fixtures must be identified
+as such; sample `owner` and `purpose` tags are not required configuration fields.
+
+### Queued tag editing
+
+The user requested a feasibility check and queued support for adding tags.
+The Bicep `tags` parameter is an open object of tag names and values, not a fixed
+Owner/Purpose form. The existing Bicep object editor renders current properties
+but does not expose its add-mapping control, which is currently native-map-only.
+The application already supplies `addProperty` and `remove` draft operations, so
+the guided tag controls can reuse the existing edit/review/save path.
+
+Queue this after the current styling acceptance: an empty-state Add tag action,
+user-entered names and values, editing/removing entries, and visible validation
+for empty or duplicate names. Show only source-defined or explicitly user-added
+keys. Preserve existing expressions, unrelated source bytes, read-only/ownership
+guards and undo/review behavior. This item is queued, not implemented; it does
+not authorize the styling worker to implement tag controls or change
+configuration data.
+
+### Existing shell requirements
 
 Use the existing zero-dependency application and Fluent-aligned tokens, not a
 new framework or an Azure Portal clone. Separate a restrained persistent

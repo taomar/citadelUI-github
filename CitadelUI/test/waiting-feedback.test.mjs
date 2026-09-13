@@ -28,7 +28,7 @@ test('every async entry point marks the status as pending', () => {
   // than something each call site has to remember.
   const fn = app.slice(app.indexOf('async function withStatus'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
-  assert.match(body, /setStatus\(\s*message\s*,\s*'info'\s*,\s*true\s*,\s*true\s*\)/);
+  assert.match(body, /setStatus\(\s*message\s*,\s*'info'\s*,\s*true\s*,\s*true\s*,\s*\{\s*operation:\s*message\s*\}\)/);
 });
 
 test('a pending status is rendered as busy, not merely as new text', () => {
@@ -61,9 +61,9 @@ test('a long wait escalates to an honest reassurance, not a fake percentage', ()
 });
 
 test('the escalation is time-based and cleared with the status', () => {
-  assert.match(app, /pendingTicker\s*=\s*setTimeout\(renderStatus,\s*STILL_WORKING_AFTER_MS\)/);
-  // A stale ticker would re-render a status that has already been replaced.
-  assert.match(app, /clearTimeout\(pendingTicker\)/);
+  assert.match(app, /notice\.pendingTimer\s*=\s*setTimeout\(\(\) => \{[^}]*owner === state[^}]*owner\.notifications\.get\(key\) === notice[^}]*renderStatus\(\)[^}]*\}, STILL_WORKING_AFTER_MS\)/);
+  assert.match(app, /clearTimeout\(previous\?\.pendingTimer\)/);
+  assert.match(app, /clearTimeout\(notice\.pendingTimer\)/);
 });
 
 test('the pending marker actually animates', () => {

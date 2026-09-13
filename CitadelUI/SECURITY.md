@@ -51,10 +51,12 @@ Known gaps, deliberate for a demo and listed for whoever hardens this next:
 
 ### Opt-in instance diagnostics
 
-`/debug` is an unlinked support page, not a security boundary. It uses normal
-owner sign-in, and every `/api/diagnostics/*` route requires the owner session,
-Host/Fetch-Site checks and the appropriate Origin check. No query-string switch,
-TTL override, cross-origin sharing route or unprotected report endpoint exists.
+**Diagnostics** in the application header opens the support page in a new tab;
+`/debug` remains a direct route. The public bootstrap presents the normal owner
+claim/sign-in flow. Discoverability is not an access control: every
+`/api/diagnostics/*` route requires the owner session, Host/Fetch-Site checks and
+the appropriate Origin check. No query-string switch, TTL override, cross-origin
+sharing route or unprotected report endpoint exists.
 
 Capture defaults off and lasts a fixed 30 minutes per explicit activation,
 unless stopped manually. Reloads, activity and repeated ON requests do not

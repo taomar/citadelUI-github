@@ -10,10 +10,10 @@ export function createDocumentActions({ views, currentOwner, setStatus }) {
       action.owner.documentGeneration === action.generation;
   }
 
-  function retainDocumentNotice(action, message, tone, outcome = false) {
+  function retainDocumentNotice(action, message, tone, outcome = false, operation = null) {
     const { owner, document, contract, generation } = action;
     const path = document?.path || contract?.policy?.path;
-    const notice = { message, tone, outcome };
+    const notice = { message, tone, outcome, ...(operation ? { operation } : {}) };
     if (path) {
       owner.documentNotices ||= new Map();
       // A reload error must not erase a confirmed source outcome awaiting its owner.
@@ -22,7 +22,7 @@ export function createDocumentActions({ views, currentOwner, setStatus }) {
     if (owner.current === document && owner.contract === contract && owner.documentGeneration === generation) {
       owner.status = notice;
     }
-    if (ownsDocumentAction(action)) setStatus(message, tone);
+    if (ownsDocumentAction(action)) setStatus(message, tone, false, false, { operation: operation || 'notice', path: path || null });
   }
 
   function restoreDocumentNotice() {
@@ -30,8 +30,15 @@ export function createDocumentActions({ views, currentOwner, setStatus }) {
     const path = owner.current?.path, notice = owner.documentNotices?.get(path);
     if (!notice) return;
     owner.documentNotices.delete(path);
-    setStatus(notice.message, notice.tone);
+    setStatus(notice.message, notice.tone, false, false, { operation: notice.operation || 'notice', path });
   }
 
-  return { captureDocumentAction, ownsDocumentAction, retainDocumentNotice, restoreDocumentNotice };
+  function resolveDocumentNotice(action, operation) {
+    if (!ownsDocumentAction(action)) return;
+    const path = action.document?.path || action.contract?.policy?.path;
+    const notice = action.owner.documentNotices?.get(path);
+    if (notice && !notice.outcome && notice.operation === operation) action.owner.documentNotices.delete(path);
+  }
+
+  return { captureDocumentAction, ownsDocumentAction, retainDocumentNotice, restoreDocumentNotice, resolveDocumentNotice };
 }

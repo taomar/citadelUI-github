@@ -150,7 +150,8 @@ function readVariable(xml, key, comments) {
   let fallback = null;
   let m;
   while ((m = re.exec(xml))) {
-    const valueStart = m.index + m[0].indexOf('value="') + 7 + (m[2] ? m[2].length : 0);
+    const attributeStart = m.index + m[0].indexOf('value="') + 7;
+    const valueStart = attributeStart + (m[2] ? m[2].length : 0);
     const raw = m[3];
     const commented = Boolean(m[1]) || inRanges(comments, m.index);
     const found = {
@@ -158,6 +159,8 @@ function readVariable(xml, key, comments) {
       commented,
       expression: Boolean(m[2]),
       value: decodePolicyAttribute(raw),
+      // Inspection retains both delimiters independently of the legacy typed span.
+      sourceValue: decodePolicyAttribute(xml.slice(attributeStart, valueStart + raw.length + (m[4]?.length || 0))),
       span: { start: valueStart, end: valueStart + raw.length },
       elementSpan: { start: m.index, end: m.index + m[0].length },
     };
@@ -680,15 +683,6 @@ export function readPolicyControls(xml) {
     };
   }
 
-  const headers = /(<set-variable\s+name="enableResponseHeaders"\s+value="@\()(true|false)(\)")/.exec(xml);
-  if (headers) {
-    const start = headers.index + headers[1].length;
-    controls.responseHeaders = {
-      value: headers[2] === 'true',
-      span: { start, end: start + headers[2].length },
-    };
-  }
-
   // Report only live fragments; commented-out examples are documentation.
   const fragments = [];
   const fragRe = /<include-fragment\s+fragment-id="([^"]+)"/g;
@@ -704,6 +698,13 @@ export function readPolicyControls(xml) {
   for (const def of POLICY_VARIABLES) {
     const found = readVariable(xml, def.key, comments);
     controls.variables[def.key] = found || { present: false, commented: false, value: null };
+  }
+  // APIM distinguishes @(true) Booleans from the string value="true".
+  // Use the same live declaration and exact span as the generic variable reader.
+  const headers = controls.variables.enableResponseHeaders;
+  if (headers.present && !headers.commented && headers.expression && /^(true|false)$/.test(headers.value) &&
+    headers.sourceValue === `@(${headers.value})`) {
+    controls.responseHeaders = { value: headers.value === 'true', span: headers.span };
   }
 
   controls.contentSafety = readContentSafety(xml);
@@ -1063,7 +1064,8 @@ function writeControlValues(xml, changes) {
     splices.push({ ...controls.allowedModels.span, text: escapeAttr(changes.allowedModels) });
   }
 
-  if (changes.responseHeaders !== undefined && controls.responseHeaders) {
+  if (changes.responseHeaders !== undefined && controls.responseHeaders &&
+    Boolean(changes.responseHeaders) !== controls.responseHeaders.value) {
     splices.push({ ...controls.responseHeaders.span, text: changes.responseHeaders ? 'true' : 'false' });
   }
 

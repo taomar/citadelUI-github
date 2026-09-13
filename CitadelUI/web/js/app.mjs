@@ -10,18 +10,16 @@
  * operation. Every other parameter file in the repository stays reachable behind
  * a disclosure, so nothing is hidden -- it is just not competing for attention.
  *
- * The shell is three persistent panes plus a title block: areas rail, context
- * rail (contract list and/or section index), and the sheet. Save, discard and
- * the pending count live in the title block rather than in a header that
- * scrolls away, because the one thing a control plane must never lose is
- * whether there is unsaved work.
+ * The shell has workspace identity, contextual document commands, and three
+ * panes: areas rail, context rail and the sheet. Save, discard and pending
+ * ownership remain visible rather than scrolling away with the document.
  */
 
 import { api } from './api.mjs';
 import { ensureOwnerSession, forgetToken } from './owner-gate.mjs';
 import { reportClientError, startDiagnostics } from './diagnostics-client.mjs';
 import { h, mount, clear } from './dom.mjs';
-import { preserveEditorFocus } from './editor-focus.mjs';
+import { focusEditorControl, preserveEditorFocus } from './editor-focus.mjs';
 import { pauseEditorForLoad } from './editor-load.mjs';
 import { renderDiff } from './diff.mjs';
 import { renderParamDocument, renderOutlineNav } from './paramview.mjs';
@@ -50,6 +48,7 @@ import { guardedHandler } from './single-flight.mjs';
 import { githubSessions } from './github-session-manager.mjs';
 import { BrowserDirectoryProvider } from './directory-provider.mjs';
 import { environmentLocation, environmentSourceOf, isGitHubEnvironment } from './registry.mjs';
+import { withSourceUnavailable } from './workspace-activation.mjs';
 import { createProvider } from './source-factory.mjs';
 import { historyEntry } from './history-entry.mjs';
 import { createCompareSession } from './compare-session.mjs';
@@ -58,11 +57,12 @@ import { openTerraformExport } from './terraform-export-view.mjs';
 import { compareUrl, describeCreatedBranch, saveStatusLine } from './save-resolution.mjs';
 import { mutationComplete } from '../../shared/mutation-outcome.mjs';
 import { refNameProblem } from '../../shared/git-refs.mjs';
-import { configurationOf } from '../../shared/workspace-configuration.mjs';
+import { configurationKey, configurationOf } from '../../shared/workspace-configuration.mjs';
 import { assertNativeDraft, sameNativeDraftBinding } from '../../shared/terraform/drafts.mjs';
 import { assertNonsecretValues, validateNativeValues } from '../../shared/terraform/schema.mjs';
 import { NATIVE_WIRING_NOTICE, NATIVE_LOCAL_CREATION_NOTICE } from '../../shared/terraform/workspace.mjs';
 import { nativeEditContext, nativeReadonlyPolicy } from './native-controls.mjs';
+import { formatIcon } from './format-icon.mjs';
 import { WorkspaceViewState } from './workspace-view-state.mjs';
 import { createDocumentActions } from './document-action.mjs';
 import { createEditorDocumentSession } from './editor-document-session.mjs';
@@ -137,6 +137,7 @@ function createEditorState() { return {
   filter: '',
   showAll: false,
   status: null,
+  notifications: new Map(),
   projectLabel: 'Project',
   workspaceId: null,
   quarantinedDraft: null,
@@ -158,9 +159,9 @@ const editorDocuments = createEditorDocumentSession({
   currentOwner: () => state,
   contextProvider: () => activeWorkspace(),
   documents: {
-    contract: (id, context) => api.contract(id, context),
-    accessContractTargets: (context) => api.accessContractTargets(context),
-    deployment: (path, context) => api.deployment(path, context),
+    contract: (id, context) => sourceOperation({ context }, () => api.contract(id, context)),
+    accessContractTargets: (context) => sourceOperation({ context }, () => api.accessContractTargets(context)),
+    deployment: (path, context) => sourceOperation({ context, path }, () => api.deployment(path, context)),
     onboardedModels: () => api.onboardedModels(),
     policyVariables: () => api.policyVariables(),
     validateDocument: (doc) => validateDocument(doc),
@@ -176,7 +177,7 @@ const editorDocuments = createEditorDocumentSession({
     isCurrentGeneration: (generation) => generation === documentGeneration,
   },
   publish: {
-    withStatus: (message, action) => withStatus(message, action),
+    withStatus: (message, action, source) => withStatus(message, action, source),
     setStatus: (message, tone) => setStatus(message, tone),
     render: () => render(),
     refreshPolicyPreview: () => refreshPolicyPreview(),
@@ -205,55 +206,84 @@ githubHeadEvents.addEventListener('change', ({ detail }) => {
 
 /* ------------------------------------------------------------------ status */
 
-let statusTimer = null;
-let pendingTicker = null;
 let pendingSince = 0;
+const statusEntries = new Map();
 
 // A slow network and a hung app look identical if nothing on screen moves. Work
 // that is waiting says so, and says so more loudly the longer it waits, so the
 // user never has to guess whether Citadel is still trying.
 const STILL_WORKING_AFTER_MS = 8000;
 
-function setStatus(message, tone = 'info', sticky = false, pending = false) {
+function setStatus(message, tone = 'info', sticky = false, pending = false, scope = {}) {
   if (message && tone === 'error') reportClientError(null, 'app.status', { module: '/js/app.mjs' });
   const owner = state;
-  owner.status = message ? { message, tone, pending } : null;
-  const notice = owner.status;
-  clearTimeout(statusTimer);
-  clearTimeout(pendingTicker);
+  owner.notifications ||= new Map();
+  if (!message) {
+    if (owner.status) removeStatusNotice(owner, owner.status);
+    else renderStatus();
+    return;
+  }
+  const path = scope.path === undefined ? owner.current?.path || null : scope.path;
+  const operation = scope.operation || 'notice';
+  const key = JSON.stringify([path, operation]);
+  const previous = owner.notifications.get(key);
+  const notice = { message, tone, pending, path, operation, key, since: Date.now(),
+    previousError: pending && previous?.tone === 'error' ? previous : null };
+  owner.notifications.set(key, notice);
+  owner.status = notice;
+  clearTimeout(previous?.timer);
+  clearTimeout(previous?.pendingTimer);
   if (message && pending) {
     pendingSince = Date.now();
     // Re-render once the wait stops being ordinary, so the toast can escalate
     // from "doing it" to "still doing it" without a timer that ticks forever.
-    pendingTicker = setTimeout(renderStatus, STILL_WORKING_AFTER_MS);
+    notice.pendingTimer = setTimeout(() => {
+      if (owner === state && owner.notifications.get(key) === notice) renderStatus();
+    }, STILL_WORKING_AFTER_MS);
   }
   // Transient notices must clear themselves. A toast that is only dismissed on
   // the success path stays pinned forever the moment anything throws.
-  if (message && !sticky && tone !== 'error') {
-    statusTimer = setTimeout(() => {
-      if (owner.status !== notice) return;
-      owner.status = null;
-      if (owner === state) renderStatus();
+  if (!sticky && !pending && tone !== 'error') {
+    notice.timer = setTimeout(() => {
+      removeStatusNotice(owner, notice);
     }, 4000);
   }
   renderStatus();
 }
 
 function renderStatus() {
-  if (!state.status) {
+  const notices = [...(state.notifications?.values() || [])]
+    .filter((notice) => !notice.path || notice.path === state.current?.path);
+  if (state.status && !state.status.key && !notices.includes(state.status)) notices.push(state.status);
+  if (!notices.length) {
     els.status.hidden = true;
     els.status.removeAttribute('aria-busy');
+    clear(els.status);
+    statusEntries.clear();
     return;
   }
-  const { message, tone, pending } = state.status;
   els.status.hidden = false;
-  els.status.className = `status status-${tone}${pending ? ' status-pending' : ''}`;
+  els.status.className = 'status status-stack';
+  const pending = notices.some((notice) => notice.pending);
   // Assistive tech is told the region is busy, not just sent new text.
   if (pending) els.status.setAttribute('aria-busy', 'true');
   else els.status.removeAttribute('aria-busy');
-  const waited = pending && Date.now() - pendingSince >= STILL_WORKING_AFTER_MS;
-  mount(
-    els.status,
+  const owner = state;
+  const keys = new Set(notices.map((notice) => notice.key || notice));
+  for (const [key, entry] of statusEntries) {
+    if (entry.owner !== owner || !keys.has(key)) {
+      entry.node.remove();
+      statusEntries.delete(key);
+    }
+  }
+  for (const notice of notices) {
+    const key = notice.key || notice, previous = statusEntries.get(key);
+    const { message, tone, pending } = notice;
+    const waited = pending && Date.now() - (notice.since || pendingSince) >= STILL_WORKING_AFTER_MS;
+    if (previous?.notice === notice && previous.waited === waited && previous.node.parentElement === els.status) continue;
+    const node = previous?.node || h('div');
+    node.className = `status-entry status-${tone}${pending ? ' status-pending' : ''}`;
+    mount(node,
     h('span', { class: 'status-text' }, message),
     // Honest reassurance rather than a fake percentage: nothing here knows how
     // long GitHub will take, so it reports that it is still trying, not how far.
@@ -269,11 +299,14 @@ function renderStatus() {
             class: 'status-x',
             type: 'button',
             'aria-label': 'Dismiss notification',
-            onclick: () => setStatus(null),
+            onclick: () => removeStatusNotice(owner, notice),
           },
           '\u2715'
-        )
-  );
+        ),
+    notice.previousError ? h('p', { class: 'status-previous' }, `Previous attempt: ${notice.previousError.message}`) : null);
+    if (node.parentElement !== els.status) els.status.append(node);
+    statusEntries.set(key, { owner, notice, waited, node });
+  }
 }
 
 function currentWriteContext(file = state.current?.path || null, environment = null) {
@@ -366,27 +399,38 @@ function transactionTone(transaction) {
 }
 
 /** Every async entry point runs through here so status can never stick. */
-async function withStatus(message, fn) {
+async function withStatus(message, fn, source = null) {
   // `pending` is what turns a static sentence into a live, animated one. Every
   // await in the product passes through this function, so nothing can wait
   // silently without someone deliberately bypassing it.
   const owner = state, action = captureDocumentAction(owner);
+  const sourceScope = source ? captureSourceScope(source) : null;
+  reattributeSourceNotices(owner);
   const announce = captureDialogStatus();
   announce(message);
-  setStatus(message, 'info', true, true);
+  setStatus(message, 'info', true, true, { operation: message });
   const pending = owner.status;
   try {
     const result = await fn();
     if (ownsDocumentAction(action)) announce(null);
-    if (owner.status === pending) {
-      owner.status = null;
-      if (ownsDocumentAction(action)) setStatus(null);
-    }
+    reattributeSourceNotices(owner);
+    documentActions.resolveDocumentNotice(action, message);
+    if (sourceScope && result && (!source.mutation || mutationComplete(result))) resolveSourceUnavailable(action, sourceScope);
+    removeStatusNotice(owner, pending);
     return result;
   } catch (err) {
     reportClientError(err, 'app.action', { module: '/js/app.mjs' });
-    if (ownsDocumentAction(action)) announce(err.message, 'error');
-    retainDocumentNotice(action, err.message, 'error');
+    reattributeSourceNotices(owner);
+    const previousSource = sourceScope && state === owner && els.shell?.dataset.workspace === 'active' && !sourceScopeIsCurrent(sourceScope)
+      ? previousSourceNotice(sourceScope, err.message, message) : null;
+    const unavailable = previousSource ? null : presentSourceUnavailable(action, err, message, sourceScope);
+    if (ownsDocumentAction(action)) announce(previousSource ? previousSource.message : unavailable
+      ? `${unavailable.path ? `${unavailable.path}: ` : ''}${unavailable.message} ${unavailable.guidance}`
+      : err.message, 'error');
+    if (previousSource) removeStatusNotice(owner, pending);
+    retainDocumentNotice(action, previousSource?.message || err.message, 'error', false, previousSource?.operation || message,
+      previousSource ? null : sourceScope);
+    if (unavailable && ownsDocumentAction(action)) unavailable.notice = owner.status;
     return undefined;
   }
 }
@@ -399,12 +443,207 @@ function ownsDocumentAction(action) {
   return documentActions.ownsDocumentAction(action);
 }
 
-function retainDocumentNotice(action, message, tone, outcome = false) {
-  return documentActions.retainDocumentNotice(action, message, tone, outcome);
+function retainDocumentNotice(action, message, tone, outcome = false, operation = null, source = null) {
+  const owner = action.owner, path = action.document?.path || action.contract?.policy?.path || null;
+  const stored = owner.documentNotices?.get(path), status = owner.status;
+  const result = documentActions.retainDocumentNotice(action, message, tone, outcome, operation);
+  if (source && tone === 'error') {
+    const binding = { source, path, message, operation: operation || 'notice' };
+    const retained = owner.documentNotices?.get(path);
+    if (retained && retained !== stored) sourceNoticeScopes.set(retained, binding);
+    if (owner.status && owner.status !== status) sourceNoticeScopes.set(owner.status, binding);
+  }
+  return result;
 }
 
 function restoreDocumentNotice() {
-  return documentActions.restoreDocumentNotice();
+  reattributeSourceNotices();
+  const binding = sourceNoticeScopes.get(state.documentNotices?.get(state.current?.path));
+  const result = documentActions.restoreDocumentNotice();
+  if (binding && state.status) sourceNoticeScopes.set(state.status, binding);
+  return result;
+}
+
+function removeStatusNotice(owner, notice) {
+  if (!notice) return;
+  if (notice.timer) clearTimeout(notice.timer);
+  if (notice.pendingTimer) clearTimeout(notice.pendingTimer);
+  if (notice?.key && owner.notifications?.get(notice.key) === notice) owner.notifications.delete(notice.key);
+  if (owner.status === notice) {
+    owner.status = null;
+    if (owner === state) setStatus(null);
+  } else if (notice.key && owner === state) renderStatus();
+}
+
+function resolveOperationStatus(operation, owner = state, path = null) {
+  const notice = owner.notifications?.get(JSON.stringify([path, operation]));
+  if (notice && !notice.pending) removeStatusNotice(owner, notice);
+}
+
+function sourceContextKey(context) {
+  return JSON.stringify([context.projectId, context.environment.id,
+    environmentSourceOf(context.environment), configurationKey(configurationOf(context.environment))]);
+}
+
+function captureSourceScope({ context, path = null }) {
+  return { path, key: sourceContextKey(context), environment: structuredClone(context.environment),
+    provider: context.provider, handle: context.handle, handleName: context.handle?.name };
+}
+
+function sourceScopeIsCurrent(source) {
+  const context = activeWorkspace();
+  return source.key === sourceContextKey(context) && source.provider === context.provider && source.handle === context.handle;
+}
+
+let previousSourceNoticeId = 0;
+// Provider and directory-handle references never enter notice or draft payloads.
+const sourceNoticeScopes = new WeakMap();
+
+function previousSourceNotice(source, message, operation) {
+  const location = environmentLocation(source.environment), name = source.handleName;
+  const label = name && !location.endsWith(name) ? `${location} (${name})` : location;
+  return {
+    operation: `${operation}:previous-source:${++previousSourceNoticeId}`,
+    message: `Previous source (${label})${source.path ? `, ${source.path}` : ''}: ${message} This earlier operation did not check the current source.`,
+  };
+}
+
+function reattributeSourceNotices(owner = state) {
+  if (owner !== state) return;
+  const notices = [...(owner.notifications?.values() || [])];
+  const remembered = [...(owner.documentNotices?.values() || [])];
+  const detail = owner.sourceUnavailable;
+  const currentDetail = detail && detail.document === owner.current && detail.contract === owner.contract &&
+    detail.generation === owner.documentGeneration;
+  const bindings = new Set([
+    ...notices.flatMap((notice) => [notice, notice.previousError]), ...remembered, owner.status,
+    currentDetail ? detail.notice : null,
+  ].map((notice) => sourceNoticeScopes.get(notice)).filter(Boolean));
+  if (!bindings.size || els.shell?.dataset.workspace !== 'active') return;
+  let changed = false;
+  for (const binding of bindings) {
+    if (binding.previous || sourceScopeIsCurrent(binding.source)) continue;
+    const previous = binding.previous = previousSourceNotice(binding.source, binding.message, binding.operation);
+    const replace = (notice) => ({ ...notice, message: previous.message, operation: previous.operation,
+      ...(notice.key ? { key: JSON.stringify([notice.path, previous.operation]) } : {}) });
+    for (const [path, notice] of owner.documentNotices || []) {
+      if (sourceNoticeScopes.get(notice) === binding) {
+        owner.documentNotices.set(path, replace(notice));
+        changed = true;
+      }
+    }
+    let displayed = false;
+    for (const notice of notices) {
+      const original = sourceNoticeScopes.get(notice) === binding ? notice
+        : sourceNoticeScopes.get(notice.previousError) === binding ? notice.previousError : null;
+      if (!original) continue;
+      const replacement = replace(original);
+      if (original === notice && owner.notifications.get(notice.key) === notice) owner.notifications.delete(notice.key);
+      owner.notifications.set(replacement.key, replacement);
+      if (owner.status === original) owner.status = replacement;
+      displayed = changed = true;
+    }
+    if (sourceNoticeScopes.get(owner.status) === binding) {
+      owner.status = replace(owner.status);
+      changed = true;
+    }
+    if (detail && (sourceNoticeScopes.get(detail.notice) === binding ||
+        detail.source === binding.source && detail.operation === binding.operation)) {
+      detail.previousNotice = previous;
+      if (currentDetail) {
+        els.workspace.querySelector('.source-unavailable')?.remove();
+        if (!displayed) setStatus(previous.message, 'error', true, false,
+          { path: binding.path, operation: previous.operation });
+      }
+    }
+  }
+  if (changed) renderStatus();
+}
+
+async function sourceOperation(source, operation) {
+  const captured = captureSourceScope(source);
+  try { return await operation(); }
+  catch (error) { throw annotateSourceFailure(error, captured); }
+}
+
+function annotateSourceFailure(error, source) {
+  if (!error || typeof error !== 'object' || error.sourceUnavailable) return error;
+  const code = error.code || '';
+  if (/^(?:REGISTRY_|REATTACH_|TRANSACTION_|NATIVE_)/.test(code) && code !== 'NATIVE_VALUE_MISSING') return error;
+  const kind = error.name === 'NotFoundError' || ['ENOENT', 'SOURCE_NOT_FOUND', 'NATIVE_VALUE_MISSING'].includes(code)
+    ? 'missing-file'
+    : ['NotAllowedError', 'SecurityError'].includes(error.name) || /^(?:PERMISSION_|FOLDER_PERMISSION_)/.test(code)
+      ? 'permission'
+      : /^(?:GITHUB_SESSION_|CONNECTION_)/.test(code) ? 'connection'
+        : code === 'WORKSPACE_SOURCE_UNAVAILABLE' ? 'unavailable' : null;
+  return kind ? withSourceUnavailable(error, source.environment, { kind, path: source.path || error.alias }) : error;
+}
+
+function resolveSourceUnavailable(action, source) {
+  const detail = action.owner.sourceUnavailable;
+  if (!detail || !ownsDocumentAction(action) || !sourceScopeIsCurrent(source) ||
+      !source.path || source.path !== detail.path ||
+      detail.source && (detail.source.key !== source.key || detail.source.provider !== source.provider || detail.source.handle !== source.handle)) return;
+  action.owner.sourceUnavailable = null;
+  els.workspace.querySelector('.source-unavailable')?.remove();
+  documentActions.resolveDocumentNotice(action, detail.operation);
+  const notice = action.owner.notifications?.get(JSON.stringify([action.document?.path || null, detail.operation]));
+  if (notice && !notice.pending) removeStatusNotice(action.owner, notice);
+}
+
+function presentSourceUnavailable(action, error, operation, source = null) {
+  const detail = error?.sourceUnavailable;
+  if (!detail || !['missing-file', 'permission', 'connection', 'unavailable'].includes(detail.kind) ||
+      typeof detail.message !== 'string' || !detail.message.trim() ||
+      typeof detail.guidance !== 'string' || !detail.guidance.trim() ||
+      detail.path !== undefined && typeof detail.path !== 'string') return;
+  if (action.owner.current !== action.document || action.owner.contract !== action.contract ||
+      action.owner.documentGeneration !== action.generation) return;
+  if (ownsDocumentAction(action) && source && !sourceScopeIsCurrent(source)) return;
+  action.owner.sourceUnavailable = {
+    kind: detail.kind, path: detail.path || source?.path || action.document?.path || null,
+    message: detail.message, guidance: detail.guidance, technical: error.message,
+    document: action.document, contract: action.contract, generation: action.generation, operation, source,
+  };
+  if (ownsDocumentAction(action)) renderSourceUnavailable();
+  return action.owner.sourceUnavailable;
+}
+
+function renderSourceUnavailable() {
+  reattributeSourceNotices();
+  const detail = state.sourceUnavailable;
+  if (!detail || detail.document !== state.current || detail.contract !== state.contract || detail.generation !== state.documentGeneration) return;
+  const action = captureDocumentAction(), source = detail.source || captureSourceScope({ context: activeWorkspace(), path: detail.path });
+  if (!sourceScopeIsCurrent(source)) {
+    els.workspace.querySelector('.source-unavailable')?.remove();
+    if (!detail.previousNotice) {
+      detail.previousNotice = previousSourceNotice(source, detail.technical, detail.operation);
+      retainDocumentNotice(action, detail.previousNotice.message, 'error', false, detail.previousNotice.operation);
+      removeStatusNotice(action.owner, detail.notice);
+    }
+    return;
+  }
+  const recover = (operation) => guardedHandler(() => {
+    if (!ownsDocumentAction(action) || action.owner.sourceUnavailable !== detail || !sourceScopeIsCurrent(source)) {
+      retainDocumentNotice(action, 'The workspace source or owning document changed. Reopen its current source settings before recovery.', 'info', false, 'source-recovery');
+      return false;
+    }
+    return operation();
+  }, { key: `source-recovery:${action.owner.workspaceId}` });
+  els.workspace.querySelector('.source-unavailable')?.remove();
+  const pending = pendingDocuments();
+  els.workspace.prepend(h('section', { class: 'source-unavailable banner banner-warn', 'aria-label': 'Source unavailable' },
+    h('h3', {}, 'Source unavailable'),
+    detail.path ? h('code', {}, detail.path) : null,
+    h('p', {}, detail.message),
+    h('p', {}, detail.guidance),
+    h('p', {}, pending.length
+      ? `Drafts in ${pending.length} ${pending.length === 1 ? 'document remain' : 'documents remain'} retained in this browser session. No missing source is recreated.`
+      : 'No editor drafts are pending. No missing source is recreated.'),
+    h('div', { class: 'source-recovery-actions' },
+      h('button', { class: 'btn', type: 'button', onclick: recover(openWorkspaceSettings) }, 'Open workspace settings'),
+      h('button', { class: 'btn', type: 'button', onclick: recover(returnToSetup) }, 'Return to workspaces')),
+    h('details', { class: 'technical-details' }, h('summary', {}, 'Technical error'), h('p', {}, detail.technical))));
 }
 
 /* -------------------------------------------------------------- operations */
@@ -481,6 +720,11 @@ function pushOperation(op) {
 }
 
 function pushOperations(operations) {
+  if (state.paintingEditor) return false;
+  if (state.quarantinedDraft) {
+    setStatus(state.quarantinedDraft.reason, 'error');
+    return false;
+  }
   if (hasParameterInputs(state)) {
     setStatus('Finish or discard the pending field input before applying multiple changes.', 'error');
     return false;
@@ -507,21 +751,39 @@ function canLeaveIncompleteNumber() {
 }
 
 function flushParameterInputs() {
-  const owner = state, sourceDocument = owner.current;
+  const owner = state, sourceDocument = owner.current, contract = owner.contract;
+  const generation = owner.documentGeneration, workspaceKey = owner.workspaceKey;
+  const current = () => state === owner && owner.current === sourceDocument && owner.contract === contract &&
+    owner.documentGeneration === generation && owner.workspaceKey === workspaceKey;
+  const liveControl = (key) => [...els.workspace.querySelectorAll('[data-parameter-input]')]
+    .find((element) => element.dataset.parameterInput === key);
+  const reject = (key, input) => {
+    if (!current()) return false;
+    const control = liveControl(key), path = input.path?.map(String).join('.') || key;
+    const message = input.composing
+      ? `Return to ${path} and finish or discard the composition before review. Its text is retained in memory.`
+      : `${path}: ${control?.validationMessage || 'Return to Parameters and finish or discard this input before review.'} Its text is retained in memory and has not been saved.`;
+    setStatus(message, 'error');
+    if (control && !control.disabled && !control.readOnly) focusEditorControl(control);
+    return false;
+  };
   if (els.workspace.contains(document.activeElement)) document.activeElement.blur();
-  for (const [key, input] of Object.entries(owner.parameterInputs || {})) {
-    if (state !== owner || owner.current !== sourceDocument) return false;
-    const control = [...els.workspace.querySelectorAll('[data-parameter-input]')]
-      .find((element) => element.dataset.parameterInput === key);
+  if (!current()) return false;
+  for (const key of Object.keys(owner.parameterInputs || {})) {
+    if (!current()) return false;
+    const input = owner.parameterInputs[key];
+    if (!input) continue;
+    const control = liveControl(key);
     if (!control || control.disabled || control.readOnly || input.composing) {
-      setStatus('Return to the pending parameter field and finish or discard its input before review. Its text is retained in memory.', 'error');
-      return false;
+      return reject(key, input);
     }
     control.dispatchEvent(new Event('change', { bubbles: true }));
+    if (!current()) return false;
+    if (owner.parameterInputs[key]) return reject(key, owner.parameterInputs[key]);
   }
   if (hasParameterInputs(owner)) {
-    setStatus('Correct the pending parameter input before review. Its text is retained in memory and has not been saved.', 'error');
-    return false;
+    const [key, input] = Object.entries(owner.parameterInputs)[0];
+    return reject(key, input);
   }
   return true;
 }
@@ -568,6 +830,57 @@ function pendingCount() {
     if (pending.workspaceKey === state.workspaceKey) count += editorPendingCount(pending);
   }
   return count;
+}
+
+function pendingDocuments() {
+  const documents = new Map();
+  const add = (path, count, detail, snapshot) => {
+    if (!path || !count) return;
+    const entry = documents.get(path) || { path, count: 0, details: new Set(),
+      parameterPath: snapshot.parameterPath, policyPath: snapshot.policyPath };
+    entry.count += count;
+    entry.details.add(detail);
+    documents.set(path, entry);
+  };
+  for (const snapshot of [captureContractEdits(state), ...pendingByDocument.values()]) {
+    if (snapshot.workspaceKey && snapshot.workspaceKey !== state.workspaceKey) continue;
+    const inputs = Object.keys(snapshot.parameterInputs || {}).length;
+    const count = editorPendingCount({ ...snapshot, policyRaw: null, policyChanges: {} });
+    add(snapshot.parameterPath, count, inputs ? 'Unfinished field input, kept in this browser session' : 'Unsaved parameter changes', snapshot);
+    if (Object.keys(snapshot.policyChanges || {}).length || typeof snapshot.policyRaw === 'string') {
+      add(snapshot.policyPath, 1, typeof snapshot.policyRaw === 'string' ? 'Hand-edited XML, kept in this browser session' : 'Unsaved policy changes', snapshot);
+    }
+  }
+  for (const [path, entries] of state.quarantinedDrafts || []) {
+    add(path, entries.length, 'Retained draft: source reconciliation required', { parameterPath: path });
+  }
+  return [...documents.values()];
+}
+
+function pendingDocumentsContext() {
+  const context = { project: state.projectLabel || 'Project', environment: activeWorkspace().environment.label || 'Workspace' };
+  return h('section', { class: 'draft-context', 'aria-label': 'Documents with unsaved changes' },
+    h('p', {}, h('strong', {}, context.project), ' / ', context.environment),
+    h('ul', { class: 'draft-documents' }, pendingDocuments().map((entry) =>
+      h('li', {}, h('code', {}, entry.path),
+        h('span', {}, `${entry.count} pending ${entry.count === 1 ? 'change' : 'changes'}`),
+        h('small', {}, [...entry.details].join('; '))))),
+    h('p', { class: 'hint' }, 'Discard affects all listed drafts in this workspace, including drafts in other documents. It does not change source files. Other workspaces are not affected.'));
+}
+
+function pendingDocumentBadge(path) {
+  const pending = pendingDocuments().filter((entry) => entry.path === path || entry.parameterPath === path)
+    .reduce((total, entry) => total + entry.count, 0);
+  return pending ? h('span', { class: 'nav-pending', title: `${pending} unsaved changes`,
+    'aria-label': `${pending} unsaved changes` }, String(pending)) : null;
+}
+
+function pendingDraftIdentity(owner = state) {
+  return JSON.stringify({
+    current: captureContractEdits(owner),
+    retained: [...pendingByDocument].filter(([, snapshot]) => snapshot.workspaceKey === owner.workspaceKey),
+    quarantines: [...owner.quarantinedDrafts],
+  });
 }
 
 function pendingKey(path = state.current?.path, environmentId = activeWorkspace().environment.id) {
@@ -623,27 +936,34 @@ function canPersistAllPending() {
 }
 
 async function discardAllPending() {
+  const owner = state, action = captureDocumentAction(), identity = pendingDraftIdentity(owner);
+  const environmentId = activeWorkspace().environment.id;
   const drafts = [];
-  if (state.current?.path) {
+  if (owner.current?.path) {
     drafts.push(
-      workspaceRegistry.removeDraft(activeWorkspace().environment.id, state.current.path)
+      workspaceRegistry.removeDraft(environmentId, owner.current.path)
     );
   }
   for (const snapshot of pendingByDocument.values()) {
-    if (snapshot.workspaceKey === state.workspaceKey && snapshot.parameterPath) {
+    if (snapshot.workspaceKey === owner.workspaceKey && snapshot.parameterPath) {
       drafts.push(
         workspaceRegistry.removeDraft(snapshot.environmentId, snapshot.parameterPath)
       );
     }
   }
-  for (const path of state.quarantinedDrafts.keys()) {
-    drafts.push(workspaceRegistry.removeDraft(state.workspaceId, path));
+  for (const path of owner.quarantinedDrafts.keys()) {
+    drafts.push(workspaceRegistry.removeDraft(owner.workspaceId, path));
   }
   await Promise.all(drafts);
-  for (const [key, snapshot] of pendingByDocument) if (snapshot.workspaceKey === state.workspaceKey) pendingByDocument.delete(key);
-  state.quarantinedDrafts.clear();
-  state.quarantinedDraft = null;
-  clearEditorPending(state);
+  if (!ownsDocumentAction(action) || pendingDraftIdentity(owner) !== identity) {
+    retainDocumentNotice(action, 'The draft context changed while stored copies were being discarded. In-memory edits were retained; review the draft list again.', 'error', false, 'discard-drafts');
+    return false;
+  }
+  for (const [key, snapshot] of pendingByDocument) if (snapshot.workspaceKey === owner.workspaceKey) pendingByDocument.delete(key);
+  owner.quarantinedDrafts.clear();
+  owner.quarantinedDraft = null;
+  clearEditorPending(owner);
+  return true;
 }
 
 async function choosePendingNavigation({ allowPreserve = true, destination, leavesPage = false }) {
@@ -652,9 +972,11 @@ async function choosePendingNavigation({ allowPreserve = true, destination, leav
   return choiceDialog({
     title: 'Unsaved changes',
     message: preserve
-      ? `You have unsaved changes. Preserve them as browser drafts before ${destination}, discard them, or stay here.`
-      : `You have unsaved changes that cannot be safely preserved through ${destination}. Discard them or stay here.`,
-    context: writeContextNode(),
+      ? `Preserve the listed drafts before ${destination}, discard them, or stay here. ${leavesPage
+        ? 'These parameter drafts can be stored safely in this browser.'
+        : 'Unfinished input, secure values and hand-edited policy text are kept only in this open browser session, not through a reload or browser closure.'}`
+      : `The listed drafts cannot be safely preserved through ${destination}. Discard them or stay here.`,
+    context: pendingDocumentsContext(),
     choices: [
       { value: 'stay', label: 'Stay' },
       ...(preserve
@@ -668,7 +990,7 @@ async function choosePendingNavigation({ allowPreserve = true, destination, leav
 async function applyPendingNavigation(choice, { leavesPage = false } = {}) {
   if (!choice || choice === 'stay') return false;
   if (choice === 'discard') {
-    await discardAllPending();
+    if (await discardAllPending() === false) return false;
     return true;
   }
   if (choice === 'preserve') {
@@ -696,19 +1018,41 @@ window.addEventListener('beforeunload', (event) => {
 
 /* -------------------------------------------------------------- edit context */
 
+const modelFocusScopes = new WeakMap();
+
 function editContext(doc) {
   const owner = state, sourceDocument = state.current, ticket = viewStates.ticket(), inputScope = state.inputScope;
   const ownsInputs = () => owner === state && owner.current === sourceDocument &&
     owner.inputScope === inputScope && viewStates.isCurrent(ticket);
-  const change = (op) => ownsInputs() && !owner.paintingEditor ? pushOperation(op) : false;
+  let modelScope = modelFocusScopes.get(owner);
+  // Body and outline contexts are rebuilt while painting/loading. Those
+  // temporary focus restrictions must not replace the current viewer's token.
+  if (!modelScope?.ownsView()) {
+    const action = documentActions.captureDocumentAction(owner);
+    const root = els.workspace, tab = owner.tab, mode = els.shell.dataset.workspace;
+    const ownsView = () => ownsInputs() && documentActions.ownsDocumentAction(action) &&
+      els.workspace === root && owner.tab === tab && els.shell.dataset.workspace === mode;
+    modelScope = {
+      ownsView,
+      focus: {
+        root,
+        isCurrent: () => ownsView() && mode === 'active' && tab === 'params' &&
+          !editorTransition && !owner.paintingEditor && !els.modal?.open,
+      },
+    };
+    modelFocusScopes.set(owner, modelScope);
+  }
+  const ownsEditableView = () => modelScope.ownsView() && owner.tab === 'params' && els.shell.dataset.workspace === 'active';
+  const change = (op) => ownsEditableView() && !owner.paintingEditor ? pushOperation(op) : false;
   const dirty = dirtyParams();
   const params = new Map((doc.params || []).map((param) => [param.name, param]));
   const findings = currentValidation(doc);
   const context = {
     inputOwner: inputScope,
+    modelFocus: modelScope.focus,
     inputDraft: (path) => ownsInputs() ? parameterInput(owner, path) : null,
     onInputDraft: (path, input) => {
-      if (!ownsInputs() || owner.paintingEditor || owner.quarantinedDraft) return;
+      if (!ownsEditableView() || owner.paintingEditor || owner.quarantinedDraft) return;
       const before = editorPendingCount(owner);
       setParameterInput(owner, path, input);
       if (before !== editorPendingCount(owner)) renderActions();
@@ -719,7 +1063,7 @@ function editContext(doc) {
     // `set` rewrites an existing span, so a property the file does not yet
     // carry has to be created instead of assigned.
     onAddProperty: (path, key, value) => change({ op: 'addProperty', path, key, value }),
-    rerender: () => render(),
+    rerender: () => modelScope.ownsView() ? render() : false,
     resolveEnv: () => null,
     schemaFor: (name) => {
       const schema = doc.schema;
@@ -772,7 +1116,7 @@ function editContext(doc) {
     }, { key: 'save-subscription-id' }),
     accessTargets: state.accessTargets,
     applyObject: (path, source, fields) => {
-      if (!ownsInputs()) return;
+      if (!ownsEditableView()) return;
       const target = path.reduce((value, segment) => value && value[segment], Object.fromEntries(
         (doc.params || []).map((param) => [param.name, param.value])
       ));
@@ -781,11 +1125,32 @@ function editContext(doc) {
           ? { op: 'set', path: [...path, field], value: source[field] }
           : { op: 'addProperty', path, key: field, value: source[field] }
       );
-      pushOperations(operations);
+      return pushOperations(operations);
     },
     pendingFor: (name) => dirty.has(name),
-    isOpen: (id, fallback) => (state.open.has(id) ? state.open.get(id) : fallback),
-    setOpen: (id, value) => state.open.set(id, value),
+    isOpen: (id, fallback) => (modelScope.ownsView() && owner.open.has(id) ? owner.open.get(id) : fallback),
+    setOpen: (id, value) => modelScope.ownsView() ? owner.open.set(id, value) : false,
+  };
+  if (doc.format !== 'terraform') context.resourceTags = {
+    focus: modelScope.focus,
+    add: (path, key, value) => {
+      if (!modelScope.focus.isCurrent() || path.length !== 1 || path[0] !== 'tags') return false;
+      const inputs = [[...path, 0], [...path, 1]];
+      if (inputs.some((at) => parameterInput(owner, at)?.composing)) {
+        setStatus('Finish the tag input composition before adding it. Its text is retained.', 'error');
+        return false;
+      }
+      const pending = owner.parameterInputs, operations = owner.operations;
+      // Consume only this explicit addition's buffers; pushOperation still
+      // admits the edit and rejects unrelated unfinished or quarantined input.
+      for (const at of inputs) setParameterInput(owner, at, null);
+      try {
+        context.onAddProperty(path, key, value);
+      } finally {
+        if (owner.operations === operations) owner.parameterInputs = pending;
+      }
+      return owner.operations !== operations;
+    },
   };
   return doc.format === 'terraform' ? nativeEditContext(doc, context) : context;
 }
@@ -796,8 +1161,9 @@ function areaButton(area) {
   const active = state.area === area.id;
   return h(
     'button',
-    { class: `area${active ? ' active' : ''}`, onclick: () => selectArea(area.id) },
-    h('span', { class: 'area-title' }, area.title),
+    { class: `area${active ? ' active' : ''}`, type: 'button', 'aria-current': active ? 'page' : null,
+      dataset: { shellFocus: `area:${area.id}` }, onclick: () => selectArea(area.id) },
+    h('span', { class: 'area-title' }, area.title, pendingDocumentBadge(area.path)),
     h('span', { class: `area-sub${state.catalog?.format === 'terraform' ? ' area-sub-native' : ''}`,
       title: area.subtitle }, area.subtitle)
   );
@@ -807,62 +1173,73 @@ function matchesFilter(text) {
   return !state.filter || text.toLowerCase().includes(state.filter.toLowerCase());
 }
 
+let sidebarComposition = null;
+
 function renderSidebar() {
+  // Restoring text on a new input cannot restore the browser's composition range.
+  if (sidebarComposition && ownsDocumentAction(sidebarComposition.action) && els.sidebar.contains(sidebarComposition.input)) return;
+  sidebarComposition = null;
+  const owner = state, action = captureDocumentAction(owner);
   const areas = h('div', { class: 'areas' }, state.areas.map(areaButton));
 
   const catalog = state.catalog;
-  const extras = catalog
-    ? catalog.files.filter(
-        (f) => !state.areas.some((a) => a.path === f.path) && matchesFilter(f.path)
-      )
-    : [];
+  const results = h('div', { class: 'all-list', id: 'parameter-file-results' });
+  const count = h('p', { class: 'file-results-count', role: 'status', 'aria-live': 'polite' });
+  const renderFiles = () => {
+    const extras = (catalog?.files || []).filter((file) =>
+      (state.filter || !state.areas.some((area) => area.path === file.path)) && matchesFilter(file.path));
+    count.textContent = `${extras.length} ${state.filter ? 'matching' : 'additional'} ${extras.length === 1 ? 'file' : 'files'}`;
+    mount(results, extras.length ? extras.map((file) => {
+      const active = state.current?.path === file.path;
+      return h('button', { class: `nav-item${active ? ' active' : ''}`, type: 'button',
+        title: file.path, 'aria-label': `Open ${file.path}`, 'aria-current': active ? 'page' : null,
+        dataset: { shellFocus: `file:${file.path}` }, onclick: () => openOther(file.path) },
+      h('span', { class: 'nav-name' }, file.name, pendingDocumentBadge(file.path)),
+      h('span', { class: 'nav-meta' }, file.path));
+    }) : h('p', { class: 'empty' }, state.filter ? 'No matching parameter files.' : 'No additional parameter files.'));
+  };
+  renderFiles();
 
+  const input = h('input', {
+    class: 'ctl ctl-sm',
+    type: 'search',
+    id: 'deployment-filter',
+    name: 'deployment-filter',
+    'aria-label': 'Filter parameter files',
+    'aria-controls': 'parameter-file-results',
+    placeholder: 'Find a parameter file\u2026',
+    autocomplete: 'off', spellcheck: false,
+    dataset: { editorFocus: 'shell:parameter-filter' },
+    value: owner.filter,
+    oninput: (event) => {
+      if (!ownsFilter()) return;
+      owner.filter = event.target.value;
+      renderFiles();
+    },
+    oncompositionstart: () => {
+      if (ownsFilter()) sidebarComposition = { action, input };
+    },
+    oncompositionend: () => {
+      if (sidebarComposition?.input === input) sidebarComposition = null;
+    },
+  });
+  const ownsFilter = () => ownsDocumentAction(action) && els.sidebar.contains(input);
   const all = h(
     'details',
-    { class: 'all-deployments', open: state.showAll },
+    { class: 'all-deployments', open: owner.showAll },
     h('summary', {}, `All parameter files (${catalog ? catalog.files.length : 0})`),
-    h('input', {
-      class: 'ctl ctl-sm',
-      type: 'search',
-      id: 'deployment-filter',
-      name: 'deployment-filter',
-      'aria-label': 'Filter parameter files',
-      placeholder: 'Filter\u2026',
-      value: state.filter,
-      oninput: (e) => {
-        state.filter = e.target.value;
-        renderSidebar();
-      },
-    }),
-    h(
-      'div',
-      { class: 'all-list' },
-      extras.length
-        ? extras.map((f) =>
-            h(
-              'button',
-              {
-                class: `nav-item${
-                  state.area === 'other' && state.current && state.current.path === f.path
-                    ? ' active'
-                    : ''
-                }`,
-                onclick: () => openOther(f.path),
-              },
-              h('span', { class: 'nav-name' }, f.name),
-              h('span', { class: 'nav-meta' }, f.path)
-            )
-          )
-        : h('p', { class: 'empty' }, 'No matches.')
-    )
+    input,
+    count,
+    results
   );
   all.addEventListener('toggle', () => {
-    state.showAll = all.open;
+    if (ownsFilter()) owner.showAll = all.open;
   });
 
   const currentArea = state.areas.find((area) => area.id === state.area);
-  mount(
+  preserveEditorFocus(els.sidebar, () => mount(
     els.sidebar,
+    h('div', { class: 'explorer-heading' }, 'Workspace explorer'),
     h(
       'details',
       { class: 'area-disclosure', open: !COMPACT_NAV.matches },
@@ -874,10 +1251,57 @@ function renderSidebar() {
       ),
       h('div', { class: 'area-disclosure-body' }, areas, all)
     )
-  );
+  ));
 }
 
 /* ---------------------------------------------------------------- contracts */
+
+function contractLabel(contract) {
+  const pathOf = (item) => item.paramFile || item.param?.path || item.dir || item.id;
+  const filenameOf = (item) => pathOf(item).split('/').at(-1);
+  const displayLabel = (item) => {
+    const name = String(item.name || '').trim();
+    if (name && !/^contracts?$/i.test(name) && !/\.(bicepparam|tfvars(?:\.json)?)$/i.test(name)) return name;
+    return filenameOf(item).replace(/\.(bicepparam|tfvars(?:\.json)?)$/i, '').replace(/[-_]+/g, ' ')
+      .replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+  };
+  const peers = state.contracts?.contracts || [];
+  const identity = (item) => JSON.stringify([pathOf(item), item.id || '']);
+  const target = identity(contract), groups = new Map();
+  const contracts = peers.some((peer) => identity(peer) === target) ? peers : [...peers, contract];
+  const entries = [...new Map(contracts.map((item) => [identity(item), {
+    id: identity(item), path: pathOf(item), filename: filenameOf(item), label: displayLabel(item),
+  }])).values()];
+  for (const entry of entries) {
+    const key = entry.label.toLowerCase(), group = groups.get(key) || [];
+    group.push(entry);
+    groups.set(key, group);
+  }
+  const labels = new Map(), used = new Set(), collisions = [];
+  for (const group of groups.values()) {
+    if (group.length === 1) {
+      labels.set(group[0].id, group[0].label);
+      used.add(group[0].label.toLowerCase());
+    } else {
+      for (const entry of group) {
+        const sharedFilename = group.some((peer) => peer !== entry && peer.filename.toLowerCase() === entry.filename.toLowerCase());
+        collisions.push({ ...entry, preferred: `${entry.label} \u2014 ${sharedFilename ? entry.path : entry.filename}` });
+      }
+    }
+  }
+  // Reserve unchanged labels first, then allocate every generated label in
+  // source-identity order, including collisions created by earlier suffixes.
+  collisions.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  for (const entry of collisions) {
+    let label = entry.preferred;
+    const qualified = `${entry.label} \u2014 ${entry.path}`;
+    if (used.has(label.toLowerCase())) label = qualified;
+    for (let suffix = 2; used.has(label.toLowerCase()); suffix++) label = `${qualified} (${suffix})`;
+    labels.set(entry.id, label);
+    used.add(label.toLowerCase());
+  }
+  return labels.get(target);
+}
 
 function contractList() {
   const data = state.contracts;
@@ -899,9 +1323,12 @@ function contractList() {
           class: `contract-item${state.contractId === c.id ? ' active' : ''}${
             c.isTemplate ? ' contract-template' : ''
           }`,
+          type: 'button', 'aria-current': state.current?.path === c.paramFile ? 'page' : null,
+          dataset: { shellFocus: `contract:${c.paramFile || c.id}` },
           onclick: () => selectContract(c.id),
         },
-        h('span', { class: 'contract-name', title: c.dir }, c.name),
+        h('span', { class: 'contract-name', title: c.paramFile || c.dir }, contractLabel(c), pendingDocumentBadge(c.paramFile)),
+        h('span', { class: 'contract-path', title: c.paramFile || c.dir }, c.paramFile || c.dir),
         h(
           'span',
           { class: 'contract-meta' },
@@ -1175,41 +1602,89 @@ function foldPolicyChange(change) {
  * adding a per-model limit moves every span after it. The workspace service owns
  * the splice logic, so it re-parses the result and the screen renders that.
  */
-async function refreshPolicyPreview() {
+function capturePolicyViewFocus() {
+  const control = document.activeElement;
+  const key = els.workspace.contains(control) ? control.dataset.editorFocus : null;
+  return key ? { control, key, selection: typeof control.selectionStart === 'number'
+    ? [control.selectionStart, control.selectionEnd, control.selectionDirection] : null } : null;
+}
+
+async function refreshPolicyPreview(focus = capturePolicyViewFocus()) {
   const owner = state, context = activeWorkspace(), ticket = viewStates.ticket();
   const policy = owner.contract && owner.contract.policy;
   if (!policy) return;
+  const action = captureDocumentAction(owner), source = captureSourceScope({ context, path: policy.path });
   const token = ++policyPreviewToken;
   const generation = documentGeneration, identity = policyPreviewIdentity(owner);
   const current = () => token === policyPreviewToken && generation === documentGeneration &&
     viewStates.isCurrent(ticket) && state === owner && ownsPolicyPreview(owner, identity);
-
-  if (owner.policyRaw !== null || !Object.keys(owner.policyChanges).length) {
-    invalidatePolicyPreview(owner);
-    render();
-    return;
+  let interrupted = false, painting = false;
+  const moved = (event) => {
+    if (!painting && (event.type === 'keydown' || event.target !== focus?.control)) interrupted = true;
+  };
+  if (focus) {
+    document.addEventListener('focusin', moved);
+    document.addEventListener('pointerdown', moved, true);
+    document.addEventListener('keydown', moved, true);
   }
-
-  owner.policyPreviewPending = true;
-  owner.policyPreviewError = null;
-  render();
+  const paint = () => {
+    painting = true;
+    try { preserveEditorFocus(els.workspace, renderEditor); } finally { painting = false; }
+  };
+  const restore = () => {
+    if (!focus || interrupted || owner.tab !== 'policy' ||
+        document.activeElement !== document.body && document.activeElement !== focus.control) return;
+    const candidates = [...els.workspace.querySelectorAll('[data-editor-focus]')]
+      .filter((node) => node.dataset.editorFocus === focus.key && !node.disabled &&
+        !node.closest('[inert]') && node.getClientRects().length);
+    const control = candidates.find((node) => /^H[1-6]$/.test(node.tagName)) || candidates[0];
+    if (!control || els.modal?.open) return;
+    painting = true;
+    try {
+      focusEditorControl(control);
+      if (focus.selection && typeof control.selectionStart === 'number') control.setSelectionRange(...focus.selection);
+    } finally { painting = false; }
+  };
   try {
-    const res = await api.previewPolicy(policy.path, structuredClone(owner.policyChanges), policy.hash, context);
-    if (!current()) return;
-    owner.policyPreview = { text: res.after, controls: res.controls, identity };
-  } catch (err) {
-    if (!current()) return;
-    owner.policyPreview = null;
-    owner.policyPreviewError = err.message;
-    setStatus(err.message, 'error');
+    if (owner.policyRaw !== null || !Object.keys(owner.policyChanges).length) {
+      invalidatePolicyPreview(owner);
+      paint();
+      if (state === owner && viewStates.isCurrent(ticket) && generation === documentGeneration) restore();
+      return;
+    }
+    owner.policyPreviewPending = true;
+    owner.policyPreviewError = null;
+    paint();
+    try {
+      const res = await api.previewPolicy(policy.path, structuredClone(owner.policyChanges), policy.hash, context);
+      if (!current()) return;
+      owner.policyPreview = { text: res.after, controls: res.controls, identity };
+      resolveSourceUnavailable(action, source);
+    } catch (err) {
+      if (!current()) return;
+      annotateSourceFailure(err, source);
+      owner.policyPreview = null;
+      owner.policyPreviewError = err.message;
+      reportClientError(err, 'app.policy-preview', { module: '/js/app.mjs' });
+      retainDocumentNotice(action, err.message, 'error', false, 'policy-preview');
+      presentSourceUnavailable(action, err, 'policy-preview', source);
+    }
+    owner.policyPreviewPending = false;
+    paint();
+    if (current()) restore();
+  } finally {
+    document.removeEventListener('focusin', moved);
+    document.removeEventListener('pointerdown', moved, true);
+    document.removeEventListener('keydown', moved, true);
   }
-  owner.policyPreviewPending = false;
-  render();
 }
 
 function policyContext() {
+  const owner = state, action = captureDocumentAction();
   return {
-    policyMode: state.policyMode,
+    policyMode: owner.policyMode,
+    isOpen: (id, fallback) => owner.open.has(id) ? owner.open.get(id) : fallback,
+    setOpen: (id, value) => { if (ownsDocumentAction(action)) owner.open.set(id, value); },
     /**
      * Guided and raw are two views of the same file, but only one direction is
      * lossless. Guided hands the previewed XML to the textarea, so nothing is
@@ -1217,11 +1692,14 @@ function policyContext() {
      * no structured equivalent, so say so before it happens rather than after.
      */
     setPolicyMode: (mode) => {
-      const losing = mode === 'guided' && state.policyRaw !== null;
+      if (!ownsDocumentAction(action)) return;
+      const focus = capturePolicyViewFocus();
+      const raw = owner.policyRaw;
+      const losing = mode === 'guided' && raw !== null;
       if (!losing) {
-        invalidatePolicyPreview(state);
-        state.policyMode = mode;
-        refreshPolicyPreview();
+        invalidatePolicyPreview(owner);
+        owner.policyMode = mode;
+        refreshPolicyPreview(focus);
         return;
       }
       showModal(
@@ -1242,11 +1720,15 @@ function policyContext() {
             {
               class: 'btn btn-primary',
               onclick: () => {
-                state.policyRaw = null;
-                state.policyMode = 'guided';
-                invalidatePolicyPreview(state);
-                closeModal();
-                refreshPolicyPreview();
+                if (!ownsDocumentAction(action) || owner.policyRaw !== raw) {
+                  captureDialogStatus()('The owning policy or its draft changed. Return to that document and choose its mode again.', 'error');
+                  return;
+                }
+                owner.policyRaw = null;
+                owner.policyMode = 'guided';
+                invalidatePolicyPreview(owner);
+                closeModal({ restoreFocus: false });
+                refreshPolicyPreview(focus);
               },
             },
             'Discard and switch'
@@ -1254,14 +1736,14 @@ function policyContext() {
         ]
       );
     },
-    onPolicyChange: foldPolicyChange,
+    onPolicyChange: (change) => ownsDocumentAction(action) ? foldPolicyChange(change) : false,
     policyVariables: state.policyVariables,
     throttleSpecs: state.throttleSpecs,
     semanticCacheSpec: state.semanticCacheSpec,
     contentSafetySpec: state.contentSafetySpec,
     onboardedModels: state.onboardedModels,
     onPolicyRaw: (text) => {
-      setRawPolicyDraft(state, text, renderActions);
+      if (ownsDocumentAction(action)) setRawPolicyDraft(owner, text, renderActions);
     },
   };
 }
@@ -1279,9 +1761,11 @@ async function savePolicy() {
   };
 
   const review = { context, owner, ticket, epoch, policy, raw, payload,
-    document: owner.current, scope: captureDocumentAction(owner), revision: owner.policyRevision || 0 };
+    document: owner.current, scope: captureDocumentAction(owner), revision: owner.policyRevision || 0,
+    returnFocus: els.tbActions?.querySelector('.btn-primary') };
   const preview = await withStatus('Preparing preview\u2026', () =>
-    withLocalConflict(review, () => api.previewPolicyPayload(payload, context)));
+    withLocalConflict(review, () => sourceOperation({ context, path: policy.path }, () => api.previewPolicyPayload(payload, context))),
+    { context, path: policy.path });
   if (!preview || !ownsDocumentAction(review.scope)) return;
   if (!policyReviewMatches(review)) {
     setStatus('The policy draft changed while previewing. Review the latest draft before saving.', 'info');
@@ -1330,7 +1814,9 @@ function showPolicyReview(review, preview) {
               return;
             }
             const result = await withStatus('Saving\u2026', () => withLocalConflict(review, () =>
-              overwrite ? api.saveLocalOverwrite(preview) : api.savePolicy(payload, context)));
+              sourceOperation({ context, path: policy.path }, () =>
+                overwrite ? api.saveLocalOverwrite(preview) : api.savePolicy(payload, context))),
+              { context, path: policy.path, mutation: true });
             if (!result) return;
             if (result.kind === 'local-overwrite') {
               if (ownsDocumentAction(action) && policyReviewMatches(review)) showPolicyReview(review, result);
@@ -1373,7 +1859,8 @@ function showPolicyReview(review, preview) {
         },
         overwrite ? 'Back up and overwrite' : 'Save policy'
       ),
-    ]
+    ],
+    { returnFocus: review.returnFocus }
   );
 }
 
@@ -1398,9 +1885,9 @@ async function withLocalConflict(review, operation) {
     const loaded = review.policy || review.document;
     if (environmentSourceOf(review.context.environment).kind !== 'local' || !loaded?.hash || loaded.absent ||
         !['SOURCE_CHANGED', 'NATIVE_REVIEW_STALE'].includes(error.code)) throw error;
-    return review.policy
+    return sourceOperation({ context: review.context, path: loaded.path }, () => review.policy
       ? api.prepareLocalPolicyOverwrite(review.policy, review.payload.changes, review.payload.text, review.context)
-      : api.prepareLocalOverwrite(review.document, review.operations, review.context);
+      : api.prepareLocalOverwrite(review.document, review.operations, review.context));
   }
 }
 
@@ -1412,7 +1899,7 @@ function showLocalOverwrite(review, proposal) {
       h('button', { class: 'btn btn-primary',
         onclick: guardedHandler(() => commitSave({ ...review, localOverwrite: proposal }), { key: `save-parameters:${review.context.environment.id}` }),
       }, 'Back up and overwrite'),
-    ]);
+    ], { returnFocus: review.returnFocus });
 }
 
 async function openReview() {
@@ -1431,10 +1918,12 @@ async function openReview() {
   }
   const review = { context: activeWorkspace(), owner: state, document: state.current,
     operations: structuredClone(state.operations), ticket: viewStates.ticket(), writeContext: currentWriteContext(), epoch: state.reviewEpoch,
-    scope: captureDocumentAction() };
+    scope: captureDocumentAction(), returnFocus: els.tbActions?.querySelector('.btn-primary') };
   const preview = await withStatus('Preparing preview\u2026', () =>
     withLocalConflict(review, () =>
-      api.preview(review.document.path, review.operations, review.document.hash, review.document.nativeIdentity, review.context))
+      sourceOperation({ context: review.context, path: review.document.path }, () =>
+        api.preview(review.document.path, review.operations, review.document.hash, review.document.nativeIdentity, review.context))),
+    { context: review.context, path: review.document.path }
   );
   if (!preview || !ownsDocumentAction(review.scope)) return;
   if (state.reviewEpoch !== review.epoch || hasParameterInputs(state) ||
@@ -1477,7 +1966,8 @@ async function openReview() {
         },
         'Save changes'
       ),
-    ]
+    ],
+    { returnFocus: review.returnFocus }
   );
 }
 
@@ -1492,8 +1982,10 @@ async function commitSave(review) {
     return;
   }
   const result = await withStatus('Saving\u2026', () =>
-    withLocalConflict(review, () => review.localOverwrite ? api.saveLocalOverwrite(review.localOverwrite) :
-      api.save(document.path, operations, document.hash, document.nativeIdentity, context))
+    withLocalConflict(review, () => sourceOperation({ context, path: document.path }, () =>
+      review.localOverwrite ? api.saveLocalOverwrite(review.localOverwrite) :
+        api.save(document.path, operations, document.hash, document.nativeIdentity, context))),
+    { context, path: document.path, mutation: true }
   );
   if (!result) return;
   if (result.kind === 'local-overwrite') {
@@ -1630,12 +2122,12 @@ async function resolveUnsavedCommit(pending, source, review) {
 
 /* --------------------------------------------------------------------- modal */
 
-function showModal(title, body, actions) {
-  showDialog(title, body, actions);
+function showModal(title, body, actions, options = {}) {
+  showDialog(title, body, actions, options);
 }
 
-function closeModal() {
-  closeDialog();
+function closeModal(options) {
+  closeDialog(options);
 }
 
 /* ----------------------------------------------------------------- rendering */
@@ -1759,7 +2251,7 @@ async function openHistory() {
                             )
                           ),
                           [
-                            h('button', { class: 'btn', onclick: openHistory }, 'Back'),
+                            h('button', { class: 'btn', onclick: () => dismissDialog() }, 'Back'),
                             h('button', {
                               class: 'btn',
                               onclick: async () => {
@@ -1808,7 +2300,8 @@ async function openHistory() {
                                 }
                               },
                             }, transaction.status === 'reverting' ? 'Confirm removed' : 'Complete')
-                          ]
+                          ],
+                          { stack: true }
                         );
                       },
                     }, 'Recover')
@@ -1883,7 +2376,8 @@ async function openHistory() {
           )
         : h('p', { class: 'empty' }, 'No transactions have been recorded for this environment.')
     ),
-    [h('button', { class: 'btn', onclick: closeModal }, 'Close')]
+    [h('button', { class: 'btn', onclick: closeModal }, 'Close')],
+    { returnFocus: els.tbActions?.querySelector('.shell-history') }
   );
   return captureDialogStatus();
 }
@@ -2225,7 +2719,7 @@ function attachGitHubProject({ projectLabel, environmentLabel }) {
   });
 }
 
-async function openWorkspaceSettingsContent() {
+async function openWorkspaceSettingsContent(returnFocus = null) {
   const context = activeWorkspace();
   const projects = await workspaceRegistry.listProjects();
   const project = projects.find((item) => item.id === context.projectId);
@@ -2363,7 +2857,7 @@ async function openWorkspaceSettingsContent() {
                   target: '_blank',
                   rel: 'noreferrer noopener',
                 },
-                'Open pull request'
+                'Create pull request'
               )
             : null,
           h('button', {
@@ -2430,7 +2924,7 @@ async function openWorkspaceSettingsContent() {
                   await workspaceRegistry.restoreEnvironmentSnapshot(snapshot);
                 }
               });
-              if (current && pendingChoice === 'discard') await discardAllPending();
+              if (current && pendingChoice === 'discard' && await discardAllPending() === false) return false;
               await workspaceRegistry.reconnectEnvironment(environment.id, handle, localPath);
               const updated = await workspaceRegistry.updateEnvironment(environment.id, {
                 permission: 'granted',
@@ -2600,7 +3094,7 @@ async function openWorkspaceSettingsContent() {
               restoreContractEdits(state, uiPending);
               render();
             });
-            if (pendingChoice === 'discard') await discardAllPending();
+            if (pendingChoice === 'discard' && await discardAllPending() === false) return false;
             await workspaceRegistry.removeProject(context.projectId);
             await syncRegistryMetadata({ removedProjectIds: [context.projectId] });
             const fallback = projects.find((item) => item.id !== context.projectId);
@@ -2628,219 +3122,287 @@ async function openWorkspaceSettingsContent() {
         h('button', { class: 'btn', onclick: openHistory }, 'History'),
       ],
     }),
-    [h('button', { class: 'btn', onclick: closeModal }, 'Close')]
+    [h('button', { class: 'btn', onclick: closeModal }, 'Close')],
+    { returnFocus }
   );
 }
 
 async function openWorkspaceSettings() {
-  await withStatus('Loading settings\u2026', openWorkspaceSettingsContent);
+  const opener = document.activeElement === document.body ? els.globalSettings : document.activeElement;
+  await withStatus('Loading settings\u2026', () => openWorkspaceSettingsContent(opener));
+}
+
+function setToolHeaderContext(label, writeTarget, format = null) {
+  if (els.documentLabel) mount(els.documentLabel, format ? formatIcon(format) : null, label);
+  if (els.writeTarget) {
+    els.writeTarget.textContent = writeTarget;
+    els.writeTarget.title = writeTarget;
+  }
 }
 
 async function openTerraformExportReview() {
-  if (pendingCount() || await workspaceRegistry.countDrafts(activeWorkspace().environment.id)) {
-    setStatus('Save or discard existing parameter and policy drafts before Export to Terraform. Your edits have been kept.', 'error');
+  const action = captureDocumentAction(), context = activeWorkspace();
+  const drafts = await workspaceRegistry.countDrafts(context.environment.id);
+  if (!ownsDocumentAction(action)) return;
+  if (pendingCount() || drafts) {
+    setStatus('Save or discard existing parameter and policy drafts before Export to Terraform. Your edits have been kept.', 'error', false, false,
+      { operation: 'terraform-export-admission', path: null });
     return;
   }
+  resolveOperationStatus('terraform-export-admission', action.owner);
   if (COMPACT_NAV.matches) {
     setStatus('Terraform export is a desktop experiment. Use a wider desktop window; your editor is unchanged.', 'info');
     return;
   }
-  await openTerraformExport({
-    session: api.createTerraformExportSession({
-      pendingEdits: () => pendingCount() > 0, activePath: state.current?.path,
-    }),
-    surface: {
-      shell: els.shell, workspace: els.workspace, areas: els.sidebar, actions: els.tbActions,
-      rail: els.contextRail, breadcrumb: els.repoPath,
-    },
-    onExit: () => render(),
-  });
+  setGlobalCommandsEnabled(false);
+  setToolHeaderContext('Terraform input export', 'ZIP download only; source files are not changed', 'terraform');
+  try {
+    await openTerraformExport({
+      session: api.createTerraformExportSession({
+        pendingEdits: () => pendingCount() > 0, activePath: state.current?.path,
+      }),
+      surface: {
+        shell: els.shell, workspace: els.workspace, areas: els.sidebar, actions: els.tbActions,
+        rail: els.contextRail, breadcrumb: els.repoPath,
+      },
+      onExit: () => {
+        render();
+        if (ownsDocumentAction(action)) els.tbActions.querySelector('.shell-menu-trigger')?.focus({ preventScroll: true });
+      },
+    });
+  } catch (error) {
+    retainDocumentNotice(action, error.message, 'error', false, 'terraform-export-entry');
+    throw error;
+  } finally {
+    if (ownsDocumentAction(action) && els.shell.dataset.workspace === 'active') updateHeaderContext();
+  }
 }
 
 async function openParameterMigration() {
   // Migration is separate from editor drafts. Do not discard or silently stash
   // either tab's edits just because the operator opened a wizard.
   if (pendingCount()) {
-    setStatus('Save or discard existing editor changes before opening Migrate Citadel Configuration (Experimental). Your edits have been kept.', 'error');
+    setStatus('Save or discard existing editor changes before opening Migrate Citadel Configuration (Experimental). Your edits have been kept.', 'error', false, false,
+      { operation: 'migration-admission', path: null });
     return;
   }
-  const context = activeWorkspace();
-  await openMigrationWizard({
-    surface: {
-      shell: els.shell, workspace: els.workspace, areas: els.sidebar, actions: els.tbActions,
-      rail: els.contextRail, breadcrumb: els.repoPath,
-    },
-    onExit: () => render(),
-    session: api.createMigrationSession({
-      projectLabel: state.projectLabel,
-      pendingEdits: () => pendingCount() > 0,
-    }),
-    onApplied: async (result) => {
-      // A late completion belongs to its captured workspace, never to whichever
-      // workspace happens to be active now. Do not refresh over new editor work.
-      let current;
-      try { current = activeWorkspace(); } catch { return; }
-      if (current !== context || pendingCount()) return;
-      api.resetWorkspace();
-      if (state.current?.path === result.target) {
-        const stillCurrent = () => {
-          try {
-            return activeWorkspace() === context && !pendingCount() && state.current?.path === result.target;
-          } catch { return false; }
-        };
-        const document = await api.deployment(result.target);
-        if (!stillCurrent()) return;
-        const draft = await workspaceRegistry.getDraft(context.environment.id, result.target);
-        if (draft || !stillCurrent()) return;
-        // Refresh only this loaded document; do not clear any pending map,
-        // restore/delete drafts, reset the policy tab, or replace another view.
-        state.current = document;
-        state.baselineValidation = validateDocument(document);
-        if (state.contract?.param?.path === result.target) {
-          state.contract = { ...state.contract, param: document };
-        }
+  resolveOperationStatus('migration-admission');
+  const context = activeWorkspace(), action = captureDocumentAction();
+  setGlobalCommandsEnabled(false);
+  setToolHeaderContext('Migrate configuration', 'Destination files are chosen and reviewed in this workflow');
+  try {
+    await openMigrationWizard({
+      surface: {
+        shell: els.shell, workspace: els.workspace, areas: els.sidebar, actions: els.tbActions,
+        rail: els.contextRail, breadcrumb: els.repoPath,
+      },
+      onExit: () => {
         render();
-      }
-      setStatus('Reviewed local migration applied. Previous destination bytes are available in Settings > History.', 'ok');
-    },
-  });
+        if (ownsDocumentAction(action)) els.tbActions.querySelector('.shell-menu-trigger')?.focus({ preventScroll: true });
+      },
+      session: api.createMigrationSession({
+        projectLabel: state.projectLabel,
+        pendingEdits: () => pendingCount() > 0,
+      }),
+      onApplied: async (result) => {
+        // A late completion belongs to its captured workspace, never to whichever
+        // workspace happens to be active now. Do not refresh over new editor work.
+        let current;
+        try { current = activeWorkspace(); } catch { return; }
+        if (current !== context || pendingCount()) return;
+        api.resetWorkspace();
+        if (state.current?.path === result.target) {
+          const stillCurrent = () => {
+            try {
+              return activeWorkspace() === context && !pendingCount() && state.current?.path === result.target;
+            } catch { return false; }
+          };
+          const document = await api.deployment(result.target);
+          if (!stillCurrent()) return;
+          const draft = await workspaceRegistry.getDraft(context.environment.id, result.target);
+          if (draft || !stillCurrent()) return;
+          // Refresh only this loaded document; do not clear any pending map,
+          // restore/delete drafts, reset the policy tab, or replace another view.
+          state.current = document;
+          state.baselineValidation = validateDocument(document);
+          if (state.contract?.param?.path === result.target) {
+            state.contract = { ...state.contract, param: document };
+          }
+          render();
+        }
+        setStatus('Reviewed local migration applied. Previous destination bytes are available in Settings > History.', 'ok');
+      },
+    });
+  } catch (error) {
+    retainDocumentNotice(action, error.message, 'error', false, 'migration-entry');
+    throw error;
+  } finally {
+    if (ownsDocumentAction(action) && els.shell.dataset.workspace === 'active') updateHeaderContext();
+  }
 }
 
-/**
- * Global actions.
- *
- * These sit in the title block, outside every scroll container, because unsaved
- * work is the state a control plane must never let out of sight. The count is
- * always present -- "no pending changes" is information, not the absence of it,
- * and a control that only appears when it matters teaches nobody where it is.
- */
+let openShellMenu = null;
+
+function closeShellMenu(restoreFocus = false) {
+  if (!openShellMenu) return;
+  const { trigger, panel } = openShellMenu;
+  panel.hidden = true;
+  trigger.setAttribute('aria-expanded', 'false');
+  openShellMenu = null;
+  if (restoreFocus && trigger.isConnected) trigger.focus();
+}
+
+function toolsMenu(workspace) {
+  const menu = h('div', { class: 'shell-menu' });
+  const panel = h('div', { class: 'shell-menu-panel', id: 'workspace-tools', role: 'menu',
+    'aria-label': 'Workspace tools', hidden: true });
+  const items = () => [...panel.querySelectorAll('button')].filter((item) => !item.disabled);
+  const open = (last = false) => {
+    closeShellMenu();
+    panel.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    openShellMenu = { menu, trigger, panel };
+    (last ? items().at(-1) : items()[0])?.focus();
+  };
+  const trigger = h('button', { class: 'btn btn-ghost shell-menu-trigger', type: 'button',
+    dataset: { shellFocus: 'tools' }, 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+    'aria-controls': 'workspace-tools',
+    onclick: () => panel.hidden ? open() : closeShellMenu(true),
+    onkeydown: (event) => {
+      if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+      event.preventDefault();
+      open(event.key === 'ArrowUp');
+    },
+  }, 'Tools', h('span', { class: 'menu-chevron', 'aria-hidden': 'true' }));
+  const item = (label, handler, key, attributes = {}, format = null) => h('button', {
+    class: 'shell-menu-item', type: 'button', role: 'menuitem', tabindex: '-1', ...attributes,
+    onclick: (event) => {
+      closeShellMenu(true);
+      return guardedHandler(handler, { key })(event);
+    },
+  }, format ? formatIcon(format) : null, label);
+  panel.append(item('Compare & copy', async () => {
+    const action = captureDocumentAction();
+    const environments = await withStatus('Loading environments\u2026', () => workspaceRegistry.listEnvironments(workspace.projectId));
+    if (environments && ownsDocumentAction(action)) await openEnvironmentCompare(environments);
+  }, 'open-environment-compare'));
+  if (configurationOf(workspace.environment).format === 'bicep') {
+    panel.append(h('div', { class: 'shell-menu-group', role: 'group', 'aria-label': 'Experimental tools' },
+      h('p', { class: 'shell-menu-heading', 'aria-hidden': 'true' }, 'Experimental'),
+      item('Migrate configuration', openParameterMigration, 'open-parameter-migration'),
+      item('Export Terraform inputs', openTerraformExportReview, 'open-terraform-export',
+        { dataset: { terraformExportEntry: 'true' } }, 'terraform')));
+  }
+  panel.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault(); event.stopPropagation(); closeShellMenu(true);
+      return;
+    }
+    const available = items(), index = available.indexOf(document.activeElement);
+    const next = event.key === 'ArrowDown' ? (index + 1) % available.length
+      : event.key === 'ArrowUp' ? (index - 1 + available.length) % available.length
+        : event.key === 'Home' ? 0 : event.key === 'End' ? available.length - 1 : null;
+    if (next !== null) { event.preventDefault(); available[next]?.focus(); }
+  });
+  menu.addEventListener('focusout', (event) => {
+    if (menu.contains(event.relatedTarget)) return;
+    queueMicrotask(() => {
+      if (openShellMenu?.menu === menu && !menu.contains(document.activeElement)) closeShellMenu();
+    });
+  });
+  menu.append(trigger, panel);
+  return menu;
+}
+
+async function openPendingReview() {
+  if (els.workspace.contains(document.activeElement)) document.activeElement.blur();
+  if (!canLeaveIncompleteNumber()) return;
+  const owner = state, ticket = viewStates.ticket(), drafts = pendingDocuments();
+  const path = drafts.length === 1 ? drafts[0].path : await choiceDialog({
+    title: 'Choose a draft to review',
+    message: 'Open the owning document first. Nothing is saved or discarded by this choice.',
+    context: pendingDocumentsContext(),
+    choices: [...drafts.map((entry) => ({ value: entry.path, label: entry.path })),
+      { value: null, label: 'Cancel' }],
+  });
+  if (!path || state !== owner || !viewStates.isCurrent(ticket)) return;
+  const draft = drafts.find((entry) => entry.path === path);
+  const parameterPath = draft.parameterPath || draft.path;
+  if (owner.current?.path !== parameterPath) {
+    const contract = owner.contracts?.contracts.find((entry) => entry.paramFile === parameterPath);
+    if (contract) {
+      const area = owner.areas.find((entry) => entry.kind === 'contracts');
+      if (area && owner.area !== area.id && !await selectArea(area.id)) return;
+      if (!await selectContract(contract.id)) return;
+    } else if (!await openOther(parameterPath)) return;
+  }
+  if (state !== owner || !viewStates.isCurrent(ticket) || owner.current?.path !== parameterPath) return;
+  owner.tab = draft.policyPath === path ? 'policy' : 'params';
+  render();
+  focusWorkspaceHeading();
+}
+
 function renderActions() {
   let workspace = null;
-  try { workspace = activeWorkspace(); } catch { /* Preserve setup/catalog flow. */ }
-  const bicep = workspace && configurationOf(workspace.environment).format === 'bicep';
-  const migration = bicep
-    ? h('button', {
-      class: 'btn btn-ghost', type: 'button',
-      onclick: guardedHandler(openParameterMigration, { key: 'open-parameter-migration' }),
-    }, 'Migrate Citadel Configuration (Experimental)')
-    : null;
-  const terraformExport = bicep ? h('button', {
-    class: 'btn btn-ghost', type: 'button', dataset: { terraformExportEntry: 'true' },
-    onclick: guardedHandler(openTerraformExportReview, { key: 'open-terraform-export' }),
-  }, 'Export to Terraform (Experimental)') : null;
-  if (!state.current) {
-    mount(
-      els.tbActions,
-      h(
-        'div',
-        { class: 'tb-command-set' },
-        migration,
-        terraformExport,
-        h('button', { class: 'btn', onclick: openWorkspaceSettings }, 'Settings')
-      )
-    );
-    editorTransition?.pause.refresh();
-    return;
-  }
-  const pending = pendingCount();
-  const policyTab = state.tab === 'policy';
-
-  // Pending work is counted globally because unsaved edits must never be
-  // hidden, but each tab can only save its own file. When the two disagree the
-  // button says where the work actually is and goes there, rather than sitting
-  // inert next to a count that claims there is something to save.
-  const savableHere = policyTab ? hasPolicyEdits() : state.operations.length > 0 || hasParameterInputs(state);
-  const validation = policyTab ? [] : currentValidation();
+  try { workspace = activeWorkspace(); } catch { /* Setup has no selected source. */ }
+  const active = document.activeElement, focusKey = els.tbActions.contains(active) ? active.dataset.shellFocus : null;
+  closeShellMenu();
+  const pending = pendingCount(), drafts = pendingDocuments(), policyTab = state.tab === 'policy';
+  const savableHere = Boolean(state.current) && (policyTab ? hasPolicyEdits() : state.operations.length > 0 || hasParameterInputs(state));
+  const elsewhere = !savableHere && drafts.some((entry) =>
+    entry.parameterPath !== state.current?.path || (entry.policyPath === entry.path) !== policyTab);
+  const validation = policyTab || !state.current ? [] : currentValidation();
   const blocking = validation.filter((finding) => finding.severity === 'error');
   const warnings = validation.filter((finding) => finding.severity === 'warning');
-  const elsewhere = pending > 0 && !savableHere;
-  const target = policyTab ? 'params' : 'policy';
-  const targetLabel = policyTab ? 'parameters' : 'policy';
-  const pendingLabel = pending
-    ? `${pending} unsaved ${pending === 1 ? 'change' : 'changes'}`
-    : 'no pending changes';
-  const validationLabel = blocking.length
-    ? `${blocking.length} blocking ${blocking.length === 1 ? 'error' : 'errors'}${
-        warnings.length
-          ? ` · ${warnings.length} ${warnings.length === 1 ? 'warning' : 'warnings'}`
-          : ''
-      }`
-    : warnings.length
-      ? `${warnings.length} validation ${warnings.length === 1 ? 'warning' : 'warnings'}`
-      : '';
-
-  const settings = h(
-    'button',
-    { class: 'btn btn-ghost', onclick: openWorkspaceSettings },
-    'Settings'
-  );
-  const discard = h(
-    'button',
-    {
-      class: 'btn',
-      disabled: !pending,
-      onclick: async () => {
-        try {
-          await discardAllPending();
-          render();
-        } catch (error) {
-          setStatus(error.message, 'error');
-        }
-      },
-    },
-    'Discard'
-  );
-  const primary = elsewhere
-    ? h(
-        'button',
-        {
-          class: 'btn',
-          title: `The unsaved changes are on the ${targetLabel} tab`,
-          onclick: () => {
-            if (els.workspace.contains(document.activeElement)) document.activeElement.blur();
-            if (!canLeaveIncompleteNumber()) return;
-            state.tab = target;
-            render();
-          },
-        },
-        `Review on ${targetLabel}\u2026`
-      )
-    : policyTab
-      ? h(
-          'button',
-          { class: 'btn btn-primary', disabled: !savableHere, onclick: savePolicy },
-          'Review & save policy'
-        )
-      : h(
-          'button',
-          {
-            class: 'btn btn-primary',
-            disabled: !savableHere || blocking.length > 0 || Boolean(state.quarantinedDraft),
-            title: blocking.length ? 'Resolve blocking validation errors before review' : '',
-            onmousedown: (event) => event.preventDefault(),
-            onclick: openReview,
-          },
-          'Review & save'
-        );
-
-  mount(
-    els.tbActions,
-    h(
-      'div',
-      { class: 'tb-status-group' },
-      h(
-        'span',
-        {
-          class:
-            `tb-pending${pending ? ' is-dirty' : ''}` +
-            `${blocking.length ? ' has-errors' : warnings.length ? ' has-warnings' : ''}`,
-        },
-        validationLabel ? `${pendingLabel} · ${validationLabel}` : pendingLabel
-      )
-    ),
-    h('div', { class: 'tb-command-set' }, migration, terraformExport, settings, discard, primary)
-  );
+  const reason = !workspace ? 'Choose a workspace first'
+    : elsewhere ? 'Open the document that owns the draft before reviewing'
+      : state.quarantinedDraft ? 'Reconcile or discard the retained draft before reviewing'
+        : blocking.length ? 'Resolve blocking validation errors before review'
+          : !savableHere ? 'No changes to review in this document' : '';
+  const pendingLabel = pending ? `${pending} unsaved ${pending === 1 ? 'change' : 'changes'}${drafts.length > 1 ? ` in ${drafts.length} documents` : ''}` : 'No pending changes';
+  const validationLabel = blocking.length ? `${blocking.length} blocking ${blocking.length === 1 ? 'error' : 'errors'}`
+    : warnings.length ? `${warnings.length} validation ${warnings.length === 1 ? 'warning' : 'warnings'}` : '';
+  const discard = h('button', { class: 'btn btn-ghost', type: 'button', disabled: !pending,
+    dataset: { shellFocus: 'discard' },
+    onclick: guardedHandler(async () => {
+      const action = captureDocumentAction(), identity = pendingDraftIdentity();
+      if (!await confirmDialog({ title: 'Discard workspace drafts?', message: 'Discard all the listed unsaved changes?',
+        confirmLabel: 'Discard drafts', tone: 'danger', context: pendingDocumentsContext() })) return;
+      if (!ownsDocumentAction(action)) return;
+      if (pendingDraftIdentity() !== identity) {
+        setStatus('The listed drafts changed. Review the current draft list before discarding.', 'error', false, false, { operation: 'discard-drafts' });
+        return;
+      }
+      const discarded = await withStatus('Discarding workspace drafts\u2026', async () => {
+        const accepted = await discardAllPending();
+        if (accepted) render();
+        return accepted;
+      });
+      if (discarded && ownsDocumentAction(action)) focusWorkspaceHeading();
+    }, { key: 'discard-workspace-drafts' }),
+  }, 'Discard');
+  const primary = h('button', { class: 'btn btn-primary', type: 'button', id: 'review-save',
+    dataset: { shellFocus: 'review-save' },
+    disabled: !workspace || !elsewhere && (!savableHere || blocking.length > 0 || Boolean(state.quarantinedDraft)),
+    title: reason, 'aria-describedby': 'save-state',
+    onmousedown: (event) => event.preventDefault(),
+    onclick: elsewhere ? openPendingReview : policyTab ? savePolicy : openReview,
+  }, elsewhere ? 'Review drafts' : policyTab ? 'Review & save policy' : 'Review & save');
+  mount(els.tbActions,
+    h('div', { class: 'tb-command-set' },
+      workspace ? h('button', { class: 'btn btn-ghost shell-history', type: 'button', dataset: { shellFocus: 'history' },
+        onclick: guardedHandler(openHistory, { key: 'open-history' }) }, 'History') : null,
+      workspace ? toolsMenu(workspace) : null, discard, primary),
+    h('div', { class: 'tb-status-group', id: 'save-state', role: 'status', 'aria-live': 'polite' },
+      h('span', { class: `tb-pending${pending ? ' is-dirty' : ''}${blocking.length ? ' has-errors' : warnings.length ? ' has-warnings' : ''}`,
+        title: reason }, validationLabel ? `${pendingLabel} \u00b7 ${validationLabel}` : pendingLabel),
+      h('span', { class: 'sr-only' }, reason)));
   editorTransition?.pause.refresh();
+  if (focusKey && !active.isConnected && (document.activeElement === document.body || document.activeElement === active)) {
+    const replacement = [...els.tbActions.querySelectorAll('[data-shell-focus]')].find((node) => node.dataset.shellFocus === focusKey && !node.disabled);
+    if (replacement) replacement.focus({ preventScroll: true });
+    else focusWorkspaceHeading();
+  }
 }
 
 /**
@@ -2882,6 +3444,18 @@ function setSourceLine({ text, label, copyable = false, hint = null }) {
   els.localPathCopy.disabled = !copyable;
 }
 
+function setGlobalCommandsEnabled(enabled) {
+  if (els.globalSettings) els.globalSettings.disabled = !enabled;
+  if (els.workspaceSwitch) els.workspaceSwitch.disabled = !enabled;
+}
+
+function setConfigurationFormat(format) {
+  if (!els.configurationFormat) return;
+  const known = format === 'bicep' || format === 'terraform';
+  els.configurationFormat.hidden = !known;
+  mount(els.configurationFormat, known ? [formatIcon(format), format === 'bicep' ? 'Bicep' : 'Terraform'] : []);
+}
+
 function updateHeaderContext() {
   let workspace = null;
   try {
@@ -2889,6 +3463,8 @@ function updateHeaderContext() {
   } catch {
     // No active workspace: the setup screen's own context is used instead.
   }
+  setGlobalCommandsEnabled(Boolean(workspace) && els.shell?.dataset.workspace === 'active');
+  setConfigurationFormat(workspace ? configurationOf(workspace.environment).format : null);
   if (!workspace && setupContext) {
     const { projectLabel, environmentLabel, repository, branch, account, sourceKind, location: stated } =
       setupContext;
@@ -2919,16 +3495,34 @@ function updateHeaderContext() {
     state.area === 'access-contracts' && state.contracts
       ? `${state.contracts.root}/${state.contracts.parent}/`
       : null;
+  const policyTab = Boolean(state.contract && state.tab === 'policy');
+  const documentPath = (policyTab ? state.contract.policy : state.current)?.path ||
+    (policyTab ? 'No policy file selected' : overviewPath || 'No file selected');
   els.projectName.textContent = state.projectLabel || 'Project';
   els.environmentName.textContent = environment.label || 'Environment';
-  els.repoPath.textContent = state.current?.path || overviewPath || 'No file selected';
-  els.repoPath.title = state.current?.path || overviewPath || 'No file selected';
+  els.projectName.title = els.projectName.textContent;
+  els.environmentName.title = els.environmentName.textContent;
+  if (els.workspaceSwitch) {
+    const label = `${els.projectName.textContent} / ${els.environmentName.textContent}`;
+    els.workspaceSwitch.title = `Switch workspace: ${label}`;
+    els.workspaceSwitch.setAttribute('aria-label', `Switch workspace: ${label}`);
+  }
+  if (els.documentLabel) els.documentLabel.textContent = state.contract ? contractLabel(state.contract)
+    : state.areas.find((area) => area.id === state.area)?.title || state.current?.path?.split('/').at(-1) || 'Choose a document';
+  els.repoPath.textContent = documentPath;
+  els.repoPath.title = documentPath;
   const location = environmentLocation(environment);
   const recorded = location !== 'Local path not recorded';
   // A GitHub source is an identifier, not a path the clipboard helps with.
   const isGitHub = isGitHubEnvironment(environment);
+  const source = environmentSourceOf(environment);
+  if (els.sourceKind) els.sourceKind.textContent = isGitHub ? 'GitHub' : 'Local';
+  if (els.writeTarget) {
+    els.writeTarget.textContent = isGitHub ? `Source: ${source.sourceBranch || 'not recorded'} \u00b7 Write: ${source.workingBranch || 'not recorded'}` : 'Writes to selected folder';
+    els.writeTarget.title = describeWriteTarget(source)?.text || 'The selected browser folder handle owns local reads and writes.';
+  }
   setSourceLine({
-    text: location,
+    text: isGitHub ? source.fullName : location,
     label: isGitHub ? 'Repository' : 'Folder',
     copyable: recorded && !isGitHub,
     hint: recorded ? (isGitHub ? location : `Copy source location: ${location}`) : 'Local path not recorded',
@@ -2990,9 +3584,13 @@ function railDoc() {
  * the column it was helping you navigate. So the index moves: same nav, same
  * state, rendered once, as a strip above the sheet instead of a rail beside it.
  */
+function renderAfterBootstrap() {
+  if (els.shell) render();
+}
+
 const SECTIONS_IN_RAIL = window.matchMedia('(min-width: 100rem)');
-SECTIONS_IN_RAIL.addEventListener('change', () => render());
-COMPACT_NAV.addEventListener('change', () => render());
+SECTIONS_IN_RAIL.addEventListener('change', renderAfterBootstrap);
+COMPACT_NAV.addEventListener('change', renderAfterBootstrap);
 
 function renderContextRail() {
   const area = state.areas.find((a) => a.id === state.area) || null;
@@ -3048,7 +3646,7 @@ function renderContextRail() {
       h(
         'summary',
         { class: 'context-disclosure-summary' },
-        state.contract ? `Contract: ${state.contract.name}` : 'Page sections'
+        state.contract ? `Contract: ${contractLabel(state.contract)}` : 'Page sections'
       ),
       h('div', { class: 'context-disclosure-body' }, blocks)
     )
@@ -3361,7 +3959,8 @@ function contractsOverview(area) {
                     h(
                       'td',
                       { class: 'otable-name' },
-                      h('span', { class: 'otable-link' }, c.name),
+                      h('span', { class: 'otable-link' }, contractLabel(c)),
+                      pendingDocumentBadge(c.paramFile),
                       c.isTemplate ? h('span', { class: 'chip chip-note' }, 'template') : null
                     ),
                     h('td', { class: 'otable-num' }, String(c.paramCount)),
@@ -3372,7 +3971,7 @@ function contractsOverview(area) {
                         ? h('span', { class: 'chip chip-success' }, 'own policy')
                         : h('span', { class: 'chip chip-neutral' }, 'default')
                     ),
-                    h('td', { class: 'otable-path' }, h('code', {}, c.dir))
+                    h('td', { class: 'otable-path' }, h('code', {}, c.paramFile || c.dir))
                   )
                 )
               )
@@ -3443,8 +4042,8 @@ function renderContractsArea(area) {
         'div',
         { class: 'sheet-sticky' },
         sheetStrip(
-          contract.name,
-          doc,
+          contractLabel(contract),
+          state.tab === 'policy' ? contract.policy : doc,
           tabs,
           contract.isTemplate ? h('span', { class: 'chip chip-note' }, 'template') : null
         )
@@ -3482,6 +4081,7 @@ function render() {
   updateHeaderContext();
   renderSidebar();
   renderEditor();
+  renderStatus();
 }
 
 function renderEditor() {
@@ -3494,6 +4094,7 @@ function renderEditor() {
     try {
       renderActions();
       renderWorkspace();
+      if (owner.sourceUnavailable) renderSourceUnavailable();
       renderContextRail();
       markCurrentSection();
       editorTransition?.pause.refresh();
@@ -3519,7 +4120,7 @@ async function withEditorLoad(message, action, transition = null) {
   if (!canLeaveIncompleteNumber()) return false;
   const owner = state, ticket = viewStates.ticket(), predecessor = owner.current;
   const pause = pauseEditorForLoad(
-    [els.workspace, els.sidebar, els.contextRail, els.tbActions], els.editorLoading, message
+    [els.workspace, els.sidebar, els.contextRail, els.tbActions, els.titleblock], els.editorLoading, message
   );
   const scope = { pause };
   editorTransition = scope;
@@ -3537,9 +4138,19 @@ async function withEditorLoad(message, action, transition = null) {
         }
       } finally {
         pause.release();
+        if (els.globalSettings) els.globalSettings.disabled = els.shell.dataset.workspace !== 'active';
+        if (els.workspaceSwitch) els.workspaceSwitch.disabled = els.shell.dataset.workspace !== 'active';
+        if (state === owner && viewStates.isCurrent(ticket) && document.activeElement === document.body) focusWorkspaceHeading();
       }
     }
   }
+}
+
+function focusWorkspaceHeading() {
+  if (els.modal?.open) return;
+  const heading = els.workspace.querySelector('.strip-title, h1, h2');
+  if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
+  else els.workspace.focus({ preventScroll: true });
 }
 
 function rememberDocumentView() {
@@ -3567,7 +4178,7 @@ async function selectArea(id, options = {}) {
     const selection = { area: id, tab: 'params', contract: null, contractId: null, accessTargets: null };
 
     if (area.kind === 'contracts') {
-      const data = await withStatus('Loading contracts\u2026', () => api.contracts(context));
+      const data = await withStatus('Loading contracts\u2026', () => sourceOperation({ context }, () => api.contracts(context)), { context });
       if (!data || !viewStates.isCurrent(ticket)) return false;
       Object.assign(owner, selection, { current: null, contracts: data });
       render();
@@ -3606,6 +4217,20 @@ let wired = false;
  * so Back is meaningful.
  */
 function wireShellNavigation() {
+  document.querySelector('.skip-link')?.addEventListener('click', (event) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    els.workspace.focus();
+  });
+  els.workspaceSwitch?.addEventListener('click', () => {
+    if (els.shell.dataset.workspace === 'active') returnToSetup();
+  });
+  els.globalSettings?.addEventListener('click', guardedHandler(() => {
+    if (els.shell.dataset.workspace === 'active') return openWorkspaceSettings();
+  }, { key: 'open-settings' }));
+  document.addEventListener('pointerdown', (event) => {
+    if (openShellMenu && !openShellMenu.menu.contains(event.target)) closeShellMenu();
+  });
   const brand = document.querySelector('.tb-brand');
   brand?.addEventListener('click', async (event) => {
     // Modified clicks belong to the browser, not to us.
@@ -3634,6 +4259,13 @@ function wireShellNavigation() {
 
 async function init() {
   els.shell = document.querySelector('.shell');
+  els.titleblock = document.querySelector('.titleblock');
+  els.workspaceSwitch = document.getElementById('workspace-switch');
+  els.globalSettings = document.getElementById('global-settings');
+  els.documentLabel = document.getElementById('document-label');
+  els.configurationFormat = document.getElementById('configuration-format');
+  els.sourceKind = document.getElementById('source-kind');
+  els.writeTarget = document.getElementById('write-target');
   els.sidebar = document.getElementById('sidebar');
   els.contextRail = document.getElementById('context-rail');
   els.tbActions = document.getElementById('tb-actions');

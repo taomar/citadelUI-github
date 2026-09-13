@@ -26,13 +26,14 @@ been tested live.
 ## Prerequisites
 
 **Choose the application version first.** The clone examples below retrieve
-published `main`. This documentation also covers native workspaces and timed
-diagnostics from application source `4379522cdf0dbc8048bf45e0dbe0db2aa42cd358`;
-at this documentation revision those changes are accepted locally, not published
-on GitHub `main`. Use an operator-supplied reviewed checkout or image for that
-version. A local commit or branch name is not a remotely cloneable release.
-For an existing reviewed checkout, skip the clone and enter its `CitadelUI`
-directory. Do not run a launcher from an older checkout expecting newer features.
+published `main`. The reviewed desktop UI, literal Bicep resource-tag editor,
+native workspaces and timed diagnostics are delivered separately on
+`taomar-citadel-orchestrator`. Use the
+[delivery-branch checkout](../README.md#start-with-a-clone) for that version,
+or an operator-supplied image built from its reviewed source. For an existing
+reviewed checkout, skip the clone and enter its `CitadelUI` directory.
+Publishing source does not provision Azure or replace a running container.
+Do not run a launcher from an older checkout expecting newer features.
 See [release and offline operation](../CitadelUI/RELEASE.md).
 
 Azure deployment needs Git, PowerShell 7.4+, Azure CLI and Azure Developer CLI

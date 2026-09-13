@@ -21,12 +21,21 @@ git clone --branch main --single-branch https://github.com/taomar/citadelUI-gith
 cd citadelUI-github
 ```
 
-**Version prerequisite:** this documentation describes application source at
-`4379522cdf0dbc8048bf45e0dbe0db2aa42cd358`. At this documentation revision, native
-workspaces and timed diagnostics are accepted local changes, not published on
-GitHub `main`. The clone above retrieves published `main`, not that local
-version. To use those features, obtain the reviewed checkout or image from your
-operator; do not assume a local branch is remotely available. See
+**This UI delivery:** the refreshed desktop UI, literal Bicep resource-tag editor
+and screenshots belong to the
+[`taomar-citadel-orchestrator` delivery branch](https://github.com/taomar/citadelUI-github/tree/taomar-citadel-orchestrator),
+not `main`. To use this delivery, choose this checkout **instead of** the
+`main` clone above:
+
+```text
+git clone --branch taomar-citadel-orchestrator --single-branch https://github.com/taomar/citadelUI-github.git
+cd citadelUI-github
+git rev-parse HEAD
+```
+
+Record the returned commit when building an image. Publishing source does not
+update an existing container or Azure deployment; an older image or `main`
+checkout can lack these changes. See
 [release and offline operation](./CitadelUI/RELEASE.md).
 
 The application and its deployment live in **`CitadelUI/`**. Never run `azd up`
@@ -76,9 +85,10 @@ Choose the workflow by the files you want to change:
 | Task | Use | Result |
 | --- | --- | --- |
 | Edit existing Bicep parameters and APIM policy XML | **Bicep / Citadel**, then **Local** or **Existing GitHub Repo** | Reviewed edits to the selected source |
+| Add, edit or remove literal Bicep resource tags | **Azure Deployment > tags** | Source-defined entries staged for normal review/save |
 | Edit Terraform operator inputs | **Terraform (native)**, then **Local** or **Existing GitHub Repo** | Edits to explicitly selected `.tfvars` or `.tfvars.json` files |
-| Produce Terraform inputs from saved Bicep values | **Export to Terraform (Experimental)** in a Bicep workspace | A downloaded ZIP; neither repository is changed |
-| Bring older values into current Bicep templates | **Migrate Citadel Configuration (Experimental)** | Reviewed local apply, or preview/sanitized export for GitHub destinations |
+| Produce Terraform inputs from saved Bicep values | **Tools > Export Terraform inputs** (Experimental) in a Bicep workspace | A downloaded ZIP; neither repository is changed |
+| Bring older values into current Bicep templates | **Tools > Migrate configuration** (Experimental) | Reviewed local apply, or preview/sanitized export for GitHub destinations |
 | Start a local Bicep/Citadel project | **Create local from Citadel source** | A verified source snapshot in a new folder, without Git history |
 | Start a private GitHub Bicep/Citadel project | **New GitHub Repo** | A new private snapshot repository, followed by workspace attachment |
 
@@ -94,6 +104,12 @@ defines infrastructure, model backends and access policy as source files.
 The Control Plane presents those inputs as guided forms between deployments.
 Its three areas are **Azure Deployment**, **LLM Onboarding** and **Access Contracts**.
 Native LLM or Access units can be opened without a Deployment unit or Bicep files.
+
+The header identifies the workspace; the contextual command bar identifies the
+document, source and write destination. **Review & save** stays in the same
+place, separate from **History**, **Discard** and the **Tools** menu.
+The workspace explorer selects an area/file; the document's **Parameters**,
+**Raw file** and category tabs keep its source context visible.
 
 The forms use source comments and schema information where available. Supported
 edits splice the selected values rather than reformatting the whole file.
@@ -128,7 +144,17 @@ The format selector leaves Local and GitHub as independent source choices:
 Native inputs use the shared typed controls. Here, a declared-but-unconsumed
 input remains an advisory; Save does not establish a runtime effect:
 
-![Synthetic native Deployment edit with field-level advisories and Review & save available](./docs/images/61-native-deployment.png)
+![Synthetic native Deployment draft showing an unconsumed-input advisory beside optional_note](./docs/images/61-native-deployment.png)
+
+For a literal Bicep `tags` object, edit existing values or use **Tag name**,
+**Tag value** and **Add tag** to stage a new entry, including from an empty
+object. Names come from the source or your explicit input, not a fixed tag list.
+The example below retains the source-shaped `azd-env-name` and `SecurityControl`
+keys; `cost-center` is an explicitly added demonstration tag, not a default.
+See [resource tags](./guides/using-the-control-plane.md#resource-tags) for
+validation, save and History restore.
+
+![Synthetic Bicep tags with cost-center explicitly added to the draft before Review & save](./docs/images/64-resource-tags.png)
 
 ## Deploy to Azure
 

@@ -454,6 +454,19 @@ export const MODEL_FIELDS = [
   { key: 'sessionAwareModel', type: 'boolean', required: false, label: 'Stateful model', default: false, help: 'Gives multi-backend pools for this model a sticky affinity cookie.' },
 ];
 
+export const MODEL_FIELD_GROUPS = [
+  { id: 'identity', label: 'Identity', keys: ['name', 'modelPath', 'model_path'] },
+  { id: 'serving', label: 'Deployment & capacity', keys: ['modelFormat', 'model_format', 'modelVersion', 'model_version', 'sku', 'capacity'] },
+  { id: 'request', label: 'Endpoint & request', keys: ['apiVersion', 'api_version', 'inferenceApiVersion', 'inference_api_version', 'timeout'] },
+  { id: 'lifecycle', label: 'Lifecycle & routing', keys: ['retirementDate', 'retirement_date', 'sessionAwareModel', 'session_aware_model'] },
+];
+
+export const BACKEND_FIELD_GROUPS = [
+  { id: 'identity', label: 'Identity', keys: ['backendId', 'backend_id', 'backendType', 'backend_type'] },
+  { id: 'connection', label: 'Endpoint & authentication', keys: ['endpoint', 'authType', 'auth_type', 'auth_scheme', 'authConfig', 'auth_config', 'auth_header', 'auth_value'] },
+  { id: 'routing', label: 'Deployment & traffic', keys: ['priority', 'weight'] },
+];
+
 /** Circuit breaker override keys (shallow-merged over circuitBreakerDefaults). */
 export const CIRCUIT_BREAKER_FIELDS = [
   { key: 'enabled', type: 'boolean', label: 'Enabled', default: true, help: 'Set false to opt this backend out entirely.' },

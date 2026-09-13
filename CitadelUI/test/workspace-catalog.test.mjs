@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import vm from 'node:vm';
 
 import { installDom, readText } from './_dom-stub.mjs';
 import { TEST_TOKEN } from './_github-mock.mjs';
@@ -912,16 +913,62 @@ test('nothing in the catalogue is sized in pixels', () => {
 
 test('the catalogue survives a breakpoint change', () => {
   const app = readFileSync(new URL('../web/js/app.mjs', import.meta.url), 'utf8');
-  // `render()` is wired to two media-query listeners. Without a guard, resizing
-  // the window paints the empty workspace over whatever the setup screen has
-  // mounted — leaving a screen with no controls and an `ensureWorkspace` promise
-  // that can never resolve.
-  assert.match(app, /SECTIONS_IN_RAIL\.addEventListener\('change', \(\) => render\(\)\)/);
-  assert.match(app, /COMPACT_NAV\.addEventListener\('change', \(\) => render\(\)\)/);
-  assert.match(
-    app,
-    /function render\(\) \{\s*if \(els\.shell\.dataset\.workspace === 'migration'\) return;\s*if \(els\.shell\.dataset\.workspace !== 'active'\) \{\s*updateHeaderContext\(\);\s*return;/
-  );
+  const section = (start, end) => {
+    const first = app.indexOf(start), last = app.indexOf(end, first);
+    assert(first >= 0 && last > first, `Missing production section ${start}`);
+    return app.slice(first, last);
+  };
+  const compact = app.match(/^const COMPACT_NAV = window\.matchMedia\(.+\);$/m);
+  assert(compact, 'Use the actual compact media query, not a substitute listener.');
+  const calls = [], listeners = [];
+  const scope = {
+    els: {},
+    window: { matchMedia: (query) => ({ addEventListener: (event, callback) => {
+      assert.equal(event, 'change');
+      listeners.push({ query, callback });
+    } }) },
+    updateHeaderContext: () => calls.push('header'),
+    renderSidebar: () => calls.push('sidebar'),
+    renderEditor: () => calls.push('editor'),
+    renderStatus: () => calls.push('status'),
+  };
+  vm.runInNewContext([
+    compact[0],
+    section('function render() {', 'function renderEditor() {'),
+    section('function renderAfterBootstrap()', 'function renderContextRail()'),
+  ].join('\n'), scope);
+  assert.deepEqual(listeners.map(({ query }) => query).sort(), ['(max-width: 48rem)', '(min-width: 100rem)']);
+  assert.equal(listeners[0].callback, listeners[1].callback);
+  for (const { callback } of listeners) assert.doesNotThrow(() => callback());
+  assert.deepEqual(calls, []);
+  assert.deepEqual(Object.keys(scope.els), [], 'Pre-owner callbacks must not initialize or access shell content.');
+
+  const dom = installDom(), shell = dom.node('div'), catalog = dom.node('main'), search = dom.node('input');
+  shell.dataset.workspace = 'setup';
+  search.value = 'finance';
+  catalog.append(search);
+  shell.append(catalog);
+  dom.root.append(shell);
+  search.focus();
+  Object.assign(scope.els, { shell, workspace: catalog });
+  for (const { callback } of listeners) {
+    callback();
+    assert.deepEqual(calls.splice(0), ['header']);
+    assert.equal(catalog.children[0], search);
+    assert.equal(search.isConnected, true);
+    assert.equal(search.value, 'finance');
+    assert.equal(document.activeElement, search);
+  }
+  shell.dataset.workspace = 'active';
+  for (const { callback } of listeners) {
+    callback();
+    assert.deepEqual(calls.splice(0), ['header', 'sidebar', 'editor', 'status']);
+  }
+  for (const workflow of ['migration', 'terraform-export']) {
+    shell.dataset.workspace = workflow;
+    for (const { callback } of listeners) callback();
+    assert.deepEqual(calls, [], `${workflow} keeps ownership of its surface.`);
+  }
 });
 test('the catalogue is reachable and announced without sight', () => {
   assert.match(catalogSource, /'aria-label': 'Citadel workspaces'/);

@@ -77,6 +77,7 @@ async function fixture() {
   };
   const scope = {
     structuredClone, ...edits, h, guardedHandler, historyEntry, environmentSourceOf, saveStatusLine, mutationComplete,
+    els: { tbActions: h('header') },
     state, activeWorkspace: () => context,
     captureDialogStatus: dom.captureDialogStatus,
     viewStates: { ticket: () => ticket, isCurrent: (value) => value === ticket },

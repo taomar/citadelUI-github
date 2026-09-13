@@ -1,9 +1,10 @@
 # Timed diagnostic capture
 
-For troubleshooting, open **`/debug` on the same Citadel instance** and sign in
-as its normal owner. This support page has no entry in the application menus.
-The unlinked URL is not an access control: every diagnostic API also requires
-the owner session and the normal browser transport checks.
+For troubleshooting, choose **Diagnostics** in the application header to open
+the support page in a new tab, or open **`/debug` on the same Citadel instance**.
+The public bootstrap presents the normal owner claim/sign-in flow. Discovering
+the page is not an access control: every diagnostic API requires the owner
+session and the normal browser transport checks.
 
 ## Capture a report for support
 
@@ -25,7 +26,7 @@ the owner session and the normal browser transport checks.
 
 ![Diagnostics page before activation, with Instance-wide debugging off and no captured report](../docs/images/70-debug-off.png)
 
-This retained synthetic-instance capture shows the default state. The switch
+This synthetic-instance capture shows the default state. The switch
 enables real collection on this server and in connected signed-in application
 tabs, not unrestricted console or framework logging. Closing the debug page
 does not stop a live capture. Nothing is uploaded automatically.
@@ -37,8 +38,8 @@ recorded, not that the instance passed a health or security check.
 
 For operators maintaining an older installation, see the
 [source-version prerequisite](../README.md#start-with-a-clone). This support
-route is part of the locally accepted `4379522c` application, not a promise
-about older published images.
+route is included in the reviewed delivery branch; publishing that source does
+not add it to an older running image.
 
 ## The capture window
 

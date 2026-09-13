@@ -27,7 +27,7 @@
 
 import { h } from './dom.mjs';
 import { picker } from './picker.mjs';
-import { editorField, inputFeedback } from './editor-focus.mjs';
+import { editorField, focusEditorControl, inputFeedback } from './editor-focus.mjs';
 import { exactNumber, isExactNumber } from '../../shared/terraform/parser.mjs';
 import {
   APIC_LOCATION_VALUES,
@@ -426,7 +426,7 @@ function validatedNumber(input, path, ctx, read) {
  * and provenance appears nowhere in them.
  */
 function scalarControl(value, path, ctx, schema) {
-  schema = ctx.readOnly || ctx.native ? schema : withRegionSchema(schema, path);
+  schema = ctx.readOnly || ctx.native || ctx.resourceTags && path[0] === 'tags' ? schema : withRegionSchema(schema, path);
   const commit = (next) => ctx.onChange(path, next);
   const type = schema && schema.type;
   const label = valueLabel(path, schema);
@@ -1077,6 +1077,7 @@ function pathTable(value, path, ctx) {
  * indent and no container.
  */
 function objectEditor(value, path, ctx, options, schema) {
+  if (!ctx.native && ctx.resourceTags && path.length === 1 && path[0] === 'tags') return resourceTagsEditor(value, path, ctx);
   const keys = ctx.native ? [...new Set([...Object.keys(value), ...Object.keys(schema?.properties || {})])]
     .map((key) => [key, value[key]]) : Object.entries(value);
   const map = ctx.native && schema?.collection === 'map';
@@ -1109,6 +1110,84 @@ function objectEditor(value, path, ctx, options, schema) {
         ctx.onAddProperty(path, key, ctx.newValue([...path, key]));
       } }, 'Add mapping'), problem));
   }
+  return content;
+}
+
+function resourceTagsEditor(value, path, ctx) {
+  const keys = Object.keys(value), scope = ctx.resourceTags;
+  const content = h('div', { class: 'resource-tags' });
+  const address = (name) => JSON.stringify([path, name]);
+  const current = () => !ctx.readOnly && content.isConnected && scope.focus.root.contains(content) && scope.focus.isCurrent();
+  const perform = (action, target) => {
+    if (!current()) return;
+    const active = document.activeElement, focusKey = active?.dataset.editorFocus;
+    const restore = content.contains(active);
+    action();
+    if (!restore || content.isConnected || !scope.focus.isCurrent()) return;
+    if (document.activeElement !== document.body && document.activeElement !== active &&
+        (!focusKey || document.activeElement?.dataset.editorFocus !== focusKey)) return;
+    const next = [...scope.focus.root.querySelectorAll('[data-editor-focus]')]
+      .find((control) => control.dataset.tagFocus === address(target));
+    focusEditorControl(next);
+  };
+  const rows = keys.map((key, index) => h('div', { class: 'defs-row resource-tag-row' },
+    h('code', { class: 'defs-key' }, key),
+    h('div', { class: 'defs-val' }, renderValue(value[key], [...path, key], ctx, null)),
+    ctx.readOnly ? null : h('button', {
+      class: 'btn btn-danger-ghost btn-sm', type: 'button', 'aria-label': `Remove tag ${key}`,
+      dataset: { tagFocus: address(`remove:${key}`), editorFocus: address(`remove:${key}`) },
+      onclick: () => perform(() => ctx.onRemove([...path, key]),
+        keys[index + 1] !== undefined ? `remove:${keys[index + 1]}` : index > 0 ? `remove:${keys[index - 1]}` : 'name'),
+    }, 'Remove')));
+  content.append(keys.length ? h('div', { class: 'defs resource-tag-list' }, rows)
+    : h('p', { class: 'empty' }, 'No tags in this object.'));
+  if (ctx.readOnly) {
+    for (const control of content.querySelectorAll('input, select, textarea, button')) control.disabled = true;
+    return content;
+  }
+
+  // Numeric input addresses cannot collide with the object's string keys.
+  // They retain an unfinished addition without pretending it is a source edit.
+  const namePath = [...path, 0], valuePath = [...path, 1];
+  const input = (label, at, target) => namedControl(draftControl(h('input', {
+    class: 'ctl ctl-w-id', type: 'text', value: '', 'aria-label': label,
+    autocomplete: 'off', spellcheck: false, dataset: { tagFocus: address(target) },
+  }), at, ctx, (event) => {
+    if (!event.target.validationMessage) event.target.setCustomValidity?.('Choose Add tag to stage this entry, or clear its name and value.');
+  }), label, at);
+  const name = input('New tag name', namePath, 'name'), tagValue = input('New tag value', valuePath, 'value');
+  const feedback = inputFeedback(name);
+  feedback.set(name.validationMessage || '');
+  let attempted = Boolean(name.validationMessage);
+  const problem = () => !name.value.trim() ? 'Enter a tag name; whitespace alone is not a name.'
+    : Object.hasOwn(value, name.value) ? `A tag named "${name.value}" already exists.`
+      : ['__proto__', '__expr', '__args', '__tfNumber'].includes(name.value)
+        ? 'This name is reserved by the editor value/path representation. Choose another tag name.' : '';
+  const showProblem = (message) => {
+    feedback.set(message);
+    const retained = ctx.inputDraft?.(namePath);
+    if (retained) ctx.onInputDraft?.(namePath, { ...retained, validationMessage: message });
+  };
+  name.addEventListener('input', () => showProblem(attempted ? problem() : ''));
+  const add = () => {
+    if (!current()) return;
+    attempted = true;
+    const message = problem();
+    showProblem(message);
+    if (message) { focusEditorControl(name); return; }
+    perform(() => scope.add(path, name.value, tagValue.value), 'name');
+  };
+  for (const control of [name, tagValue]) control.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.isComposing || event.defaultPrevented) return;
+    event.preventDefault();
+    add();
+  });
+  content.append(h('div', { class: 'resource-tag-add' },
+    h('label', {}, h('span', {}, 'Tag name'), name),
+    h('label', {}, h('span', {}, 'Tag value'), tagValue),
+    h('button', { class: 'btn btn-sm', type: 'button',
+      dataset: { tagFocus: address('add'), editorFocus: address('add') }, onclick: add }, 'Add tag'),
+    feedback.node));
   return content;
 }
 

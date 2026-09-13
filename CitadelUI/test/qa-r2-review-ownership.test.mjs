@@ -10,6 +10,8 @@ import { createDocumentActions } from '../web/js/document-action.mjs';
 import { environmentSourceOf } from '../web/js/registry.mjs';
 import { saveStatusLine } from '../web/js/save-resolution.mjs';
 import { mutationComplete } from '../shared/mutation-outcome.mjs';
+import { configurationKey, configurationOf } from '../shared/workspace-configuration.mjs';
+import { withSourceUnavailable } from '../web/js/workspace-activation.mjs';
 import * as edits from '../web/js/contract-edit-state.mjs';
 
 const source = (await readFile(new URL('../web/js/app.mjs', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
@@ -36,6 +38,8 @@ async function fixture() {
   const dom = await loadDialogModule(), calls = [], statuses = [];
   let context = { environment: { id: 'r2-review', source: { kind: 'local', folderName: 'synthetic' } } };
   const scope = { structuredClone, Map, h, guardedHandler, ...edits, environmentSourceOf, saveStatusLine, mutationComplete,
+    configurationKey, configurationOf, withSourceUnavailable,
+    els: { tbActions: h('header') },
     captureDialogStatus: dom.captureDialogStatus,
     activeWorkspace: () => context, showModal: dom.showDialog, closeModal: dom.closeDialog,
     writeContextNode: () => h('p', {}, 'Synthetic Alpha source'),

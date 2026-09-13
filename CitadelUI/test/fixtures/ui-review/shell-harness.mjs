@@ -14,7 +14,9 @@ import { environmentLocation, environmentSourceOf, isGitHubEnvironment } from '.
 import { historyEntry } from '../../../web/js/history-entry.mjs';
 import { saveStatusLine } from '../../../web/js/save-resolution.mjs';
 import { mutationComplete } from '../../../shared/mutation-outcome.mjs';
-import { configurationOf } from '../../../shared/workspace-configuration.mjs';
+import { configurationKey, configurationOf } from '../../../shared/workspace-configuration.mjs';
+import { withSourceUnavailable } from '../../../web/js/workspace-activation.mjs';
+import { focusEditorControl, preserveEditorFocus } from '../../../web/js/editor-focus.mjs';
 import { previewDocument } from '../../../web/js/preview.mjs';
 import * as edits from '../../../web/js/contract-edit-state.mjs';
 
@@ -83,7 +85,8 @@ export async function shellHarness({context, api = {}, state:initial = {}, regis
   const calls = [], statuses = [], storedDrafts = new Map();
   const forbidden = name => () => { throw new Error(`Unexpected synthetic port: ${name}`); };
   const scope = {structuredClone, Map, Promise, h, mount, document:globalThis.document, Event:globalThis.Event,
-    ...edits, previewDocument, configurationOf, createEditorDocumentSession, pauseEditorForLoad,
+    ...edits, previewDocument, configurationKey, configurationOf, withSourceUnavailable,
+    focusEditorControl, preserveEditorFocus, createEditorDocumentSession, pauseEditorForLoad,
     guardedHandler, createEnvironmentOperation, createEnvironmentForm, createGitHubConnectionSummary, createWorkspaceSettingsView,
     environmentLocation, environmentSourceOf, isGitHubEnvironment, historyEntry, saveStatusLine, mutationComplete,
     els, editorTransition:null, documentGeneration:0, policyPreviewToken:0, pendingByDocument:new Map(),
@@ -139,7 +142,7 @@ export async function shellHarness({context, api = {}, state:initial = {}, regis
     appSection('function recoveryBanner()', 'function quarantineNotice()'),
     appSection('function tabBar(', 'function renderWorkspace('),
     appSection('async function openHistory()', 'async function openEnvironmentCompare('),
-    appSection('async function openWorkspaceSettingsContent()', 'async function openTerraformExportReview('),
+    appSection('async function openWorkspaceSettingsContent(', 'async function openTerraformExportReview('),
     appSection('function renderStartupRecovery(', '// Nothing starts'),
     appSection('const editorDocuments =', 'const els ='),
   ];

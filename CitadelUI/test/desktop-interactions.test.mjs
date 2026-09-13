@@ -176,14 +176,17 @@ test('nested model fields have distinct stable focus addresses, including option
     }));
   }
   render();
-  const capacities = all(root, (node) => node.getAttribute('aria-label') === 'Capacity');
+  const contexts = entries.flatMap((entry) => entry.supportedModels.map((model) => `model ${model.name} on backend ${entry.backendId}`));
+  const capacities = all(root, (node) => node.getAttribute('aria-label')?.startsWith('Capacity: '));
+  assert.deepEqual(capacities.map((node) => node.getAttribute('aria-label')), contexts.map((context) => `Capacity: ${context}`));
   assert.equal(new Set(capacities.map((node) => node.dataset.editorFocus)).size, 3);
   capacities[2].focus();
   capacities[2].value = '75';
   capacities[2].dispatch('keydown', { key: 'Tab' });
   assert.deepEqual(changes, [{ path: ['llmBackendConfig', 1, 'supportedModels', 1, 'capacity'], value: 75 }]);
   assert.equal(document.activeElement.dataset.editorFocus, capacities[2].dataset.editorFocus);
-  const timeouts = all(root, (node) => node.getAttribute('aria-label') === 'Timeout (s)');
+  const timeouts = all(root, (node) => node.getAttribute('aria-label')?.startsWith('Timeout (s): '));
+  assert.deepEqual(timeouts.map((node) => node.getAttribute('aria-label')), contexts.map((context) => `Timeout (s): ${context}`));
   assert.equal(timeouts.length, 3);
   timeouts[0].focus();
   timeouts[0].value = '45';
@@ -206,7 +209,8 @@ test('edit focus restoration does not hijack another control, dialog or disabled
   assert.equal(document.activeElement, outside);
   root.children[0].focus();
   preserveEditorFocus(root, () => { render(); showDialog('Help', h('div'), [outside]); });
-  assert.equal(document.activeElement, outside);
+  assert.equal(document.activeElement, document.getElementById(dom.modal.getAttribute('aria-labelledby')));
+  assert.equal(readText(document.activeElement), 'Help');
   closeDialog();
   root.children[0].focus();
   preserveEditorFocus(root, () => render(true));

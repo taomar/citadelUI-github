@@ -16,7 +16,8 @@ import { historyEntry } from '../web/js/history-entry.mjs';
 import { environmentSourceOf, environmentLocation } from '../web/js/registry.mjs';
 import { describeCreatedBranch, saveStatusLine } from '../web/js/save-resolution.mjs';
 import { mutationComplete } from '../shared/mutation-outcome.mjs';
-import { configurationOf, createConfiguration } from '../shared/workspace-configuration.mjs';
+import { configurationKey, configurationOf, createConfiguration } from '../shared/workspace-configuration.mjs';
+import { withSourceUnavailable } from '../web/js/workspace-activation.mjs';
 import { GitHubCommitCoordinator } from '../web/js/github-coordinator.mjs';
 import { localRecoveryFailure } from '../web/js/mutation-coordinator.mjs';
 import { refNameProblem } from '../shared/git-refs.mjs';
@@ -80,7 +81,11 @@ async function fixture(initial, { local = false, context: attachedContext = null
     }
     return node;
   };
+  const els = { tbActions: domH('header'), workspace: domH('main', { id: 'workspace', tabindex: '-1' }) };
+  els.tbActions.append(domH('button', { class: 'shell-history', dataset: { shellFocus: 'history' } }, 'History'));
+  dom.root.append(els.tbActions, els.workspace);
   const scope = { structuredClone, Map, h: domH, guardedHandler, ...edits, mutationComplete,
+    els, configurationKey, withSourceUnavailable,
     captureDialogStatus: dom.captureDialogStatus,
     environmentSourceOf, environmentLocation, configurationOf, describeCreatedBranch, saveStatusLine, refNameProblem, historyEntry,
     activeWorkspace: () => context, requestAnimationFrame() {}, render() { calls.push(['render']); },

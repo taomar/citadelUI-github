@@ -19,7 +19,10 @@ test('a departing workspace status timer cannot clear the newly active workspace
   const context = { state: {}, statusTimer: null, pendingTicker: null,
     clearTimeout() {}, setTimeout(fn) { callbacks.push(fn); return callbacks.length; },
     renderStatus() { rendered.push(context.state.status); } };
-  vm.runInNewContext(source.slice(source.indexOf('function setStatus('), source.indexOf('function renderStatus(')), context);
+  vm.runInNewContext([
+    source.slice(source.indexOf('function setStatus('), source.indexOf('function renderStatus(')),
+    source.slice(source.indexOf('function removeStatusNotice('), source.indexOf('function resolveOperationStatus(')),
+  ].join('\n'), context);
   context.setStatus('Previous workspace saved.');
   const previous = context.state;
   context.state = { status: { message: 'Current workspace needs attention.', tone: 'error' } };
