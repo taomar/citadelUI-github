@@ -464,3 +464,8 @@ CitadelUI/.srv.log
 credential.key
 CitadelUI/container.env
 CitadelUI/.data/
+
+# Publish only the operator-facing Control Plane guides.
+/guides/*
+!/guides/deployment.md
+!/guides/using-the-control-plane.md

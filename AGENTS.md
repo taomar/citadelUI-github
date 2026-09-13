@@ -35,6 +35,11 @@ file the Azure Deployment editor opens.
 Running `azd up` at the root deploys the wrong product. Generating infrastructure
 there overwrites the data this application exists to edit.
 
+Only `guides/deployment.md` and `guides/using-the-control-plane.md` are published
+from `guides/`. Other guides, including handovers and review plans, are
+local-only and ignored; do not force-add them. Preserve needed internal notes
+outside disposable worktrees before archival.
+
 ---
 
 ## Running the tests

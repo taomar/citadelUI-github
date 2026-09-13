@@ -10,9 +10,9 @@ not merged into `main`. Follow the
 [delivery-branch checkout](../README.md#start-with-a-clone) and record
 `git rev-parse HEAD` before building. Use the published commit above to identify
 this application baseline; later documentation-only commits can advance the
-branch without changing application behavior. The
-[implementation record](../guides/ui-review-implementation-plan.md) retains the
-earlier local review candidates and their acceptance history.
+branch without changing application behavior. Internal handovers and detailed
+review records are kept locally by the release operator, not published under
+`guides/`.
 
 Source publication does not build or distribute a container image, replace an
 existing installation, or deploy Azure resources. An older clone, the image's
