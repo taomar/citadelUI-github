@@ -840,6 +840,10 @@ export async function createCitadelServer(options = {}) {
   const sessionToken = options.sessionToken || randomBytes(32).toString('base64url');
   const diagnostics = new DiagnosticCapture(options.diagnosticOptions);
   const maxConcurrency = options.maxConcurrency ?? 32;
+  const maxQueuedStaticRequests = options.maxQueuedStaticRequests ?? 128;
+  if (!Number.isSafeInteger(maxQueuedStaticRequests) || maxQueuedStaticRequests < 0) {
+    throw new Error('Invalid static request queue limit.');
+  }
   const registryStore = options.registryStore || new RegistryStore({ dataRoot });
   const store = options.store || new TransactionStore({ dataRoot, getEnvironment: (id) => registryStore.getEnvironment(id), ...(options.transactionOptions || {}) });
   const connectionStore = options.connectionStore || new ConnectionProfileStore({ dataRoot });
@@ -905,6 +909,38 @@ export async function createCitadelServer(options = {}) {
     return html ? injectBootstrapMetadata(html, state, registryNamespace, testRuntime) : bootstraps[state];
   };
   let active = 0;
+  const staticQueue = [];
+  const waitForStaticSlot = (res) => new Promise((resolve) => {
+    const waiting = {
+      res,
+      grant() {
+        res.off('close', cancel);
+        resolve(true);
+      },
+      cancel() {
+        res.off('close', cancel);
+        const index = staticQueue.indexOf(waiting);
+        if (index !== -1) staticQueue.splice(index, 1);
+        resolve(false);
+      },
+    };
+    const cancel = () => waiting.cancel();
+    staticQueue.push(waiting);
+    res.once('close', cancel);
+    if (res.destroyed) cancel();
+  });
+  const admitQueuedStaticRequests = () => {
+    while (active < maxConcurrency && staticQueue.length) {
+      const waiting = staticQueue.shift();
+      if (waiting.res.destroyed) {
+        waiting.cancel();
+        continue;
+      }
+      // Reserve capacity before the waiting handler resumes.
+      active += 1;
+      waiting.grant();
+    }
+  };
 
   const server = createServer(async (req, res) => {
     // Keep the existing response correlation contract, but never retain or log
@@ -929,27 +965,45 @@ export async function createCitadelServer(options = {}) {
       }
     });
     if (active >= maxConcurrency) {
-      if (!excludedFromDiagnostics((req.url || '/').split(/[?#]/, 1)[0])) {
-        diagnostics.recordRequest('api.other', 503, 'SERVER_BUSY', 'Error', diagnosticCorrelationId, diagnosticContext);
+      const pathname = URL.canParse(req.url || '/', allowedOrigin)
+        ? new URL(req.url || '/', allowedOrigin).pathname : '';
+      const canQueue = maxConcurrency > 0 && staticQueue.length < maxQueuedStaticRequests &&
+        req.headers.host === allowedHost && (req.method === 'GET' || req.method === 'HEAD') &&
+        pathname !== '' && pathname !== '/healthz' && pathname !== '/api' && !pathname.startsWith('/api/');
+      if (canQueue) {
+        diagnosticOperation = diagnosticRoute(pathname);
+        diagnosticContext.resource = diagnosticResource(pathname);
+        diagnosticExcluded = excludedFromDiagnostics(pathname);
+        if (!await waitForStaticSlot(res)) return;
+      } else {
+        if (!excludedFromDiagnostics((req.url || '/').split(/[?#]/, 1)[0])) {
+          diagnostics.recordRequest('api.other', 503, 'SERVER_BUSY', 'Error', diagnosticCorrelationId, diagnosticContext);
+        }
+        return sendJson(
+          res,
+          503,
+          { error: { code: 'SERVER_BUSY', message: 'Server concurrency limit reached.', correlationId } },
+          correlationId,
+          { 'Retry-After': '1' }
+        );
       }
-      return sendJson(
-        res,
-        503,
-        { error: { code: 'SERVER_BUSY', message: 'Server concurrency limit reached.', correlationId } },
-        correlationId,
-        { 'Retry-After': '1' }
-      );
+    } else {
+      active += 1;
     }
-    active += 1;
     let released = false;
     const release = () => {
       if (!released) {
         released = true;
         active -= 1;
+        admitQueuedStaticRequests();
       }
     };
     res.once('finish', release);
     res.once('close', release);
+    if (res.destroyed) {
+      release();
+      return;
+    }
 
     try {
       if (req.headers.host !== allowedHost) {

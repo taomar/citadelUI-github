@@ -68,11 +68,16 @@ test('deployment docs: parameter inputs are synchronized before resource preflig
   assert.match(guide, /Do not put passwords, tokens or key material in the parameter file/);
 });
 
-test('deployment docs: image-only commands live in the supported script, not a copied guide implementation', () => {
-  const code = codeBlocks(section('Redeploy an existing Citadel UI container app'), 'powershell').join('\n');
+test('deployment docs: native azd redeploys public Legacy images and retains the specialized build helper', () => {
+  const text = section('Redeploy an existing Citadel UI container app');
+  const code = codeBlocks(text, 'powershell').join('\n');
   assert.match(code, /azd env select/);
-  assert.match(code, /\.\\scripts\\deploy-image\.ps1/);
-  assert.doesNotMatch(code, /azd (up|provision|env new)/);
+  assert.match(code, /^azd deploy citadelui$/m);
+  assert.doesNotMatch(code, /azd (up|provision|env new)|az (acr|containerapp)/);
+  assert.match(text, /LegacyRegistryPermissions/);
+  assert.match(text, /ABAC or private registries/);
+  assert.match(text, /scripts\\deploy-image\.ps1/);
+  assert.match(text, /does not run provisioning hooks or initialize a missing\s+credential-encryption key/);
   assert.match(imageScript, /--container-name citadelui --image \$ImageReference/);
   assert.match(imageScript, /azd env set SERVICE_CITADELUI_IMAGE_NAME \$ImageReference/);
   assert.match(imageScript, /@\('--source-acr-auth-id', '\[caller\]'\)/);

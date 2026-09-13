@@ -147,8 +147,9 @@ broken intermediate state because someone said "commit all".
 ## Azure deployment
 
 The azd project is `CitadelUI/`. `azd up` runs the key-initialization
-`postprovision` hook before image deployment. Separate `azd provision` and
-`azd deploy citadelui` also run that hook. It calls
+`postprovision` hook before image deployment; `azd provision` also runs that
+hook. Image-only `azd deploy citadelui` does not run provisioning hooks or
+initialize missing keys. The provisioning hook calls
 `scripts\ensure-credential-key.ps1`, which preserves an existing Key Vault
 credential key or creates it once when absent. It must not rotate existing keys.
 Azure provisioning requires PowerShell 7 on every host and private endpoint

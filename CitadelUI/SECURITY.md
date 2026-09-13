@@ -449,7 +449,12 @@ write authority comes only from its separate explicit unit binding.
   Credential-management routes use their explicit owner-gated exchange/erasure
   protocol. GitHub routes remain the only routes permitted to use `DELETE`.
 - No CORS response is emitted.
-- JSON and backup bodies have explicit limits; concurrency is bounded.
+- JSON and backup bodies have explicit limits; active request processing is
+  bounded to 32 requests by default. Up to 128 same-host static GET/HEAD requests
+  can wait for capacity so pages, native modules, styles and parser assets do
+  not fail during a startup burst. Waiting requests release their queue slot on
+  disconnect. API requests, health checks and a full static queue still receive
+  the bounded 503 response; host, path, session, and body guards are unchanged.
 - CSP denies external scripts, connections, frames, forms, and objects. The
   browser never contacts GitHub directly. Native parsing adds only
   `'wasm-unsafe-eval'` to same-origin `script-src` for vendored WASM; JavaScript

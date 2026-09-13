@@ -361,17 +361,30 @@ incompatible newer data format.
 
 ## Redeploy an existing Citadel UI container app
 
-From `CitadelUI`, select the original environment, then update only its image:
+From `CitadelUI`, select the original environment. With a public registry using
+`LegacyRegistryPermissions`, rebuild and deploy the image through azd:
 
 ```powershell
 azd env select '<original-environment-name>'
-.\scripts\deploy-image.ps1
+azd deploy citadelui
 ```
 
 On a new checkout, use `azd env refresh '<original-environment-name>'` to recover
-the deployment's environment first. The script preserves mounts, identity,
-network and owner state, and records the image for later reprovisioning.
-Do not create a new environment to update an existing app.
+the deployment's environment first. The configured remote build creates the
+image in the existing registry; azd updates the Container App revision and
+records the image for later reprovisioning. Mounts, identity, networking and
+owner state are retained. Do not create a new environment to update an existing
+app.
+
+For ABAC or private registries, retain the authenticated/private build route
+described above and `scripts\deploy-image.ps1`, including `-ImageReference`
+when supplying an already-built private image. Ordinary azd remote builds do
+not supply ABAC source authentication or private network connectivity.
+
+Image-only deployment does not run provisioning hooks or initialize a missing
+credential-encryption key. Recover that key separately, or explicitly approve
+a replacement with the understanding that older saved credentials may need
+reconnection. Never reset owner or application data merely to update an image.
 
 Review ownership before `azd down`. Never delete or purge shared resources or
 their resource groups to remove this UI.
