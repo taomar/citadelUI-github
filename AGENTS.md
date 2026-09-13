@@ -106,14 +106,22 @@ happened once.
 
 `credential.helper` is additive, and the system-level Git Credential Manager
 resolves `github.com` to `taomar_microsoft`, an account that cannot see this
-repository. The result is a misleading `Repository not found`. Push with:
+repository. The result is a misleading `Repository not found`. For the reviewed
+UI delivery, push only its approved working branch:
 
 ```powershell
+if ((git branch --show-current) -cne 'taomar-citadel-orchestrator') {
+  throw 'Switch to the reviewed delivery branch before publishing.'
+}
 $env:GH_TOKEN=""
+$env:GITHUB_TOKEN=""
 $env:CIT_TOKEN = (gh auth token -u taomar)
 $h = '!f() { echo username=x-access-token; echo "password=$CIT_TOKEN"; }; f'
-git -c credential.helper= -c credential.helper="$h" push origin main
+git -c credential.helper= -c credential.helper="$h" push --set-upstream --no-follow-tags origin HEAD:refs/heads/taomar-citadel-orchestrator
 ```
+
+Publishing or merging `main` requires separate authorization: the checked-in
+Azure DevOps pipeline provisions and deploys the gateway when `main` changes.
 
 ### The checked-out branch is not always `main`
 
@@ -277,6 +285,7 @@ accepts a value and discards it.
 | `e1d6570` | README rewritten; 22 accelerator guides replaced by two; screenshots; VNet deployment added |
 | `1033f3c` | Deployment guide leads with the five deployment types |
 | `46bff50` | Citadel Publish Playground (on `citadel-samples-playground`) |
+| `8e6fa18` | Reviewed desktop UI, Azure-blue styling, literal Bicep tags and twelve current screenshots published on `taomar-citadel-orchestrator`; no deployment |
 
 ---
 

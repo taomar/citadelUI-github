@@ -21,8 +21,10 @@ git clone --branch main --single-branch https://github.com/taomar/citadelUI-gith
 cd citadelUI-github
 ```
 
-**This UI delivery:** the refreshed desktop UI, literal Bicep resource-tag editor
-and screenshots belong to the
+**This UI delivery:** published source
+[`8e6fa18`](https://github.com/taomar/citadelUI-github/commit/8e6fa1859a5f1ae2ff786179a03ca6d897f67c9f)
+includes the refreshed desktop UI, literal Bicep resource-tag editor and twelve
+current screenshots. This delivery is on the
 [`taomar-citadel-orchestrator` delivery branch](https://github.com/taomar/citadelUI-github/tree/taomar-citadel-orchestrator),
 not `main`. To use this delivery, choose this checkout **instead of** the
 `main` clone above:

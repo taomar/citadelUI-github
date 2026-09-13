@@ -1,14 +1,18 @@
 # Local Release and Offline Operation
 
 The reviewed desktop UI, literal Bicep tag editor, native Bicep/Terraform
-workspaces and timed `/debug` capture are delivered on
+workspaces and timed `/debug` capture were published on 13 September 2026 as
+[`8e6fa18`](https://github.com/taomar/citadelUI-github/commit/8e6fa1859a5f1ae2ff786179a03ca6d897f67c9f).
+This source delivery includes the updated user/reference documentation and all
+twelve current UI screenshots. It is available on
 [`taomar-citadel-orchestrator`](https://github.com/taomar/citadelUI-github/tree/taomar-citadel-orchestrator),
 not merged into `main`. Follow the
 [delivery-branch checkout](../README.md#start-with-a-clone) and record
-`git rev-parse HEAD` before building. The local application-review baseline
-`779d9fd94390e0c36f655d326b0350b1c07d3d6e` is provenance, not a promise that
-this worker commit can be fetched from GitHub; the published branch identifies
-the delivered source.
+`git rev-parse HEAD` before building. Use the published commit above to identify
+this application baseline; later documentation-only commits can advance the
+branch without changing application behavior. The
+[implementation record](../guides/ui-review-implementation-plan.md) retains the
+earlier local review candidates and their acceptance history.
 
 Source publication does not build or distribute a container image, replace an
 existing installation, or deploy Azure resources. An older clone, the image's

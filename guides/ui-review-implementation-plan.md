@@ -1,5 +1,19 @@
 # Desktop UI improvement plan
 
+## Published delivery
+
+The approved desktop UI queue was committed and published on 13 September 2026
+as [`8e6fa18`](https://github.com/taomar/citadelUI-github/commit/8e6fa1859a5f1ae2ff786179a03ca6d897f67c9f)
+on `taomar-citadel-orchestrator`. The delivery includes the accepted interaction
+and Azure-blue styling corrections, source-defined literal Bicep tag editing,
+updated documentation and twelve current screenshots.
+
+The remote commit, tree and all 778 file blobs matched the verified local
+delivery. `main` was unchanged; no Azure deployment or container-image update
+was performed. All approved implementation and documentation work is complete.
+The dated candidate discussions below preserve the sequence of findings and
+corrections; their intermediate gates are not outstanding work.
+
 ## Decision and source
 
 The user authorized implementation of the UI review's findings and
