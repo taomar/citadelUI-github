@@ -1,7 +1,7 @@
 {
   "name": "citadel-ui-desktop",
   "productName": "Citadel UI",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Desktop package for the Citadel Control Panel",
   "author": "Citadel UI contributors",
   "license": "MIT",
@@ -18,12 +18,17 @@
     "start": "electron-forge start",
     "test": "node --test \"../test/desktop-*.test.mjs\"",
     "smoke": "node run-smoke.mjs",
+    "smoke:packaged": "node run-packaged-smoke.mjs",
     "package": "electron-forge package",
     "package:win": "electron-forge package --platform=win32 --arch=x64",
     "make": "electron-forge make",
     "make:win": "electron-forge make --platform=win32 --arch=x64",
-    "release:stage": "node stage-release.mjs",
-    "release:win": "npm run make:win && npm run release:stage"
+    "make:mac:x64": "electron-forge make --platform=darwin --arch=x64",
+    "make:mac:arm64": "electron-forge make --platform=darwin --arch=arm64",
+    "release:stage": "node stage-release.mjs --platform=win32 --arch=x64 --checksum-name=SHA256SUMS.txt",
+    "release:win": "npm run make:win && npm run release:stage",
+    "release:mac:x64": "npm run make:mac:x64 && node stage-release.mjs --platform=darwin --arch=x64 --checksum-name=SHA256SUMS-darwin-x64.txt",
+    "release:mac:arm64": "npm run make:mac:arm64 && node stage-release.mjs --platform=darwin --arch=arm64 --checksum-name=SHA256SUMS-darwin-arm64.txt"
   },
   "config": {
     "forge": "./forge.config.cjs"
@@ -33,6 +38,7 @@
   },
   "devDependencies": {
     "@electron-forge/cli": "7.11.2",
+    "@electron-forge/maker-dmg": "7.11.2",
     "@electron-forge/maker-squirrel": "7.11.2",
     "@electron-forge/maker-zip": "7.11.2",
     "electron": "44.3.0"

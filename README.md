@@ -6,22 +6,25 @@ The configuration surface for the Citadel AI Hub Gateway.
 
 ---
 
-## Install the Windows desktop release
+## Install a desktop release
 
 The packaged Electron application needs no Docker, Node.js, or source checkout.
 The current desktop release is
-[Citadel UI Desktop v1.0.0](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.0.0).
+[Citadel UI Desktop v1.1.0](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.0).
 Download:
 
 - [Windows installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe)
 - [Portable Windows ZIP](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUIPortable.zip)
+- [macOS Apple Silicon DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-arm64.dmg)
+- [macOS Intel DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-x64.dmg)
 - [SHA-256 checksums](https://github.com/taomar/citadelUI-github/releases/latest/download/SHA256SUMS.txt)
 
-Verify the downloaded file against `SHA256SUMS.txt` before opening it. The first
-desktop release is unsigned, so Windows reports an unknown publisher. The
-desktop app listens only on `127.0.0.1:4174`, stores its state in the current
-user's application-data directory, and keeps local repository handles in its
-own Electron profile.
+ZIP packages for both Mac architectures are also attached to the release.
+Verify the downloaded file against `SHA256SUMS.txt` before opening it. Packages
+are unsigned and the macOS builds are not notarized until Apple credentials are
+configured. The desktop app listens only on `127.0.0.1:4174`, stores its state
+in the current user's application-data directory, and keeps local repository
+handles in its own Electron profile.
 
 ## Start with a clone
 
@@ -79,7 +82,7 @@ Azure deployment.
 
 | Deployment path | Complete commands |
 | --- | --- |
-| Windows desktop installer or portable ZIP | [Install the Electron release](./guides/deployment.md#windows-desktop-release) |
+| Windows or macOS desktop package | [Install the Electron release](./guides/deployment.md#windows-and-macos-desktop-release) |
 | Fresh Azure deployment behind a new VNet | [Scenario 1: private mode](./guides/deployment.md#fresh-azure-deployment) |
 | Fresh Azure deployment on a public endpoint | [Scenario 1: public mode](./guides/deployment.md#fresh-azure-deployment) |
 | Deployment on an existing subnet and existing resources | [Reuse named resources; create anything unnamed](./guides/deployment.md#deploy-on-an-existing-subnet-and-resources) |

@@ -76,10 +76,15 @@ user's Electron `userData` directory.
 
 For desktop credential persistence, the existing AES-256-GCM envelope key is
 generated once and protected on disk with Electron `safeStorage` before being
-handed to the utility process. On Windows this uses DPAPI for the current user.
-The plaintext key is not placed in an environment variable, command line, log,
-or renderer. If operating-system encryption is unavailable, credential
-persistence is unavailable; the application does not fall back to plaintext.
+handed to the utility process. This uses DPAPI for the current Windows user and
+Keychain on macOS. The plaintext key is not placed in an environment variable,
+command line, log, or renderer. If operating-system encryption is unavailable,
+credential persistence is unavailable; the application does not fall back to
+plaintext.
+
+macOS should use a consistent Developer ID signature in production. Unsigned
+builds may not be recognized as the same Keychain application after an update,
+and they are not notarized for Gatekeeper.
 
 ## GitHub credentials
 

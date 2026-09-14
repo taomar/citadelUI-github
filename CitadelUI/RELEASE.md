@@ -61,9 +61,27 @@ under `desktop\out\release` with stable asset names:
 - `CitadelUIPortable.zip`
 - `SHA256SUMS.txt`
 
-The first release tag is `citadel-ui-desktop-v1.0.0`. Publish a later version
-only after updating `desktop/package.json`, rebuilding the assets, and committing
-the exact source used for the package.
+The first cross-platform release tag is `citadel-ui-desktop-v1.1.0`. A matching
+tag triggers `.github/workflows/citadel-ui-desktop-release.yml`, which builds and
+smoke-tests Windows x64, macOS Apple Silicon, and macOS Intel packages before
+publishing one GitHub Release with combined checksums.
+
+For local macOS builds, run on the matching Mac:
+
+```bash
+npm run release:mac:arm64
+npm run release:mac:x64
+```
+
+Unsigned macOS output is not notarized. Production signing requires a Developer
+ID Application certificate. The workflow accepts a base64 PKCS#12 certificate
+through `MACOS_CERTIFICATE` and its password through
+`MACOS_CERTIFICATE_PASSWORD`. Add `APPLE_ID`, `APPLE_PASSWORD`, and
+`APPLE_TEAM_ID` to notarize with an app-specific password. These values belong
+in GitHub Actions secrets, never in the repository or release assets.
+
+Publish a later version only after updating `desktop/package.json`, rebuilding
+the assets, and committing the exact source used for the package.
 
 Local output is unsigned. A distributed Windows release must configure a
 user-owned code-signing certificate outside the repository and verify the

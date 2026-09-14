@@ -3,7 +3,8 @@
 Every mutation uses one transaction journal under
 `/data/environments/<environment-id>/transactions/<transaction-id>/`.
 In the Electron release, `/data` maps to the `data` directory beneath Electron's
-current-user `userData` directory.
+current-user `userData` directory: normally `%APPDATA%\Citadel UI\data` on
+Windows or `~/Library/Application Support/Citadel UI/data` on macOS.
 
 ## States
 

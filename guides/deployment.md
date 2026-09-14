@@ -10,7 +10,7 @@ azd; no large PowerShell configuration block is needed.
 
 | Scenario | Instructions |
 | --- | --- |
-| Windows desktop release, no Docker | [Installer or portable ZIP](#windows-desktop-release) |
+| Windows or macOS desktop release, no Docker | [Installer, DMG, or portable ZIP](#windows-and-macos-desktop-release) |
 | New Azure resources, public or private VNet | [Fresh deployment](#fresh-azure-deployment) |
 | Existing resources or a mixture of existing and new | [Resource reuse](#deploy-on-an-existing-subnet-and-resources) |
 | Local Docker | [PowerShell](#local-deployment---powershell) or [Bash](#local-deployment---bash) |
@@ -24,25 +24,34 @@ and private log-query checks, repeated after redeployment. The eight shared
 resource configuration snapshots were unchanged. Fresh private mode has not
 been tested live.
 
-## Windows desktop release
+## Windows and macOS desktop release
 
-The current Windows x64 Electron release is
-[Citadel UI Desktop v1.0.0](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.0.0).
-It needs no Docker, Node.js, Azure account, or source checkout. Download:
+The current Electron release is
+[Citadel UI Desktop v1.1.0](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.0).
+It needs no Docker, Node.js, Azure account, or source checkout.
 
-- [CitadelUISetup.exe](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe)
-- [CitadelUIPortable.zip](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUIPortable.zip)
-- [SHA256SUMS.txt](https://github.com/taomar/citadelUI-github/releases/latest/download/SHA256SUMS.txt)
+| Platform | Installer | Portable |
+| --- | --- | --- |
+| Windows x64 | [Installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe) | [ZIP](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUIPortable.zip) |
+| macOS Apple Silicon | [DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-arm64.dmg) | [ZIP](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-arm64.zip) |
+| macOS Intel | [DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-x64.dmg) | [ZIP](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-x64.zip) |
 
-Verify the installer or ZIP against `SHA256SUMS.txt`. Use the installer for a
-normal per-user installation. For the portable package, extract the complete ZIP
-and run `CitadelUI.exe`; do not run the executable from inside the archive.
+Verify every package against
+[SHA256SUMS.txt](https://github.com/taomar/citadelUI-github/releases/latest/download/SHA256SUMS.txt).
+Use the Windows installer or macOS DMG for the normal platform installation
+flow. For a ZIP package, extract the complete archive before running the app.
 
-The first release is unsigned, so Windows reports an unknown publisher. The
-desktop app binds only to `127.0.0.1:4174`, stores application state under the
-current user's Electron `userData` directory, and uses operating-system secure
-storage for the credential-encryption key. Chrome and Edge directory handles do
-not transfer into Electron, so reconnect an existing local workspace once.
+Packages are unsigned and the macOS packages are not notarized until release
+signing credentials are configured. Windows therefore reports an unknown
+publisher, and macOS Gatekeeper does not treat the package as trusted software.
+Production distribution requires Windows code signing or an Apple Developer ID
+signature plus notarization.
+
+The desktop app binds only to `127.0.0.1:4174`, stores application state under
+the current user's Electron `userData` directory, and uses operating-system
+secure storage for the credential-encryption key: DPAPI on Windows and Keychain
+on macOS. Browser directory handles do not transfer between Chrome, Edge, and
+Electron, so reconnect an existing local workspace once.
 
 On first launch, create the one owner account for this desktop data store. There
 is no password reset. Back up the desktop `userData\data` directory using the

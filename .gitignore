@@ -404,6 +404,9 @@ local/**/*
 
 .debug
 .git*
+!.github/
+!.github/workflows/
+!.github/workflows/citadel-ui-desktop-release.yml
 .vscode
 **/__azurite_db*__.json
 **/__blobstorage__

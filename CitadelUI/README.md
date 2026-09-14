@@ -56,18 +56,23 @@ Open <http://127.0.0.1:4173>. The origin and port are fixed because retained
 directory handles are origin-bound. If the port is occupied, stop the conflicting
 process you own rather than changing ports.
 
-## Run the Windows desktop application
+## Run the Windows or macOS desktop application
 
 The Electron release runs the existing Control Panel without Docker, Node.js, or
 a source checkout. The current version is
-[Citadel UI Desktop v1.0.0](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.0.0).
-Download the
+[Citadel UI Desktop v1.1.0](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.0).
+Windows users can download the
 [Windows installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe),
-the
+or
 [portable ZIP](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUIPortable.zip),
-and
+while macOS users can download an
+[Apple Silicon DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-arm64.dmg)
+or
+[Intel DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-x64.dmg).
+Portable macOS ZIPs are attached to the same release. Verify packages using
 [SHA-256 checksums](https://github.com/taomar/citadelUI-github/releases/latest/download/SHA256SUMS.txt).
-Verify the package before opening it. The first release is unsigned.
+Packages are unsigned and the macOS builds are not notarized until signing
+credentials are configured.
 
 To build or run Electron from source instead:
 
@@ -86,8 +91,10 @@ npm run release:win
 The publishable assets are written to `CitadelUI\desktop\out\release`.
 The desktop app uses the fixed origin `http://127.0.0.1:4174` and stores its
 application data under Electron's `userData` directory, normally
-`%APPDATA%\Citadel UI`. Directory handles retained by Chrome or Edge do not
-transfer to Electron, so existing local environments must be reconnected once.
+`%APPDATA%\Citadel UI` on Windows or
+`~/Library/Application Support/Citadel UI` on macOS. Directory handles retained
+by another browser do not transfer to Electron, so existing local environments
+must be reconnected once.
 
 ## Deploy to Azure
 
