@@ -151,4 +151,5 @@ test('desktop release workflow builds and publishes both Mac architectures', asy
   assert.match(workflow, /fetch-depth: 0/);
   assert.match(workflow, /test-windows-update\.mjs/);
   assert.match(workflow, /citadel_ui-\*\.nupkg/);
+  assert.match(workflow, /path: CitadelUI\/desktop\/\.generated\/source-step-\*\.png\s+include-hidden-files: true/);
 });

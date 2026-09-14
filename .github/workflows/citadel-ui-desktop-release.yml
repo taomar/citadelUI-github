@@ -85,6 +85,7 @@ jobs:
         with:
           name: desktop-ui-evidence-${{ matrix.platform }}-${{ matrix.arch }}
           path: CitadelUI/desktop/.generated/source-step-*.png
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
       - name: Stage release assets
