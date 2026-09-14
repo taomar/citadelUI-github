@@ -9,15 +9,15 @@ repository access into Electron's main process.
 The current package is
 [Citadel UI Desktop v1.1.4](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.4).
 Download the
-[Windows installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe)
+[Windows installer](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUISetup.exe)
 or
-[portable ZIP](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUIPortable.zip),
+[portable ZIP](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUIPortable.zip),
 or a macOS
-[Apple Silicon DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-arm64.dmg)
+[Apple Silicon DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUI-macOS-arm64.dmg)
 or
-[Intel DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-x64.dmg).
+[Intel DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUI-macOS-x64.dmg).
 Then verify it with
-[SHA256SUMS.txt](https://github.com/taomar/citadelUI-github/releases/latest/download/SHA256SUMS.txt).
+[SHA256SUMS.txt](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/SHA256SUMS.txt).
 Packages are unsigned and the macOS packages are not notarized until signing
 credentials are configured.
 
@@ -56,7 +56,11 @@ Electron fixes. Earlier desktop packages through v1.1.3 used the September 7
 application and did not include the later modularization, native Terraform and UI
 fixes.
 
-Build from `taomar-electron-desktop-packaging`, not an older `main` checkout.
+For the exact released source, use tag `citadel-ui-desktop-v1.1.4` at
+`bb6b7cae2f42ff5f4f3dac6dd9cfcd6aedcb7a9f`, following the
+[pinned checkout](../../README.md#start-with-a-clone). The development branch
+`taomar-electron-desktop-packaging` may advance; it is not an immutable build
+identifier. See the [published release record](../RELEASE.md#desktop-v114-release-record).
 `application-source.json` pins the reviewed application commit. Forge compares
 all `server`, `shared` and `web` files with it, then verifies the copied files
 against `resources/desktop-build.json`. Release staging rejects dirty builds.

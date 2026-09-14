@@ -1,18 +1,69 @@
 # Local Release and Offline Operation
 
-The reviewed desktop UI, literal Bicep tag editor, native Bicep/Terraform
-workspaces and timed `/debug` capture were published on 13 September 2026 as
-[`8e6fa18`](https://github.com/taomar/citadelUI-github/commit/8e6fa1859a5f1ae2ff786179a03ca6d897f67c9f).
-This source delivery includes the updated user/reference documentation and all
-twelve current UI screenshots. It is available on
-[`taomar-citadel-orchestrator`](https://github.com/taomar/citadelUI-github/tree/taomar-citadel-orchestrator),
-not merged into `main`. Follow the
-[delivery-branch checkout](../README.md#start-with-a-clone) and record
-`git rev-parse HEAD` before building. Use the published commit above to identify
-this application baseline; later documentation-only commits can advance the
-branch without changing application behavior. Internal handovers and detailed
-review records are kept locally by the release operator, not published under
-`guides/`.
+The current packaged desktop delivery is
+[Citadel UI Desktop v1.1.4](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.4).
+Its full build source is `bb6b7cae2f42ff5f4f3dac6dd9cfcd6aedcb7a9f`, not `main`.
+That commit integrates the application baseline from `taomar-citadel-orchestrator`
+with the Electron Windows/macOS fixes, visible version and update controls.
+Follow the [pinned release checkout](../README.md#start-with-a-clone).
+Internal handovers and detailed review records remain local-only.
+
+## Desktop v1.1.4 release record
+
+Published on 14 September 2026. The identities below describe the exact tested
+and distributed build, rather than the current tip of a development branch.
+
+| Identity | Value |
+| --- | --- |
+| Source tag | [`citadel-ui-desktop-v1.1.4`](https://github.com/taomar/citadelUI-github/tree/citadel-ui-desktop-v1.1.4) |
+| Complete desktop build commit | [`bb6b7cae2f42ff5f4f3dac6dd9cfcd6aedcb7a9f`](https://github.com/taomar/citadelUI-github/commit/bb6b7cae2f42ff5f4f3dac6dd9cfcd6aedcb7a9f) |
+| Embedded application baseline | [`5791d4358f2696c1f4ec2805bd6bcfc2c7d729e8`](https://github.com/taomar/citadelUI-github/commit/5791d4358f2696c1f4ec2805bd6bcfc2c7d729e8), for `server`, `shared` and `web` |
+| Desktop version label | `v1.1.4 \| 5791d43` |
+| Release branch | `taomar-electron-desktop-packaging`; later documentation commits can advance this branch |
+| Per-platform build identity | `CitadelUI-build-win32-x64.json`, `CitadelUI-build-darwin-arm64.json`, `CitadelUI-build-darwin-x64.json` |
+| Exact artifact checksums | [v1.1.4 SHA256SUMS.txt](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/SHA256SUMS.txt) |
+
+The application baseline alone does not include the complete Electron wrapper
+and updater. Use the full build commit or tag to retrieve everything shipped.
+Use the release downloads for the identical binaries: rebuilding the same source
+can produce different hashes because of timestamps and platform/signing inputs.
+Documentation-only follow-ups do not move this tag, rebuild these packages, or
+replace published assets.
+
+### Observed release evidence
+
+GitHub-hosted evidence is recorded in the successful
+[tagged release workflow](https://github.com/taomar/citadelUI-github/actions/runs/34866034370).
+The [workflow definition](../.github/workflows/citadel-ui-desktop-release.yml)
+requires the native jobs before publication; this is not a claim about required
+merge checks or branch protection.
+
+| Target | Observed result |
+| --- | --- |
+| Windows x64 | Packaged UI, version/update control, native parser, Diagnostics, folder-permission and persistent-workspace checks passed |
+| Windows installed upgrade | Real Squirrel upgrade from v1.1.3 to v1.1.4 passed, with retained-state and installed-runtime verification |
+| macOS Apple Silicon | Native packaged checks passed; in-place updates remained disabled |
+| macOS Intel | Native packaged checks passed; in-place updates remained disabled |
+| Downloaded ZIPs | Windows, Apple Silicon and Intel archives each contained 173 application files matching the pinned Git source and their recorded hashes |
+| Published Windows update feed | The product checker verified the live v1.1.4 feed and its checksum after publication |
+
+The implementation evidence is in
+[source integrity](desktop/source-integrity.mjs),
+[packaged acceptance](desktop/run-packaged-smoke.mjs), and the
+[installed Windows upgrade check](desktop/test-windows-update.mjs).
+The latter is restricted to disposable GitHub-hosted Windows runners.
+
+The update-button smoke test uses a simulated newer release; it does not mean
+v1.1.5 has been published. The real restricted-directory permission probe and
+the writable origin-private filesystem workspace test are separate. Native
+folder pickers, arbitrary user folders and macOS privacy prompts are not
+automated. These release gates do not claim a fully green repository-wide
+suite, cloud deployment proof or a security certification.
+
+macOS and portable Windows updates are notification-only. Installed Windows
+requires separate download/staging and restart consent. Packages are unsigned;
+the Mac packages are not notarized. See the
+[combined install/update guide](../guides/deployment.md#windows-and-macos-desktop-release).
 
 Source publication does not build or distribute a container image, replace an
 existing installation, or deploy Azure resources. An older clone, the image's
@@ -110,8 +161,9 @@ latest modularization and fixes. It retains the Windows/macOS Electron fixes.
 Desktop versions through v1.1.3 incorrectly used the September 7 application
 baseline. Do not use a version label or a startup smoke check as source proof.
 
-Build the Electron package from `taomar-electron-desktop-packaging`, separately
-from the container. `desktop/application-source.json` pins the accepted runtime:
+To rebuild this release's source, use tag `citadel-ui-desktop-v1.1.4`, separately
+from the container. The development branch can advance beyond the released
+commit. `desktop/application-source.json` pins the embedded application baseline:
 
 ```powershell
 Set-Location desktop

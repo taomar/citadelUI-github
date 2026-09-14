@@ -43,19 +43,18 @@ Requirements:
 - Microsoft Edge or Google Chrome desktop.
 - A user-owned directory for durable Citadel UI data.
 
-The examples clone published **main**; no sample branch is needed.
-The refreshed desktop UI, literal Bicep tag editor and screenshots are delivered
-separately on `taomar-citadel-orchestrator`. For that version, use the
-[delivery-branch checkout](../README.md#start-with-a-clone), skip the clone in
-the shell example below and enter that checkout's `CitadelUI` directory.
-Record its exact commit before building. Source publication does not replace
+The examples pin `citadel-ui-desktop-v1.1.4`, the exact source used for the
+published desktop build: `bb6b7cae2f42ff5f4f3dac6dd9cfcd6aedcb7a9f`.
+For an existing matching checkout, skip the clone and enter its `CitadelUI`
+directory. Do not substitute an older `main` checkout or a moving branch.
+Source publication does not replace
 an existing image or installation. See
 [release and offline operation](RELEASE.md).
 
 ### PowerShell
 
 ```powershell
-git clone --branch main --single-branch https://github.com/taomar/citadelUI-github.git
+git clone --branch citadel-ui-desktop-v1.1.4 --single-branch https://github.com/taomar/citadelUI-github.git
 Set-Location .\citadelUI-github\CitadelUI
 if (-not (Test-Path container.env)) { Copy-Item container.env.example container.env }
 .\scripts\start.ps1
@@ -64,7 +63,7 @@ if (-not (Test-Path container.env)) { Copy-Item container.env.example container.
 ### Bash
 
 ```bash
-git clone --branch main --single-branch https://github.com/taomar/citadelUI-github.git
+git clone --branch citadel-ui-desktop-v1.1.4 --single-branch https://github.com/taomar/citadelUI-github.git
 cd citadelUI-github/CitadelUI
 if [ ! -f container.env ]; then cp container.env.example container.env; fi
 # Docker Engine on Linux needs the bind directory writable by container UID 10001.
@@ -89,15 +88,15 @@ The Electron release runs the existing Control Panel without Docker, Node.js, or
 a source checkout. The current version is
 [Citadel UI Desktop v1.1.4](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.4).
 Windows users can download the
-[Windows installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe),
+[Windows installer](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUISetup.exe),
 or
-[portable ZIP](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUIPortable.zip),
+[portable ZIP](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUIPortable.zip),
 while macOS users can download an
-[Apple Silicon DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-arm64.dmg)
+[Apple Silicon DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUI-macOS-arm64.dmg)
 or
-[Intel DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-x64.dmg).
+[Intel DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUI-macOS-x64.dmg).
 Portable macOS ZIPs are attached to the same release. Verify packages using
-[SHA-256 checksums](https://github.com/taomar/citadelUI-github/releases/latest/download/SHA256SUMS.txt).
+[SHA-256 checksums](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/SHA256SUMS.txt).
 Packages are unsigned and the macOS builds are not notarized until signing
 credentials are configured. See the
 [combined Windows and macOS guide](../guides/deployment.md#windows-and-macos-desktop-release)
@@ -107,7 +106,7 @@ fine-grained GitHub PAT requirements.
 To build or run Electron from source instead:
 
 ```powershell
-git clone --branch taomar-electron-desktop-packaging --single-branch https://github.com/taomar/citadelUI-github.git
+git clone --branch citadel-ui-desktop-v1.1.4 --single-branch https://github.com/taomar/citadelUI-github.git
 Set-Location .\citadelUI-github
 Set-Location .\CitadelUI\desktop
 npm ci
@@ -121,7 +120,9 @@ npm run release:win
 ```
 
 The publishable assets are written to `CitadelUI\desktop\out\release`.
-Version v1.1.4 integrates application revision `5791d43` from
+The complete released build is commit `bb6b7cae2f42ff5f4f3dac6dd9cfcd6aedcb7a9f`;
+the [release record](RELEASE.md#desktop-v114-release-record) pins its evidence
+and artifacts. Version v1.1.4 integrates application revision `5791d43` from
 `taomar-citadel-orchestrator`; versions through v1.1.3 contained the older
 September 7 application. `desktop/application-source.json` pins the accepted
 revision. Packaging refuses a different runtime tree and verifies the shipped

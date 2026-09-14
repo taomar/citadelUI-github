@@ -4,11 +4,12 @@ Citadel edits Bicep/Citadel configuration and native Terraform inputs in
 independent workspaces. Changes remain drafts until you review and save.
 It does not run Terraform, deploy resources or manage state.
 
-This guide and its refreshed screenshots describe the reviewed desktop/tag UI
-on `taomar-citadel-orchestrator`, not an older `main` checkout or running image.
-Use the [delivery-branch checkout](../README.md#start-with-a-clone) or an
-operator-supplied image built from that reviewed source. Publishing the branch
-does not update an existing installation.
+This guide describes the current UI included in desktop release
+`citadel-ui-desktop-v1.1.4`, built from
+`bb6b7cae2f42ff5f4f3dac6dd9cfcd6aedcb7a9f` with application baseline `5791d43`.
+Use the [pinned release checkout](../README.md#start-with-a-clone) or an
+operator-supplied image built from reviewed source, not an older `main` checkout.
+Documentation or source publication does not update an existing installation.
 Screenshots use synthetic files, labels and endpoints, not deployed services.
 
 | Start here | Task |

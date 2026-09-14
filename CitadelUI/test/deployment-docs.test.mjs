@@ -9,7 +9,12 @@ const azdProject = await readFile(new URL('../azure.yaml', import.meta.url), 'ut
 const parameterFile = await readFile(new URL('../infra/main.bicepparam', import.meta.url), 'utf8');
 const mapping = JSON.parse(await readFile(new URL('../infra/main.parameters.json', import.meta.url), 'utf8'));
 const imageScript = await readFile(new URL('../scripts/deploy-image.ps1', import.meta.url), 'utf8');
-const clone = 'git clone --branch main --single-branch https://github.com/taomar/citadelUI-github.git';
+const desktopReadme = await readFile(new URL('../desktop/README.md', import.meta.url), 'utf8');
+const releaseRecord = await readFile(new URL('../RELEASE.md', import.meta.url), 'utf8');
+const desktopPackage = JSON.parse(await readFile(new URL('../desktop/package.json', import.meta.url), 'utf8'));
+const releaseTag = `citadel-ui-desktop-v${desktopPackage.version}`;
+const buildCommit = 'bb6b7cae2f42ff5f4f3dac6dd9cfcd6aedcb7a9f';
+const clone = `git clone --branch ${releaseTag} --single-branch https://github.com/taomar/citadelUI-github.git`;
 
 function section(heading) {
   const start = guide.indexOf(`## ${heading}\n`);
@@ -22,18 +27,23 @@ function codeBlocks(text, language) {
     .map((match) => match[1]);
 }
 
-test('deployment docs: README starts with a main-only clone before the product overview', () => {
+test('deployment docs: checkout instructions pin the exact published build, not main', () => {
   assert.ok(readme.indexOf(clone) >= 0 && readme.indexOf(clone) < readme.indexOf('## Overview'));
   assert.match(readme, /Never run `azd up`/);
+  assert.match(readme, /git rev-parse HEAD/);
+  for (const text of [readme, guide, appReadme, desktopReadme]) {
+    assert.ok(text.includes(buildCommit));
+    assert.doesNotMatch(text, /git clone --branch main\b/);
+  }
 });
 
 test('deployment docs: Electron release assets are operator-facing deployment options', () => {
-  for (const text of [readme, guide, appReadme]) {
-    assert.match(text, /releases\/latest\/download\/CitadelUISetup\.exe/);
-    assert.match(text, /releases\/latest\/download\/CitadelUIPortable\.zip/);
-    assert.match(text, /releases\/latest\/download\/CitadelUI-macOS-arm64\.dmg/);
-    assert.match(text, /releases\/latest\/download\/CitadelUI-macOS-x64\.dmg/);
-    assert.match(text, /releases\/latest\/download\/SHA256SUMS\.txt/);
+  for (const text of [readme, guide, appReadme, desktopReadme]) {
+    for (const asset of ['CitadelUISetup.exe', 'CitadelUIPortable.zip',
+      'CitadelUI-macOS-arm64.dmg', 'CitadelUI-macOS-x64.dmg', 'SHA256SUMS.txt']) {
+      assert.ok(text.includes(`releases/download/${releaseTag}/${asset}`), `Unpinned release asset: ${asset}`);
+    }
+    assert.doesNotMatch(text, /releases\/latest\/download\//);
   }
   const desktop = section('Windows and macOS desktop release');
   assert.match(desktop, /127\.0\.0\.1:4174/);
@@ -45,6 +55,15 @@ test('deployment docs: Electron release assets are operator-facing deployment op
   assert.match(desktop, /gho_/);
 });
 
+test('deployment docs: release record separates the full build from its application baseline', () => {
+  assert.ok(releaseRecord.includes(buildCommit));
+  assert.match(releaseRecord, /5791d4358f2696c1f4ec2805bd6bcfc2c7d729e8/);
+  assert.match(releaseRecord, /actions\/runs\/34866034370/);
+  assert.match(releaseRecord, /173 application files/);
+  assert.match(releaseRecord, /Documentation-only follow-ups do not move this tag/);
+  assert.match(releaseRecord, /simulated newer release/);
+  assert.match(releaseRecord, /Native\s+folder pickers.*are not\s+automated/s);
+});
 test('deployment docs: Azure examples configure a Bicep parameter file instead of a shell parameter map', () => {
   for (const heading of ['Fresh Azure deployment', 'Deploy on an existing subnet and resources']) {
     const text = section(heading);

@@ -40,15 +40,21 @@ server, shared and browser files.
 
 | Platform | Installer | Portable |
 | --- | --- | --- |
-| Windows x64 | [Installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe) | [ZIP](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUIPortable.zip) |
-| macOS Apple Silicon | [DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-arm64.dmg) | [ZIP](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-arm64.zip) |
-| macOS Intel | [DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-x64.dmg) | [ZIP](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-x64.zip) |
+| Windows x64 | [Installer](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUISetup.exe) | [ZIP](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUIPortable.zip) |
+| macOS Apple Silicon | [DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUI-macOS-arm64.dmg) | [ZIP](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUI-macOS-arm64.zip) |
+| macOS Intel | [DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUI-macOS-x64.dmg) | [ZIP](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUI-macOS-x64.zip) |
+
+These links select the exact v1.1.4 assets, not a future `latest` release.
+The full desktop build commit is `bb6b7cae2f42ff5f4f3dac6dd9cfcd6aedcb7a9f`;
+`5791d43` identifies only its embedded application baseline.
+The [release record](../CitadelUI/RELEASE.md#desktop-v114-release-record)
+distinguishes those identities and links the completed Windows/Mac gates.
 
 Use the Apple Silicon package for an M1, M2, M3, M4, or later Apple processor.
 Use the Intel package when **About This Mac** identifies an Intel processor.
 
 Verify every package against
-[SHA256SUMS.txt](https://github.com/taomar/citadelUI-github/releases/latest/download/SHA256SUMS.txt).
+[SHA256SUMS.txt](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/SHA256SUMS.txt).
 Use the Windows installer or macOS DMG for the normal platform installation
 flow. For a ZIP package, extract the complete archive before running the app.
 
@@ -136,13 +142,14 @@ profile while the app is running.
 
 ## Azure prerequisites
 
-**Choose the application version first.** The clone examples below retrieve
-published `main`. The reviewed desktop UI, literal Bicep resource-tag editor,
-native workspaces and timed diagnostics are delivered separately on
-`taomar-citadel-orchestrator`. Use the
-[delivery-branch checkout](../README.md#start-with-a-clone) for that version,
-or an operator-supplied image built from its reviewed source. For an existing
-reviewed checkout, skip the clone and enter its `CitadelUI` directory.
+**Choose the application version first.** The clone examples below pin
+`citadel-ui-desktop-v1.1.4`, whose full source commit is
+`bb6b7cae2f42ff5f4f3dac6dd9cfcd6aedcb7a9f`. This includes the current UI,
+native workspaces, modularization and fixes; it does not follow an older `main`
+checkout or a moving branch. Use the
+[pinned checkout](../README.md#start-with-a-clone) or an operator-supplied image
+built from reviewed source. For an existing matching checkout, skip the clone
+and enter its `CitadelUI` directory.
 Publishing source does not provision Azure or replace a running container.
 Do not run a launcher from an older checkout expecting newer features.
 See [release and offline operation](../CitadelUI/RELEASE.md).
@@ -167,7 +174,7 @@ are never relaxed by reuse.
 Clone and create an azd environment:
 
 ```powershell
-git clone --branch main --single-branch https://github.com/taomar/citadelUI-github.git
+git clone --branch citadel-ui-desktop-v1.1.4 --single-branch https://github.com/taomar/citadelUI-github.git
 cd .\citadelUI-github\CitadelUI
 az login
 azd config set auth.useAzCliAuth true
@@ -203,7 +210,7 @@ the first visitor owns a new container. There is no password reset.
 Clone and create a separate azd environment:
 
 ```powershell
-git clone --branch main --single-branch https://github.com/taomar/citadelUI-github.git
+git clone --branch citadel-ui-desktop-v1.1.4 --single-branch https://github.com/taomar/citadelUI-github.git
 cd .\citadelUI-github\CitadelUI
 az login
 azd config set auth.useAzCliAuth true
@@ -336,7 +343,7 @@ Requires Docker Desktop/Engine 29+ with Compose and Edge or Chrome.
 No Azure account is needed; Windows PowerShell 5.1 or PowerShell 7 works.
 
 ```powershell
-git clone --branch main --single-branch https://github.com/taomar/citadelUI-github.git
+git clone --branch citadel-ui-desktop-v1.1.4 --single-branch https://github.com/taomar/citadelUI-github.git
 cd .\citadelUI-github\CitadelUI
 if (-not (Test-Path container.env)) { Copy-Item container.env.example container.env }
 .\scripts\start.ps1
@@ -351,7 +358,7 @@ Requires Docker Desktop/Engine 29+ with Compose, Bash and Edge or Chrome.
 
 ```bash
 set -euo pipefail
-git clone --branch main --single-branch https://github.com/taomar/citadelUI-github.git
+git clone --branch citadel-ui-desktop-v1.1.4 --single-branch https://github.com/taomar/citadelUI-github.git
 cd citadelUI-github/CitadelUI
 if [ ! -f container.env ]; then cp container.env.example container.env; fi
 if [ "$(uname -s)" = "Linux" ]; then

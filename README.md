@@ -18,11 +18,11 @@ The current desktop release is
 [Citadel UI Desktop v1.1.4](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.4).
 Download:
 
-- [Windows installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe)
-- [Portable Windows ZIP](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUIPortable.zip)
-- [macOS Apple Silicon DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-arm64.dmg)
-- [macOS Intel DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-x64.dmg)
-- [SHA-256 checksums](https://github.com/taomar/citadelUI-github/releases/latest/download/SHA256SUMS.txt)
+- [Windows installer](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUISetup.exe)
+- [Portable Windows ZIP](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUIPortable.zip)
+- [macOS Apple Silicon DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUI-macOS-arm64.dmg)
+- [macOS Intel DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/CitadelUI-macOS-x64.dmg)
+- [SHA-256 checksums](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.4/SHA256SUMS.txt)
 
 See the
 [combined Windows and macOS deployment guide](guides/deployment.md#windows-and-macos-desktop-release)
@@ -36,13 +36,20 @@ configured. The desktop app listens only on `127.0.0.1:4174`, stores its state
 in the current user's application-data directory, and keeps local repository
 handles in its own Electron profile.
 
-**Application source:** v1.1.4 packages
+**Exact desktop build:** tag `citadel-ui-desktop-v1.1.4` points to
+[`bb6b7cae2f42ff5f4f3dac6dd9cfcd6aedcb7a9f`](https://github.com/taomar/citadelUI-github/commit/bb6b7cae2f42ff5f4f3dac6dd9cfcd6aedcb7a9f).
+This is the full application plus Electron wrapper, fixes and update controls.
+The embedded `server`, `shared` and `web` application baseline is
 [`5791d43`](https://github.com/taomar/citadelUI-github/tree/5791d4358f2696c1f4ec2805bd6bcfc2c7d729e8)
 from the current delivery branch, including native Terraform, modularization,
-local-source creation and the latest UI fixes, together with the Electron
-Windows/macOS local-folder fixes. Versions through v1.1.3 packaged the older
-September 7 application. The lower-left version label, window title and attached `CitadelUI-build-*.json`
+local-source creation and the latest UI fixes. The full build adds the Electron
+Windows/macOS local-folder fixes and updater. Versions through v1.1.3 packaged
+the older September 7 application. The lower-left version label, window title
+and attached `CitadelUI-build-*.json`
 identify the actual version and source; startup alone is not release verification.
+See the [published build record](./CitadelUI/RELEASE.md#desktop-v114-release-record)
+for the native Windows/Mac evidence and exact artifact identity. These download
+links are pinned to v1.1.4, rather than following a future `latest` release.
 
 Quit the older application before upgrading. Replace the whole portable folder
 or macOS `.app`, not just its executable, and retain the existing application-data
@@ -58,30 +65,27 @@ Install this updater-enabled release once to use future in-place Windows updates
 ## Start with a clone
 
 These instructions run **Citadel UI only**, not the gateway or sample apps.
-The normal published checkout is:
+To get the exact source used for the published desktop build, clone its tag:
 
 ```text
-git clone --branch main --single-branch https://github.com/taomar/citadelUI-github.git
-cd citadelUI-github
-```
-
-**This UI delivery:** published source
-[`8e6fa18`](https://github.com/taomar/citadelUI-github/commit/8e6fa1859a5f1ae2ff786179a03ca6d897f67c9f)
-includes the refreshed desktop UI, literal Bicep resource-tag editor and twelve
-current screenshots. This delivery is on the
-[`taomar-citadel-orchestrator` delivery branch](https://github.com/taomar/citadelUI-github/tree/taomar-citadel-orchestrator),
-not `main`. To use this delivery, choose this checkout **instead of** the
-`main` clone above:
-
-```text
-git clone --branch taomar-citadel-orchestrator --single-branch https://github.com/taomar/citadelUI-github.git
+git clone --branch citadel-ui-desktop-v1.1.4 --single-branch https://github.com/taomar/citadelUI-github.git
 cd citadelUI-github
 git rev-parse HEAD
 ```
 
-Record the returned commit when building an image. Publishing source does not
-update an existing container or Azure deployment; an older image or `main`
-checkout can lack these changes. See
+The returned commit must be `bb6b7cae2f42ff5f4f3dac6dd9cfcd6aedcb7a9f`.
+A detached HEAD is normal when checking out a release tag. Do not substitute
+`main` or a moving branch when you need this exact release:
+`taomar-electron-desktop-packaging` can advance with later documentation or work,
+and `taomar-citadel-orchestrator` identifies the application baseline without
+the complete Electron delivery.
+
+The downloadable packages are the exact tested binaries. Rebuilding the same
+source may produce different archive hashes because of packaging timestamps
+and platform/signing inputs. Documentation-only follow-ups do not move the
+release tag or replace its published assets.
+
+Publishing source does not update an existing container or Azure deployment. See
 [release and offline operation](./CitadelUI/RELEASE.md).
 
 The application and its deployment live in **`CitadelUI/`**. Never run `azd up`
