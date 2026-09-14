@@ -27,7 +27,7 @@ been tested live.
 ## Windows and macOS desktop release
 
 The current Electron release is
-[Citadel UI Desktop v1.1.1](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.1).
+[Citadel UI Desktop v1.1.2](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.2).
 It needs no Docker, Node.js, Azure account, or source checkout.
 
 | Platform | Installer | Portable |

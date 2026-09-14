@@ -266,8 +266,9 @@ function configureSession() {
 }
 
 async function probeRestrictedFileSystemAccess(window) {
-  const previousClipboard = await clipboard.read();
   try {
+    window.show();
+    window.webContents.focus();
     await window.webContents.executeJavaScript(`
       (() => {
         globalThis.__citadelDesktopFileProbe = {
@@ -298,8 +299,13 @@ async function probeRestrictedFileSystemAccess(window) {
         document.body.focus();
       })()
     `);
-    await clipboard.write([
-      new ClipboardItem({ 'text/uri-list': pathToFileURL(homedir()).href }),
+    await Promise.race([
+      clipboard.write([
+        new ClipboardItem({ 'text/uri-list': pathToFileURL(homedir()).href }),
+      ]),
+      delay(5_000).then(() => {
+        throw new Error('Restricted local file clipboard setup timed out.');
+      }),
     ]);
     window.webContents.focus();
     window.webContents.paste();
@@ -326,7 +332,7 @@ async function probeRestrictedFileSystemAccess(window) {
     return { done: false, error: 'Restricted local file access probe timed out' };
   } finally {
     clipboard.clear();
-    if (previousClipboard.length > 0) await clipboard.write(previousClipboard);
+    window.hide();
   }
 }
 

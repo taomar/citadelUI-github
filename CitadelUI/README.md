@@ -60,7 +60,7 @@ process you own rather than changing ports.
 
 The Electron release runs the existing Control Panel without Docker, Node.js, or
 a source checkout. The current version is
-[Citadel UI Desktop v1.1.1](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.1).
+[Citadel UI Desktop v1.1.2](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.2).
 Windows users can download the
 [Windows installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe),
 or
