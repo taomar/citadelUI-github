@@ -89,6 +89,12 @@ jobs:
           retention-days: 7
       - name: Stage release assets
         run: node stage-release.mjs --platform=${{ matrix.platform }} --arch=${{ matrix.arch }} --checksum-name=SHA256SUMS-${{ matrix.platform }}-${{ matrix.arch }}.txt
+      - name: Verify installed Windows upgrade
+        if: matrix.platform == 'win32'
+        timeout-minutes: 8
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node test-windows-update.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: citadel-ui-desktop-${{ matrix.platform }}-${{ matrix.arch }}
@@ -124,7 +130,9 @@ jobs:
             CitadelUI-macOS-x64.zip \
             CitadelUI-build-win32-x64.json \
             CitadelUI-build-darwin-arm64.json \
-            CitadelUI-build-darwin-x64.json |
+            CitadelUI-build-darwin-x64.json \
+            RELEASES \
+            citadel_ui-*.nupkg |
             awk '{ print toupper($1) "  " $2 }' > SHA256SUMS.txt
       - name: Publish release
         shell: bash
@@ -153,8 +161,11 @@ jobs:
           - \`CitadelUI-macOS-x64.dmg\` and \`.zip\` - Intel Macs
           - \`SHA256SUMS.txt\` - checksums for every package
           - \`CitadelUI-build-*.json\` - application/release revisions and bundled runtime hashes for each platform
+          - \`RELEASES\` and \`citadel_ui-*.nupkg\` - the installed Windows application's in-place update feed
 
           Quit any older Citadel UI instance before opening this release. Replace the complete portable folder or macOS application, not only the executable. The window title and lower-left label display the desktop version and application source revision.
+
+          The button beneath the version checks for updates. macOS and portable Windows copies notify only. Supported installed Windows builds can download and prepare an update after confirmation, then restart after a separate confirmation. Automatic checks never download or restart the app. Install this updater-enabled release once before using future in-app Windows updates.
 
           Unless signing secrets were configured for this workflow, these packages are unsigned and the macOS packages are not notarized. Verify the checksum before opening a package. Production macOS distribution requires an Apple Developer ID certificate and notarization.
           EOF

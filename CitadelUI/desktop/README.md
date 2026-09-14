@@ -74,6 +74,32 @@ Quit an older instance before starting an update; the single-instance behavior
 otherwise focuses the already-running application. Replace the complete portable
 folder or `.app` and preserve the existing `userData` profile.
 
+## Update control
+
+**Check for updates** is directly beneath the version label. Release builds
+check on startup and every four hours, notifying once per newer version per
+launch. The check reads only public metadata for stable desktop tags in this
+repository. OS notifications supplement the inline status; failures stay
+visible with a retry action.
+
+macOS is deliberately notification-only, including signed builds. Portable
+Windows is also notification-only. In-place updating requires an installed
+Windows x64 build with its accessible Squirrel `Update.exe`, a clean build, and
+the release's verified `RELEASES` / `.nupkg` assets. The feed is tied to the
+selected tag, checksum-verified against GitHub metadata and validated before
+the native updater runs.
+
+The user first approves downloading/staging, then separately approves a restart.
+Nothing is downloaded by automatic checks. A full update package may be needed.
+The updater does not reset `userData`. This release must be installed once
+before later Windows releases can be applied from inside the app.
+
+The sandbox preload exposes only update-state/check/prepare/restart/release-view
+methods. Main-process IPC validates the exact main window, its top frame and
+the desktop origin. It exposes no filesystem, command execution or credential
+primitive. `updates.mjs` owns the testable policy/state machine;
+`electron-updates.mjs` owns native integration and `update-ui.mjs` the footer.
+
 ## Windows release package
 
 ```powershell

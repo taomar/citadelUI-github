@@ -16,6 +16,8 @@ import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { verifyPackagedSources } from './source-integrity.mjs';
+import { configureDesktopUpdates } from './electron-updates.mjs';
+import { installDesktopFooter } from './update-ui.mjs';
 
 import {
   DESKTOP_ALLOWED_HOST,
@@ -48,6 +50,7 @@ let mainWindow = null;
 let serverProcess = null;
 let quitting = false;
 let desktopBuild = null;
+let desktopUpdates = null;
 
 function atomicWrite(path, bytes) {
   return mkdir(dirname(path), { recursive: true }).then(async () => {
@@ -598,36 +601,7 @@ async function waitForRenderer(window, expression, label) {
 }
 
 async function installVersionBadge(window) {
-  await window.webContents.insertCSS(`
-    #citadel-desktop-version {
-      position: fixed;
-      left: .5rem;
-      bottom: .5rem;
-      z-index: 40;
-      padding: .125rem .375rem;
-      border-radius: .2rem;
-      color: var(--nav-muted, #c3dcf2);
-      background: var(--nav, #0b3c68);
-      font-family: inherit;
-      font-size: .6875rem;
-      line-height: 1.4;
-      white-space: nowrap;
-      user-select: text;
-    }
-  `);
-  const label = desktopVersionLabel(desktopBuild);
-  const title = `Citadel UI ${desktopBuild.version}\nApplication source: ${desktopBuild.applicationRevision}\nRelease: ${desktopBuild.releaseRevision || 'development'}`;
-  await window.webContents.executeJavaScript(`(() => {
-    let badge = document.getElementById('citadel-desktop-version');
-    if (!badge) {
-      badge = document.createElement('small');
-      badge.id = 'citadel-desktop-version';
-      badge.setAttribute('aria-label', 'Citadel UI desktop version and application source');
-      document.body.append(badge);
-    }
-    badge.textContent = ${JSON.stringify(label)};
-    badge.title = ${JSON.stringify(title)};
-  })()`);
+  await installDesktopFooter(window, desktopBuild, window === mainWindow);
 }
 
 function retainVersionBadge(window) {
@@ -655,18 +629,34 @@ async function runInterfaceAcceptance(window) {
   const versionBadge = await window.webContents.executeJavaScript(`(() => {
     const badge = document.getElementById('citadel-desktop-version');
     const bounds = badge?.getBoundingClientRect();
+    const footer = document.getElementById('citadel-desktop-footer')?.getBoundingClientRect();
+    const update = document.getElementById('citadel-desktop-update')?.getBoundingClientRect();
     return {
       text: badge?.textContent,
       left: bounds?.left,
-      bottom: bounds ? innerHeight - bounds.bottom : null,
-      fontSize: badge ? parseFloat(getComputedStyle(badge).fontSize) : null
+      bottom: footer ? innerHeight - footer.bottom : null,
+      fontSize: badge ? parseFloat(getComputedStyle(badge).fontSize) : null,
+      updateBelowVersion: Boolean(update && bounds && update.top >= bounds.bottom)
     };
   })()`);
   if (versionBadge.text !== desktopVersionLabel(desktopBuild) ||
       versionBadge.left < 0 || versionBadge.left > 24 ||
       versionBadge.bottom < 0 || versionBadge.bottom > 24 ||
-      !versionBadge.fontSize || versionBadge.fontSize > 12) {
+      !versionBadge.fontSize || versionBadge.fontSize > 12 || !versionBadge.updateBelowVersion) {
     throw new Error(`The lower-left version label is missing or misplaced: ${JSON.stringify(versionBadge)}`);
+  }
+  await window.webContents.executeJavaScript(`document.getElementById('citadel-desktop-update').click()`);
+  await waitForRenderer(window,
+    `document.getElementById('citadel-desktop-footer')?.dataset.updatePhase === 'available'`,
+    'update availability notification');
+  const updates = await window.webContents.executeJavaScript(`(async () => ({
+    ...await window.citadelDesktopUpdates.state(),
+    notification: document.getElementById('citadel-desktop-update-status').textContent,
+    button: document.getElementById('citadel-desktop-update').textContent
+  }))()`);
+  if (updates.canInstall || !updates.availableVersion ||
+      updates.button !== 'Check for updates' || !updates.notification.includes(updates.availableVersion)) {
+    throw new Error('The packaged update button did not show the notification-only fixture safely.');
   }
   await window.webContents.executeJavaScript(`(() => {
     const add = [...document.querySelectorAll('.workspace-catalog button')]
@@ -740,7 +730,7 @@ async function runInterfaceAcceptance(window) {
   } finally {
     diagnostics.destroy();
   }
-  return { ownerSignIn: true, currentSourceChoices: true, nativeParser, diagnostics: true, versionBadge, ...controls };
+  return { ownerSignIn: true, currentSourceChoices: true, nativeParser, diagnostics: true, versionBadge, updates, ...controls };
 }
 
 function protectNavigation(window) {
@@ -763,6 +753,7 @@ async function createWindow(desktopSession) {
     allowRunningInsecureContent: false,
     spellcheck: false,
     devTools: !app.isPackaged,
+    preload: join(here, 'preload.cjs'),
   };
   const window = new BrowserWindow({
     width: 1440,
@@ -855,6 +846,8 @@ async function launch() {
   if (desktopBuild.applicationRevision !== source.revision || desktopBuild.version !== app.getVersion()) {
     throw new Error('The desktop version or application source does not match its build identity.');
   }
+  if (process.platform === 'win32') app.setAppUserModelId('com.squirrel.citadel_ui.CitadelUI');
+  desktopUpdates = await configureDesktopUpdates({ build: desktopBuild, getWindow: () => mainWindow, smokeTest });
   const desktopSession = configureSession();
   const keyState = await loadCredentialKey();
   try {
@@ -906,6 +899,7 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', () => {
   quitting = true;
+  desktopUpdates?.dispose();
   serverProcess?.kill();
   serverProcess = null;
 });

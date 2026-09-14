@@ -124,6 +124,25 @@ origin in another sandboxed window with the same isolated settings. Other popup
 URLs remain denied. Packaged runtime hashes and a pinned source revision prevent
 accidental stale/mixed releases; they are not a replacement for code signing.
 
+### Desktop update boundary
+
+The sandbox preload exposes a small update-only IPC interface. Main process
+accepts its calls only from the exact main window's top frame at the desktop
+origin. No filesystem, shell command, repository or credential API is exposed.
+Update checks query public GitHub release metadata for this repository with no
+workspace PAT; release URLs are constructed from validated desktop version tags,
+not accepted from the renderer or release prose.
+
+macOS never invokes an automatic installer. Windows in-place updating requires
+the per-user installed Squirrel updater and explicit download/staging consent.
+The selected release feed's SHA-256 is compared with GitHub metadata; its
+package names, versions and sizes are validated before native execution.
+Squirrel verifies the downloaded packages against that feed. Restart needs
+separate confirmation so the user can save drafts first. Automatic checks and
+notifications do not download, restart, elevate privileges or reset the profile.
+Public GitHub account/release integrity and HTTPS remain part of this trust
+boundary; the current unsigned packages do not claim publisher-signature proof.
+
 For desktop credential persistence, the existing AES-256-GCM envelope key is
 generated once and protected on disk with Electron `safeStorage` before being
 handed to the utility process. This uses DPAPI for the current Windows user and

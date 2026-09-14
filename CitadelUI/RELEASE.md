@@ -128,6 +128,7 @@ under `desktop\out\release` with stable asset names:
 - `CitadelUIPortable.zip`
 - `SHA256SUMS.txt`
 - `CitadelUI-build-win32-x64.json`
+- `RELEASES` and `citadel_ui-<version>-full.nupkg` for installed Windows updates
 
 Forge rejects `server`, `shared` or `web` files that differ from the pinned
 application tree, including extra untracked files, and checks every packaged
@@ -151,6 +152,17 @@ duplicate attachment, attach a second environment, write one Bicep value
 through the production browser provider, and verify the saved bytes through an
 independent retained handle. The workflow does not automate a native directory
 picker or claim that it selected a specific runner filesystem path.
+
+Windows staging validates the Squirrel feed's version, file sizes and package
+hashes and publishes the referenced packages. The native Windows CI check
+installs the checksum-pinned v1.1.3 fixture on a disposable runner, applies the
+candidate feed with `Update.exe`, verifies the installed runtime identity, and
+runs the current packaged acceptance from that installation. It never runs on
+the operator's workstation or overwrites a pre-existing installation.
+
+macOS updates remain notification-only by explicit product policy. Windows
+in-place download/staging and restart each require confirmation; portable
+builds fall back to notification. Automatic checks do not download packages.
 
 For local macOS builds, run on the matching Mac:
 

@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verifyPackagedSources } from './source-integrity.mjs';
+import { validateWindowsFeed } from './updates.mjs';
 
 const desktopRoot = dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(await readFile(resolve(desktopRoot, 'package.json'), 'utf8'));
@@ -90,6 +91,26 @@ sources.push({
   source: resolve(resources, 'desktop-build.json'),
   name: `CitadelUI-build-${platform}-${arch}.json`,
 });
+if (platform === 'win32') {
+  const squirrel = resolve(outputRoot, 'make', 'squirrel.windows', arch);
+  const names = [`citadel_ui-${manifest.version}-full.nupkg`, `citadel_ui-${manifest.version}-delta.nupkg`];
+  const packages = [];
+  for (const entry of await readdir(squirrel)) {
+    if (!names.includes(entry)) continue;
+    const path = resolve(squirrel, entry);
+    packages.push({ name: entry, size: (await stat(path)).size });
+    sources.push({ source: path, name: entry });
+  }
+  const feed = await readFile(resolve(squirrel, 'RELEASES'), 'utf8');
+  validateWindowsFeed(feed, manifest.version, packages);
+  for (const line of feed.trim().split(/\r?\n/)) {
+    const [expected, name] = line.split(' ');
+    const hash = createHash('sha1');
+    for await (const chunk of createReadStream(resolve(squirrel, name))) hash.update(chunk);
+    if (hash.digest('hex') !== expected.toLowerCase()) throw new Error(`Windows updater package checksum mismatch: ${name}`);
+  }
+  sources.push({ source: resolve(squirrel, 'RELEASES'), name: 'RELEASES' });
+}
 
 function sha256(path) {
   return new Promise((resolveHash, rejectHash) => {

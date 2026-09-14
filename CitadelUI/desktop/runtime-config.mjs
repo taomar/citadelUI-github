@@ -51,6 +51,12 @@ export function desktopVersionLabel(info) {
   return `v${info.version} | ${info.applicationRevision.slice(0, 7)}${info.dirty ? ' (dev)' : ''}`;
 }
 
+export function trustedDesktopUpdateRequest(event, expectedWebContents) {
+  return Boolean(expectedWebContents && event?.sender === expectedWebContents &&
+    event.senderFrame === expectedWebContents.mainFrame &&
+    trustedDesktopOrigin(event.senderFrame?.url));
+}
+
 export function trustedDesktopFileSystemRequest(details, expectedWebContents) {
   return Boolean(
     expectedWebContents &&

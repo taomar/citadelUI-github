@@ -142,6 +142,15 @@ and reopens an existing environment, rejects a duplicate attachment, attaches a
 second environment, saves one Bicep value, and reads the saved bytes through an
 independent retained handle. Native directory pickers are not automated in CI.
 
+**Check for updates** appears beneath the version label. macOS is
+notification-only; portable Windows also notifies without trying to install.
+An accessible installed Windows Squirrel updater enables an in-place update
+after download confirmation, with a separate restart confirmation. Owner data,
+workspace records and the credential key remain in the existing profile.
+Release builds check public GitHub metadata at startup and every four hours;
+checks never download packages automatically and use no workspace PAT.
+See [in-app update checks](../guides/deployment.md#in-app-update-checks).
+
 ## Deploy to Azure
 
 The [deployment guide](../guides/deployment.md) contains complete commands for

@@ -71,6 +71,7 @@ module.exports = {
       /^\/run-packaged-smoke\.mjs$/,
       /^\/run-smoke\.mjs$/,
       /^\/stage-release\.mjs$/,
+      /^\/test-windows-update\.mjs$/,
       /^\/README\.md$/,
     ],
     win32metadata: {

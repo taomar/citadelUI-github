@@ -92,6 +92,35 @@ dialog includes **Configuration format**, **Terraform (native)** and
 **Create local from Citadel source**. The Diagnostics link opens a sandboxed
 window on the same desktop origin.
 
+### In-app update checks
+
+**Check for updates** sits below the lower-left version label. Release builds
+also check GitHub shortly after launch and every four hours while running.
+A newer stable desktop release is shown inline and, when supported by the OS,
+as a desktop notification. Checks use public release metadata, not your GitHub
+connection token; an offline check failure does not prevent editing.
+
+- **macOS:** notifications only. **View release** opens the download page;
+  Citadel never automatically downloads, installs or restarts a Mac update.
+- **Installed Windows:** if the per-user Squirrel updater is accessible and the
+  release supplies a verified feed, the button changes to **Update to v...**.
+  Confirm **Download update** to download and stage the application files.
+  **Restart to update** asks separately before closing the application. Save
+  unfinished work first; the owner, key and workspace data are retained.
+- **Portable Windows or unavailable updater:** notifications only. Use the
+  Windows installer to enable future in-place updates.
+
+One initial installation of v1.1.4 or later is required: older releases do not
+contain the update control. Windows may download a full `.nupkg` package;
+smaller differential downloads are not promised, and no manual ZIP/EXE
+download is needed for a supported subsequent in-place update. **Later**
+defers confirmation; checking alone never prepares or installs a package.
+
+The publisher supplies `RELEASES` and the matching `.nupkg` files alongside the
+normal downloads. The app checks the feed's SHA-256 against GitHub asset
+metadata and rejects mismatched versions, paths, sizes or package names before
+starting the native Windows updater. These checks do not replace code signing.
+
 GitHub connections require a fine-grained personal access token beginning with
 `github_pat_`, limited to the intended repositories. An OAuth credential
 beginning with `gho_`, such as the credential normally used internally by the

@@ -48,6 +48,13 @@ Quit the older application before upgrading. Replace the whole portable folder
 or macOS `.app`, not just its executable, and retain the existing application-data
 profile. See the combined guide for the update procedure.
 
+**Updates:** use **Check for updates** below the version label. The app also
+checks at startup and every four hours. macOS and portable Windows copies
+notify only, with a **View release** link. Supported installed Windows builds
+offer **Update to v...** and, after preparation, **Restart to update**. Both
+actions require confirmation; automatic checks never download or restart.
+Install this updater-enabled release once to use future in-place Windows updates.
+
 ## Start with a clone
 
 These instructions run **Citadel UI only**, not the gateway or sample apps.
