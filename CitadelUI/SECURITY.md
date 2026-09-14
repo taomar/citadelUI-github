@@ -72,10 +72,13 @@ existing server runs in a separate Electron utility process bound only to
 denied except for the exact desktop origin and the file-system, clipboard-write,
 and loopback permissions the application uses. Chromium profile data and
 directory handles live in a persistent Electron session under the current
-user's Electron `userData` directory. For operating-system-restricted locations,
-the main process normalizes Electron's serialized origin, confirms the request
-came from the desktop window, and requires an explicit **Allow this folder**
-choice before Chromium receives the handle.
+user's Electron `userData` directory. Electron may omit `webContents` from a
+file-system permission check, so checks use the exact requesting origin;
+permission requests and restricted-path decisions still require the exact
+desktop `webContents`. For operating-system-restricted locations, the main
+process normalizes Electron's serialized origin, confirms the request came from
+the desktop window, and requires an explicit **Allow this folder** choice before
+Chromium receives the handle.
 
 For desktop credential persistence, the existing AES-256-GCM envelope key is
 generated once and protected on disk with Electron `safeStorage` before being

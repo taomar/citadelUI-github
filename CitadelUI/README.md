@@ -60,7 +60,7 @@ process you own rather than changing ports.
 
 The Electron release runs the existing Control Panel without Docker, Node.js, or
 a source checkout. The current version is
-[Citadel UI Desktop v1.1.2](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.2).
+[Citadel UI Desktop v1.1.3](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.3).
 Windows users can download the
 [Windows installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe),
 or
@@ -97,8 +97,12 @@ application data under Electron's `userData` directory, normally
 `%APPDATA%\Citadel UI` on Windows or
 `~/Library/Application Support/Citadel UI` on macOS. Directory handles retained
 by another browser do not transfer to Electron, so existing local environments
-must be reconnected once. The `v1.1.2` native package tests verified restricted
-local-directory access on Windows, Apple Silicon, and Intel Mac.
+must be reconnected once. The native package tests separately verify a real
+restricted operating-system directory handle and a writable persistent
+File System Access workspace inside Electron. The workspace acceptance attaches
+and reopens an existing environment, rejects a duplicate attachment, attaches a
+second environment, saves one Bicep value, and reads the saved bytes through an
+independent retained handle. Native directory pickers are not automated in CI.
 
 ## Deploy to Azure
 

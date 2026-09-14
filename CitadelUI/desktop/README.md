@@ -7,7 +7,7 @@ repository access into Electron's main process.
 ## Install the release
 
 The current package is
-[Citadel UI Desktop v1.1.2](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.2).
+[Citadel UI Desktop v1.1.3](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.3).
 Download the
 [Windows installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe)
 or
@@ -40,8 +40,13 @@ The desktop application uses the fixed origin `http://127.0.0.1:4174`.
 Application state is stored under Electron's `userData` directory, normally
 `%APPDATA%\Citadel UI`. Browser directory handles are kept in the persistent
 `citadel-ui-desktop` Electron session and are separate from handles retained by
-Chrome or Edge. Release `v1.1.2` passed packaged tests on Windows and both Mac
-architectures that granted read access to a restricted local directory handle.
+Chrome or Edge. Packaged tests on Windows and both Mac architectures grant
+read access to a real restricted operating-system directory handle. A separate
+writable acceptance workspace in Electron's persistent File System Access
+storage attaches and reopens an existing environment, rejects a duplicate,
+attaches a second environment, saves one Bicep value, and reads the changed
+bytes through an independent retained handle. Native directory pickers are not
+automated in CI.
 
 ## Windows release package
 

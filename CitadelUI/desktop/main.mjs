@@ -23,6 +23,7 @@ import {
   DESKTOP_PARTITION,
   DESKTOP_PORT,
   decodeCredentialKey,
+  desktopPermissionCheckAllowed,
   desktopPermissionAllowed,
   resourceRoot,
   serverProcessPath,
@@ -221,9 +222,7 @@ function isTrustedContents(webContents) {
 function configureSession() {
   const desktopSession = session.fromPartition(DESKTOP_PARTITION);
   desktopSession.setPermissionCheckHandler(
-    (webContents, permission, requestingOrigin) =>
-      isTrustedContents(webContents) &&
-      desktopPermissionAllowed(permission, requestingOrigin)
+    desktopPermissionCheckAllowed
   );
   desktopSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
     const requestingOrigin = details?.requestingUrl || webContents?.getURL() || '';
@@ -265,71 +264,314 @@ function configureSession() {
   return desktopSession;
 }
 
+function namesWithFillers(signature, minimum, prefix) {
+  const names = [...signature];
+  for (let index = 1; names.length < minimum; index += 1) {
+    names.push(`${prefix}${String(index).padStart(3, '0')}`);
+  }
+  return names;
+}
+
+function parameterType(name) {
+  if (/Units$|Count$|Capacity$|Index$/.test(name)) return 'int';
+  if (/^(enable|use|configure|is)[A-Z]/.test(name)) return 'bool';
+  if (/Instances$|Config$|Defaults$|Aliases$|Mapping$|services$/i.test(name)) return 'array';
+  if (['apim', 'apimManagedIdentity', 'keyVault', 'useCase', 'foundry'].includes(name)) {
+    return 'object';
+  }
+  return 'string';
+}
+
+function parameterValue(name, environmentName) {
+  if (name === 'environmentName') return `'${environmentName}'`;
+  if (name === 'location') return "'westeurope'";
+  if (name === 'apimSku') return "'Developer'";
+  const type = parameterType(name);
+  if (type === 'int') return '1';
+  if (type === 'bool') return 'false';
+  if (type === 'array') return '[]';
+  if (type === 'object') return '{}';
+  return "'fixture'";
+}
+
+function bicepParamText(using, names, environmentName) {
+  return [
+    `using '${using}'`,
+    '',
+    ...names.map((name) => `param ${name} = ${parameterValue(name, environmentName)}`),
+    '',
+  ].join('\n');
+}
+
+function bicepTemplateText(names) {
+  return [
+    "targetScope = 'subscription'",
+    '',
+    ...names.map((name) => `param ${name} ${parameterType(name)}`),
+    '',
+  ].join('\n');
+}
+
+async function desktopFixtureFiles(environmentName) {
+  const runtimeRoot = resourceRoot({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    desktopDirectory: here,
+  });
+  const { primaryCapabilities } = await import(
+    pathToFileURL(join(runtimeRoot, 'shared', 'citadel-core.mjs')).href
+  );
+  const accessRoot = 'bicep/infra/citadel-access-contracts';
+  const mainNames = namesWithFillers(
+    primaryCapabilities.mainSignature,
+    primaryCapabilities.mainMinimumParameters,
+    'desktopMain'
+  );
+  const llmNames = [...primaryCapabilities.llmSignature];
+  const accessNames = namesWithFillers(
+    primaryCapabilities.accessSignature,
+    primaryCapabilities.accessMinimumParameters,
+    'desktopAccess'
+  );
+  return {
+    mainPath: primaryCapabilities.mainPath,
+    files: {
+      [primaryCapabilities.mainPath]: bicepParamText('./main.bicep', mainNames, environmentName),
+      'bicep/infra/main.bicep': bicepTemplateText(mainNames),
+      [primaryCapabilities.llmPath]: bicepParamText('./main.bicep', llmNames, environmentName),
+      'bicep/infra/llm-backend-onboarding/main.bicep': bicepTemplateText(llmNames),
+      [`${accessRoot}/main.bicepparam`]: bicepParamText(
+        'main.bicep',
+        accessNames,
+        environmentName
+      ),
+      [`${accessRoot}/main.bicep`]: bicepTemplateText(accessNames),
+      [`${accessRoot}/policies/default-ai-product-policy.xml`]:
+        '<policies><inbound><base /></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>\n',
+    },
+  };
+}
+
 async function probeRestrictedFileSystemAccess(window) {
-  try {
-    window.show();
-    window.webContents.focus();
-    await window.webContents.executeJavaScript(`
-      (() => {
-        globalThis.__citadelDesktopFileProbe = {
-          done: false,
-          error: null,
-          handle: null
+  await window.webContents.executeJavaScript(`
+    (() => {
+      globalThis.__citadelDesktopFileProbe = {
+        done: false,
+        error: null,
+        handle: null
+      };
+      document.addEventListener('paste', (event) => {
+        event.preventDefault();
+        const item = event.clipboardData?.items?.[0];
+        if (!item || typeof item.getAsFileSystemHandle !== 'function') {
+          globalThis.__citadelDesktopFileProbe.done = true;
+          globalThis.__citadelDesktopFileProbe.error = 'File-system clipboard handle unavailable';
+          return;
+        }
+        item.getAsFileSystemHandle().then((handle) => {
+          globalThis.__citadelDesktopFileProbe.handle = handle;
+          globalThis.__citadelDesktopFileProbe.done = true;
+        }).catch((error) => {
+          globalThis.__citadelDesktopFileProbe.error = String(error);
+          globalThis.__citadelDesktopFileProbe.done = true;
+        });
+      }, { capture: true, once: true });
+      window.focus();
+      document.body.focus();
+    })()
+  `);
+  clipboard.clear();
+  await Promise.race([
+    clipboard.write([
+      new ClipboardItem({ 'text/uri-list': pathToFileURL(homedir()).href }),
+    ]),
+    delay(5_000).then(() => {
+      throw new Error('Restricted local file clipboard setup timed out.');
+    }),
+  ]);
+  window.webContents.focus();
+  window.webContents.paste();
+
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const result = await window.webContents.executeJavaScript(`
+      (async () => {
+        const probe = globalThis.__citadelDesktopFileProbe;
+        if (!probe?.done) return { done: false };
+        return {
+          done: true,
+          error: probe.error,
+          kind: probe.handle?.kind || null,
+          permission: probe.handle
+            ? await probe.handle.queryPermission({ mode: 'read' })
+            : null
         };
-        document.addEventListener('paste', (event) => {
-          event.preventDefault();
-          const item = event.clipboardData?.items?.[0];
-          if (!item || typeof item.getAsFileSystemHandle !== 'function') {
-            globalThis.__citadelDesktopFileProbe.done = true;
-            globalThis.__citadelDesktopFileProbe.error = 'File-system clipboard handle unavailable';
-            return;
-          }
-          item.getAsFileSystemHandle().then(
-            (handle) => {
-              globalThis.__citadelDesktopFileProbe.handle = handle;
-              globalThis.__citadelDesktopFileProbe.done = true;
-            },
-            (error) => {
-              globalThis.__citadelDesktopFileProbe.error = String(error);
-              globalThis.__citadelDesktopFileProbe.done = true;
-            }
-          );
-        }, { capture: true, once: true });
-        window.focus();
-        document.body.focus();
       })()
     `);
-    await Promise.race([
-      clipboard.write([
-        new ClipboardItem({ 'text/uri-list': pathToFileURL(homedir()).href }),
-      ]),
-      delay(5_000).then(() => {
-        throw new Error('Restricted local file clipboard setup timed out.');
-      }),
-    ]);
-    window.webContents.focus();
-    window.webContents.paste();
+    if (result.done) return result;
+    await delay(50);
+  }
+  return { done: false, error: 'Restricted local file access probe timed out' };
+}
 
-    const deadline = Date.now() + 10_000;
-    while (Date.now() < deadline) {
-      const result = await window.webContents.executeJavaScript(`
-        (async () => {
-          const probe = globalThis.__citadelDesktopFileProbe;
-          if (!probe?.done) return { done: false };
-          return {
-            done: true,
-            error: probe.error,
-            kind: probe.handle?.kind || null,
-            permission: probe.handle
-              ? await probe.handle.queryPermission({ mode: 'read' })
-              : null
-          };
-        })()
-      `);
-      if (result.done) return result;
-      await delay(50);
+async function runDesktopAcceptance(window) {
+  const existingFixture = await desktopFixtureFiles('desktop-before');
+  const newFixture = await desktopFixtureFiles('desktop-new');
+  window.show();
+  window.webContents.focus();
+  try {
+    const localFiles = await probeRestrictedFileSystemAccess(window);
+    if (
+      !localFiles.done ||
+      localFiles.error ||
+      localFiles.kind !== 'directory' ||
+      localFiles.permission !== 'granted'
+    ) {
+      throw new Error(`Restricted local folder selection failed: ${JSON.stringify(localFiles)}`);
     }
-    return { done: false, error: 'Restricted local file access probe timed out' };
+    const workspace = await window.webContents.executeJavaScript(`
+      (async () => {
+        const { BrowserDirectoryProvider } = await import('/js/directory-provider.mjs');
+        const { WorkspaceRegistry } = await import('/js/registry.mjs');
+        const {
+          assertSupportedScan,
+          attachEnvironment,
+          scanProvider
+        } = await import('/js/workspace-context.mjs');
+        const fixtureRootName = 'citadel-desktop-acceptance-' + crypto.randomUUID();
+        const storageRoot = await navigator.storage.getDirectory();
+        const fixtureRoot = await storageRoot.getDirectoryHandle(fixtureRootName, { create: true });
+        const writeFixture = async (name, fixture) => {
+          const root = await fixtureRoot.getDirectoryHandle(name, { create: true });
+          for (const [alias, text] of Object.entries(fixture.files)) {
+            const parts = alias.split('/');
+            const leaf = parts.pop();
+            let directory = root;
+            for (const part of parts) {
+              directory = await directory.getDirectoryHandle(part, { create: true });
+            }
+            const file = await directory.getFileHandle(leaf, { create: true });
+            const writable = await file.createWritable();
+            await writable.write(new TextEncoder().encode(text));
+            await writable.close();
+          }
+          return root;
+        };
+        const directRead = async (root, alias) => {
+          const parts = alias.split('/');
+          const leaf = parts.pop();
+          let directory = root;
+          for (const part of parts) {
+            directory = await directory.getDirectoryHandle(part);
+          }
+          const file = await (await directory.getFileHandle(leaf)).getFile();
+          return new TextDecoder().decode(await file.arrayBuffer());
+        };
+        const existingFixture = ${JSON.stringify(existingFixture)};
+        const newFixture = ${JSON.stringify(newFixture)};
+        try {
+          const existingHandle = await writeFixture('existing', existingFixture);
+          const newHandle = await writeFixture('new', newFixture);
+          const registry = new WorkspaceRegistry({
+            dbName: 'citadel-desktop-acceptance-' + crypto.randomUUID(),
+            stateKey: 'citadel-desktop-acceptance.active',
+            testMode: true
+          });
+          const existingProvider = new BrowserDirectoryProvider(existingHandle);
+          await existingProvider.assertWritable({ request: true });
+          const existingScan = await scanProvider(existingProvider);
+          assertSupportedScan(existingScan);
+          const existingPath = ${JSON.stringify(
+            process.platform === 'win32'
+              ? 'C:\\CitadelDesktopAcceptance\\existing'
+              : '/CitadelDesktopAcceptance/existing'
+          )};
+          const newPath = ${JSON.stringify(
+            process.platform === 'win32'
+              ? 'C:\\CitadelDesktopAcceptance\\new'
+              : '/CitadelDesktopAcceptance/new'
+          )};
+          const attachedExisting = await attachEnvironment({
+            projectLabel: 'Desktop acceptance',
+            environmentLabel: 'Existing local',
+            localPath: existingPath,
+            handle: existingHandle,
+            scan: existingScan,
+            provider: existingProvider,
+            registry,
+            mirror: async () => {}
+          });
+
+          const project = (await registry.listProjects())[0];
+          const retainedHandle = await registry.getHandle(attachedExisting.environment.id);
+          const existingRetained = await retainedHandle.isSameEntry(existingHandle);
+          const reopenedProvider = new BrowserDirectoryProvider(retainedHandle);
+          const before = await reopenedProvider.read(existingFixture.mainPath);
+          const nextText = before.text.replace(
+            "param environmentName = 'desktop-before'",
+            "param environmentName = 'desktop-after'"
+          );
+          if (nextText === before.text) {
+            throw new Error('Desktop value edit did not match its source.');
+          }
+          await reopenedProvider.write(
+            existingFixture.mainPath,
+            new TextEncoder().encode(nextText),
+            { expectedHash: before.hash }
+          );
+          const after = await reopenedProvider.read(existingFixture.mainPath);
+
+          let duplicateRejected = false;
+          try {
+            await registry.addEnvironment(
+              project.id,
+              'Duplicate existing',
+              existingHandle,
+              null,
+              { localPath: existingPath }
+            );
+          } catch (error) {
+            duplicateRejected = /already attached/i.test(error?.message || '');
+          }
+
+          const newProvider = new BrowserDirectoryProvider(newHandle);
+          await newProvider.assertWritable({ request: true });
+          const newScan = await scanProvider(newProvider);
+          assertSupportedScan(newScan);
+          const attachedNew = await attachEnvironment({
+            project,
+            environmentLabel: 'New local',
+            localPath: newPath,
+            handle: newHandle,
+            scan: newScan,
+            provider: newProvider,
+            registry,
+            mirror: async () => {}
+          });
+          const projects = await registry.listProjects();
+          const environments = await registry.listEnvironments(project.id);
+          const newRead = await newProvider.read(newFixture.mainPath);
+          const storedText = await directRead(retainedHandle, existingFixture.mainPath);
+          return {
+            storage: 'origin-private-file-system',
+            existingCompatibility: existingScan.compatibility,
+            newCompatibility: newScan.compatibility,
+            existingRetained,
+            duplicateRejected,
+            projectCount: projects.length,
+            environmentCount: environments.length,
+            existingSource: attachedExisting.environment.source?.kind,
+            newSource: attachedNew.environment.source?.kind,
+            savedValue: after.text.includes("param environmentName = 'desktop-after'"),
+            storageSaved: storedText.includes("param environmentName = 'desktop-after'"),
+            newValueReadable: newRead.text.includes("param environmentName = 'desktop-new'")
+          };
+        } finally {
+          await storageRoot.removeEntry(fixtureRootName, { recursive: true });
+        }
+      })()
+    `);
+    return { localFiles, workspace };
   } finally {
     clipboard.clear();
     window.hide();
@@ -383,22 +625,34 @@ async function createWindow(desktopSession) {
         origin: globalThis.location.origin
       })`
     );
-    const localFiles = await probeRestrictedFileSystemAccess(window);
+    const acceptance = await runDesktopAcceptance(window);
     const passed =
       browser.title === 'Citadel Control Panel' &&
       browser.secureContext === true &&
       browser.directoryPicker === true &&
       browser.indexedDB === true &&
       browser.origin === DESKTOP_ORIGIN &&
-      localFiles.done === true &&
-      localFiles.error === null &&
-      localFiles.kind === 'directory' &&
-      localFiles.permission === 'granted';
+      acceptance.localFiles.done === true &&
+      acceptance.localFiles.error === null &&
+      acceptance.localFiles.kind === 'directory' &&
+      acceptance.localFiles.permission === 'granted' &&
+      acceptance.workspace.storage === 'origin-private-file-system' &&
+      acceptance.workspace.existingCompatibility === 'supported' &&
+      acceptance.workspace.newCompatibility === 'supported' &&
+      acceptance.workspace.existingRetained === true &&
+      acceptance.workspace.duplicateRejected === true &&
+      acceptance.workspace.projectCount === 1 &&
+      acceptance.workspace.environmentCount === 2 &&
+      acceptance.workspace.existingSource === 'local' &&
+      acceptance.workspace.newSource === 'local' &&
+      acceptance.workspace.savedValue === true &&
+      acceptance.workspace.storageSaved === true &&
+      acceptance.workspace.newValueReadable === true;
     console.log(JSON.stringify({
       event: 'citadel_desktop_smoke',
       passed,
       ...browser,
-      localFiles,
+      ...acceptance,
     }));
     process.exitCode = passed ? 0 : 1;
     app.quit();
@@ -419,6 +673,17 @@ async function launch() {
 }
 
 app.whenReady().then(launch).catch((error) => {
+  if (smokeTest) {
+    console.error(JSON.stringify({
+      event: 'citadel_desktop_smoke_error',
+      error: error?.message || 'The desktop application could not start.',
+    }));
+    quitting = true;
+    serverProcess?.kill();
+    serverProcess = null;
+    app.exit(1);
+    return;
+  }
   dialog.showErrorBox(
     'Citadel UI could not start',
     error?.message || 'The desktop application could not start.'

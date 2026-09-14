@@ -35,6 +35,12 @@ export function desktopPermissionAllowed(permission, requestingOrigin) {
   return DESKTOP_PERMISSIONS.has(permission) && trustedDesktopOrigin(requestingOrigin);
 }
 
+export function desktopPermissionCheckAllowed(_webContents, permission, requestingOrigin) {
+  // Electron may pass null webContents for file-system checks. The exact origin
+  // remains authoritative; permission requests still validate WebContents.
+  return desktopPermissionAllowed(permission, requestingOrigin);
+}
+
 export function trustedDesktopFileSystemRequest(details, expectedWebContents) {
   return Boolean(
     expectedWebContents &&

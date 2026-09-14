@@ -10,7 +10,7 @@ The configuration surface for the Citadel AI Hub Gateway.
 
 The packaged Electron application needs no Docker, Node.js, or source checkout.
 The current desktop release is
-[Citadel UI Desktop v1.1.2](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.2).
+[Citadel UI Desktop v1.1.3](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.3).
 Download:
 
 - [Windows installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe)

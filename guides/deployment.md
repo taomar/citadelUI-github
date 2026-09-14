@@ -27,7 +27,7 @@ been tested live.
 ## Windows and macOS desktop release
 
 The current Electron release is
-[Citadel UI Desktop v1.1.2](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.2).
+[Citadel UI Desktop v1.1.3](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.3).
 It needs no Docker, Node.js, Azure account, or source checkout.
 
 | Platform | Installer | Portable |
@@ -67,7 +67,12 @@ Electron may show a **Restricted folder** warning. Choose **Allow this folder**
 only when it is the intended Citadel repository. Release `v1.1.2` fixed the
 desktop origin check for these locations; the packaged Windows, Apple Silicon,
 and Intel Mac smoke tests each obtained read permission to a restricted local
-directory handle.
+directory handle. Release `v1.1.3` also uses isolated writable File System Access
+workspaces in Electron's persistent profile to attach and reopen an existing
+environment, reject a duplicate, attach a second environment, change one Bicep
+value through the production directory provider, and verify the saved bytes
+through an independent retained handle. Native directory pickers are not
+automated in CI.
 
 GitHub connections require a fine-grained personal access token beginning with
 `github_pat_`, limited to the intended repositories. An OAuth credential

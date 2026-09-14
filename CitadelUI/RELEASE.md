@@ -66,7 +66,13 @@ tag triggers `.github/workflows/citadel-ui-desktop-release.yml`, which builds an
 smoke-tests Windows x64, macOS Apple Silicon, and macOS Intel packages before
 publishing one GitHub Release with combined checksums. The packaged smoke test
 also obtains read permission to a restricted local directory handle, so a
-release cannot publish when Electron local-folder access is broken.
+release cannot publish when Electron local-folder access is broken. It then
+uses two isolated persistent File System Access workspaces in the packaged
+Electron profile to attach and reopen an existing environment, reject a
+duplicate attachment, attach a second environment, write one Bicep value
+through the production browser provider, and verify the saved bytes through an
+independent retained handle. The workflow does not automate a native directory
+picker or claim that it selected a specific runner filesystem path.
 
 For local macOS builds, run on the matching Mac:
 
