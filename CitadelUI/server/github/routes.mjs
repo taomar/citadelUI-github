@@ -4,7 +4,8 @@
  * The browser never calls GitHub. Every route here runs after the existing host,
  * origin, fetch-site, session-token, body-size, and concurrency checks, and then
  * additionally requires an opaque GitHub credential session id, except for the
- * explicit anonymous, GET-only public-donor route.
+ * explicit public-donor and local-source preparation routes. Local-source
+ * preparation changes only its bounded in-memory cache, never GitHub or files.
  *
  * Editable workspace repository/branch identity comes from the authoritative
  * registry, never the request body. Public donors are separate ephemeral
@@ -13,7 +14,9 @@
 import { GitHubApiClient, githubError } from './api.mjs';
 import { PublicGitHubDonorRoutes } from './public-donor.mjs';
 import { MigrationSourceRoutes } from './migration-source.mjs';
-import { classifyToken, GitHubSessionStore } from './sessions.mjs';
+import { GitHubSessionStore } from './sessions.mjs';
+import { createConnectionLifecycle } from './connection-lifecycle.mjs';
+import { createWorkspaceRoutes } from './workspace-routes.mjs';
 import {
   AttachmentReservations,
   RESERVATION_PENDING,
@@ -27,53 +30,32 @@ import {
   validateCommitSha,
   validateRepositoryId,
   workingBranchName,
-  BLOB_MODE_FILE,
   WORKING_BRANCH_PREFIX,
 } from './repositories.mjs';
 import {
   assertAction,
-  branchHead,
   commitChangeSet,
   createCommitBranch,
   ensureWorkingBranch,
   inspectCommit,
   loadHistory,
-  loadTree,
-  readBlob,
-  readSourceBlob,
   readSubscriptionId,
-  requireBranchHead,
   revertCommit,
 } from './workspace.mjs';
-import {
-  readSubscriptionIdFromText,
-  validateSubscriptionId,
-  writeSubscriptionIdToText,
-} from '../../shared/subscription-env.mjs';
-import { MAX_ENV_BYTES, subscriptionEnvironmentAlias } from '../../shared/source-scope.mjs';
+import { branchHead, loadTree, readBlob, readSourceBlob, requireBranchHead } from './git-reader.mjs';
 import {
   assertAttachableRepository,
   inspectBranchCompatibility,
 } from './compatibility.mjs';
-import { profileName as profileNameOf } from '../connections.mjs';
-import { sameAccount } from '../credentials.mjs';
 import { RepositoryCreationService } from './repository-creation.mjs';
+import { LocalSourceImportService } from './local-import.mjs';
+import { assertNoWritableOverlap, configurationKey, configurationOf, nativeInventoryAlias, unitForAlias, validateConfiguration, workspaceScope } from '../../shared/workspace-configuration.mjs';
+import { assertNativeDependencySafe, assertNativeFileSafe, decodeNativeBytes, readUnitSchema } from '../../shared/terraform/workspace.mjs';
+import { githubScanProvider } from './scan-provider.mjs';
 
 const SESSION_HEADER = 'x-citadel-github-session';
 
-/**
- * The one definition of what a connection's status word means.
- *
- * Computed server-side and sent as a word, rather than sent as three booleans
- * the catalogue re-derives: the badge in the connections list, the badge on a
- * saved workspace row, and any future surface must all agree, and they only
- * agree if one place decides.
- */
-export function connectionStatus({ connected, persisted, vaultAvailable }) {
-  if (connected) return persisted ? 'persistent' : 'session';
-  if (persisted) return vaultAvailable ? 'persistent-idle' : 'unavailable';
-  return 'reconnect';
-}
+export { connectionStatus } from './connection-lifecycle.mjs';
 
 function assertKeys(body, allowed) {
   if (
@@ -122,6 +104,7 @@ export class GitHubRoutes {
     // Same fixed-host client, but no credential store or session is passed to
     // the public donor. Its separate facade permits anonymous GETs only.
     this.publicDonor = new PublicGitHubDonorRoutes({ client: this.client, ...(options.publicDonorOptions || {}) });
+    this.localImports = new LocalSourceImportService({ client: this.client, ...(options.localImportOptions || {}) });
     this.registryStore = options.registryStore;
     this.audit = options.audit || null;
     this.profiles = options.profiles || null;
@@ -150,6 +133,34 @@ export class GitHubRoutes {
     // definition. Bounded, in memory only, and never written to `/data`.
     this.blobCache = new Map();
     this.blobCacheLimit = options.blobCacheLimit ?? 512;
+    const owner = this;
+    this.connectionLifecycle = createConnectionLifecycle({
+      get sessions() { return owner.sessions; },
+      get profiles() { return owner.profiles; },
+      get vault() { return owner.vault; },
+      get client() { return owner.client; },
+      get allowClassicTokens() { return owner.allowClassicTokens; },
+      note: (event) => this.note(event),
+      forgetCaches: () => this.forgetCaches(),
+      assertKeys,
+    });
+    this.workspaceRoutes = createWorkspaceRoutes({
+      get client() { return owner.client; },
+      get audit() { return owner.audit; },
+      tree: (...args) => this.tree(...args),
+      blob: (...args) => this.blob(...args),
+      assertKeys,
+      transactionIdOf,
+      assertAction,
+      requireBranchHead,
+      readBlob,
+      loadHistory,
+      inspectCommit,
+      readSubscriptionId,
+      commitChangeSet,
+      createCommitBranch,
+      revertCommit,
+    });
   }
 
   /** Governance events never fail the operation they describe. */
@@ -159,28 +170,17 @@ export class GitHubRoutes {
   }
 
   requireProfiles() {
-    if (!this.profiles) {
-      throw githubError(
-        503,
-        'CONNECTIONS_UNAVAILABLE',
-        'Saved GitHub connections are not available in this deployment.'
-      );
-    }
-    return this.profiles;
+    return this.connectionLifecycle.requireProfiles();
   }
 
   profileIdOf(value) {
-    const id = String(value || '');
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)) {
-      throw githubError(400, 'INVALID_CONNECTION', 'Invalid connection id.');
-    }
-    return id;
+    return this.connectionLifecycle.profileIdOf(value);
   }
 
-  async tree(token, fullName, commitSha) {
-    const key = `${fullName}:${commitSha}`;
+  async tree(token, fullName, commitSha, configuration) {
+    const key = `${fullName}:${commitSha}:${configurationKey(configuration)}`;
     if (!this.treeCache.has(key)) {
-      const snapshot = await loadTree(this.client, token, fullName, commitSha);
+      const snapshot = await loadTree(this.client, token, fullName, commitSha, configuration);
       this.treeCache.set(key, snapshot);
       while (this.treeCache.size > this.treeCacheLimit) {
         this.treeCache.delete(this.treeCache.keys().next().value);
@@ -202,13 +202,17 @@ export class GitHubRoutes {
    * scan, and the whole scan ran again on reopen. The bytes live only in this
    * process and are never written to `/data`.
    */
-  async blob(token, fullName, head, alias, sha, snapshot, repositoryId) {
+  async blob(token, fullName, head, alias, sha, snapshot, repositoryId, configuration) {
+    workspaceScope(configuration).read(alias);
     const entry = snapshot?.files?.find((file) => file.alias === alias) || null;
+    if (entry && sha && entry.sha !== validateCommitSha(sha, 'blob')) {
+      throw githubError(409, 'STALE_SOURCE', 'File changed outside Citadel UI. Reload before saving.');
+    }
     // Only an entry the alias resolves to in this exact tree may be served from
     // cache. Anything else falls through to the authoritative read, which
     // performs the scope and precondition checks.
     const key = entry ? `${repositoryId}:${entry.sha}` : null;
-    if (key && this.blobCache.has(key)) {
+    if (key && this.blobCache.has(key) && configuration?.format !== 'terraform') {
       const hit = this.blobCache.get(key);
       // Refresh recency: a Map preserves insertion order, so re-inserting is
       // what makes the bounded eviction least-recently-used rather than
@@ -217,8 +221,18 @@ export class GitHubRoutes {
       this.blobCache.set(key, hit);
       return hit;
     }
-    const blob = await readSourceBlob(this.client, token, fullName, head, alias, sha, snapshot);
-    if (key && blob?.sha === entry.sha) {
+    const blob = await readSourceBlob(this.client, token, fullName, head, alias, sha, snapshot, configuration);
+    if (configuration?.format === 'terraform') {
+      blob.text = decodeNativeBytes(blob.bytes);
+      await assertNativeDependencySafe(blob.text, alias);
+      const unit = unitForAlias(configuration, alias);
+      if (unit) {
+        const provider = githubScanProvider(this.client, token, fullName, snapshot, configuration);
+        const { parameters } = await readUnitSchema(provider, unit);
+        await assertNativeFileSafe(blob.text, unit, parameters);
+      }
+    }
+    if (key && blob?.sha === entry.sha && configuration?.format !== 'terraform') {
       this.blobCache.set(key, blob);
       while (this.blobCache.size > this.blobCacheLimit) {
         this.blobCache.delete(this.blobCache.keys().next().value);
@@ -247,7 +261,7 @@ export class GitHubRoutes {
     if (environment.source?.kind !== 'github') {
       throw githubError(400, 'NOT_GITHUB_ENVIRONMENT', 'That environment is not a GitHub repository.');
     }
-    return { environmentId: id, ...environment.source };
+    return { environmentId: id, ...environment.source, configuration: configurationOf(environment) };
   }
 
   /**
@@ -293,449 +307,51 @@ export class GitHubRoutes {
   }
 
   async connect(body) {
-    assertKeys(body, new Set(['token']));
-    this.sessions.assertLoginAllowed();
-    const { token, kind } = classifyToken(body.token, { allowClassic: this.allowClassicTokens });
-    const identity = await this.identify(token);
-    // The credential is handed to the store and nothing else. It is never
-    // returned, logged, or written to disk.
-    return this.sessions.create(token, identity, { tokenKind: kind });
+    return this.connectionLifecycle.connect(body);
   }
 
-  /** Validate a credential against GitHub and read the account it belongs to. */
   async identify(token) {
-    const { data } = await this.client.request('/user', { token });
-    if (!data || typeof data.login !== 'string' || typeof data.id !== 'number') {
-      throw githubError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an unexpected account.');
-    }
-    return { login: data.login, id: data.id, type: data.type || 'User' };
+    return this.connectionLifecycle.identify(token);
   }
 
-  /**
-   * Every saved connection, with the one status word the UI renders.
-   *
-   * Carries no credential and no session id. A browser that has lost its opaque
-   * id learns from this only *that* a connection can be resumed, and must ask
-   * for a session explicitly.
-   */
   async connections() {
-    const profiles = await this.requireProfiles().list();
-    const vaultAvailable = Boolean(this.vault?.available);
-    const rows = [];
-    for (const profile of profiles) {
-      const persisted = this.vault ? await this.vault.has(profile.id) : false;
-      rows.push({
-        ...profile,
-        persisted,
-        connected: this.sessions.hasProfile(profile.id),
-        status: connectionStatus({
-          connected: this.sessions.hasProfile(profile.id),
-          persisted,
-          vaultAvailable,
-        }),
-      });
-    }
-    return { vault: this.vault ? this.vault.status() : { available: false, reason: 'disabled' }, profiles: rows };
+    return this.connectionLifecycle.connections();
   }
 
-  /**
-   * Seal a credential for later, or refuse honestly.
-   *
-   * Persistence failing is never allowed to fail the connection: the user is
-   * connected either way, and the response says whether the box they ticked
-   * actually took effect. Silently reporting success for a credential that was
-   * not stored would promise a restart-survival that does not exist.
-   */
   async persist(profile, token) {
-    if (!this.vault?.available) return { persisted: false, reason: 'persistence-unavailable' };
-    try {
-      const stored = await this.vault.store(profile.id, profile.accountId, token);
-      return stored
-        ? { persisted: true, reason: null }
-        : { persisted: false, reason: 'persistence-unavailable' };
-    } catch {
-      return { persisted: false, reason: 'persistence-unavailable' };
-    }
+    return this.connectionLifecycle.persist(profile, token);
   }
 
-  /** Shape of every successful connect/reconnect/resume answer. */
   async connectionResult(profile, session, persisted, reason = null) {
-    return {
-      profile: {
-        ...profile,
-        persisted,
-        connected: true,
-        status: connectionStatus({
-          connected: true,
-          persisted,
-          vaultAvailable: Boolean(this.vault?.available),
-        }),
-      },
-      session,
-      persisted,
-      persistenceReason: reason,
-      vault: this.vault ? this.vault.status() : { available: false, reason: 'disabled' },
-    };
+    return this.connectionLifecycle.connectionResult(profile, session, persisted, reason);
   }
 
-  /**
-   * Create a named connection from a freshly entered credential.
-   *
-   * The name is required before the token is accepted, and is validated first,
-   * so a rejected name never costs the user a token paste. If the account is
-   * already saved under another name the request is refused rather than
-   * duplicated — the same identity twice is a mistake, not two connections.
-   */
   async createConnection(body) {
-    assertKeys(body, new Set(['name', 'token', 'persist']));
-    const profiles = this.requireProfiles();
-    const name = profileNameOf(body.name);
-    this.sessions.assertLoginAllowed();
-    const { token, kind } = classifyToken(body.token, { allowClassic: this.allowClassicTokens });
-    let identity;
-    try {
-      identity = await this.identify(token);
-    } catch (error) {
-      this.note({ action: 'connection.create', outcome: 'failed', target: name });
-      throw error;
-    }
-    const existing = await profiles.findByAccount(identity.id);
-    if (existing) {
-      this.note({
-        action: 'connection.create',
-        outcome: 'refused',
-        reason: 'duplicate-name',
-        target: name,
-        account: identity.login,
-      });
-      throw githubError(
-        409,
-        'CONNECTION_ACCOUNT_TAKEN',
-        `${identity.login} is already saved as "${existing.name}". Reconnect that connection instead.`,
-        { profileId: existing.id }
-      );
-    }
-    const profile = await profiles.create({
-      name,
-      accountId: identity.id,
-      accountLogin: identity.login,
-      accountType: identity.type,
-      credentialMode: body.persist === true ? 'persistent' : 'session',
-    });
-    const { persisted, reason } =
-      body.persist === true ? await this.persist(profile, token) : { persisted: false, reason: null };
-    if (body.persist === true && !persisted) {
-      await profiles.update(profile.id, { credentialMode: 'session' });
-    }
-    const session = this.sessions.create(token, identity, {
-      tokenKind: kind,
-      profileId: profile.id,
-    });
-    this.note({
-      action: 'connection.create',
-      outcome: 'ok',
-      target: profile.name,
-      account: identity.login,
-    });
-    if (persisted) {
-      this.note({
-        action: 'connection.persistence-enabled',
-        outcome: 'ok',
-        target: profile.name,
-        account: identity.login,
-      });
-    }
-    return this.connectionResult(
-      { ...profile, credentialMode: persisted ? 'persistent' : 'session' },
-      session,
-      persisted,
-      reason
-    );
+    return this.connectionLifecycle.createConnection(body);
   }
 
-  /**
-   * Replace the credential behind an existing connection.
-   *
-   * The new token must resolve to the same immutable account id. A token for a
-   * different account is refused and the user is told to create a separate
-   * connection: rebinding would leave every workspace attached to this profile
-   * silently pointing at repositories chosen by someone else.
-   */
   async reconnectConnection(profileId, body) {
-    assertKeys(body, new Set(['token', 'persist']));
-    const profiles = this.requireProfiles();
-    const profile = await profiles.get(profileId);
-    if (!profile) {
-      throw githubError(404, 'UNKNOWN_CONNECTION', 'That GitHub connection is not saved.');
-    }
-    this.sessions.assertLoginAllowed();
-    const { token, kind } = classifyToken(body.token, { allowClassic: this.allowClassicTokens });
-    const identity = await this.identify(token);
-    if (!sameAccount(identity.id, profile.accountId)) {
-      this.note({
-        action: 'connection.reconnect',
-        outcome: 'refused',
-        reason: 'account-mismatch',
-        target: profile.name,
-        account: identity.login,
-      });
-      throw githubError(
-        409,
-        'CONNECTION_ACCOUNT_MISMATCH',
-        `That token belongs to ${identity.login}, but "${profile.name}" is bound to ${profile.accountLogin}. Add a separate connection for ${identity.login}.`,
-        { expectedLogin: profile.accountLogin, actualLogin: identity.login }
-      );
-    }
-    this.sessions.destroyProfile(profile.id);
-    const wantsPersistence = body.persist === undefined
-      ? profile.credentialMode === 'persistent'
-      : body.persist === true;
-    // The previous envelope goes first, unconditionally. Sealing can fail — a
-    // full or read-only data volume — and `persist` reports that without
-    // throwing, so gating removal on the outcome would leave the *old* token on
-    // disk under a profile now marked session-only. A later restart would then
-    // silently reconnect with the credential the user came here to replace.
-    await this.vault?.remove(profile.id);
-    const { persisted, reason } = wantsPersistence
-      ? await this.persist(profile, token)
-      : { persisted: false, reason: null };
-    const updated = await profiles.update(profile.id, {
-      credentialMode: persisted ? 'persistent' : 'session',
-      connected: true,
-    });
-    const session = this.sessions.create(token, identity, {
-      tokenKind: kind,
-      profileId: profile.id,
-    });
-    this.note({
-      action: 'connection.reconnect',
-      outcome: 'ok',
-      target: updated.name,
-      account: updated.accountLogin,
-    });
-    return this.connectionResult(updated, session, persisted, reason);
+    return this.connectionLifecycle.reconnectConnection(profileId, body);
   }
 
-  /**
-   * Restore a connection from its encrypted envelope, with no user interaction.
-   *
-   * This is the whole point of the checkbox: the browser asks for a session, the
-   * server unseals the credential it already holds, validates it is still good,
-   * and hands back an opaque id. The token never crosses the process boundary.
-   */
   async resumeConnection(profileId) {
-    const profiles = this.requireProfiles();
-    const profile = await profiles.get(profileId);
-    if (!profile) {
-      throw githubError(404, 'UNKNOWN_CONNECTION', 'That GitHub connection is not saved.');
-    }
-    if (!this.vault?.available) {
-      throw githubError(
-        409,
-        'CREDENTIAL_UNAVAILABLE',
-        'The encrypted credential store is unavailable. Reconnect this connection with a token.'
-      );
-    }
-    const token = await this.vault.load(profile.id, profile.accountId);
-    if (!token) {
-      this.note({
-        action: 'connection.restore',
-        outcome: 'failed',
-        reason: 'credential-unavailable',
-        target: profile.name,
-        account: profile.accountLogin,
-      });
-      throw githubError(
-        409,
-        'CREDENTIAL_UNAVAILABLE',
-        `The saved credential for "${profile.name}" could not be opened. Reconnect it with a token.`
-      );
-    }
-    let identity;
-    try {
-      identity = await this.identify(token);
-    } catch (error) {
-      this.note({
-        action: 'connection.restore',
-        outcome: 'failed',
-        reason: 'credential-expired',
-        target: profile.name,
-        account: profile.accountLogin,
-      });
-      throw error;
-    }
-    if (!sameAccount(identity.id, profile.accountId)) {
-      // The sealed credential no longer belongs to the account this profile is
-      // bound to. Refuse and remove it rather than connect as someone else.
-      await this.vault.remove(profile.id);
-      this.note({
-        action: 'connection.restore',
-        outcome: 'refused',
-        reason: 'account-mismatch',
-        target: profile.name,
-        account: profile.accountLogin,
-      });
-      throw githubError(
-        409,
-        'CONNECTION_ACCOUNT_MISMATCH',
-        `The saved credential for "${profile.name}" no longer belongs to ${profile.accountLogin}. Reconnect it with a token.`
-      );
-    }
-    this.sessions.destroyProfile(profile.id);
-    const session = this.sessions.create(token, identity, {
-      tokenKind: 'fine-grained',
-      profileId: profile.id,
-    });
-    const updated = await profiles.update(profile.id, { connected: true });
-    this.note({
-      action: 'connection.restore',
-      outcome: 'ok',
-      target: updated.name,
-      account: updated.accountLogin,
-    });
-    return this.connectionResult(updated, session, true, null);
+    return this.connectionLifecycle.resumeConnection(profileId);
   }
 
   async renameConnection(profileId, body) {
-    assertKeys(body, new Set(['name']));
-    const profiles = this.requireProfiles();
-    const updated = await profiles.update(profileId, { name: profileNameOf(body.name) });
-    this.note({
-      action: 'connection.rename',
-      outcome: 'ok',
-      target: updated.name,
-      account: updated.accountLogin,
-    });
-    return { profile: updated };
+    return this.connectionLifecycle.renameConnection(profileId, body);
   }
 
-  /**
-   * Turn encrypted persistence on or off for one connection.
-   *
-   * Turning it on needs the live credential, because the envelope is sealed from
-   * the token itself — there is nothing to encrypt if the connection is idle.
-   * Turning it off deletes the envelope immediately rather than marking it
-   * disabled, so unchecking the box actually removes the stored bytes.
-   */
   async setConnectionPersistence(profileId, body) {
-    assertKeys(body, new Set(['persist']));
-    const profiles = this.requireProfiles();
-    const profile = await profiles.get(profileId);
-    if (!profile) {
-      throw githubError(404, 'UNKNOWN_CONNECTION', 'That GitHub connection is not saved.');
-    }
-    if (body.persist === true) {
-      if (!this.vault?.available) {
-        throw githubError(
-          409,
-          'PERSISTENCE_UNAVAILABLE',
-          'This deployment has no credential key mounted, so connections cannot be saved on this device.'
-        );
-      }
-      const session = this.sessions.findByProfile(profile.id);
-      if (!session) {
-        throw githubError(
-          409,
-          'CONNECTION_NOT_LIVE',
-          `Reconnect "${profile.name}" first, then save it on this device.`
-        );
-      }
-      const { persisted, reason } = await this.persist(profile, session.token);
-      if (!persisted) {
-        throw githubError(
-          500,
-          'PERSISTENCE_FAILED',
-          'The credential could not be encrypted. It has not been saved.',
-          { reason }
-        );
-      }
-      const updated = await profiles.update(profile.id, { credentialMode: 'persistent' });
-      this.note({
-        action: 'connection.persistence-enabled',
-        outcome: 'ok',
-        target: updated.name,
-        account: updated.accountLogin,
-      });
-      return { profile: { ...updated, persisted: true, connected: true, status: 'persistent' } };
-    }
-    await this.vault?.remove(profile.id);
-    const updated = await profiles.update(profile.id, { credentialMode: 'session' });
-    this.note({
-      action: 'connection.persistence-disabled',
-      outcome: 'ok',
-      target: updated.name,
-      account: updated.accountLogin,
-    });
-    const connected = this.sessions.hasProfile(profile.id);
-    return {
-      profile: {
-        ...updated,
-        persisted: false,
-        connected,
-        status: connectionStatus({
-          connected,
-          persisted: false,
-          vaultAvailable: Boolean(this.vault?.available),
-        }),
-      },
-    };
+    return this.connectionLifecycle.setConnectionPersistence(profileId, body);
   }
 
-  /** End the live session but keep the connection and any stored credential. */
   async disconnectConnection(profileId) {
-    const profiles = this.requireProfiles();
-    const profile = await profiles.get(profileId);
-    if (!profile) {
-      throw githubError(404, 'UNKNOWN_CONNECTION', 'That GitHub connection is not saved.');
-    }
-    const removed = this.sessions.destroyProfile(profile.id);
-    this.forgetCaches();
-    const persisted = this.vault ? await this.vault.has(profile.id) : false;
-    this.note({
-      action: 'connection.disconnect',
-      outcome: 'ok',
-      target: profile.name,
-      account: profile.accountLogin,
-    });
-    return {
-      disconnected: removed > 0,
-      profile: {
-        ...profile,
-        persisted,
-        connected: false,
-        status: connectionStatus({
-          connected: false,
-          persisted,
-          vaultAvailable: Boolean(this.vault?.available),
-        }),
-      },
-    };
+    return this.connectionLifecycle.disconnectConnection(profileId);
   }
 
-  /**
-   * Remove a saved connection and its credential.
-   *
-   * This deletes metadata and encrypted bytes on this device. It does not touch
-   * GitHub: no branch is deleted, no token is revoked, and every workspace that
-   * referenced this connection stays exactly where it is, marked as needing a
-   * reconnection.
-   */
   async removeConnection(profileId) {
-    const profiles = this.requireProfiles();
-    const profile = await profiles.remove(profileId);
-    if (!profile) {
-      throw githubError(404, 'UNKNOWN_CONNECTION', 'That GitHub connection is not saved.');
-    }
-    this.sessions.destroyProfile(profile.id);
-    this.forgetCaches();
-    await this.vault?.remove(profile.id);
-    this.note({
-      action: 'connection.remove',
-      outcome: 'ok',
-      target: profile.name,
-      account: profile.accountLogin,
-    });
-    return { removed: true, profileId: profile.id };
+    return this.connectionLifecycle.removeConnection(profileId);
   }
 
   /**
@@ -752,7 +368,10 @@ export class GitHubRoutes {
     }
 
     // The normal owner/browser transport guard still runs in server/index.mjs.
-    // This is the sole source-reading path that does NOT resolve a PAT/session.
+    // Public source readers do not resolve or borrow an editable PAT/session.
+    if (tail[0] === 'local-imports') {
+      return this.localImports.handle({ req, url, tail, readBody });
+    }
     if (tail[0] === 'public-donor' && tail.length === 2) {
       return this.publicDonor.handle({ req, url, operation: tail[1] });
     }
@@ -829,19 +448,31 @@ export class GitHubRoutes {
     // Read-only Citadel structure check for one repository and branch. Creates
     // nothing: the browser uses it to decide whether Attach may be enabled, and
     // attachment re-runs it against the head it is about to branch from.
-    if (method === 'GET' && tail[0] === 'repos' && tail[2] === 'compatibility' && tail.length === 3) {
+    if (method === 'GET' && tail[0] === 'repos' && tail[2] === 'native-inventory' && tail.length === 3) {
+      const session = this.session(req);
+      const repository = await getRepository(this.client, session.token, validateRepositoryId(tail[1]));
+      const branch = validateBranchName(url.searchParams.get('branch'));
+      const head = await requireBranchHead(this.client, session.token, repository.fullName, branch);
+      const tree = await loadTree(this.client, session.token, repository.fullName, head, undefined, { nativeInventory: true });
+      return { head, files: tree.files.filter((entry) => nativeInventoryAlias(entry.alias)).map(({ alias, kind }) => ({ alias, kind })) };
+    }
+    if (['GET', 'POST'].includes(method) && tail[0] === 'repos' && tail[2] === 'compatibility' && tail.length === 3) {
       const session = this.session(req);
       const repository = await getRepository(
         this.client,
         session.token,
         validateRepositoryId(tail[1])
       );
-      const branch = validateBranchName(url.searchParams.get('branch'));
+      const input = method === 'POST' ? await readBody() : null;
+      if (input) assertKeys(input, new Set(['branch', 'configuration']));
+      const configuration = input?.configuration === undefined ? undefined : validateConfiguration(input.configuration);
+      const branch = validateBranchName(input?.branch || url.searchParams.get('branch'));
       const verdict = await inspectBranchCompatibility(
         this.client,
         session.token,
         repository.fullName,
-        branch
+        branch,
+        configuration
       );
       this.note({
         action: verdict.supported ? 'repository.validate' : 'validation.failure',
@@ -901,6 +532,7 @@ export class GitHubRoutes {
         'adoptExisting',
         'operationKey',
         'expectedHead',
+        'configuration',
       ])
     );
     const session = this.session(req);
@@ -910,6 +542,12 @@ export class GitHubRoutes {
     // cannot both create a branch and both claim to own it.
     return this.attachments.serialize(sessionFingerprint, clientKey, async () => {
       const existing = this.attachments.findByKey(sessionFingerprint, clientKey);
+      const configuration = body.configuration === undefined ? undefined : validateConfiguration(body.configuration);
+      const selectionIdentity = JSON.stringify([body.repositoryId, body.sourceBranch, body.environmentId,
+        body.writeMode, body.workingBranch || null, body.adoptExisting === true, configurationKey(configuration)]);
+      if (existing?.selectionIdentity && existing.selectionIdentity !== selectionIdentity) {
+        throw githubError(409, 'ATTACH_SELECTION_CHANGED', 'This attachment attempt belongs to a different repository, branch or native binding. Resume the original attempt or start a new one.');
+      }
       if (existing?.result) return existing.result;
 
       const environmentId = environmentIdOf(body.environmentId);
@@ -947,7 +585,8 @@ export class GitHubRoutes {
         session.token,
         repository.fullName,
         sourceBranch,
-        body.expectedHead ? validateCommitSha(body.expectedHead, 'head') : null
+        body.expectedHead ? validateCommitSha(body.expectedHead, 'head') : null,
+        configuration
       );
       const head = validated.head;
       // The branch is the user's to name. `citadel-ui/<environmentId>` remains
@@ -969,6 +608,10 @@ export class GitHubRoutes {
           `${sourceBranch} is the branch you selected. Attach it directly instead of asking Citadel to create it.`
         );
       }
+      if (configuration?.format === 'terraform') {
+        assertNoWritableOverlap([...(await this.registryStore.read()).environments,
+          { id: environmentId, source: { kind: 'github', repositoryId: repository.id, workingBranch }, configuration }]);
+      }
 
       // Provenance first. A create whose response is lost has still happened on
       // GitHub, and without a record written beforehand nothing could name the
@@ -985,6 +628,7 @@ export class GitHubRoutes {
           sourceBranch,
           workingBranch,
           writeMode,
+          selectionIdentity,
         });
 
       let working;
@@ -1072,9 +716,13 @@ export class GitHubRoutes {
       // repository it is, and only the moment of attaching knows which happened.
       const branchChoice =
         writeMode === 'direct' ? 'selected' : working.created ? 'created' : 'adopted';
+      if (working.head !== head) {
+        await assertAttachableRepository(this.client, session.token, repository.fullName, working.branch, working.head, configuration);
+      }
 
       const result = {
         repository,
+        ...(configuration ? { configuration } : {}),
         source: {
           kind: 'github',
           // Ownership comes from the credential that performed the attach, never
@@ -1230,250 +878,12 @@ export class GitHubRoutes {
   }
 
   async workspace({ req, url, environmentId, operation, readBody }) {
-    const { token, source, repository } = await this.resolve(req, environmentId);
-    const fullName = repository.fullName;
-    const branch = source.workingBranch;
-
-    if (req.method === 'GET' && operation === 'tree') {
-      const head = await requireBranchHead(this.client, token, fullName, branch);
-      const tree = await this.tree(token, fullName, head);
-      return {
-        repository,
-        branch,
-        sourceBranch: source.sourceBranch,
-        writeMode: source.writeMode,
-        head,
-        files: tree.files,
-        rejected: tree.rejected,
-        truncated: tree.truncated,
-      };
-    }
-
-    if (req.method === 'GET' && operation === 'blob') {
-      const head = await requireBranchHead(this.client, token, fullName, branch);
-      const alias = url.searchParams.get('alias');
-      const snapshot = await this.tree(token, fullName, head);
-      const blob = await this.blob(
-        token,
-        fullName,
-        head,
-        alias,
-        url.searchParams.get('sha'),
-        snapshot,
-        repository.id
-      );
-      return {
-        alias,
-        sha: blob.sha,
-        size: blob.size,
-        hash: blob.hash,
-        content: blob.bytes.toString('base64'),
-      };
-    }
-
-    if (req.method === 'GET' && operation === 'history') {
-      return {
-        transactions: await loadHistory(this.client, token, fullName, branch, environmentId, {
-          audit: this.audit,
-        }),
-      };
-    }
-
-    if (req.method === 'GET' && operation === 'commits') {
-      const sha = validateCommitSha(url.searchParams.get('sha'));
-      const record = this.audit
-        ? await this.audit.find({
-            commit: sha,
-            repositoryId: repository.id,
-            environmentId,
-            branch,
-          })
-        : null;
-      return {
-        transaction: await inspectCommit(this.client, token, fullName, branch, sha, { record }),
-      };
-    }
-
-    if (req.method === 'GET' && operation === 'subscription') {
-      const head = await requireBranchHead(this.client, token, fullName, branch);
-      return readSubscriptionId(
-        this.client,
-        token,
-        fullName,
-        head,
-        String(url.searchParams.get('environmentName') || ''),
-        { readSubscriptionIdFromText }
-      );
-    }
-
-    if (req.method === 'POST' && operation === 'commits') {
-      const body = await readBody();
-      assertKeys(body, new Set(['action', 'expectedHead', 'transactionId', 'files']));
-      return commitChangeSet(this.client, token, {
-        fullName,
-        branch,
-        repositoryId: repository.id,
-        expectedHead: body.expectedHead ? validateCommitSha(body.expectedHead) : null,
-        files: body.files,
-        action: assertAction(body.action),
-        environmentId,
-        transactionId: transactionIdOf(body.transactionId),
-        audit: this.audit,
-        // Deliberately omitted: the public endpoint never grants the
-        // subscription capability, so no request can reach `.azure/**/.env`.
-      });
-    }
-
-    if (req.method === 'POST' && operation === 'commit-branches') {
-      // The user's answer to a refused save: put that commit on a branch of
-      // this name. Nothing here runs without it — a refusal on its own creates
-      // no ref at all.
-      const body = await readBody();
-      assertKeys(body, new Set(['commit', 'branch']));
-      return createCommitBranch(this.client, token, {
-        fullName,
-        commitSha: validateCommitSha(body.commit),
-        branch: body.branch,
-        // The branch the refused save was aiming at. The audit record was
-        // written against it, so it is how the commit is proven to belong to
-        // this workspace.
-        intendedBranch: branch,
-        environmentId,
-        repositoryId: repository.id,
-        audit: this.audit,
-      });
-    }
-
-    if (req.method === 'POST' && operation === 'subscription') {
-      const body = await readBody();
-      assertKeys(
-        body,
-        new Set(['environmentName', 'value', 'expectedHead', 'expectedHash', 'transactionId'])
-      );
-      return this.saveSubscriptionId({
-        token,
-        fullName,
-        branch,
-        environmentId,
-        repository,
-        body,
-      });
-    }
-
-    if (req.method === 'POST' && operation === 'reverts') {
-      const body = await readBody();
-      assertKeys(body, new Set(['commit', 'transactionId']));
-      return revertCommit(this.client, token, {
-        fullName,
-        branch,
-        repositoryId: repository.id,
-        commitSha: validateCommitSha(body.commit),
-        environmentId,
-        transactionId: transactionIdOf(body.transactionId),
-        audit: this.audit,
-      });
-    }
-
-    throw githubError(404, 'ROUTE_NOT_FOUND', 'API route not found.');
+    const resolved = await this.resolve(req, environmentId);
+    return this.workspaceRoutes.workspace(resolved, { req, url, environmentId, operation, readBody });
   }
 
-  /**
-   * Patch only `AZURE_SUBSCRIPTION_ID` in a tracked `.azure/<env>/.env`.
-   *
-   * Staleness is checked with the SHA-256 the user reviewed, which is the same
-   * precondition the local provider uses, so both sources behave identically:
-   * an existing file requires a matching hash, and creating one requires the
-   * caller to have observed that the file was absent.
-   *
-   * Every other byte of the file is preserved and never returned.
-   */
   async saveSubscriptionId({ token, fullName, branch, environmentId, repository, body }) {
-    const id = validateSubscriptionId(body.value);
-    const environmentName = String(body.environmentName || '');
-    const alias = subscriptionEnvironmentAlias(environmentName);
-    const head = await requireBranchHead(this.client, token, fullName, branch);
-    if (body.expectedHead && head !== body.expectedHead) {
-      throw githubError(
-        409,
-        'STALE_WORKSPACE',
-        'The branch moved after you reviewed this environment file. Reload before saving.'
-      );
-    }
-    const current = await readSubscriptionId(
-      this.client,
-      token,
-      fullName,
-      head,
-      environmentName,
-      { readSubscriptionIdFromText }
-    );
-    const expectedHash = body.expectedHash ?? null;
-    if (
-      (current.available && (typeof expectedHash !== 'string' || current.hash !== expectedHash)) ||
-      (!current.available && expectedHash !== null)
-    ) {
-      throw githubError(
-        409,
-        'STALE_SOURCE',
-        'The azd environment file changed outside Citadel UI. Reload before saving.'
-      );
-    }
-    const before = current.available
-      ? (await readBlob(this.client, token, fullName, current.blobSha, { maxBytes: MAX_ENV_BYTES })).text
-      : '';
-    const after = writeSubscriptionIdToText(before, id);
-    if (after === before) return { ...current, changed: false };
-    const bytes = Buffer.from(after, 'utf8');
-    if (bytes.byteLength > MAX_ENV_BYTES) {
-      throw githubError(413, 'ENV_TOO_LARGE', 'The azd environment file exceeds the 1 MiB safety limit.');
-    }
-    const result = await commitChangeSet(this.client, token, {
-      fullName,
-      branch,
-      repositoryId: repository?.id,
-      expectedHead: head,
-      files: [
-        {
-          alias,
-          create: !current.available,
-          blobSha: current.blobSha,
-          beforeHash: current.hash,
-          mode: current.mode || BLOB_MODE_FILE,
-          after: bytes.toString('base64'),
-        },
-      ],
-      action: 'subscription-edit',
-      environmentId,
-      transactionId: transactionIdOf(body.transactionId),
-      audit: this.audit,
-      // The only place this capability is ever granted, and only for this path.
-      subscriptionAlias: alias,
-    });
-    // The commit has landed. A failed verification read is reported as a warning
-    // on a committed result, never as a save failure that invites a retry.
-    try {
-      const verified = await readSubscriptionId(
-        this.client,
-        token,
-        fullName,
-        result.commit,
-        environmentName,
-        { readSubscriptionIdFromText }
-      );
-      return { ...verified, changed: true, commit: result.commit, warnings: result.warnings };
-    } catch (error) {
-      return {
-        ...current,
-        value: id,
-        changed: true,
-        commit: result.commit,
-        verified: false,
-        warnings: [
-          ...(result.warnings || []),
-          `The subscription was committed, but it could not be re-read: ${error.message}`,
-        ],
-      };
-    }
+    return this.workspaceRoutes.saveSubscriptionId({ token, fullName, branch, environmentId, repository, body });
   }
 }
 

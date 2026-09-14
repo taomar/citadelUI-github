@@ -27,6 +27,8 @@
 
 import { h } from './dom.mjs';
 import { picker } from './picker.mjs';
+import { editorField, focusEditorControl, inputFeedback } from './editor-focus.mjs';
+import { exactNumber, isExactNumber } from '../../shared/terraform/parser.mjs';
 import {
   APIC_LOCATION_VALUES,
   PRIMARY_REGIONS,
@@ -41,6 +43,7 @@ function isExpr(value) {
 }
 
 function typeOf(value) {
+  if (isExactNumber(value)) return 'number';
   if (isExpr(value)) return 'expr';
   if (value === null || value === undefined) return 'null';
   if (Array.isArray(value)) return 'array';
@@ -65,7 +68,7 @@ function templateFrom(sample) {
 
 let comboSeq = 0;
 
-function namedControl(node, label) {
+function namedControl(node, label, path) {
   const controls = node.matches && node.matches('input, select, textarea')
     ? [node]
     : [...node.querySelectorAll('input, select, textarea')];
@@ -74,7 +77,7 @@ function namedControl(node, label) {
       control.setAttribute('aria-label', label);
     }
   }
-  return node;
+  return editorField(node, path);
 }
 
 function valueLabel(path, schema) {
@@ -195,15 +198,13 @@ function withBounds(input, schema) {
  * gets a monospace box that grows to the text instead of a single line that
  * scrolls the beginning of the value out of sight.
  */
-function exprBox(str, commit) {
-  const ta = h('textarea', {
+function exprBox(str, commit, path, ctx) {
+  return draftControl(h('textarea', {
     class: 'ctl ctl-expr',
     rows: Math.max(2, Math.min(10, str.split('\n').length + 1)),
     value: str,
     spellcheck: false,
-    onchange: (e) => commit(e.target.value),
-  });
-  return ta;
+  }), path, ctx, (event) => commit(event.target.value));
 }
 
 /**
@@ -274,6 +275,7 @@ function isLocationSchema(schema, path = []) {
 }
 
 export function regionOptionsFor(schema, path = []) {
+  if (schema?.native) return null;
   if (!isLocationSchema(schema, path)) return null;
   if (schema && Array.isArray(schema.allowedValues) && schema.allowedValues.length) {
     return schema.allowedValues.map(String);
@@ -335,16 +337,113 @@ function comboControl(value, allowed, commit, secure, schema) {
   return wrap;
 }
 
+// Number inputs do not expose their incomplete text through .value.
+const incompleteNumbers = new WeakMap();
+
+export function draftControl(input, path, ctx, onChange) {
+  const key = JSON.stringify(path);
+  const controls = ctx.inputOwner && incompleteNumbers.get(ctx.inputOwner);
+  const retained = ctx.inputDraft?.(path);
+  if (retained?.badInput && controls?.has(key)) return controls.get(key);
+  controls?.delete(key);
+  const original = input.value;
+  if (retained) {
+    input.value = retained.value;
+    input.setCustomValidity?.(retained.validationMessage || '');
+  }
+  input.dataset.parameterInput = key;
+  let composing = false;
+  const notify = () => {
+    if (!ctx.onInputDraft || !input.isConnected || ctx.readOnly || input.readOnly || input.disabled) return;
+    const badInput = Boolean(input.validity?.badInput);
+    if (ctx.inputOwner) {
+      if (badInput) {
+        if (!incompleteNumbers.has(ctx.inputOwner)) incompleteNumbers.set(ctx.inputOwner, new Map());
+        incompleteNumbers.get(ctx.inputOwner).set(key, input);
+      } else incompleteNumbers.get(ctx.inputOwner)?.delete(key);
+    }
+    ctx.onInputDraft(path, input.value === original && !badInput ? null : {
+      value: input.value, composing, badInput, validationMessage: input.validationMessage || '',
+    });
+  };
+  input.addEventListener('input', notify);
+  input.addEventListener('compositionstart', () => { composing = true; });
+  input.addEventListener('compositionend', () => { composing = false; notify(); });
+  input.addEventListener('change', (event) => {
+    if (composing || ctx.onInputDraft && !input.isConnected) return;
+    onChange(event);
+    if (input.isConnected && ctx.inputDraft?.(path)) notify();
+  });
+  return input;
+}
+
+export function numberInputProblem(input, { integer = false } = {}) {
+  if (input.validity?.badInput) return input.validationMessage || 'Enter a complete number. Its unfinished text has not been applied.';
+  if (input.value.trim() === '') return 'Enter a number. Blank input is not zero or an omitted value.';
+  const value = Number(input.value);
+  if (!Number.isFinite(value)) return 'Enter a finite number.';
+  if (integer && !Number.isInteger(value)) return 'Enter a whole number, not a fraction.';
+  if (integer && !Number.isSafeInteger(value)) return 'Enter a whole number within the exact supported integer range.';
+  if (integer) {
+    // Number can round a fractional spelling to an integer, including to zero.
+    const parts = /^[+-]?(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(input.value);
+    if (!parts || input.value.length > 1024) return 'Enter a whole decimal number within the supported input length.';
+    const fraction = parts[2] || '', digits = parts[1] + fraction;
+    const tail = /0*$/.exec(digits)[0].length;
+    if (/[1-9]/.test(digits) && BigInt(parts[3] || '0') - BigInt(fraction.length) + BigInt(tail) < 0n) {
+      return 'Enter a whole number, not a fraction.';
+    }
+  }
+  const min = input.min ?? input.getAttribute('min'), max = input.max ?? input.getAttribute('max');
+  if (min !== null && min !== undefined && min !== '' && value < Number(min)) return `Enter a number of ${min} or more.`;
+  if (max !== null && max !== undefined && max !== '' && value > Number(max)) return `Enter a number of ${max} or less.`;
+  return '';
+}
+
+function validatedNumber(input, path, ctx, read) {
+  const feedback = inputFeedback(input);
+  const validate = () => {
+    const result = read(input);
+    feedback.set(result.message || '');
+    return result;
+  };
+  input.addEventListener('input', validate);
+  const control = draftControl(input, path, ctx, () => {
+    const result = validate();
+    if (!result.message) ctx.onChange(path, result.value);
+    else ctx.onInputDraft?.(path, {
+      value: input.value, badInput: Boolean(input.validity?.badInput), validationMessage: result.message,
+    });
+  });
+  const currentFeedback = inputFeedback(control);
+  currentFeedback.set(ctx.inputDraft?.(path)?.validationMessage || '');
+  return { control, feedback: currentFeedback.node };
+}
+
 /**
  * Rule 1, in one function: the declared type decides, the expression does not.
  * The branches are ordered by type -- bool, int, enum, secret, long, string --
  * and provenance appears nowhere in them.
  */
 function scalarControl(value, path, ctx, schema) {
-  schema = withRegionSchema(schema, path);
+  schema = ctx.readOnly || ctx.native || ctx.resourceTags && path[0] === 'tags' ? schema : withRegionSchema(schema, path);
   const commit = (next) => ctx.onChange(path, next);
   const type = schema && schema.type;
   const label = valueLabel(path, schema);
+  if (ctx.native && (schema?.type === 'number' || isExactNumber(value))) {
+    const input = validatedNumber(h('input', { class: 'ctl ctl-native-number', type: 'text', inputmode: 'decimal',
+      value: isExactNumber(value) ? value.__tfNumber : String(value), 'aria-label': label,
+      autocomplete: 'off', spellcheck: false,
+    }), path, ctx, (control) => {
+      try {
+        return { value: exactNumber(control.value, schema?.syntax) };
+      } catch (error) {
+        if (!error.code?.startsWith('NATIVE_')) throw error;
+        return { message: error.message };
+      }
+    });
+    return namedControl(h('div', { class: 'combo' }, input.control, input.feedback), label, path);
+  }
 
   // A boolean is a switch, whatever shape it arrives in. `bool(readEnvironment
   // Variable(...))` delivers the string "true"; without this the fifteen
@@ -368,27 +467,26 @@ function scalarControl(value, path, ctx, schema) {
       }),
       h('span', { class: 'toggle-track' }),
       h('span', { class: 'toggle-label' }, on ? 'true' : 'false')
-    ), label);
+    ), label, path);
   }
 
   // A number, whether it arrived as one or as the string an int() cast
   // consumes. Written back in the shape it was read.
   if (typeof value === 'number' || (type === 'int' && typeof value === 'string')) {
     const numeric = typeof value === 'number';
-    return namedControl(withBounds(
-      h('input', {
-        class: 'ctl ctl-num',
-        type: 'number',
-        inputmode: 'numeric',
-        value: String(value),
-        onchange: (e) => commit(numeric ? Number(e.target.value) : e.target.value),
-      }),
-      schema
-    ), label);
+    const input = validatedNumber(h('input', {
+      class: 'ctl ctl-num', type: 'number', inputmode: 'numeric',
+      value: String(value), step: type === 'int' ? '1' : 'any',
+    }), path, ctx, (control) => ({
+      message: numberInputProblem(control, { integer: type === 'int' }),
+      value: numeric && control.value !== '' ? Number(control.value) : control.value,
+    }));
+    return namedControl(h('div', { class: 'combo' },
+      withBounds(input.control, schema), input.feedback), label, path);
   }
 
   if (schema && Array.isArray(schema.allowedValues) && schema.allowedValues.length) {
-    return namedControl(comboControl(value, schema.allowedValues, commit, schema.secure, schema), label);
+    return namedControl(comboControl(value, schema.allowedValues, commit, schema.secure, schema), label, path);
   }
 
   const str = value === null ? '' : String(value);
@@ -396,17 +494,16 @@ function scalarControl(value, path, ctx, schema) {
   // all. Sixty characters is where a value stops fitting the sheet's value
   // column on a laptop, so that is where the single line stops being honest.
   const multiline = str.includes('\n') || str.length > 60 || str.startsWith('@(');
-  if (multiline) return namedControl(exprBox(str, commit), label);
+  if (multiline) return namedControl(exprBox(str, commit, path, ctx), label, path);
 
-  const input = h('input', {
+  const input = draftControl(h('input', {
     class: `ctl ${widthClass(schema, str)}`,
     type: schema && schema.secure ? 'password' : 'text',
     value: str,
     placeholder:
       schema && !schema.envVar && schema.hasDefault ? String(schema.defaultValue ?? '') : '',
-    onchange: (e) => commit(e.target.value),
-  });
-  return namedControl(schema && schema.secure ? withReveal(input) : input, label);
+  }), path, ctx, (event) => commit(event.target.value));
+  return namedControl(schema && schema.secure ? withReveal(input) : input, label, path);
 }
 
 /**
@@ -544,7 +641,7 @@ function chipList(value, path, ctx) {
       'span',
       { class: 'listchip' },
       h('span', { class: 'listchip-text' }, String(item)),
-      h('button', {
+      ctx.readOnly ? null : h('button', {
         type: 'button',
         class: 'listchip-x',
         'aria-label': `Remove ${item}`,
@@ -553,6 +650,8 @@ function chipList(value, path, ctx) {
       })
     )
   );
+
+  if (ctx.readOnly) return h('div', { class: 'chiplist' }, h('div', { class: 'chiplist-set' }, chips));
 
   const input = h('input', {
     class: 'ctl ctl-sm',
@@ -599,7 +698,7 @@ function chipList(value, path, ctx) {
 function isRecordList(value) {
   if (!Array.isArray(value) || value.length === 0) return false;
   const rows = value.filter(
-    (v) => v !== null && typeof v === 'object' && !Array.isArray(v) && !isExpr(v)
+    (v) => v !== null && typeof v === 'object' && !Array.isArray(v) && !isExpr(v) && !isExactNumber(v)
   );
   if (rows.length !== value.length) return false;
 
@@ -613,7 +712,7 @@ function isRecordList(value) {
   // and the table into a lie about the shape of the data.
   for (const row of rows) {
     for (const v of Object.values(row)) {
-      if (v !== null && typeof v === 'object' && !isExpr(v)) return false;
+      if (v !== null && typeof v === 'object' && !isExpr(v) && !isExactNumber(v)) return false;
     }
   }
   return true;
@@ -666,19 +765,21 @@ function recordCell(row, key, index, path, ctx, schema, config) {
   const hasValue = Object.prototype.hasOwnProperty.call(row, key);
   const pickerConfig = config && config.picker;
   const custom = config && config.controls && config.controls[key];
-  const control = custom
+  let control = custom
     ? custom({ value: row[key], hasValue, row, index, path, ctx, schema: columnSchema(schema, key) })
     : null;
+  if (!control && hasValue && pickerConfig && key === pickerConfig.key) {
+    control = recordPickerControl(row[key], row, index, path, ctx, config);
+  }
+  if (control && ctx.decorateRecordValue) control = ctx.decorateRecordValue([...path, index, key], control);
   return h(
     'div',
     {
       class: 'rec-cell',
       dataset: { kind: typeOf(row[key]), label: recordHeader(key) },
     },
-    control || (hasValue
-      ? pickerConfig && key === pickerConfig.key
-      ? recordPickerControl(row[key], row, index, path, ctx, config)
-      : renderValue(row[key], [...path, index, key], ctx, columnSchema(schema, key))
+    control || (hasValue || ctx.native
+      ? renderValue(row[key], [...path, index, key], ctx, columnSchema(schema, key))
       : h(
         'button',
         {
@@ -777,6 +878,7 @@ function recordTable(value, path, ctx, schema, config = null) {
           type: 'button',
           'aria-expanded': String(expanded),
           'aria-controls': detailId,
+          dataset: ctx.readOnly ? { editorFocus: `inspect:${stateKey}` } : {},
           title: `Show ${split.hidden.length} additional fields`,
           onclick: (event) => {
             expanded = !expanded;
@@ -849,9 +951,10 @@ function columnSchema(schema, key) {
 }
 
 function arrayEditor(value, path, ctx, schema, options) {
-  if (isScalarList(value)) return chipList(value, path, ctx);
+  const tuple = ctx.native && schema?.collection === 'tuple';
+  if (isScalarList(value) && (!ctx.native || schema?.item?.type === 'string')) return chipList(value, path, ctx);
   if (options && options.record) return recordTable(value, path, ctx, schema, options.record);
-  if (isRecordList(value)) return recordTable(value, path, ctx, schema, options && options.record);
+  if (!tuple && options?.array !== 'items' && isRecordList(value)) return recordTable(value, path, ctx, schema, options && options.record);
 
   const items = value.map((item, index) =>
     h(
@@ -865,6 +968,7 @@ function arrayEditor(value, path, ctx, schema, options) {
           'button',
           {
             class: 'btn btn-ghost btn-sm',
+            disabled: tuple,
             title: 'Remove this entry',
             onclick: () => ctx.onRemove([...path, index]),
           },
@@ -883,9 +987,10 @@ function arrayEditor(value, path, ctx, schema, options) {
       'button',
       {
         class: 'btn btn-sm',
-        onclick: () => ctx.onAppend(path, templateFrom(value[value.length - 1])),
+        disabled: tuple,
+        onclick: () => ctx.onAppend(path, ctx.newArrayItem ? ctx.newArrayItem(path, value.length) : templateFrom(value[value.length - 1])),
       },
-      'Add entry'
+      options?.addLabel || 'Add entry'
     )
   );
 }
@@ -971,12 +1076,15 @@ function pathTable(value, path, ctx) {
  * definitions, not a document. Key at one fixed measure, control beside it, no
  * indent and no container.
  */
-function objectEditor(value, path, ctx) {
-  const keys = Object.entries(value);
-  if (!keys.length) return h('p', { class: 'empty' }, 'No properties.');
-  if (depthOf(value) > 1) return pathTable(value, path, ctx);
+function objectEditor(value, path, ctx, options, schema) {
+  if (!ctx.native && ctx.resourceTags && path.length === 1 && path[0] === 'tags') return resourceTagsEditor(value, path, ctx);
+  const keys = ctx.native ? [...new Set([...Object.keys(value), ...Object.keys(schema?.properties || {})])]
+    .map((key) => [key, value[key]]) : Object.entries(value);
+  const map = ctx.native && schema?.collection === 'map';
+  if (!keys.length && !map) return h('p', { class: 'empty' }, 'No properties.');
+  if (!ctx.native && depthOf(value) > 1 && options?.object !== 'fields') return pathTable(value, path, ctx);
 
-  return h(
+  const content = h(
     'div',
     { class: 'defs' },
     keys.map(([key, val]) =>
@@ -988,13 +1096,117 @@ function objectEditor(value, path, ctx) {
       )
     )
   );
+  if (map && !ctx.readOnly) {
+    const input = h('input', { class: 'ctl', type: 'text', 'aria-label': `New key for ${path.join('.')}`, placeholder: 'New mapping key' });
+    const problem = h('span', { class: 'field-error', role: 'alert', hidden: true });
+    content.append(h('div', { class: 'form-actions' }, input,
+      h('button', { class: 'btn btn-sm', type: 'button', onclick: () => {
+        const key = input.value;
+        if (!key || Object.hasOwn(value, key) || key === '__tfNumber') {
+          problem.textContent = 'Choose a nonempty, unused key (the exact-number adapter key is reserved).';
+          problem.hidden = false;
+          return;
+        }
+        ctx.onAddProperty(path, key, ctx.newValue([...path, key]));
+      } }, 'Add mapping'), problem));
+  }
+  return content;
+}
+
+function resourceTagsEditor(value, path, ctx) {
+  const keys = Object.keys(value), scope = ctx.resourceTags;
+  const content = h('div', { class: 'resource-tags' });
+  const address = (name) => JSON.stringify([path, name]);
+  const current = () => !ctx.readOnly && content.isConnected && scope.focus.root.contains(content) && scope.focus.isCurrent();
+  const perform = (action, target) => {
+    if (!current()) return;
+    const active = document.activeElement, focusKey = active?.dataset.editorFocus;
+    const restore = content.contains(active);
+    action();
+    if (!restore || content.isConnected || !scope.focus.isCurrent()) return;
+    if (document.activeElement !== document.body && document.activeElement !== active &&
+        (!focusKey || document.activeElement?.dataset.editorFocus !== focusKey)) return;
+    const next = [...scope.focus.root.querySelectorAll('[data-editor-focus]')]
+      .find((control) => control.dataset.tagFocus === address(target));
+    focusEditorControl(next);
+  };
+  const rows = keys.map((key, index) => h('div', { class: 'defs-row resource-tag-row' },
+    h('code', { class: 'defs-key' }, key),
+    h('div', { class: 'defs-val' }, renderValue(value[key], [...path, key], ctx, null)),
+    ctx.readOnly ? null : h('button', {
+      class: 'btn btn-danger-ghost btn-sm', type: 'button', 'aria-label': `Remove tag ${key}`,
+      dataset: { tagFocus: address(`remove:${key}`), editorFocus: address(`remove:${key}`) },
+      onclick: () => perform(() => ctx.onRemove([...path, key]),
+        keys[index + 1] !== undefined ? `remove:${keys[index + 1]}` : index > 0 ? `remove:${keys[index - 1]}` : 'name'),
+    }, 'Remove')));
+  content.append(keys.length ? h('div', { class: 'defs resource-tag-list' }, rows)
+    : h('p', { class: 'empty' }, 'No tags in this object.'));
+  if (ctx.readOnly) {
+    for (const control of content.querySelectorAll('input, select, textarea, button')) control.disabled = true;
+    return content;
+  }
+
+  // Numeric input addresses cannot collide with the object's string keys.
+  // They retain an unfinished addition without pretending it is a source edit.
+  const namePath = [...path, 0], valuePath = [...path, 1];
+  const input = (label, at, target) => namedControl(draftControl(h('input', {
+    class: 'ctl ctl-w-id', type: 'text', value: '', 'aria-label': label,
+    autocomplete: 'off', spellcheck: false, dataset: { tagFocus: address(target) },
+  }), at, ctx, (event) => {
+    if (!event.target.validationMessage) event.target.setCustomValidity?.('Choose Add tag to stage this entry, or clear its name and value.');
+  }), label, at);
+  const name = input('New tag name', namePath, 'name'), tagValue = input('New tag value', valuePath, 'value');
+  const feedback = inputFeedback(name);
+  feedback.set(name.validationMessage || '');
+  let attempted = Boolean(name.validationMessage);
+  const problem = () => !name.value.trim() ? 'Enter a tag name; whitespace alone is not a name.'
+    : Object.hasOwn(value, name.value) ? `A tag named "${name.value}" already exists.`
+      : ['__proto__', '__expr', '__args', '__tfNumber'].includes(name.value)
+        ? 'This name is reserved by the editor value/path representation. Choose another tag name.' : '';
+  const showProblem = (message) => {
+    feedback.set(message);
+    const retained = ctx.inputDraft?.(namePath);
+    if (retained) ctx.onInputDraft?.(namePath, { ...retained, validationMessage: message });
+  };
+  name.addEventListener('input', () => showProblem(attempted ? problem() : ''));
+  const add = () => {
+    if (!current()) return;
+    attempted = true;
+    const message = problem();
+    showProblem(message);
+    if (message) { focusEditorControl(name); return; }
+    perform(() => scope.add(path, name.value, tagValue.value), 'name');
+  };
+  for (const control of [name, tagValue]) control.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.isComposing || event.defaultPrevented) return;
+    event.preventDefault();
+    add();
+  });
+  content.append(h('div', { class: 'resource-tag-add' },
+    h('label', {}, h('span', {}, 'Tag name'), name),
+    h('label', {}, h('span', {}, 'Tag value'), tagValue),
+    h('button', { class: 'btn btn-sm', type: 'button',
+      dataset: { tagFocus: address('add'), editorFocus: address('add') }, onclick: add }, 'Add tag'),
+    feedback.node));
+  return content;
 }
 
 export function renderValue(value, path, ctx, schema, options = null) {
+  if (ctx.schemaForValue) schema = ctx.schemaForValue(path, schema);
+  if (ctx.optionsForValue) options = ctx.optionsForValue(path, value, schema) || options;
+  const rendered = renderValueContent(value, path, ctx, schema, options);
+  return ctx.decorateValue ? ctx.decorateValue(path, rendered) : rendered;
+}
+
+function renderValueContent(value, path, ctx, schema, options) {
+  if (ctx.nativeValueControl) {
+    const control = ctx.nativeValueControl(value, path, schema);
+    if (control) return control;
+  }
   const kind = typeOf(value);
   if (kind === 'expr') return exprCard(value, path, ctx, schema);
   if (kind === 'array') return arrayEditor(value, path, ctx, schema, options);
-  if (kind === 'object') return objectEditor(value, path, ctx);
+  if (kind === 'object') return objectEditor(value, path, ctx, options, schema);
   // `null` and "no value" are the same fact to the reader, so they get the
   // same row state rather than a second vocabulary for absence.
   if (kind === 'null') {

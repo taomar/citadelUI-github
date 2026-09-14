@@ -17,23 +17,10 @@
 
 import { h } from './dom.mjs';
 import { picker } from './picker.mjs';
+import { editorField } from './editor-focus.mjs';
+import { decodePolicyAttribute as decodeAttr } from '../../shared/policy.mjs';
 
 const QUOTA_PERIODS = ['Hourly', 'Daily', 'Weekly', 'Monthly', 'Yearly'];
-
-/**
- * Attribute values are read straight out of the XML, so a counter key that
- * embeds a quoted string arrives as `&quot;`. Showing that to the user is both
- * unreadable and a trap: editing the field would send the entity back as
- * literal text and the escaper would turn its ampersand into `&amp;quot;`.
- */
-function decodeAttr(value) {
-  return String(value)
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&');
-}
 
 function escapeMarkup(value) {
   return String(value)
@@ -55,15 +42,17 @@ function highlightXml(value) {
     });
 }
 
-function rawXmlEditor(policy, ctx) {
+export function rawXmlEditor(policy, ctx) {
   const lines = h('pre', { class: 'raw-lines', 'aria-hidden': 'true' });
   const code = h('pre', { class: 'raw-code', 'aria-hidden': 'true' });
   const input = h('textarea', {
     class: 'ctl policy-raw',
-    'aria-label': 'Raw policy XML',
+    'aria-label': ctx.label || 'Raw policy XML',
     spellcheck: false,
+    readOnly: Boolean(ctx.readOnly),
     value: policy.text,
     oninput: (e) => {
+      if (ctx.readOnly) return;
       sync(e.target.value);
       ctx.onPolicyRaw(e.target.value);
     },
@@ -130,6 +119,7 @@ function modelsEditor(control, onChange, onboarded) {
         {
           class: 'chip-x',
           title: `Remove ${model}`,
+          'aria-label': `Remove allowed model ${model}`,
           onclick: () => {
             const next = models.filter((_, i) => i !== index);
             onChange({ control: 'allowedModels', value: next.join(',') });
@@ -152,6 +142,7 @@ function modelsEditor(control, onChange, onboarded) {
 
   const p = picker(remaining, add, {
     placeholder: known.size ? 'Search models\u2026' : 'gpt-4o-mini',
+    ariaLabel: 'Add an allowed model',
     freeTextLabel: 'not onboarded',
     empty: 'Every onboarded model is already allowed. Type an id to add one anyway.',
   });
@@ -276,6 +267,7 @@ function perModelAdder(limits, onboarded, key, onAdd, label) {
 
   const p = picker(available, onAdd, {
     placeholder: 'Search models\u2026',
+    ariaLabel: `Model for ${label.toLowerCase()}`,
     freeTextLabel: 'not onboarded',
     empty: 'No onboarded model left. Type a model id to add it anyway.',
   });
@@ -284,7 +276,7 @@ function perModelAdder(limits, onboarded, key, onAdd, label) {
     'div',
     { class: 'pol-add' },
     p.el,
-    h('button', { class: 'btn', onclick: p.choose }, label),
+    p.action(label, { class: 'btn' }),
     h(
       'p',
       { class: 'hint' },
@@ -362,6 +354,7 @@ function tokenLimitsEditor(limits, onboarded, onChange) {
                 'button',
                 {
                   class: 'btn-quiet btn-destructive',
+                  'aria-label': `Remove token limit override for model ${entry.model}`,
                   onclick: () => onChange({ control: 'tokenLimits', removeModel: entry.model }),
                 },
                 'Remove override'
@@ -380,13 +373,19 @@ function tokenLimitsEditor(limits, onboarded, onChange) {
       )
     ),
 
-    perModelAdder(
-      limits,
-      onboarded,
-      'per-model-limit-options',
-      (model) => onChange({ control: 'tokenLimits', addModel: model }),
-      'Give this model its own budget'
-    )
+    limits.universal || limits.chooseSpan
+      ? perModelAdder(
+          limits,
+          onboarded,
+          'per-model-limit-options',
+          (model) => onChange({ control: 'tokenLimits', addModel: model }),
+          'Give this model its own budget'
+        )
+      : h(
+          'p',
+          { class: 'hint' },
+          'Add a universal token limit in Raw XML before creating the first model budget. No default budget is chosen for you.'
+        )
   );
 }
 
@@ -510,6 +509,33 @@ function headersEditor(control, onChange) {
   );
 }
 
+function inspectVariable(def, state, reason) {
+  return h(
+    'div',
+    { class: 'pol-field' },
+    h('label', { class: 'pol-label' }, def.label),
+    h('span', { class: 'chip chip-muted' }, 'Inspect only'),
+    h('code', {}, def.key),
+    h('pre', { class: 'pol-readonly', 'aria-label': `${def.label} source value` },
+      typeof state.sourceValue === 'string' ? state.sourceValue : 'Full attribute representation unavailable in this view.'),
+    h('p', { class: 'hint', role: 'note' }, reason, ' This declaration is preserved. Inspect or edit it in Raw XML (expert).')
+  );
+}
+
+function responseHeadersEditor(controls, onChange) {
+  if (controls.responseHeaders) return headersEditor(controls.responseHeaders, onChange);
+  const state = controls.variables?.enableResponseHeaders;
+  if (!state?.present) return null;
+  const reason = state.commented
+    ? 'This response-header declaration is commented out; it is not active.'
+    : typeof state.sourceValue !== 'string'
+      ? 'Use Raw XML (expert) to inspect the complete attribute.'
+    : !/^@[({]/.test(state.sourceValue)
+      ? 'This is an APIM string literal, not a Boolean expression. Guided mode does not convert its type.'
+      : 'Guided mode only toggles complete Boolean expressions @(true) and @(false) with supported delimiters; it does not evaluate this expression.';
+  return inspectVariable({ key: 'enableResponseHeaders', label: 'Response headers' }, state, reason);
+}
+
 /**
  * The documented `set-variable` switches, grouped as the policy guide groups
  * them. A knob absent from the file is shown in its default state and writing
@@ -539,6 +565,9 @@ function variableField(def, state, onChange) {
   const write = (v) => onChange({ control: 'variable', key: def.key, value: v });
 
   if (def.type === 'boolean') {
+    if (value !== null && !/^(true|false)$/.test(value)) {
+      return inspectVariable(def, state, 'This value is not a literal Boolean that guided mode can safely toggle.');
+    }
     const on = value === 'true';
     return h(
       'div',
@@ -555,16 +584,21 @@ function variableField(def, state, onChange) {
     );
   }
 
+  const multiline = /[\r\n]/.test(value || '');
+  // Text inputs remove line breaks; textareas preserve LF but normalize CR.
+  const rawOnly = /\r/.test(value || '');
   return field(
     def.label,
-    def.help,
-    h('input', {
+    rawOnly ? `${def.help} This value contains carriage returns. Edit it in Raw XML to preserve them.` : def.help,
+    h(multiline ? 'textarea' : 'input', {
       class: 'ctl',
-      type: def.type === 'number' ? 'number' : 'text',
+      type: multiline ? undefined : def.type === 'number' ? 'number' : 'text',
       step: def.type === 'number' ? '0.05' : undefined,
+      rows: multiline ? 3 : undefined,
+      readOnly: rawOnly,
       value: value === null ? '' : value,
       placeholder: 'not set',
-      onchange: (e) => write(e.target.value === '' ? null : e.target.value),
+      onchange: rawOnly ? undefined : (e) => write(e.target.value === '' ? null : e.target.value),
     })
   );
 }
@@ -618,7 +652,7 @@ function absentCard(name, title, lead, onChange) {
       { class: 'pol-enable' },
       h(
         'button',
-        { class: 'btn btn-primary', onclick: () => onChange({ control: name, enable: true }) },
+        { class: 'btn btn-primary', 'aria-label': `Add ${title.toLowerCase()} to this policy`, onclick: () => onChange({ control: name, enable: true }) },
         'Add to this policy'
       ),
       h(
@@ -670,7 +704,7 @@ function contentSafetyEditor(control, onChange) {
   const missing = CONTENT_SAFETY_CATEGORIES.filter((c) => !present.has(c));
   const picker = h(
     'select',
-    { class: 'ctl' },
+    { class: 'ctl', 'aria-label': 'Content safety category to check' },
     missing.map((c) => h('option', { value: c }, c))
   );
 
@@ -803,6 +837,7 @@ function contentSafetyEditor(control, onChange) {
                     'button',
                     {
                       class: 'btn-quiet btn-destructive',
+                      'aria-label': `Stop checking ${cat.name} in content safety`,
                       onclick: () =>
                         onChange({ control: 'contentSafety', removeCategory: cat.name }),
                     },
@@ -883,6 +918,7 @@ function blocklistSection(control, onChange) {
                 {
                   class: 'chip-x',
                   title: `Stop enforcing ${b.id}`,
+                  'aria-label': `Stop enforcing blocklist ${b.id}`,
                   onclick: () =>
                     onChange({ control: 'contentSafety', removeBlocklist: b.id }),
                 },
@@ -948,12 +984,15 @@ function throttleField(spec, value, onSet) {
   return field(spec.label, spec.help, control);
 }
 
-function callLimitEditor(control, name, title, lead, onChange, limits, onboarded, spec) {
+function callLimitEditor(control, name, title, lead, onChange, limits, onboarded, spec, ctx) {
   if (!control) return absentCard(name, title, lead, onChange);
 
   const fields = (spec && spec.fields) || [];
+  const core = fields.filter((f) => ['calls', 'bandwidth', 'renewal-period', 'counter-key'].includes(f.key));
+  const advanced = fields.filter((f) => !core.includes(f));
   const structureKey = name === 'rateLimit' ? 'rateLimits' : 'quotaLimits';
   const shape = limits ? SHAPES[limits.mode] || SHAPES.universal : null;
+  const universal = limits ? limits.universal : control;
   const valueOf = (attrs, key) => (attrs[key] ? decodeAttr(attrs[key].value) : undefined);
 
   // Once the policy is mixed the flat control points at the first branch, so
@@ -963,11 +1002,11 @@ function callLimitEditor(control, name, title, lead, onChange, limits, onboarded
       ? onChange({ control: structureKey, universal: { [k]: v } })
       : onChange({ control: name, attributes: { [k]: v } });
 
-  const grid = (attrs, onSet) =>
+  const grid = (attrs, onSet, shown = core) =>
     h(
       'div',
       { class: 'pol-grid' },
-      fields.map((f) => throttleField(f, valueOf(attrs, f.key), onSet))
+      shown.map((f) => throttleField(f, valueOf(attrs, f.key), onSet))
     );
 
   return h(
@@ -984,14 +1023,13 @@ function callLimitEditor(control, name, title, lead, onChange, limits, onboarded
     spec ? h('p', { class: 'hint' }, spec.window) : null,
     shape && limits.mode !== 'universal' ? h('p', { class: 'hint' }, shape.note) : null,
 
-    h(
+    universal ? h(
       'div',
       { class: 'pol-sub' },
-      limits && limits.mode !== 'universal'
-        ? h('h4', {}, 'Fallback for models without their own limit')
-        : null,
-      grid(control.attributes, setUniversal)
-    ),
+      h('h4', {}, limits && limits.mode !== 'universal'
+        ? 'Fallback for models without their own limit' : 'Applies to every model'),
+      grid(universal.attributes, setUniversal)
+    ) : h('p', { class: 'hint hint-warn' }, 'No fallback is configured. Models without an override have no limit in this rule.'),
 
     limits
       ? limits.perModel.map((entry) =>
@@ -1007,6 +1045,7 @@ function callLimitEditor(control, name, title, lead, onChange, limits, onboarded
                     'button',
                     {
                       class: 'btn-quiet btn-destructive',
+                      'aria-label': `Remove ${title.toLowerCase()} override for model ${entry.model}`,
                       onclick: () =>
                         onChange({ control: structureKey, removeModel: entry.model }),
                     },
@@ -1032,10 +1071,28 @@ function callLimitEditor(control, name, title, lead, onChange, limits, onboarded
           onboarded,
           `${structureKey}-add`,
           (model) => onChange({ control: structureKey, addModel: model }),
-          'Give this model its own call budget'
+          name === 'rateLimit' ? 'Add a model request rate limit' : 'Add a model request quota'
         )
-      : null
+      : null,
+    advanced.length ? advancedSettings(ctx, `policy-${name}-advanced`, `Advanced ${title.toLowerCase()} settings`,
+      h('p', { class: 'hint' }, 'Optional counting expressions and response headers. Omitted values stay omitted.'),
+      universal ? h('div', { class: 'pol-sub' },
+        h('h4', {}, limits?.mode !== 'universal' ? 'Fallback for models without their own limit' : 'Applies to every model'),
+        grid(universal.attributes, setUniversal, advanced)) : null,
+      (limits?.perModel || []).filter((entry) => entry.model).map((entry) =>
+        h('div', { class: 'pol-sub' },
+          h('h4', {}, entry.model),
+          grid(entry.attributes, (k, v) =>
+            onChange({ control: structureKey, perModel: { [entry.model]: { [k]: v } } }), advanced)))
+    ) : null
   );
+}
+
+function advancedSettings(ctx, key, label, ...children) {
+  const disclosure = h('details', { class: 'technical-details', open: ctx?.isOpen?.(key, false) },
+    h('summary', {}, label), ...children);
+  disclosure.addEventListener('toggle', () => { if (disclosure.isConnected) ctx?.setOpen?.(key, disclosure.open); });
+  return disclosure;
 }
 
 /**
@@ -1131,7 +1188,23 @@ export function renderPolicy(policy, ctx) {
   }
 
   const controls = policy.controls || {};
-  const onChange = ctx.onPolicyChange;
+  const focusKey = (...parts) => `policy:${JSON.stringify(policy.path)}:${JSON.stringify(parts)}`;
+  const onChange = (change) => {
+    const active = document.activeElement;
+    const block = active?.closest('[data-policy-block]');
+    const structural = change.control === 'allowedModels' || change.addModel || change.removeModel ||
+      change.addCategory || change.removeCategory || change.addBlocklist || change.removeBlocklist || change.enable;
+    const previous = active?.dataset.editorFocus;
+    if (structural && block) active.dataset.editorFocus = block.dataset.policyBlock;
+    try {
+      return ctx.onPolicyChange(change);
+    } finally {
+      if (active?.isConnected && structural && block) {
+        if (previous === undefined) delete active.dataset.editorFocus;
+        else active.dataset.editorFocus = previous;
+      }
+    }
+  };
 
   /**
    * Scope is the thing this screen most easily misleads about: every control
@@ -1178,7 +1251,8 @@ export function renderPolicy(policy, ctx) {
       onChange,
       controls.rateLimits,
       ctx.onboardedModels,
-      ctx.throttleSpecs && ctx.throttleSpecs.rateLimit
+      ctx.throttleSpecs && ctx.throttleSpecs.rateLimit,
+      ctx
     ),
     callLimitEditor(
       controls.callQuota,
@@ -1188,14 +1262,15 @@ export function renderPolicy(policy, ctx) {
       onChange,
       controls.quotaLimits,
       ctx.onboardedModels,
-      ctx.throttleSpecs && ctx.throttleSpecs.callQuota
+      ctx.throttleSpecs && ctx.throttleSpecs.callQuota,
+      ctx
     ),
     contentSafetyEditor(controls.contentSafety, onChange),
     semanticCacheEditor(controls.semanticCache, onChange, ctx.semanticCacheSpec),
     VARIABLE_GROUPS.map((g) =>
       variableGroup(g, ctx.policyVariables || [], controls, onChange)
     ),
-    controls.responseHeaders ? headersEditor(controls.responseHeaders, onChange) : null,
+    responseHeadersEditor(controls, onChange),
     controls.fragments && controls.fragments.length
       ? h(
           'div',
@@ -1211,7 +1286,31 @@ export function renderPolicy(policy, ctx) {
       : null
   );
 
+  for (const block of guided.children) {
+    const heading = block.querySelector('h4, .pol-label');
+    const title = heading?.textContent || 'Policy';
+    block.dataset.policyBlock = focusKey(title);
+    if (heading) {
+      heading.dataset.editorFocus = block.dataset.policyBlock;
+      heading.tabIndex = -1;
+    }
+    for (const [index, control] of [...block.querySelectorAll('input, select, textarea, button, summary')].entries()) {
+      const sub = control.closest('.pol-sub');
+      const row = sub?.querySelector('h4')?.textContent || '';
+      const field = control.closest('.pol-field');
+      if (!field && control.type === 'checkbox') control.setAttribute('aria-label', `${title} enforcement`);
+      const label = field?.querySelector('.pol-label, .toggle-label')?.textContent || control.getAttribute('aria-label') || control.textContent;
+      const id = field ? [...field.querySelectorAll('input, select, textarea, button')].indexOf(control) : index;
+      editorField(control, [policy.path, title, row, label, id]);
+      control.dataset.editorFocus = focusKey(title, row, label, id);
+      if (['INPUT', 'SELECT', 'TEXTAREA'].includes(control.tagName) && row) {
+        control.setAttribute('aria-label', `${control.getAttribute('aria-label') || label}: ${row} - ${title}`);
+      }
+    }
+  }
+
   const raw = rawXmlEditor(policy, ctx);
+  raw.querySelector('textarea').dataset.editorFocus = focusKey('raw-input');
 
   return h(
     'div',
@@ -1228,9 +1327,12 @@ export function renderPolicy(policy, ctx) {
             'button',
             {
               class: `tab tab-sm${ctx.policyMode === mode ? ' active' : ''}`,
+              type: 'button',
+              'aria-pressed': String(ctx.policyMode === mode),
+              dataset: { editorFocus: focusKey('mode', mode) },
               onclick: () => ctx.setPolicyMode(mode),
             },
-            mode === 'guided' ? 'Guided' : 'Raw XML'
+            mode === 'guided' ? 'Guided' : 'Raw XML (expert)'
           )
         )
       )
@@ -1241,7 +1343,8 @@ export function renderPolicy(policy, ctx) {
       h(
         'p',
         { class: 'hint' },
-        'Saved as-is after a tag-balance check. Malformed XML is rejected before it reaches the file.'
+        'Expert view of the same policy. Review & save checks tag balance, not APIM expression types or runtime behavior. ' +
+        'Use Guided to return to the form. If you have typed XML here, save it first or explicitly confirm discarding it when switching back.'
       ),
       raw
     ),

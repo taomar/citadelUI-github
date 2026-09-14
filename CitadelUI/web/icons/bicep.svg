@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <title>Bicep configuration</title>
+  <rect x="1" y="1" width="22" height="22" rx="5" fill="#eaf3fc"/>
+  <path d="M8 5H7a2 2 0 0 0-2 2v2c0 1.5-1 2.5-2 3 1 .5 2 1.5 2 3v2a2 2 0 0 0 2 2h1M16 5h1a2 2 0 0 1 2 2v2c0 1.5 1 2.5 2 3-1 .5-2 1.5-2 3v2a2 2 0 0 1-2 2h-1M10 15l4-6" fill="none" stroke="#0f6cbd" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

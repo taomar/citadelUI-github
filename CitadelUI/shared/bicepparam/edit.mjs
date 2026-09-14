@@ -9,7 +9,7 @@
  */
 
 import { parseBicepParam } from './parser.mjs';
-import { serializeValue, indentLevelAt } from './serialize.mjs';
+import { serializeValue, indentLevelAt, quote } from './serialize.mjs';
 import { tokenize } from './lexer.mjs';
 
 export class EditError extends Error {}
@@ -235,18 +235,28 @@ function buildSplice(doc, text, op) {
  * Add a property to an object literal (used when a form surfaces an optional
  * field that is absent from the file).
  */
-function buildAddProperty(doc, text, op) {
-  const { node } = resolvePath(doc, op.path);
-  if (node.kind !== 'object') throw new EditError(`${describePath(op.path)} is not an object`);
+function buildAddProperties(doc, text, operations) {
+  const { node } = resolvePath(doc, operations[0].path);
+  if (node.kind !== 'object') throw new EditError(`${describePath(operations[0].path)} is not an object`);
+  const keys = new Set(node.properties.map((property) => property.key));
+  const newline = text.includes('\r\n') ? '\r\n' : '\n';
   const level = indentLevelAt(text, node.start);
   const inner = '  '.repeat(level + 1);
-  const rendered = `${op.key}: ${serializeValue(op.value, level + 1)}`;
-
-  if (node.properties.length === 0) {
-    return insertIntoEmptyLiteral(text, node, rendered, level);
-  }
-  const last = node.properties[node.properties.length - 1];
-  return { start: last.end, end: last.end, text: `\n${inner}${rendered}` };
+  const rendered = operations.map((op) => {
+    if (typeof op.key !== 'string' || keys.has(op.key)) throw new EditError('A new property needs a unique string key.');
+    keys.add(op.key);
+    const key = /^[A-Za-z_][A-Za-z0-9_]*$/.test(op.key) && !/^(true|false|null)$/.test(op.key) ? op.key : quote(op.key);
+    return `${inner}${key}: ${serializeValue(op.value, level + 1, newline)}`;
+  }).join(newline);
+  // A shared closing-brace anchor keeps additions ordered and outside removed
+  // property spans, without moving an existing property's trailing comment.
+  const closeLine = lineStart(text, node.innerEnd);
+  const ownLine = text.slice(closeLine, node.innerEnd).trim() === '';
+  const at = ownLine ? closeLine : node.innerEnd;
+  return {
+    start: at, end: at,
+    text: ownLine ? `${rendered}${newline}` : `${newline}${rendered}${newline}${'  '.repeat(level)}`,
+  };
 }
 
 /**
@@ -261,11 +271,20 @@ export function applyEdits(text, operations) {
   const names = additions.map((operation) => String(operation.name).toLowerCase());
   if (new Set(names).size !== names.length) throw new EditError('Conflicting parameter additions.');
 
-  const splices = operations.map((op, index) => ({
-    ...(op.op === 'addProperty' ? buildAddProperty(doc, text, op) : buildSplice(doc, text, op)),
-    addition: op.op === 'addParam',
-    index,
-  }));
+  const properties = new Map();
+  const splices = [];
+  operations.forEach((op, index) => {
+    if (op.op === 'addProperty') {
+      const { node } = resolvePath(doc, op.path);
+      if (!properties.has(node)) properties.set(node, { index, operations: [] });
+      properties.get(node).operations.push(op);
+    } else {
+      splices.push({ ...buildSplice(doc, text, op), addition: op.op === 'addParam', index });
+    }
+  });
+  for (const group of properties.values()) {
+    splices.push({ ...buildAddProperties(doc, text, group.operations), index: group.index });
+  }
 
   // Reject overlapping edits rather than producing corrupt output.
   const sorted = [...splices].sort((a, b) => a.start - b.start);

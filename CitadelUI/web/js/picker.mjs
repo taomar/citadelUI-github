@@ -91,6 +91,8 @@ export function picker(options, onPick, props = {}) {
   const panel = h('div', { class: 'mp-panel mp-portal', id: panelId, role: 'listbox' });
   const wrap = h('div', { class: 'mp' }, input);
   const lifecycle = {};
+  const actions = new Set();
+  const inAction = (target) => [...actions].some((action) => action.contains(target));
 
   const close = () => {
     deactivate(lifecycle);
@@ -222,7 +224,7 @@ export function picker(options, onPick, props = {}) {
           close();
           return;
         }
-        if (panel.contains(document.activeElement)) return;
+        if (panel.contains(document.activeElement) || inAction(document.activeElement)) return;
         const exact = items.find((item) => String(item.value) === input.value);
         if (exact || props.freeText !== false) {
           if (String(input.value) === String(props.value || '')) close();
@@ -279,7 +281,7 @@ export function picker(options, onPick, props = {}) {
     setTimeout(() => {
       if (!panel.isConnected) return;
       const active = document.activeElement;
-      if (active === input || panel.contains(active)) return;
+      if (active === input || panel.contains(active) || inAction(active)) return;
       close();
     }, 0);
   });
@@ -292,9 +294,17 @@ export function picker(options, onPick, props = {}) {
     place();
   };
   const outside = (event) => {
-    if (!wrap.contains(event.target) && !panel.contains(event.target)) close();
+    if (!wrap.contains(event.target) && !panel.contains(event.target) && !inAction(event.target)) close();
   };
   Object.assign(lifecycle, { input, panel, close, follow, outside });
 
-  return { el: wrap, input, choose: () => choose(input.value), items };
+  // Sibling actions belong to the picker until their click consumes the value.
+  // A true outside mousedown still dismisses and restores the committed value.
+  const action = (label, attributes = {}) => {
+    const button = h('button', { ...attributes, type: 'button', onclick: () => choose(input.value) }, label);
+    actions.add(button);
+    return button;
+  };
+
+  return { el: wrap, input, choose: () => choose(input.value), action, items };
 }

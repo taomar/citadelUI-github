@@ -9,6 +9,8 @@ import {
   DESKTOP_ORIGIN,
   DESKTOP_PORT,
   decodeCredentialKey,
+  desktopDiagnosticsAllowed,
+  desktopVersionLabel,
   desktopPermissionAllowed,
   desktopPermissionCheckAllowed,
   resourceRoot,
@@ -42,6 +44,13 @@ test('desktop permission allow-list is origin-bound', () => {
   assert.equal(desktopPermissionAllowed('fileSystem', 'https://example.test'), false);
 });
 
+test('desktop permits only its own Diagnostics popup and keeps other popups denied', () => {
+  assert.equal(desktopDiagnosticsAllowed(`${DESKTOP_ORIGIN}/debug.html`), true);
+  assert.equal(desktopDiagnosticsAllowed(`${DESKTOP_ORIGIN}/debug`), true);
+  assert.equal(desktopDiagnosticsAllowed(`${DESKTOP_ORIGIN}/`), false);
+  assert.equal(desktopDiagnosticsAllowed(`${DESKTOP_ORIGIN}/debug.html?capture=on`), false);
+  assert.equal(desktopDiagnosticsAllowed('https://example.test/debug.html'), false);
+});
 test('desktop permission checks allow null Electron webContents only for the trusted origin', () => {
   assert.equal(desktopPermissionCheckAllowed(null, 'fileSystem', DESKTOP_ORIGIN), true);
   assert.equal(
@@ -51,6 +60,11 @@ test('desktop permission checks allow null Electron webContents only for the tru
   assert.equal(desktopPermissionCheckAllowed(null, 'media', DESKTOP_ORIGIN), false);
 });
 
+test('desktop version label identifies the application revision and marks development builds', () => {
+  const info = { version: '1.1.4', applicationRevision: '5791d4358f2696c1f4ec2805bd6bcfc2c7d729e8', dirty: false };
+  assert.equal(desktopVersionLabel(info), 'v1.1.4 | 5791d43');
+  assert.equal(desktopVersionLabel({ ...info, dirty: true }), 'v1.1.4 | 5791d43 (dev)');
+});
 test('desktop restricted local paths accept Electron serialized origins', () => {
   const webContents = {};
   assert.equal(
@@ -113,7 +127,7 @@ test('desktop package declares pinned Electron and Forge dependencies', async ()
   );
   assert.equal(packageJson.main, 'main.mjs');
   assert.equal(packageJson.license, 'MIT');
-  assert.equal(packageJson.version, '1.1.3');
+  assert.equal(packageJson.version, '1.1.4');
   assert.equal(packageJson.devDependencies.electron, '44.3.0');
   assert.equal(packageJson.devDependencies['@electron-forge/cli'], '7.11.2');
   assert.equal(packageJson.devDependencies['@electron-forge/maker-dmg'], '7.11.2');

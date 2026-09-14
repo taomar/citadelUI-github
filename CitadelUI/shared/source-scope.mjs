@@ -10,6 +10,8 @@
 
 export const SOURCE_EXTENSIONS = Object.freeze(['.bicepparam', '.bicep', '.xml']);
 export const MAX_SOURCE_BYTES = 8 * 1024 * 1024;
+export const MAX_COMMIT_FILES = 64;
+export const MAX_GITHUB_COMMIT_REQUEST_BYTES = 12 * 1024 * 1024;
 export const MAX_ENV_BYTES = 1024 * 1024;
 export const SUBSCRIPTION_ENVIRONMENT_KEY = 'AZURE_SUBSCRIPTION_ID';
 

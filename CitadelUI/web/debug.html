@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Instance diagnostics - Citadel Control Panel</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/css/app.css" />
+    <link rel="stylesheet" href="/css/components.css" />
+    <link rel="stylesheet" href="/css/debug.css" />
+  </head>
+  <body>
+    <a class="debug-skip" href="#debug-workspace">Skip to diagnostic capture</a>
+    <div class="shell debug-shell" data-rail="off">
+      <header class="titleblock">
+        <a class="tb-brand" href="/" aria-label="Citadel Control Panel">
+          <span class="tb-mark" aria-hidden="true"></span>
+          <span class="tb-brand-copy">
+            <span class="tb-name">Citadel</span>
+            <span class="tb-mode">Control Panel</span>
+          </span>
+        </a>
+        <div class="tb-context"><span class="tb-crumb">Instance diagnostics</span></div>
+        <div class="tb-actions"><a class="btn" href="/">Return to application</a></div>
+      </header>
+      <aside class="rail rail-areas" aria-label="Diagnostic scope">
+        <div class="area active">
+          <span class="area-title">Diagnostics</span>
+          <span class="area-sub">This server instance</span>
+        </div>
+      </aside>
+      <main id="debug-workspace" class="sheet" tabindex="-1">
+        <div class="sheetwrap debug-content"><p>Sign in to view instance diagnostics.</p></div>
+      </main>
+      <dialog id="modal" class="modal" aria-modal="true"></dialog>
+    </div>
+    <script type="module" src="/js/debug.mjs"></script>
+  </body>
+</html>

@@ -15,6 +15,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { verifyPackagedSources } from './source-integrity.mjs';
 
 import {
   DESKTOP_ALLOWED_HOST,
@@ -23,6 +24,8 @@ import {
   DESKTOP_PARTITION,
   DESKTOP_PORT,
   decodeCredentialKey,
+  desktopDiagnosticsAllowed,
+  desktopVersionLabel,
   desktopPermissionCheckAllowed,
   desktopPermissionAllowed,
   resourceRoot,
@@ -44,6 +47,7 @@ if (!instanceLock) app.quit();
 let mainWindow = null;
 let serverProcess = null;
 let quitting = false;
+let desktopBuild = null;
 
 function atomicWrite(path, bytes) {
   return mkdir(dirname(path), { recursive: true }).then(async () => {
@@ -531,7 +535,8 @@ async function runDesktopAcceptance(window) {
               { localPath: existingPath }
             );
           } catch (error) {
-            duplicateRejected = /already attached/i.test(error?.message || '');
+            if (!/identical to, or overlaps/i.test(error?.message || '')) throw error;
+            duplicateRejected = true;
           }
 
           const newProvider = new BrowserDirectoryProvider(newHandle);
@@ -578,7 +583,187 @@ async function runDesktopAcceptance(window) {
   }
 }
 
+async function waitForRenderer(window, expression, label) {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const result = await window.webContents.executeJavaScript(`({
+      ready: Boolean(${expression}),
+      error: document.querySelector('#gate-error:not([hidden])')?.textContent || null
+    })`);
+    if (result.error) throw new Error(`${label}: ${result.error}`);
+    if (result.ready) return;
+    await delay(50);
+  }
+  throw new Error(`Packaged UI did not reach ${label}.`);
+}
+
+async function installVersionBadge(window) {
+  await window.webContents.insertCSS(`
+    #citadel-desktop-version {
+      position: fixed;
+      left: .5rem;
+      bottom: .5rem;
+      z-index: 40;
+      padding: .125rem .375rem;
+      border-radius: .2rem;
+      color: var(--nav-muted, #c3dcf2);
+      background: var(--nav, #0b3c68);
+      font-family: inherit;
+      font-size: .6875rem;
+      line-height: 1.4;
+      white-space: nowrap;
+      user-select: text;
+    }
+  `);
+  const label = desktopVersionLabel(desktopBuild);
+  const title = `Citadel UI ${desktopBuild.version}\nApplication source: ${desktopBuild.applicationRevision}\nRelease: ${desktopBuild.releaseRevision || 'development'}`;
+  await window.webContents.executeJavaScript(`(() => {
+    let badge = document.getElementById('citadel-desktop-version');
+    if (!badge) {
+      badge = document.createElement('small');
+      badge.id = 'citadel-desktop-version';
+      badge.setAttribute('aria-label', 'Citadel UI desktop version and application source');
+      document.body.append(badge);
+    }
+    badge.textContent = ${JSON.stringify(label)};
+    badge.title = ${JSON.stringify(title)};
+  })()`);
+}
+
+function retainVersionBadge(window) {
+  window.webContents.on('did-finish-load', () => {
+    installVersionBadge(window).catch((error) => {
+      if (window.isDestroyed()) return;
+      console.error(JSON.stringify({ event: 'citadel_desktop_version_display_failed', error: error.message }));
+      dialog.showErrorBox('Citadel UI version could not be displayed', error.message);
+    });
+  });
+}
+
+async function runInterfaceAcceptance(window) {
+  window.show();
+  await waitForRenderer(window, `document.querySelector('#gate-username')`, 'owner sign-in');
+  await window.webContents.executeJavaScript(`(() => {
+    if (document.querySelector('meta[name="citadel-auth"]')?.content !== 'unclaimed') {
+      throw new Error('Desktop UI acceptance requires a fresh isolated profile.');
+    }
+    document.querySelector('#gate-username').value = 'desktop-smoke';
+    document.querySelector('#gate-password').value = crypto.randomUUID();
+    document.querySelector('.gate-form').requestSubmit();
+  })()`);
+  await waitForRenderer(window, `document.querySelector('.workspace-catalog')`, 'workspace catalog');
+  const versionBadge = await window.webContents.executeJavaScript(`(() => {
+    const badge = document.getElementById('citadel-desktop-version');
+    const bounds = badge?.getBoundingClientRect();
+    return {
+      text: badge?.textContent,
+      left: bounds?.left,
+      bottom: bounds ? innerHeight - bounds.bottom : null,
+      fontSize: badge ? parseFloat(getComputedStyle(badge).fontSize) : null
+    };
+  })()`);
+  if (versionBadge.text !== desktopVersionLabel(desktopBuild) ||
+      versionBadge.left < 0 || versionBadge.left > 24 ||
+      versionBadge.bottom < 0 || versionBadge.bottom > 24 ||
+      !versionBadge.fontSize || versionBadge.fontSize > 12) {
+    throw new Error(`The lower-left version label is missing or misplaced: ${JSON.stringify(versionBadge)}`);
+  }
+  await window.webContents.executeJavaScript(`(() => {
+    const add = [...document.querySelectorAll('.workspace-catalog button')]
+      .find((button) => /^Add (workspace|your first workspace)$/.test(button.textContent.trim()));
+    if (!add) throw new Error('The real Add workspace control is missing.');
+    add.click();
+  })()`);
+  const selector = `dialog[open] select[aria-label="Configuration format"]`;
+  await waitForRenderer(window, `document.querySelector(${JSON.stringify(selector)})`, 'configuration format selector');
+  const controls = await window.webContents.executeJavaScript(`(() => {
+    const selector = ${JSON.stringify(selector)};
+    const formats = [...document.querySelector(selector).options].map((option) => option.value);
+    const choices = () => [...document.querySelectorAll('dialog[open] .catalog-choice-option')]
+      .map((button) => ({ label: button.querySelector('strong').textContent, disabled: button.disabled }));
+    const bicep = choices();
+    const format = document.querySelector(selector);
+    format.value = 'terraform';
+    format.dispatchEvent(new Event('change', { bubbles: true }));
+    return { formats, bicep, terraform: choices() };
+  })()`);
+  const labels = ['Existing GitHub Repo', 'New GitHub Repo', 'Create local from Citadel source', 'Local'];
+  if (JSON.stringify(controls.formats) !== JSON.stringify(['bicep', 'terraform']) ||
+      controls.bicep.length !== labels.length || controls.terraform.length !== labels.length ||
+      controls.bicep.some((item, index) => item.label !== labels[index] || item.disabled) ||
+      controls.terraform.some((item, index) => item.label !== labels[index] ||
+        item.disabled !== [1, 2].includes(index))) {
+    throw new Error(`Packaged Add workspace is not the reviewed UI: ${JSON.stringify(controls)}`);
+  }
+  if (process.env.CITADEL_DESKTOP_SMOKE_SCREENSHOT) {
+    const screenshot = resolve(process.env.CITADEL_DESKTOP_SMOKE_SCREENSHOT);
+    await mkdir(dirname(screenshot), { recursive: true });
+    await writeFile(screenshot, (await window.webContents.capturePage()).toPNG());
+  }
+  await window.webContents.executeJavaScript(`(() => {
+    const cancel = [...document.querySelectorAll('dialog[open] button')]
+      .find((button) => button.textContent.trim() === 'Cancel');
+    if (!cancel) throw new Error('Add workspace cancel control is missing.');
+    cancel.click();
+  })()`);
+  const nativeParser = await window.webContents.executeJavaScript(`(async () => {
+    const { initializeNativeParser, applyNativeEdits, parseNativeValues } =
+      await import('/shared/terraform/parser.mjs');
+    await initializeNativeParser();
+    const result = applyNativeEdits('environment_name = "before"\\n', [
+      { op: 'set', path: ['environment_name'], value: 'after' }
+    ]);
+    return parseNativeValues(result).value.environment_name === 'after';
+  })()`);
+  if (!nativeParser) throw new Error('Packaged native Terraform parser failed to edit a value.');
+
+  const created = new Promise((resolveWindow, rejectWindow) => {
+    const onCreated = (child) => {
+      clearTimeout(timer);
+      resolveWindow(child);
+    };
+    const timer = setTimeout(() => {
+      window.webContents.removeListener('did-create-window', onCreated);
+      rejectWindow(new Error('Packaged Diagnostics did not open.'));
+    }, 15_000);
+    window.webContents.once('did-create-window', onCreated);
+  });
+  await window.webContents.executeJavaScript(`document.querySelector('a[href="/debug.html"]').click()`);
+  const diagnostics = await created;
+  try {
+    await waitForRenderer(diagnostics,
+      `document.querySelector('#debug-capture-switch:not(:disabled)') && document.querySelector('#citadel-desktop-version')`,
+      'authenticated Diagnostics controls and version');
+    if (!desktopDiagnosticsAllowed(diagnostics.webContents.getURL())) {
+      throw new Error('Diagnostics opened outside the desktop origin.');
+    }
+  } finally {
+    diagnostics.destroy();
+  }
+  return { ownerSignIn: true, currentSourceChoices: true, nativeParser, diagnostics: true, versionBadge, ...controls };
+}
+
+function protectNavigation(window) {
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!trustedDesktopOrigin(url)) event.preventDefault();
+  });
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('will-attach-webview', (event) => event.preventDefault());
+}
+
 async function createWindow(desktopSession) {
+  const webPreferences = {
+    session: desktopSession,
+    nodeIntegration: false,
+    nodeIntegrationInWorker: false,
+    nodeIntegrationInSubFrames: false,
+    contextIsolation: true,
+    sandbox: true,
+    webSecurity: true,
+    allowRunningInsecureContent: false,
+    spellcheck: false,
+    devTools: !app.isPackaged,
+  };
   const window = new BrowserWindow({
     width: 1440,
     height: 960,
@@ -587,26 +772,20 @@ async function createWindow(desktopSession) {
     show: false,
     backgroundColor: '#f4f8fc',
     autoHideMenuBar: true,
-    webPreferences: {
-      session: desktopSession,
-      nodeIntegration: false,
-      nodeIntegrationInWorker: false,
-      nodeIntegrationInSubFrames: false,
-      contextIsolation: true,
-      sandbox: true,
-      webSecurity: true,
-      allowRunningInsecureContent: false,
-      spellcheck: false,
-      devTools: !app.isPackaged,
-    },
+    title: `Citadel UI ${app.getVersion()} - source ${desktopBuild.applicationRevision.slice(0, 7)}${desktopBuild.dirty ? ' (development)' : ''}`,
+    webPreferences,
   });
   mainWindow = window;
 
-  window.webContents.on('will-navigate', (event, url) => {
-    if (!trustedDesktopOrigin(url)) event.preventDefault();
+  protectNavigation(window);
+  window.on('page-title-updated', (event) => event.preventDefault());
+  window.webContents.setWindowOpenHandler(({ url }) => desktopDiagnosticsAllowed(url)
+    ? { action: 'allow', overrideBrowserWindowOptions: { webPreferences, autoHideMenuBar: true } }
+    : { action: 'deny' });
+  window.webContents.on('did-create-window', (child) => {
+    protectNavigation(child);
+    retainVersionBadge(child);
   });
-  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  window.webContents.on('will-attach-webview', (event) => event.preventDefault());
   window.once('ready-to-show', () => {
     if (!smokeTest) window.show();
   });
@@ -615,6 +794,8 @@ async function createWindow(desktopSession) {
   });
 
   await window.loadURL(DESKTOP_ORIGIN);
+  await installVersionBadge(window);
+  retainVersionBadge(window);
   if (smokeTest) {
     const browser = await window.webContents.executeJavaScript(
       `({
@@ -625,6 +806,7 @@ async function createWindow(desktopSession) {
         origin: globalThis.location.origin
       })`
     );
+    const interfaceCheck = await runInterfaceAcceptance(window);
     const acceptance = await runDesktopAcceptance(window);
     const passed =
       browser.title === 'Citadel Control Panel' &&
@@ -651,6 +833,11 @@ async function createWindow(desktopSession) {
     console.log(JSON.stringify({
       event: 'citadel_desktop_smoke',
       passed,
+      version: desktopBuild.version,
+      applicationRevision: desktopBuild.applicationRevision,
+      releaseRevision: desktopBuild.releaseRevision,
+      dirty: desktopBuild.dirty,
+      interface: interfaceCheck,
       ...browser,
       ...acceptance,
     }));
@@ -661,6 +848,13 @@ async function createWindow(desktopSession) {
 }
 
 async function launch() {
+  const source = JSON.parse(await readFile(join(here, 'application-source.json'), 'utf8'));
+  desktopBuild = app.isPackaged
+    ? await verifyPackagedSources(process.resourcesPath)
+    : { version: app.getVersion(), applicationRevision: source.revision, dirty: true };
+  if (desktopBuild.applicationRevision !== source.revision || desktopBuild.version !== app.getVersion()) {
+    throw new Error('The desktop version or application source does not match its build identity.');
+  }
   const desktopSession = configureSession();
   const keyState = await loadCredentialKey();
   try {

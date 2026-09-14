@@ -7,12 +7,10 @@
  * `force: false`, so a moved branch is rejected instead of overwritten.
  */
 import { githubError, redactSecrets } from './api.mjs';
+import { workspaceScope } from '../../shared/workspace-configuration.mjs';
 import {
   BLOB_MODE_EXECUTABLE,
   BLOB_MODE_FILE,
-  filterSourceTree,
-  isLfsPointer,
-  MAX_TREE_ENTRIES,
   rescueBranchName,
   validateBranchName,
   validateCommitSha,
@@ -21,14 +19,22 @@ import {
   isSkippedDirectory,
   MAX_ENV_BYTES,
   MAX_SOURCE_BYTES,
+  MAX_COMMIT_FILES,
   normalizeAlias,
-  sha256,
   subscriptionEnvironmentAlias,
   SUBSCRIPTION_ENVIRONMENT_KEY,
 } from '../../shared/source-scope.mjs';
+import { assertGitHubRequestBudget } from '../../shared/github-request-budget.mjs';
+import { branchHead, encodePath, isReachable, lookupPath, readBlob, requireBranchHead, resolveEntry, treeIndex } from './git-reader.mjs';
+import { createGitHubHistory } from './history.mjs';
 
-const MAX_COMMIT_FILES = 64;
-const MAX_HISTORY = 100;
+export { branchHead, requireBranchHead, loadTree, treeIndex, resolveEntry, readBlob, readSourceBlob, lookupPath, isReachable } from './git-reader.mjs';
+
+export const { loadHistory, inspectCommit, revertCommit } = createGitHubHistory({
+  commitChangeSet,
+  parseTrailers,
+});
+
 /**
  * How far back to look for a change that already landed.
  *
@@ -51,42 +57,12 @@ const ACTIONS = new Set([
   'history-undo',
 ]);
 
-function encodePath(alias) {
-  return alias.split('/').map(encodeURIComponent).join('/');
-}
-
 export function assertAction(value) {
   const action = String(value || '');
   if (!ACTIONS.has(action)) {
     throw githubError(400, 'INVALID_ACTION', 'Unsupported Citadel action.');
   }
   return action;
-}
-
-/** Read the current commit SHA for a branch, or null when the branch is absent. */
-export async function branchHead(client, token, fullName, branch) {
-  const ref = validateBranchName(branch);
-  try {
-    const { data } = await client.request(
-      `/repos/${fullName}/git/ref/heads/${encodePath(ref)}`,
-      { token }
-    );
-    if (data?.object?.type !== 'commit') {
-      throw githubError(409, 'AMBIGUOUS_REF', 'That branch does not resolve to a commit.');
-    }
-    return validateCommitSha(data.object.sha);
-  } catch (error) {
-    if (error.status === 404) return null;
-    throw error;
-  }
-}
-
-export async function requireBranchHead(client, token, fullName, branch) {
-  const head = await branchHead(client, token, fullName, branch);
-  if (!head) {
-    throw githubError(404, 'BRANCH_NOT_FOUND', `Branch ${branch} no longer exists.`);
-  }
-  return head;
 }
 
 /**
@@ -133,6 +109,7 @@ export async function ensureWorkingBranch(
   };
 }
 
+// Keep mutation base resolution local rather than exposing reader internals.
 async function commitTreeSha(client, token, fullName, commitSha) {
   const { data } = await client.request(
     `/repos/${fullName}/git/commits/${validateCommitSha(commitSha)}`,
@@ -143,130 +120,7 @@ async function commitTreeSha(client, token, fullName, commitSha) {
   return validateCommitSha(tree, 'tree');
 }
 
-/**
- * Walk subtrees when a recursive tree is truncated.
- *
- * Only directories that pass the shared skip policy are visited, and the total
- * entry count is bounded so a hostile repository cannot force unbounded work.
- */
-async function walkSubtrees(client, token, fullName, rootTreeSha) {
-  const entries = [];
-  const queue = [{ sha: rootTreeSha, prefix: '' }];
-  let visited = 0;
-  while (queue.length) {
-    const { sha, prefix } = queue.shift();
-    visited += 1;
-    if (visited > 2000 || entries.length > MAX_TREE_ENTRIES) {
-      throw githubError(
-        413,
-        'TREE_TOO_LARGE',
-        'This repository tree is too large for Citadel UI to enumerate.'
-      );
-    }
-    const { data } = await client.request(`/repos/${fullName}/git/trees/${sha}`, { token });
-    for (const entry of data?.tree || []) {
-      const path = prefix ? `${prefix}/${entry.path}` : entry.path;
-      if (entry.type === 'tree') {
-        if (isSkippedDirectory(entry.path)) continue;
-        queue.push({ sha: entry.sha, prefix: path });
-        continue;
-      }
-      entries.push({ ...entry, path });
-    }
-  }
-  return entries;
-}
-
-/** Enumerate the Citadel source scope for one commit. */
-export async function loadTree(client, token, fullName, commitSha) {
-  const treeSha = await commitTreeSha(client, token, fullName, commitSha);
-  const { data } = await client.request(
-    `/repos/${fullName}/git/trees/${treeSha}?recursive=1`,
-    { token, limit: 24 * 1024 * 1024 }
-  );
-  const raw = Array.isArray(data?.tree) ? data.tree : [];
-  if (raw.length > MAX_TREE_ENTRIES) {
-    throw githubError(413, 'TREE_TOO_LARGE', 'This repository tree is too large for Citadel UI.');
-  }
-  const entries = data?.truncated
-    ? await walkSubtrees(client, token, fullName, treeSha)
-    : raw;
-  const { files, rejected } = filterSourceTree(entries);
-  return { commit: commitSha, treeSha, files, rejected, truncated: Boolean(data?.truncated) };
-}
-
-/**
- * Raw path-to-blob index for one commit.
- *
- * History and undo must verify the exact files a Citadel commit wrote, and one
- * of those files -- `.azure/<environment>/.env` -- is deliberately outside the
- * browsable source scope. Enumeration filtering answers "what may the editor
- * show"; this answers "what does this commit actually contain", so identity
- * checks use it instead of the filtered listing.
- *
- * Only regular file blobs are indexed, so a symlink or submodule can never be
- * treated as restorable content.
- */
-/**
- * Index every entry in a commit's tree by path.
- *
- * `complete` includes trees and submodules, not just regular blobs, because a
- * creation must be able to see *any* object already occupying its path. A
- * blob-only index would report a directory or submodule as absent and let a
- * create replace it.
- *
- * `truncated` is reported because the fallback walk applies the enumeration skip
- * policy, so absence in a truncated index is not proof of absence in the
- * repository. Callers that must be certain use `lookupPath`.
- */
-export async function treeIndex(client, token, fullName, commitSha, options = {}) {
-  const treeSha = await commitTreeSha(client, token, fullName, commitSha);
-  const { data } = await client.request(
-    `/repos/${fullName}/git/trees/${treeSha}?recursive=1`,
-    { token, limit: 24 * 1024 * 1024 }
-  );
-  const truncated = Boolean(data?.truncated);
-  const entries = truncated
-    ? await walkSubtrees(client, token, fullName, treeSha)
-    : Array.isArray(data?.tree)
-      ? data.tree
-      : [];
-  const index = new Map();
-  for (const entry of entries) {
-    if (typeof entry?.path !== 'string') continue;
-    if (!options.complete) {
-      if (entry.type !== 'blob') continue;
-      if (
-        !options.includeAll &&
-        entry.mode !== BLOB_MODE_FILE &&
-        entry.mode !== BLOB_MODE_EXECUTABLE
-      ) {
-        continue;
-      }
-    }
-    index.set(entry.path, {
-      sha: entry.sha,
-      mode: entry.mode,
-      size: Number(entry.size) || 0,
-      type: entry.type,
-    });
-  }
-  index.truncated = truncated;
-  return index;
-}
-
-/**
- * Authoritative entry for one path.
- *
- * A complete recursive listing answers directly. A truncated one cannot, so the
- * literal path is walked instead — which is also the only way to see inside
- * directories the enumeration policy skips, such as `.azure`.
- */
-export async function resolveEntry(client, token, fullName, commitSha, alias, index) {
-  if (index && !index.truncated) return index.get(alias) ?? null;
-  return lookupPath(client, token, fullName, commitSha, alias);
-}
-
+// Browser payload admission stays separate from the reader's private decoder.
 function decodeBase64Strict(content, expectedSize) {
   const compact = String(content || '').replace(/\s+/g, '');
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(compact)) {
@@ -280,38 +134,6 @@ function decodeBase64Strict(content, expectedSize) {
     throw githubError(502, 'GITHUB_INVALID_BLOB', 'GitHub blob size did not match its contents.');
   }
   return bytes;
-}
-
-/**
- * Read one blob by SHA.
- *
- * The blob is addressed by content, never by a mutable branch path, so the bytes
- * cannot change between review and save.
- */
-export async function readBlob(client, token, fullName, blobSha, options = {}) {
-  const sha = validateCommitSha(blobSha, 'blob');
-  const limit = options.maxBytes || MAX_SOURCE_BYTES;
-  const { data } = await client.request(`/repos/${fullName}/git/blobs/${sha}`, {
-    token,
-    limit: Math.ceil(limit * 1.4) + 4096,
-  });
-  if (data?.encoding !== 'base64') {
-    throw githubError(415, 'UNSUPPORTED_BLOB', 'Citadel UI cannot read this source encoding.');
-  }
-  const declared = Number(data.size);
-  if (!Number.isFinite(declared) || declared < 0 || declared > limit) {
-    throw githubError(413, 'SOURCE_TOO_LARGE', `Source exceeds the ${limit} byte limit.`);
-  }
-  const bytes = decodeBase64Strict(data.content, declared);
-  const text = bytes.toString('utf8');
-  if (!options.allowLfs && isLfsPointer(text)) {
-    throw githubError(
-      415,
-      'LFS_POINTER',
-      'This file is stored with Git LFS and cannot be edited by Citadel UI.'
-    );
-  }
-  return { sha, bytes, text, size: bytes.byteLength, hash: await sha256(bytes) };
 }
 
 /**
@@ -330,32 +152,6 @@ function assertScopedAlias(alias) {
 }
 
 /**
- * Read one in-scope source blob.
- *
- * The alias is the authority: it passes the shared scope policy first, and the
- * blob SHA must match what the branch tree actually holds for that alias. A
- * caller-supplied SHA on its own can therefore never reach a blob outside the
- * editable scope -- notably `.azure/<environment>/.env`, which `normalizeAlias`
- * rejects outright and which only the subscription bridge may read.
- */
-export async function readSourceBlob(client, token, fullName, commitSha, alias, blobSha, tree) {
-  const safe = assertScopedAlias(alias);
-  const snapshot = tree || (await loadTree(client, token, fullName, commitSha));
-  const entry = snapshot.files.find((file) => file.alias === safe);
-  if (!entry) {
-    throw githubError(404, 'SOURCE_NOT_FOUND', `Source not found: ${safe}`);
-  }
-  if (blobSha && entry.sha !== validateCommitSha(blobSha, 'blob')) {
-    throw githubError(
-      409,
-      'STALE_SOURCE',
-      'File changed outside Citadel UI. Reload before saving.'
-    );
-  }
-  return readBlob(client, token, fullName, entry.sha);
-}
-
-/**
  * Scope policy for a path Citadel UI intends to *write*.
  *
  * `normalizeAlias` alone is not enough: it accepts `.github/private.xml`,
@@ -363,44 +159,13 @@ export async function readSourceBlob(client, token, fullName, commitSha, alias, 
  * Enumeration already hides skipped directories, so writes must apply the same
  * rule or the editor could commit to a path it can never show.
  */
-export function assertWritableAlias(alias) {
-  const safe = assertScopedAlias(alias);
+export function assertWritableAlias(alias, configuration = undefined) {
+  const safe = workspaceScope(configuration).write(alias);
   const blocked = safe.split('/').slice(0, -1).find(isSkippedDirectory);
   if (blocked) {
     throw githubError(400, 'INVALID_ALIAS', `Citadel UI does not edit sources under ${blocked}.`);
   }
   return safe;
-}
-
-/**
- * Resolve one exact path by walking tree objects segment by segment.
- *
- * A recursive tree can come back truncated, and the subtree walk used for
- * enumeration deliberately skips directories such as `.azure`. Neither is a safe
- * basis for concluding that a specific file is absent, so this walks the literal
- * path instead and is the only lookup allowed to answer "not present".
- */
-export async function lookupPath(client, token, fullName, commitSha, path) {
-  const segments = String(path || '').split('/').filter(Boolean);
-  if (!segments.length) return null;
-  let treeSha = await commitTreeSha(client, token, fullName, commitSha);
-  for (let index = 0; index < segments.length; index += 1) {
-    const { data } = await client.request(`/repos/${fullName}/git/trees/${treeSha}`, { token });
-    const entry = (data?.tree || []).find((item) => item.path === segments[index]);
-    if (!entry) return null;
-    if (index === segments.length - 1) {
-      return {
-        path,
-        sha: entry.sha,
-        mode: entry.mode,
-        size: Number(entry.size) || 0,
-        type: entry.type,
-      };
-    }
-    if (entry.type !== 'tree') return null;
-    treeSha = entry.sha;
-  }
-  return null;
 }
 
 function trailerBlock(action, environmentId, transactionId) {
@@ -448,6 +213,7 @@ export function normalizeChangeSet(files, options = {}) {
   if (!Array.isArray(files) || !files.length || files.length > MAX_COMMIT_FILES) {
     throw githubError(400, 'INVALID_CHANGE_SET', 'A change set of 1 to 64 files is required.');
   }
+  if (options.requestBudget !== false) assertGitHubRequestBudget(options.requestBody || { files });
   const subscriptionAlias = options.subscriptionAlias || null;
   const seen = new Set();
   return files.map((file) => {
@@ -463,7 +229,7 @@ export function normalizeChangeSet(files, options = {}) {
     }
     const requested = String(file.alias || '');
     const subscription = Boolean(subscriptionAlias) && requested === subscriptionAlias;
-    const alias = subscription ? subscriptionAlias : assertWritableAlias(requested);
+    const alias = subscription ? subscriptionAlias : assertWritableAlias(requested, options.configuration);
     if (seen.has(alias)) {
       throw githubError(400, 'INVALID_CHANGE_SET', `Duplicate file in change set: ${alias}`);
     }
@@ -597,66 +363,50 @@ async function reconcileAmbiguousRefUpdate(client, token, options) {
 }
 
 /**
- * Is this change already on the branch?
+ * Distinguish an audited applied retry from current content equivalence.
  *
- * ## The defect this exists to fix
+ * A reachable audited commit from the reviewed parent proves the save happened,
+ * even when collaborators subsequently moved the branch. An unaudited matching
+ * ancestor proves neither authorship nor current content: it may be reverted.
+ * Only the current matching tree can complete such an intent as a no-op.
  *
- * A refused ref update was treated as proof that the change was absent, and the
- * commit was given a rescue branch. Those are different facts. A user
- * double-clicked Save; both invocations built a commit from the same reviewed
- * parent with the same content; the first won the ref and the second was
- * refused with 422. The branch head's tree was byte-identical to the tree of the
- * commit being "rescued", so the honest answer was *your change is already
- * saved* and the correct number of new branches was zero. Instead the user got
- * two branches for one action.
- *
- * ## Why the tree SHA is the right question
- *
- * A Git tree SHA is a content hash of the entire tree. If the branch holds a
- * commit whose tree equals ours, the repository already contains exactly the
- * state this save intended to produce — whether this save put it there, a
- * retry did, or a collaborator made the identical change. In every one of those
- * cases a rescue branch is noise, and telling the user their work went
- * somewhere else would be false.
- *
- * ## Bounds
- *
- * The walk follows first parents only, stops at the reviewed parent — beyond
- * that point the content predates the save and cannot be it — and is capped at
- * `MAX_RECONCILE_DEPTH` commits. `baseCommit` itself is never a match: it is
- * the state the user was editing *away* from.
- *
- * Returns the matching commit SHA, or null. Never throws: an unreadable history
- * means "cannot prove it is already there", which falls through to the rescue
- * that was going to happen anyway.
+ * The first-parent walk stops before the reviewed parent and is bounded. Read
+ * failures propagate so callers retain an explicitly indeterminate outcome.
  */
 export async function findAppliedCommit(client, token, options) {
-  const { fullName, branch, treeSha, baseCommit } = options;
+  const { fullName, branch, treeSha, baseCommit, audit, environmentId, repositoryId } = options;
   const depth = options.depth || MAX_RECONCILE_DEPTH;
   if (!treeSha) return null;
-  try {
-    let cursor = await branchHead(client, token, fullName, branch);
-    const seen = new Set();
-    for (let step = 0; step < depth && cursor; step += 1) {
-      if (seen.has(cursor)) break;
-      seen.add(cursor);
-      // The reviewed parent bounds the search. Anything at or below it is the
-      // state that existed before this save, so it cannot be this save.
-      if (baseCommit && cursor === baseCommit) return null;
-      const { data } = await client.request(
-        `/repos/${fullName}/git/commits/${validateCommitSha(cursor)}`,
-        { token }
-      );
-      if (data?.tree?.sha === treeSha) return cursor;
-      const parents = Array.isArray(data?.parents) ? data.parents : [];
-      const next = parents[0]?.sha;
-      cursor = next ? validateCommitSha(next) : null;
+  const attributed = async (commit, data) => {
+    const record = audit ? await audit.find({ commit, repositoryId, environmentId, branch }) : null;
+    if (!record || record.fullName !== fullName || record.baseCommit !== baseCommit ||
+        (record.configurationKey || null) !== (options.configurationKey || null)) return null;
+    return { kind: 'applied', commit, record, author: data?.author?.name || null };
+  };
+  const initialHead = await branchHead(client, token, fullName, branch);
+  let cursor = initialHead, equivalent = null;
+  const seen = new Set();
+  for (let step = 0; step < depth && cursor; step += 1) {
+    if (seen.has(cursor) || cursor === baseCommit) break;
+    seen.add(cursor);
+    const { data } = await client.request(
+      `/repos/${fullName}/git/commits/${validateCommitSha(cursor)}`, { token }
+    );
+    if (data?.tree?.sha === treeSha) {
+      const applied = await attributed(cursor, data);
+      if (applied) return applied;
+      if (cursor === initialHead) equivalent = { kind: 'equivalent', head: cursor };
     }
-  } catch {
-    // Unprovable, not disproven. The caller rescues, which is safe.
-    return null;
+    const next = Array.isArray(data?.parents) ? data.parents[0]?.sha : null;
+    cursor = next ? validateCommitSha(next) : null;
   }
-  return null;
+  if (!equivalent) return null;
+  const latest = await branchHead(client, token, fullName, branch);
+  if (latest === initialHead) return equivalent;
+  if (!latest || latest === baseCommit) return null;
+  const { data } = await client.request(`/repos/${fullName}/git/commits/${validateCommitSha(latest)}`, { token });
+  if (data?.tree?.sha !== treeSha) return null;
+  return await attributed(latest, data) || { kind: 'equivalent', head: latest };
 }
 
 /**
@@ -704,6 +454,12 @@ export async function createCommitBranch(client, token, options) {
       'COMMIT_NOT_ATTRIBUTED',
       'Citadel can only branch a commit it made for this workspace.'
     );
+  }
+  if (options.configuration?.format === 'terraform' || record.configurationKey) {
+    const { assertNativeAuditScope, assertNativeHistoryBytes } = await import('./native-workspace.mjs');
+    assertNativeAuditScope(record, options.configuration);
+    await assertNativeHistoryBytes(client, token, fullName, sha, options.configuration, record.aliases);
+    await assertNativeHistoryBytes(client, token, fullName, record.baseCommit, options.configuration, record.aliases);
   }
 
   try {
@@ -760,7 +516,11 @@ export async function commitChangeSet(client, token, options) {
     subscriptionAlias,
     audit,
   } = options;
-  const changes = normalizeChangeSet(files, { subscriptionAlias });
+  const changes = normalizeChangeSet(files, {
+    subscriptionAlias, configuration: options.configuration, requestBudget: options.requestBudget,
+    requestBody: options.requestBody || { action, expectedHead, transactionId, files,
+      nativeProof: options.nativeProof, nativeIdentity: options.nativeIdentity },
+  });
   if (!expectedHead) {
     throw githubError(
       400,
@@ -775,6 +535,10 @@ export async function commitChangeSet(client, token, options) {
       'STALE_WORKSPACE',
       'The branch moved after you reviewed these changes. Reload before saving.'
     );
+  }
+  let nativeConfigurationKey = null;
+  if (options.configuration?.format === 'terraform') {
+    nativeConfigurationKey = await (await import('./native-workspace.mjs')).validateNativeChangeSet(client, token, options, changes, head);
   }
   const baseTree = await commitTreeSha(client, token, fullName, head);
   const baseIndex = await treeIndex(client, token, fullName, head, { complete: true });
@@ -893,6 +657,8 @@ export async function commitChangeSet(client, token, options) {
     baseCommit: head,
     commit: commitSha,
     aliases: changes.map((change) => change.alias),
+    ...(nativeConfigurationKey ? { configurationKey: nativeConfigurationKey,
+      nativeCreation: changes.every((change) => change.create) } : {}),
   };
 
   // The audit is written before the ref moves, and a failure aborts the save.
@@ -921,6 +687,8 @@ export async function commitChangeSet(client, token, options) {
   const warnings = [];
   let unresolved = null;
   let alreadyApplied = null;
+  let equivalent = null;
+  let indeterminate = false;
 
   try {
     await client.request(`/repos/${fullName}/git/refs/heads/${encodePath(branch)}`, {
@@ -930,40 +698,31 @@ export async function commitChangeSet(client, token, options) {
     });
   } catch (error) {
     if (error.status === 422 || error.status === 403 || error.status === 409) {
-      // The branch will not take this commit — it moved, or it is protected.
-      //
-      // That is not a failed save. The blob, the tree, the commit with the
-      // reviewed parent and the audit record all exist by now; only the ref
-      // update was refused. Reporting "your edits were not applied" would be
-      // false, and telling the user to reload would destroy work that is
-      // already durable in the repository.
-      //
-      // But "the ref would not move" is not the same fact as "the change is
-      // not there". Ask the branch first: if it already holds a commit with
-      // this exact tree, this save has landed, and the right number of new
-      // branches is zero. Skipping this question is what turned one
-      // double-clicked save into two branches holding an identical tree.
-      alreadyApplied = await findAppliedCommit(client, token, {
-        fullName,
-        branch,
-        treeSha,
-        baseCommit: head,
-      });
+      let reconciled;
+      try {
+        reconciled = await findAppliedCommit(client, token, {
+          fullName, branch, treeSha, baseCommit: head, audit, environmentId,
+          repositoryId: options.repositoryId, configurationKey: nativeConfigurationKey,
+        });
+      } catch (inspectionError) {
+        indeterminate = true;
+        warnings.push(`The branch could not be inspected after refusing the update. Keep this draft and inspect History before retrying. ${redactSecrets(inspectionError.message)}`);
+      }
+      alreadyApplied = reconciled?.kind === 'applied' ? reconciled : null;
+      equivalent = reconciled?.kind === 'equivalent' ? reconciled : null;
       if (alreadyApplied) {
-        // Idempotent success. No ref is created and no second audit record is
-        // written: the commit that is really on the branch already has one, and
-        // logging this attempt again would count one user action twice.
+        // Report the reachable audited commit, not this attempt's unreferenced
+        // proposal. Only the actual applied commit belongs in branch History.
         warnings.push(
-          `This change was already on ${branch} as ${alreadyApplied.slice(0, 12)}, so Citadel did not save it a second time.`
+          `This change was already on ${branch} as ${alreadyApplied.commit.slice(0, 12)}, so Citadel did not save it a second time.`
         );
+      } else if (equivalent) {
+        warnings.push(`The current tree on ${branch} already matches the reviewed change. No Citadel commit was applied; the matching commit ${equivalent.head.slice(0, 12)} is not attributed to this save in History.`);
       } else {
-        // Genuinely absent, and this is where Citadel used to create a branch
-        // nobody asked for. It no longer does. The commit is real and reachable
-        // by SHA with no ref pointing at it, so nothing is lost while the user
-        // is asked what they want done with it — and asking is the only way to
-        // keep the promise that Citadel creates no ref the user did not request.
+        // No proof of application. Keep the proposal available for an explicit
+        // branch decision, including when inspection left the outcome unknown.
         unresolved = {
-          kind: error.status === 422 ? 'branch-moved' : 'branch-protected',
+          kind: indeterminate ? 'outcome-unknown' : error.status === 422 ? 'branch-moved' : 'branch-protected',
           commit: commitSha,
           intendedBranch: branch,
           baseCommit: head,
@@ -1000,24 +759,29 @@ export async function commitChangeSet(client, token, options) {
   // may throw: reporting a failure for work that already landed would invite the
   // user to re-apply it, and a retry would duplicate the commit.
   const result = {
-    transactionId,
+    transactionId: alreadyApplied?.record.transactionId || transactionId,
+    outcome: indeterminate ? 'indeterminate' : unresolved ? 'pending' : equivalent ? 'unchanged' : 'applied',
+    applied: indeterminate ? null : !unresolved && !equivalent,
+    changed: !unresolved && !equivalent,
     // When the change was already there, the commit the user should be given is
     // the one the branch actually holds. Ours is a real object but nothing
     // references it, so History would never list it and Undo would refuse it.
-    commit: alreadyApplied || commitSha,
-    baseCommit: head,
+    commit: equivalent ? null : alreadyApplied?.commit || commitSha,
+    baseCommit: alreadyApplied?.record.baseCommit || head,
     // Always the branch this save aimed at. No ref was created, so there is no
     // other branch to name.
     branch,
-    author: authorName || null,
+    author: equivalent ? null : alreadyApplied ? alreadyApplied.author : authorName || null,
     files: tree.map((entry) => ({ alias: entry.path, sha: entry.sha, mode: entry.mode })),
     warnings,
-    ...(alreadyApplied ? { alreadyApplied: true, duplicateCommit: commitSha } : {}),
-    ...(unresolved ? { unresolved, applied: false } : {}),
+    ...(alreadyApplied ? { alreadyApplied: true, duplicateCommit: commitSha, attemptTransactionId: transactionId } : {}),
+    ...(equivalent ? { equivalentCommit: equivalent.head, head: equivalent.head, proposedCommit: commitSha } : {}),
+    ...(indeterminate ? { indeterminate: true } : {}),
+    ...(unresolved ? { unresolved } : {}),
   };
-  if (unresolved) {
-    // The branch is untouched and nothing was created. What the user needs is
-    // the decision, not a re-read of a head that did not move.
+  if (unresolved || equivalent) {
+    // Neither an unresolved proposal nor content equivalence is a newly applied
+    // Citadel commit.
     return result;
   }
   try {
@@ -1031,6 +795,7 @@ export async function commitChangeSet(client, token, options) {
       // collaboration, not a failed save.
       result.movedAfterSave = true;
       result.head = finalHead;
+      warnings.push(`${branch} moved after this audited save. The next source read reflects the current branch, not necessarily the saved revision.`);
     }
   } catch (error) {
     result.headUnknown = true;
@@ -1039,289 +804,6 @@ export async function commitChangeSet(client, token, options) {
     );
   }
   return result;
-}
-
-/**
- * Citadel-authored commits on the working branch, newest first.
- *
- * Shaped for the History UI: each entry carries the identifiers the inspect and
- * undo actions need, a status, changed aliases, and a timestamp. A commit is
- * only listed when the server's own audit record proves Citadel UI created it,
- * so forged trailers cannot inject entries.
- */
-export async function loadHistory(client, token, fullName, branch, environmentId, options = {}) {
-  const ref = validateBranchName(branch);
-  const audit = options.audit || null;
-  const audited = audit ? await audit.listForEnvironment(environmentId, ref) : [];
-  const auditedByCommit = new Map(audited.map((item) => [item.commit, item]));
-  const { data } = await client.request(
-    `/repos/${fullName}/commits?sha=${encodeURIComponent(ref)}&per_page=100`,
-    { token }
-  );
-  const commits = Array.isArray(data) ? data : [];
-  const head = commits[0]?.sha || null;
-  return commits
-    .map((entry) => {
-      const trailers = parseTrailers(entry?.commit?.message);
-      const record = auditedByCommit.get(entry.sha) || null;
-      if (!record) return null;
-      if (trailers.environmentId && trailers.environmentId !== environmentId) return null;
-      const parents = (entry.parents || []).map((parent) => parent.sha);
-      return {
-        // Identifiers the History panel uses for inspect and undo.
-        transactionId: record.transactionId,
-        id: entry.sha,
-        commit: entry.sha,
-        parent: parents[0] || null,
-        parents,
-        // UI contract fields.
-        status: 'committed',
-        targetLabel: record.action,
-        action: record.action,
-        aliases: record.aliases,
-        files: record.aliases.map((item) => ({ alias: item })),
-        author: entry.commit?.author?.name || null,
-        committedAt: entry.commit?.author?.date || null,
-        completedAt: entry.commit?.author?.date || null,
-        subject: String(entry.commit?.message || '').split('\n')[0].slice(0, 200),
-        // Undo is offered only for an audited single-parent commit.
-        canUndo: parents.length === 1,
-        isHead: entry.sha === head,
-      };
-    })
-    .filter(Boolean)
-    .slice(0, MAX_HISTORY);
-}
-
-/**
- * Is `candidate` an ancestor of, or equal to, the branch head?
- *
- * A commit on some other branch is still fetchable by SHA, so reachability from
- * the selected working branch is what makes an undo legitimate.
- */
-export async function isReachable(client, token, fullName, branch, candidate) {
-  const ref = validateBranchName(branch);
-  const { data } = await client.request(
-    `/repos/${fullName}/commits?sha=${encodeURIComponent(ref)}&per_page=100`,
-    { token }
-  );
-  return (Array.isArray(data) ? data : []).some((entry) => entry.sha === candidate);
-}
-
-/**
- * Describe the files one Citadel commit changed, and whether the branch still
- * holds exactly the bytes that commit produced.
- */
-export async function inspectCommit(client, token, fullName, branch, commitSha, options = {}) {
-  const sha = validateCommitSha(commitSha);
-  const { data } = await client.request(`/repos/${fullName}/commits/${sha}`, { token });
-  const parents = (data?.parents || []).map((parent) => parent.sha);
-  const parent = parents[0] || null;
-  const head = await requireBranchHead(client, token, fullName, branch);
-  const current = await treeIndex(client, token, fullName, head, { complete: true });
-  // The commit's own tree carries the mode it produced. The compare payload does
-  // not, so without this a collaborator toggling only the executable bit would
-  // look unchanged and undo would silently discard their edit.
-  const produced = await treeIndex(client, token, fullName, sha, { complete: true });
-  const files = [];
-  for (const file of data?.files || []) {
-    const alias = file.filename;
-    const finalSha = file.sha || null;
-    // Both lookups resolve exactly: a truncated listing must not leave the mode
-    // unknown on either side, because an unknown mode reads as a change and
-    // would refuse a legitimate undo.
-    const finalEntry =
-      (await resolveEntry(client, token, fullName, sha, alias, produced)) || null;
-    const entry =
-      (await resolveEntry(client, token, fullName, head, alias, current)) || null;
-    const currentSha = entry?.sha || null;
-    const currentMode = entry?.mode || null;
-    const finalMode = finalEntry?.mode || null;
-    files.push({
-      alias,
-      status: file.status,
-      finalSha,
-      finalMode,
-      currentSha,
-      currentMode,
-      state:
-        file.status === 'removed'
-          ? currentSha
-            ? 'unexpected'
-            : 'final'
-          : currentSha === finalSha && currentMode === finalMode
-            ? 'final'
-            : 'unexpected',
-    });
-  }
-  const record = options.record ?? null;
-  const singleParent = parents.length === 1;
-  return {
-    commit: sha,
-    parent,
-    parents,
-    head,
-    trailers: parseTrailers(data?.commit?.message),
-    audited: Boolean(record),
-    action: record?.action || null,
-    files,
-    canRevert:
-      Boolean(record) &&
-      singleParent &&
-      files.length > 0 &&
-      files.every((file) => file.state === 'final'),
-  };
-}
-
-/**
- * Undo a Citadel commit by creating an inverse commit.
- *
- * Three things must hold before anything is written: the server's own audit
- * record must prove Citadel UI created this commit for this environment,
- * repository, and branch; the commit must have exactly one parent so the inverse
- * is well defined; and it must be reachable from the selected working branch so
- * a commit from an unrelated branch cannot be replayed here.
- *
- * The branch is never reset or force-updated. If later edits touched any file
- * this commit produced, the undo is refused rather than overwriting them.
- */
-export async function revertCommit(client, token, options) {
-  const { fullName, branch, commitSha, environmentId, transactionId, repositoryId, audit } =
-    options;
-  if (!audit) {
-    throw githubError(500, 'AUDIT_UNAVAILABLE', 'Undo requires the Citadel commit audit.');
-  }
-  const record = await audit.find({
-    commit: validateCommitSha(commitSha),
-    repositoryId,
-    environmentId,
-    branch,
-  });
-  if (!record) {
-    // Commit trailers live inside the repository and anyone with push access can
-    // forge them, so they are never sufficient authority for a destructive undo.
-    throw githubError(
-      403,
-      'UNAUDITED_COMMIT',
-      'Citadel UI has no record of creating that commit for this environment.'
-    );
-  }
-  if (!(await isReachable(client, token, fullName, branch, commitSha))) {
-    throw githubError(
-      409,
-      'UNREACHABLE_COMMIT',
-      'That commit is not on the selected working branch.'
-    );
-  }
-  const inspection = await inspectCommit(client, token, fullName, branch, commitSha, { record });
-  if (inspection.parents.length !== 1) {
-    throw githubError(
-      409,
-      'NOT_SINGLE_PARENT',
-      'Only a single-parent Citadel commit can be undone.'
-    );
-  }
-  if (!inspection.canRevert) {
-    throw githubError(
-      409,
-      'STALE_SOURCE',
-      'Files from this change were modified afterwards. Undo was refused.'
-    );
-  }
-
-  const files = [];
-  // Loaded once: every restored file comes from the same parent revision.
-  const parentIndex = await treeIndex(client, token, fullName, inspection.parent, {
-    complete: true,
-  });
-  let subscriptionAlias = null;
-  for (const file of inspection.files) {
-    const subscription = /^\.azure\/[^/]+\/\.env$/.test(file.alias);
-    if (subscription) subscriptionAlias = file.alias;
-    // Exact resolution: a truncated parent listing, or the skip policy used to
-    // walk one, must not make the environment file look absent and turn a
-    // restore into a deletion.
-    const original = await resolveEntry(
-      client,
-      token,
-      fullName,
-      inspection.parent,
-      file.alias,
-      parentIndex
-    );
-
-    if (file.status === 'added') {
-      // The commit created it, so undo deletes it, bound to the reviewed blob
-      // and the mode currently on the branch.
-      const blob = await readBlob(client, token, fullName, file.finalSha, {
-        maxBytes: subscription ? MAX_ENV_BYTES : MAX_SOURCE_BYTES,
-        allowLfs: subscription,
-      });
-      files.push({
-        alias: file.alias,
-        remove: true,
-        blobSha: file.finalSha,
-        beforeHash: blob.hash,
-        mode: file.currentMode,
-      });
-      continue;
-    }
-
-    if (!original || original.type !== 'blob') {
-      // The commit deleted it. Undo restores it as a checked creation from the
-      // parent revision; `sha: null` is not a blob and must never be sent as a
-      // reviewed blob SHA.
-      throw githubError(
-        409,
-        'MISSING_PARENT_SOURCE',
-        `The parent revision has no content for ${file.alias}.`
-      );
-    }
-
-    const restored = await readBlob(client, token, fullName, original.sha, {
-      maxBytes: subscription ? MAX_ENV_BYTES : MAX_SOURCE_BYTES,
-      allowLfs: subscription,
-    });
-
-    if (file.status === 'removed') {
-      files.push({
-        alias: file.alias,
-        create: true,
-        after: restored.bytes.toString('base64'),
-        // The parent's mode is what the file had before deletion.
-        mode: original.mode,
-      });
-      continue;
-    }
-
-    const currentBlob = await readBlob(client, token, fullName, file.finalSha, {
-      maxBytes: subscription ? MAX_ENV_BYTES : MAX_SOURCE_BYTES,
-      allowLfs: subscription,
-    });
-    files.push({
-      alias: file.alias,
-      blobSha: file.finalSha,
-      beforeHash: currentBlob.hash,
-      after: restored.bytes.toString('base64'),
-      // Precondition against what is on the branch now; the write keeps it.
-      mode: file.currentMode,
-    });
-  }
-
-  return commitChangeSet(client, token, {
-    fullName,
-    branch,
-    expectedHead: inspection.head,
-    files,
-    action: 'history-undo',
-    environmentId,
-    transactionId,
-    repositoryId,
-    audit,
-    // Undo may legitimately restore the environment file the subscription
-    // bridge previously wrote, and only for that exact path.
-    subscriptionAlias,
-  });
 }
 
 /**

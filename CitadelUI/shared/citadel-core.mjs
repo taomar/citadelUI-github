@@ -124,6 +124,12 @@ function expressionReferences(doc) {
  * what lets a contract appear in the catalogue while its content stays
  * undownloaded until the user opens that area.
  */
+function contractPathId(relative, filename) {
+  return filename === 'main.bicepparam'
+    ? relative.join('/') || '__template'
+    : [...relative, filename].join('/');
+}
+
 function pathContract(alias) {
   const parts = alias.split('/');
   const rootIndex = parts.lastIndexOf(CONTRACT_ROOT_MARKER);
@@ -131,12 +137,13 @@ function pathContract(alias) {
   const root = parts.slice(0, rootIndex + 1).join('/');
   const relative = parts.slice(rootIndex + 1, -1);
   if (!isContractAlias(alias)) return null;
+  const id = contractPathId(relative, parts.at(-1));
   return {
     root,
-    id: relative.join('/') || '__template',
+    id,
     dir: dirname(alias),
     policyAlias: relative.length === 0 ? `${root}/policies/default-ai-product-policy.xml` : null,
-    isTemplate: relative.length === 0,
+    isTemplate: id === '__template',
   };
 }
 
@@ -147,7 +154,7 @@ function contractMetadata(alias, doc) {
   const root = parts.slice(0, rootIndex + 1).join('/');
   const relative = parts.slice(rootIndex + 1, -1);
   if (!isContractAlias(alias)) return null;
-  const id = relative.join('/') || '__template';
+  const id = contractPathId(relative, parts.at(-1));
   const policyCall = doc.params
     .flatMap((parameter) => collectCalls(parameter.value, 'loadTextContent'))
     .find((call) => call.args?.[0]?.kind === 'string');
@@ -160,7 +167,7 @@ function contractMetadata(alias, doc) {
       : relative.length === 0
         ? `${root}/policies/default-ai-product-policy.xml`
         : null,
-    isTemplate: relative.length === 0,
+    isTemplate: id === '__template',
   };
 }
 
@@ -231,6 +238,7 @@ export function documentFromText(alias, text, file = {}) {
   return {
     path: alias,
     hash: file.hash || null,
+    bom: Boolean(file.bom),
     mtimeMs: file.lastModified || null,
     size: file.size ?? new TextEncoder().encode(text).byteLength,
     using: doc.using?.path || null,

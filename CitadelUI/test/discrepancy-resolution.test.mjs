@@ -477,7 +477,7 @@ test('an already-applied save is reported to the user as an ordinary save', () =
   // anywhere unexpected. `describeSaveResolution` keys off `resolution.branch`,
   // and an already-applied result deliberately carries no resolution.
   const source = { fullName: FULL_NAME, workingBranch: BRANCH };
-  const result = { changed: true, path: 'p', archived: 'a', alreadyApplied: true, warnings: [] };
+  const result = { applied: true, changed: true, path: 'p', archived: 'a', alreadyApplied: true, warnings: [] };
   assert.equal(describeSaveResolution(result, source), null);
   assert.equal(saveStatusLine(result, source).rescued, undefined);
 });
@@ -569,13 +569,14 @@ test('the walk stops at the reviewed parent rather than matching older content',
   assert.equal(found, null, 'the reviewed parent was treated as proof the save had landed');
 });
 
-test('a matching tree further back on the branch is still found', async () => {
+test('an audited matching tree further back on the branch is still found', async () => {
   // The branch may have moved on since the save landed. Someone else pushing
   // afterwards is normal collaboration and must not turn an applied change into
   // a rescued one.
   const context = fixture();
-  await attached(context);
-  const applied = context.repository.refs.get(BRANCH);
+  const id = await attached(context);
+  const base = context.repository.refs.get(BRANCH);
+  const applied = (await save(context, id)).commit;
   const appliedTree = context.github.commits.get(applied).tree;
   let head = applied;
   for (let index = 0; index < 3; index += 1) {
@@ -587,10 +588,12 @@ test('a matching tree further back on the branch is still found', async () => {
     fullName: FULL_NAME,
     branch: BRANCH,
     treeSha: appliedTree,
-    baseCommit: null,
+    baseCommit: base,
+    audit: context.audit, environmentId: ENVIRONMENT_ID, repositoryId: context.repository.id,
   });
 
-  assert.equal(found, applied);
+  assert.equal(found.kind, 'applied');
+  assert.equal(found.commit, applied);
 });
 
 test('a cycle in history cannot spin the walk forever', async () => {
@@ -611,9 +614,7 @@ test('a cycle in history cannot spin the walk forever', async () => {
 });
 
 test('an unreadable history is not mistaken for proof the change is absent', async () => {
-  // "Cannot prove it is already there" is not "it is not there". The walk
-  // swallows its own failure and answers null, so the caller rescues — which is
-  // safe, create-only, and was going to happen anyway.
+  // The caller must retain uncertainty, not mistake a failed probe for absence.
   const context = fixture();
   await attached(context);
   const unreachable = new GitHubApiClient({
@@ -622,14 +623,12 @@ test('an unreadable history is not mistaken for proof the change is absent', asy
     },
   });
 
-  const found = await findAppliedCommit(unreachable, TEST_TOKEN, {
+  await assert.rejects(findAppliedCommit(unreachable, TEST_TOKEN, {
     fullName: FULL_NAME,
     branch: BRANCH,
     treeSha: 'a'.repeat(40),
     baseCommit: null,
-  });
-
-  assert.equal(found, null, 'an unreadable history threw instead of falling through');
+  }), (error) => error.code === 'GITHUB_UNREACHABLE');
 });
 
 test('no tree to compare means no claim that the change is already applied', async () => {
@@ -773,10 +772,10 @@ test('the refused commit is already in the audit, so it can be attributed later'
 test('an ordinary save is described exactly as before', () => {
   const source = { fullName: FULL_NAME, sourceBranch: 'main', workingBranch: BRANCH };
   assert.equal(describeSaveResolution({ changed: true, path: 'a', archived: 't' }, source), null);
-  const line = saveStatusLine({ changed: true, path: 'a', archived: 't', warnings: [] }, source);
+  const line = saveStatusLine({ applied: true, changed: true, path: 'a', archived: 't', warnings: [] }, source);
   assert.equal(line.tone, 'ok');
   assert.equal(line.text, 'Saved a. Previous revision archived to t');
-  assert.equal(saveStatusLine({ changed: false }, source).text, 'Nothing changed.');
+  assert.equal(saveStatusLine({ outcome: 'unchanged', applied: false, changed: false }, source).text, 'Nothing changed.');
 });
 
 test('a refused save is reported as a question, and never as saved', () => {
@@ -877,8 +876,8 @@ test('a refusal the user declines to resolve leaves the draft intact', () => {
   const body = save.slice(0, save.indexOf('\n}\n'));
 
   // The pending branch returns before anything is cleared or reloaded.
-  const pendingAt = body.indexOf('if (line.pending)');
-  const clearAt = body.indexOf('state.operations = []');
+  const pendingAt = body.indexOf('if (!mutationComplete(result))');
+  const clearAt = body.indexOf('owner.operations = []');
   const reloadAt = body.indexOf('loadDocument');
   assert.notEqual(pendingAt, -1, 'a refused save is no longer distinguished');
   assert.equal(pendingAt < clearAt, true, 'the draft is cleared before the refusal is handled');
@@ -889,13 +888,11 @@ test('a refusal the user declines to resolve leaves the draft intact', () => {
   assert.match(pendingBlock, /resolveUnsavedCommit/);
   assert.match(pendingBlock, /return;/);
 
-  // And the draft is dropped only once the commit actually has a branch.
+  // A named alternate branch does not retarget this workspace or discard its draft.
   const resolve = app.slice(app.indexOf('async function resolveUnsavedCommit'));
   const resolveBody = resolve.slice(0, resolve.indexOf('\n}\n'));
-  const createdAt = resolveBody.indexOf('describeCreatedBranch');
-  const dropAt = resolveBody.indexOf('removeDraft');
-  assert.notEqual(dropAt, -1);
-  assert.equal(createdAt < dropAt, true, 'the draft is dropped before the branch exists');
+  assert.match(resolveBody, /describeCreatedBranch/);
+  assert.doesNotMatch(resolveBody, /removeDraft|owner\.operations = \[\]/);
   // "Leave it" is a real answer, and it must not touch the draft at all.
   assert.match(resolveBody, /'Leave it for now'/);
   const leaveIt = resolveBody.slice(0, resolveBody.indexOf('const create'));

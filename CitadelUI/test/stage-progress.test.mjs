@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { CONNECT_STAGES, StageTracker, SLOW_STAGE_MS } from '../web/js/stage-progress.mjs';
+import { ATTACH_STAGES, CONNECT_STAGES, LOCAL_ATTACH_STAGES, StageTracker, SLOW_STAGE_MS } from '../web/js/stage-progress.mjs';
 import { installDom } from './_dom-stub.mjs';
 
 /**
@@ -117,4 +117,22 @@ test('the rendered region announces progress politely and failure as an alert', 
   assert.match(items[0].getAttribute('aria-label'), /complete$/);
   assert.match(items[1].getAttribute('aria-label'), /failed$/);
   assert.match(items[2].getAttribute('aria-label'), /not started$/);
+});
+
+test('a slow local attachment never claims GitHub or branch work while remote wording is preserved', async () => {
+  installDom();
+  const { createStageRegion } = await import('../web/js/stage-progress.mjs');
+  let now = 1000;
+  const region = createStageRegion({ waitingMessage: 'Still working with the local folder.' });
+  const tracker = new StageTracker(LOCAL_ATTACH_STAGES, { now: () => now });
+  tracker.begin('read');
+  now += SLOW_STAGE_MS;
+  region.update(tracker);
+  const waiting = region.root.children.find((node) => node.className === 'stage-waiting');
+  assert.equal(waiting.hidden, false);
+  assert.equal(waiting.textContent, 'Still working with the local folder.');
+  assert.equal(tracker.list()[0].state, 'done');
+  assert.equal(tracker.list()[1].state, 'active');
+  assert(ATTACH_STAGES.some((stage) => stage.label === 'Revalidating Citadel branch'));
+  assert(ATTACH_STAGES.some((stage) => stage.label === 'Creating or recovering working branch'));
 });

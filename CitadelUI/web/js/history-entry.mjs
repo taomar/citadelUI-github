@@ -1,3 +1,5 @@
+import { unconfirmedNativeCreation } from '../../shared/workspace-configuration.mjs';
+
 /**
  * The History panel's view model, reconciled across sources.
  *
@@ -24,8 +26,11 @@ export function historyEntry(transaction) {
   // Only a source that states `canUndo` has authoritative eligibility. The local
   // journal keeps its original rule, so its behaviour is unchanged.
   const stated = typeof transaction.canUndo === 'boolean';
+  const nativeCreation = Boolean(transaction.nativeCreation ||
+    transaction.configuration?.format === 'terraform' && transaction.nativeProof &&
+    files.length && files.every((file) => file.existed === false));
   const isCreation = stated
-    ? action === 'contract-create'
+    ? action === 'contract-create' || nativeCreation
     : files.length > 0 && files.every((file) => !file.existed);
   return {
     // A GitHub undo is addressed by commit; a local one by transaction.
@@ -43,12 +48,13 @@ export function historyEntry(transaction) {
       transaction.completedAt ||
       null,
     isCreation,
-    canUndo: stated
+    nativeCreation,
+    canUndo: unconfirmedNativeCreation(transaction) ? false : stated
       ? transaction.canUndo && undoable
       : undoable &&
         (files.some((file) => file.existed) ||
           (status === 'committed' &&
-            action === 'contract-create' &&
+            (action === 'contract-create' || nativeCreation) &&
             files.every((file) => !file.existed))),
   };
 }

@@ -1,8 +1,8 @@
 /* ============================================================================
    Citadel UI — foundation
 
-   THE WORLD: an Azure control plane. A deep Azure-blue masthead frames a paper
-   working sheet — colour owns one deliberate region and the sheet stays bright.
+   THE WORLD: an Azure control plane. Deep Azure-blue navigation frames a paper
+   working sheet, with lighter blue menus and a neutral editing surface.
    Rules are hairlines. Controls are wells sunk back into the sheet with a top
    inner shadow, never filled grey blocks: an empty well is a recess, which
    reads as absence, where an empty filled block reads as presence. No card ever
@@ -43,9 +43,7 @@
   --band: #f6f9fc;
   --sunk: #d5e0eb;
 
-  /* The masthead ramp. Retitled from graphite to Azure: the top of the
-     product is a deep, saturated blue frame around a paper sheet, which is the
-     one large region colour is allowed to own. Kept darker than --brand so a
+  /* The navigation ramp frames the paper sheet. Kept darker than --brand so a
      primary action stays findable when it sits against this frame. */
   --nav: #0b3c68;
   --nav-hover: #10497b;
@@ -77,6 +75,15 @@
   --brand-wash: #eaf3fc;
   --brand-line: #b4d6f4;
   --on-brand: #ffffff;
+
+  /* Light menu states contrast with the deep navigation, not the editor. */
+  --menu-surface: #f3f8fd;
+  --menu-hover: #dfedfb;
+  --menu-selected: #cde4f8;
+  --menu-pressed: #b7d8f2;
+  --menu-ink: var(--brand-pressed);
+  --menu-muted: #365c7e;
+  --menu-rule: var(--brand);
 
   /* --- provenance: sourced outside this file ---------------------------- */
   --cloud: #006b8f;
@@ -123,6 +130,7 @@
   --t-lead: 1rem;
   --t-micro: var(--t-mark);
   --t-small: var(--t-meta);
+  --t-caption: var(--t-meta);
   --t-h3: var(--t-lead);
   --t-h2: clamp(1rem, 0.95rem + 0.2vw, 1.0625rem);
   --t-h1: clamp(1.125rem, 1.05rem + 0.3vw, 1.25rem);
@@ -179,8 +187,8 @@
   --slow: 180ms;
 
   /* --- shell tracks ----------------------------------------------------- */
-  --rail-areas: clamp(9.5rem, 10.5vw, 13.5rem);
-  --rail-context: clamp(12rem, 13vw, 15rem);
+  --rail-areas: clamp(15.5rem, 18vw, 19rem);
+  --rail-context: clamp(13.5rem, 14vw, 16.5rem);
 }
 
 *,
@@ -299,14 +307,14 @@ textarea {
 
 /* ============================================================== the shell */
 
-/* Four regions on two rows. The context rail is its own named track so it can
-   collapse to nothing without a second grid definition or a breakpoint hack. */
+/* Identity, document commands, then the independently scrolling editor panes. */
 .shell {
   display: grid;
   grid-template-columns: var(--rail-areas) var(--ctx-track, var(--rail-context)) minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   grid-template-areas:
     'title title title'
+    'commands commands commands'
     'areas context sheet';
   height: 100dvh;
   overflow: hidden;
@@ -321,14 +329,42 @@ textarea {
 }
 
 .shell[data-workspace='setup'] {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-areas:
-    'title'
-    'sheet';
+  --ctx-track: 0px;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: 'title title title' 'areas context sheet';
 }
 
-.shell[data-workspace='setup'] .rail {
+.shell[data-workspace='setup'] .commandbar {
   display: none;
+}
+
+.skip-link {
+  position: fixed;
+  top: var(--sp-4);
+  left: var(--sp-4);
+  z-index: 100;
+  padding: var(--sp-4) var(--sp-6);
+  transform: translateY(-200%);
+  background: var(--sheet);
+  color: var(--brand);
+}
+
+.skip-link:focus {
+  transform: none;
+}
+
+.shell .catalog-rail,
+.shell[data-workspace='setup'] .rail:not(.catalog-rail) {
+  display: none;
+}
+
+.shell[data-workspace='setup'] .catalog-rail {
+  display: flex;
+}
+
+.catalog-rail .area,
+.gate-rail .area {
+  cursor: default;
 }
 
 /* Under ~1100px the two rails cannot both hold their labels at full width, so
@@ -350,7 +386,7 @@ textarea {
   gap: var(--sp-5);
   min-height: 2.5rem;
   padding: var(--sp-3) var(--gutter) var(--sp-3) var(--sp-5);
-  /* The one region colour owns. Everything below it stays paper. */
+  /* Shared deep-blue chrome; document commands and editor remain paper. */
   background: var(--nav);
   color: var(--nav-ink);
   border-bottom: 1px solid var(--nav-rule);
@@ -634,6 +670,10 @@ textarea {
   line-height: 1.35;
   color: var(--nav-muted);
   text-wrap: pretty;
+}
+
+.area-sub-native {
+  overflow-wrap: anywhere;
 }
 
 /* --------------------------------------------------- all parameter files */
@@ -1035,6 +1075,18 @@ select.ctl {
   text-align: right;
 }
 
+.ctl-native-number {
+  width: min(100%, 32ch);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.native-policy-editor .raw-lines,
+.native-policy-editor .raw-stage .policy-raw {
+  height: 18rem;
+  min-height: 18rem;
+}
+
 input[type='search'].ctl {
   font-family: var(--sans);
 }
@@ -1405,6 +1457,13 @@ input[type='search'].ctl {
   color: var(--warning);
 }
 
+.editor-loading {
+  grid-area: sheet;
+  align-self: start;
+  z-index: 20;
+  margin: var(--sp-4);
+}
+
 .welcome {
   display: grid;
   gap: var(--sp-5);
@@ -1476,6 +1535,39 @@ input[type='search'].ctl {
   animation: status-in var(--slow) var(--ease-out);
 }
 
+.status-stack {
+  display: grid;
+  gap: var(--sp-4);
+  max-height: min(20rem, 45dvh);
+  overflow: auto;
+}
+
+.status-stack::before {
+  display: none;
+}
+
+.status-entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.status-entry + .status-entry {
+  border-top: 1px solid var(--rule);
+  padding-top: var(--sp-4);
+}
+
+.status-entry .status-text {
+  flex: 1 1 18rem;
+}
+
+.status-previous {
+  flex-basis: 100%;
+  font-size: var(--t-small);
+  color: var(--danger);
+}
+
 @keyframes status-in {
   from {
     opacity: 0;
@@ -1484,7 +1576,8 @@ input[type='search'].ctl {
 }
 
 /* Severity reads from a leading marker, not a coloured edge. */
-.status::before {
+.status::before,
+.status-entry::before {
   content: '';
   width: 0.4375rem;
   height: 0.4375rem;
@@ -1614,6 +1707,7 @@ input[type='search'].ctl {
 
 .modal-head h2 {
   font-size: var(--t-h2);
+  scroll-margin-block: var(--sp-6);
 }
 
 .modal-body {
@@ -1663,9 +1757,9 @@ input[type='search'].ctl {
 
 .write-context {
   padding: var(--sp-4);
-  border: 1px solid var(--brand-line);
+  border: 1px solid var(--rule);
   border-radius: var(--r-2);
-  background: var(--brand-wash);
+  background: var(--band);
 }
 
 .write-context-row {
@@ -1710,18 +1804,20 @@ input[type='search'].ctl {
   .shell,
   .shell[data-workspace='setup'] {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto minmax(0, 1fr);
     grid-template-areas:
       'title'
+      'commands'
       'areas'
       'context'
       'sheet';
   }
 
   .shell[data-rail='off'] {
-    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
     grid-template-areas:
       'title'
+      'commands'
       'areas'
       'sheet';
   }

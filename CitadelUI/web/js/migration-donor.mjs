@@ -1,7 +1,8 @@
 import { BrowserReadOnlyDirectoryProvider } from './directory-provider.mjs';
-import { resolveAlias } from '../../shared/citadel-core.mjs';
+import { migrationTemplateAlias } from '../../shared/migration-source-scope.mjs';
 import { MAX_ALIAS_LENGTH, MAX_SOURCE_BYTES, isSkippedDirectory, normalizeAlias, sha256, sourceExtension } from '../../shared/source-scope.mjs';
-import { MigrationError, MIGRATION_LIMITS, safeLabel } from '../../shared/migration-input.mjs';
+import { MigrationError, MIGRATION_LIMITS, safeLabel, inspectArmParameterJson, readArmParameters } from '../../shared/migration-input.mjs';
+import { snapshotAlias } from '../../shared/migration-snapshot.mjs';
 
 function fileAlias(name) {
   const value = String(name || '');
@@ -23,13 +24,7 @@ export function migrationTargetAlias(alias) {
   } catch { throw new MigrationError('scope'); }
 }
 
-export function migrationTemplateAlias(alias, using) {
-  if (!using || typeof using !== 'string' || /^(?:[A-Za-z][A-Za-z0-9+.-]*:|[/\\])/.test(using)) return null;
-  try {
-    const target = migrationTargetAlias(resolveAlias(alias, using));
-    return sourceExtension(target) === '.bicep' ? target : null;
-  } catch { return null; }
-}
+export { migrationTemplateAlias };
 
 async function same(left, right) {
   if (!left || !right || typeof left.isSameEntry !== 'function' || typeof right.isSameEntry !== 'function') {
@@ -53,7 +48,7 @@ export class MigrationDonor {
     this.id = globalThis.crypto.randomUUID();
     this.kind = folder ? 'local-folder' : 'local-files';
     this.label = folder ? safeLabel(folder.name, 'Selected donor folder') : 'Explicitly selected local files';
-    this.#folder = folder ? new BrowserReadOnlyDirectoryProvider(folder) : null;
+    this.#folder = folder ? new BrowserReadOnlyDirectoryProvider(folder, { parameterJson: true }) : null;
     this.#files = files ? [...files].map((handle, index) => {
       if (handle?.kind !== 'file') throw new MigrationError('scope');
       return { id: `file-${index + 1}`, alias: fileAlias(handle.name), handle };
@@ -69,7 +64,7 @@ export class MigrationDonor {
       if (this.#folder) {
         await this.#folder.assertReadable({ request });
         return (await this.#folder.entries()).map((entry) => {
-          migrationTargetAlias(entry.alias);
+          snapshotAlias(entry.alias);
           return { ...entry, id: entry.alias, format: entry.kind };
         });
       }
@@ -87,6 +82,7 @@ export class MigrationDonor {
       }
       return this.#files.map(({ id, alias }) => ({ id, alias, format: sourceExtension(alias).slice(1) }));
     } catch (error) {
+      if (['public-scope', 'snapshot-format'].includes(error.code)) throw new MigrationError('scope');
       if (error instanceof MigrationError) throw error;
       throw new MigrationError('permission');
     }
@@ -117,7 +113,7 @@ export class MigrationDonor {
       const bytes = new Uint8Array(await file.arrayBuffer());
       if (bytes.byteLength > MAX_SOURCE_BYTES) throw new MigrationError('limit');
       return {
-        id, alias: record.alias, handle: record.handle, size: bytes.byteLength,
+        id, alias: record.alias, handle: record.handle, size: bytes.byteLength, bytes,
         text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), hash: await sha256(bytes),
       };
     } catch (error) {
@@ -126,6 +122,15 @@ export class MigrationDonor {
       if (error?.code === 'SOURCE_TOO_LARGE') throw new MigrationError('limit');
       throw new MigrationError('unavailable');
     }
+  }
+
+  async inspectJsonCandidate(id) {
+    const source = await this.read(id);
+    if (this.#files) {
+      readArmParameters(source.text);
+      return { kind: 'parameters' };
+    }
+    return inspectArmParameterJson(source.text);
   }
 
   async template(parameter, using) {

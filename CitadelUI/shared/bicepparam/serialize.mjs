@@ -37,7 +37,8 @@ export function isRawExpr(value) {
   );
 }
 
-export function serializeValue(value, indentLevel = 0) {
+/** Newline selection affects generated collection scaffolding, not raw expressions. */
+export function serializeValue(value, indentLevel = 0, newline = '\n') {
   const pad = INDENT.repeat(indentLevel);
   const padInner = INDENT.repeat(indentLevel + 1);
 
@@ -49,8 +50,8 @@ export function serializeValue(value, indentLevel = 0) {
 
   if (Array.isArray(value)) {
     if (value.length === 0) return '[]';
-    const lines = value.map((item) => `${padInner}${serializeValue(item, indentLevel + 1)}`);
-    return `[\n${lines.join('\n')}\n${pad}]`;
+    const lines = value.map((item) => `${padInner}${serializeValue(item, indentLevel + 1, newline)}`);
+    return `[${newline}${lines.join(newline)}${newline}${pad}]`;
   }
 
   if (typeof value === 'object') {
@@ -58,9 +59,9 @@ export function serializeValue(value, indentLevel = 0) {
     if (entries.length === 0) return '{}';
     const lines = entries.map(([key, val]) => {
       const k = IDENT_RE.test(key) ? key : quote(key);
-      return `${padInner}${k}: ${serializeValue(val, indentLevel + 1)}`;
+      return `${padInner}${k}: ${serializeValue(val, indentLevel + 1, newline)}`;
     });
-    return `{\n${lines.join('\n')}\n${pad}}`;
+    return `{${newline}${lines.join(newline)}${newline}${pad}}`;
   }
 
   return 'null';

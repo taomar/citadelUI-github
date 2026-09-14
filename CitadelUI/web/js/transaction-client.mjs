@@ -1,5 +1,8 @@
 import { sha256 } from './directory-provider.mjs';
+import { commitLocalReceipt, localRecoveryFailure } from './mutation-coordinator.mjs';
 import { activeWorkspace } from './workspace-context.mjs';
+import { configurationOf } from '../../shared/workspace-configuration.mjs';
+import { nativeHistoryProof } from '../../shared/terraform/workspace.mjs';
 
 function notFound(error) {
   return error?.name === 'NotFoundError' || /not found/i.test(error?.message || '');
@@ -51,6 +54,7 @@ export function createTransactionCommit(request) {
           preparedFiles.map((file) => [file.alias, file.changed || []])
         ),
         createdDirectories,
+        ...(options.nativeProof ? { nativeProof: options.nativeProof } : {}),
         files: preparedFiles.map((file) => ({
           alias: file.alias,
           existed: !file.create,
@@ -67,7 +71,14 @@ export function createTransactionCommit(request) {
     };
     let authorization = null;
     let committing = false;
+    let receiptAttempted = false;
     const written = [];
+    const committedResult = () => ({
+      applied: true,
+      transactionId,
+      files: written.map((file) => ({ alias: file.alias, hash: file.finalHash })),
+    });
+    const recoveryFailure = (error, detail) => localRecoveryFailure(error, transactionId, detail);
 
     try {
       for (const file of preparedFiles.filter((item) => !item.create)) {
@@ -152,37 +163,39 @@ export function createTransactionCommit(request) {
         written.push({ ...file, finalHash: verified.hash });
       }
 
-      await request(`/api/transactions/${encodeURIComponent(transactionId)}/receipt`, {
-        method: 'POST',
-        headers: {
-          ...environmentHeaders,
-          'X-Citadel-Authorization': authorization.authorizationToken,
-        },
-        body: JSON.stringify({
-          receipts: written.map((file) => ({
-            alias: file.alias,
-            hash: file.finalHash,
-            size: file.afterSize,
-          })),
-        }),
+      receiptAttempted = true;
+      const receipt = await commitLocalReceipt(request, {
+        transactionId, environmentId: environment.id, transactionToken,
+        authorizationToken: authorization.authorizationToken,
+        receipts: written.map((file) => ({
+          alias: file.alias,
+          hash: file.finalHash,
+          size: file.afterSize,
+        })),
       });
-      return {
-        transactionId,
-        files: written.map((file) => ({ alias: file.alias, hash: file.finalHash })),
-      };
+      return { ...committedResult(), ...(receipt.warnings ? { warnings: receipt.warnings } : {}) };
     } catch (error) {
+      if (receiptAttempted) throw error;
       if (!committing) {
-        await request(`/api/transactions/${encodeURIComponent(transactionId)}/fail`, {
-          method: 'POST',
-          headers: environmentHeaders,
-          body: JSON.stringify({ changedAliases: [] }),
-        }).catch(() => {});
+        try {
+          await request(`/api/transactions/${encodeURIComponent(transactionId)}/fail`, {
+            method: 'POST',
+            headers: environmentHeaders,
+            body: JSON.stringify({ changedAliases: [] }),
+          });
+        } catch (recordError) {
+          throw recoveryFailure(error, `No source write was attempted, but the failure could not be recorded. Inspect History. ${recordError.message}`);
+        }
         throw error;
       }
 
       const rollback = [];
+      const validateRollback = options.nativeProof
+        ? () => nativeHistoryProof(provider, configurationOf(environment), preparation.transaction)
+        : undefined;
       for (const file of [...written].reverse()) {
         try {
+          await validateRollback?.();
           const current = await provider.read(file.alias);
           if (current.hash !== file.finalHash) {
             throw new Error(
@@ -208,6 +221,7 @@ export function createTransactionCommit(request) {
             await provider.write(file.alias, backup.bytes, {
               expectedHash: file.finalHash,
               finalHash: file.beforeHash,
+              validateBeforeWrite: validateRollback,
             });
           }
           rollback.push({ alias: file.alias, restored: true });
@@ -259,20 +273,26 @@ export function createTransactionCommit(request) {
 
       if (incomplete.length) {
         const unresolved = [...new Set(incomplete.map((item) => item.alias))];
-        await request(`/api/transactions/${encodeURIComponent(transactionId)}/fail`, {
+        try {
+          await request(`/api/transactions/${encodeURIComponent(transactionId)}/fail`, {
+            method: 'POST',
+            headers: environmentHeaders,
+            body: JSON.stringify({ changedAliases: unresolved }),
+          });
+        } catch (recordError) {
+          throw recoveryFailure(error, `Recovery still requires attention for ${unresolved.join(', ')} and could not be recorded. Inspect History. ${recordError.message}`);
+        }
+        throw recoveryFailure(error, `Recovery still requires attention for ${unresolved.join(', ')}.`);
+      }
+      try {
+        await request(`/api/transactions/${encodeURIComponent(transactionId)}/rollback`, {
           method: 'POST',
           headers: environmentHeaders,
-          body: JSON.stringify({ changedAliases: unresolved }),
-        }).catch(() => {});
-        throw new Error(
-          `${error.message} Recovery still requires attention for ${unresolved.join(', ')}.`
-        );
+          body: JSON.stringify({ receipts }),
+        });
+      } catch (recordError) {
+        throw recoveryFailure(error, `Source bytes were restored, but the rollback receipt could not be confirmed. Inspect History. ${recordError.message}`);
       }
-      await request(`/api/transactions/${encodeURIComponent(transactionId)}/rollback`, {
-        method: 'POST',
-        headers: environmentHeaders,
-        body: JSON.stringify({ receipts }),
-      }).catch(() => {});
       throw error;
     }
   };

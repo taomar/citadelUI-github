@@ -3,7 +3,8 @@
  *
  * The browser owns every handle to Citadel source. This process serves the
  * packaged application, performs content-only transformations, and stores
- * transaction journals and backup bytes under CITADEL_DATA_ROOT. It never
+ * transaction journals, backup bytes and explicitly captured migration sources
+ * under CITADEL_DATA_ROOT. It never
  * discovers, opens, or writes a host workspace.
  */
 import { createServer } from 'node:http';
@@ -20,9 +21,16 @@ import { RegistryStore } from './registry-store.mjs';
 import { ConnectionProfileStore } from './connections.mjs';
 import { CredentialVault } from './credentials.mjs';
 import { OwnerAccount } from './owner.mjs';
+import { DiagnosticCapture } from './diagnostics.mjs';
+import { handleDiagnostics } from './diagnostics-routes.mjs';
+import { diagnosticException, diagnosticResource, diagnosticRoute, isDiagnosticPath, safeDiagnosticCode, safeDiagnosticMethod } from '../shared/diagnostics.mjs';
 import { ActivityStore, ACTIVITY_ACTIONS } from './activity.mjs';
+import { MigrationSnapshotStore } from './migration-snapshots.mjs';
+import { MigrationError } from '../shared/migration-input.mjs';
+import { SNAPSHOT_ENDPOINT, SNAPSHOT_LIMITS } from '../shared/migration-snapshot.mjs';
 import { GitHubRoutes } from './github/routes.mjs';
 import { GitHubAuditStore } from './github/audit.mjs';
+import { MAX_GITHUB_COMMIT_REQUEST_BYTES as GITHUB_COMMIT_BODY_LIMIT } from '../shared/source-scope.mjs';
 import {
   applyPolicyChanges,
   CONTENT_SAFETY_CATEGORIES,
@@ -45,14 +53,6 @@ const PRODUCTION_CHECKOUT_DATA_ROOT = resolve(here, '..', '.data');
 const DEFAULT_ALLOWED_HOST = process.env.CITADEL_ALLOWED_HOST || PRODUCTION_ALLOWED_HOST;
 const JSON_BODY_LIMIT = 2 * 1024 * 1024;
 const BACKUP_BODY_LIMIT = 32 * 1024 * 1024;
-/**
- * GitHub commit bodies carry base64-encoded sources, so the advertised 8 MiB
- * source limit needs roughly 4/3 for base64 plus JSON framing. Without this the
- * transport would reject a file the product says it supports. The aggregate
- * decoded size stays bounded by the per-file and per-change-set limits enforced
- * in the change-set validator.
- */
-const GITHUB_COMMIT_BODY_LIMIT = 12 * 1024 * 1024;
 
 /**
  * The activity actions a browser may append.
@@ -79,6 +79,7 @@ const MIME = {
   '.png': 'image/png',
   '.webp': 'image/webp',
   '.woff2': 'font/woff2',
+  '.wasm': 'application/wasm',
 };
 
 const CSP = [
@@ -87,7 +88,7 @@ const CSP = [
   "object-src 'none'",
   "frame-ancestors 'none'",
   "form-action 'self'",
-  "script-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval'",
   "style-src 'self'",
   "img-src 'self' data:",
   "font-src 'self'",
@@ -126,10 +127,10 @@ function sendEmpty(res, status, correlationId, extraHeaders = {}) {
   res.end();
 }
 
-function safeCorrelationId(value) {
+function safeCorrelationId(value, fallback) {
   return typeof value === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(value)
     ? value
-    : randomUUID();
+    : fallback;
 }
 
 function sameToken(left, right) {
@@ -455,7 +456,25 @@ async function handleApi(context) {
     return await handleOwnerApi(context);
   }
 
-  assertBrowserRequest(req, allowedHost, allowedOrigin, sessionToken, stateChanging);
+  assertBrowserRequest(req, allowedHost, allowedOrigin, sessionToken,
+    stateChanging || (isDiagnosticPath(url.pathname) && req.headers.origin !== undefined));
+
+  if (isDiagnosticPath(url.pathname)) {
+    return await handleDiagnostics({
+      req, url, diagnostics: context.diagnostics,
+      readBody: (limit) => readLimitedBody(req, limit, true),
+      sendJson: (status, body, headers) => sendJson(res, status, body, correlationId, headers),
+      sendDownload: (payload, filename) => {
+        res.writeHead(200, {
+          ...securityHeaders(correlationId),
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${filename}"`,
+          'Content-Length': Buffer.byteLength(payload, 'utf8'),
+        });
+        return res.end(payload);
+      },
+    });
+  }
 
   // GitHub routes own their own method set (they need DELETE to disconnect), so
   // they are dispatched before the method allow-list that governs every other
@@ -502,6 +521,39 @@ async function handleApi(context) {
 
   if (req.method === 'GET' && url.pathname === '/api/health') {
     return sendJson(res, 200, { ok: true, service: 'citadel-ui' }, correlationId);
+  }
+
+  if (url.pathname === SNAPSHOT_ENDPOINT || url.pathname.startsWith(`${SNAPSHOT_ENDPOINT}/`)) {
+    const parts = routeParts(url.pathname).slice(2);
+    const snapshots = context.snapshotStore;
+    try {
+      let result;
+      if (req.method === 'GET' && !parts.length) result = { sources: await snapshots.list() };
+      else if (req.method === 'POST' && !parts.length) {
+        result = await snapshots.begin(await readLimitedBody(req, SNAPSHOT_LIMITS.metadataBytes, true));
+      } else if (req.method === 'GET' && parts.length === 1) result = await snapshots.get(parts[0]);
+      else if (req.method === 'GET' && parts.length === 3 && parts[1] === 'files') {
+        const file = await snapshots.read(parts[0], parts[2]);
+        res.writeHead(200, {
+          ...securityHeaders(correlationId), 'Content-Type': 'application/octet-stream',
+          'Content-Length': file.bytes.length, 'X-Citadel-Content-SHA256': file.hash,
+        });
+        return res.end(file.bytes);
+      } else if (req.method === 'PUT' && parts.length === 3 && parts[1] === 'files') {
+        if (String(req.headers['content-type'] || '').split(';')[0].toLowerCase() !== 'application/octet-stream') {
+          throw transactionError(415, 'BINARY_REQUIRED', 'Source uploads require application/octet-stream.');
+        }
+        result = await snapshots.upload(parts[0], parts[2], req.headers['x-citadel-content-sha256'],
+          await readLimitedBody(req, SNAPSHOT_LIMITS.bytes, false));
+      } else if (req.method === 'POST' && parts.length === 2 && ['complete', 'delete'].includes(parts[1])) {
+        assertBodyKeys(await readLimitedBody(req, context.jsonBodyLimit, true), new Set());
+        result = await snapshots[parts[1]](parts[0]);
+      } else throw transactionError(404, 'ROUTE_NOT_FOUND', 'API route not found.');
+      return sendJson(res, 200, result, correlationId);
+    } catch (error) {
+      if (error instanceof MigrationError) throw transactionError(409, error.code, error.message);
+      throw error;
+    }
   }
 
   if (req.method === 'GET' && url.pathname === '/api/registry') {
@@ -705,6 +757,13 @@ async function handleApi(context) {
   return sendJson(res, 200, result, correlationId);
 }
 
+function excludedFromDiagnostics(pathname) {
+  return !pathname.startsWith('/') || isDiagnosticPath(pathname) || pathname === '/debug' ||
+    pathname === '/debug.html' || pathname === '/healthz' ||
+    /^\/(?:js|shared)\/(?:debug|diagnostics)(?:[-.]|\/)/.test(pathname) ||
+    pathname === '/css/debug.css';
+}
+
 async function serveStatic(context) {
   const { req, res, url, correlationId, webRoot, sharedRoot, bootstrapFor } = context;
   if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -715,7 +774,8 @@ async function serveStatic(context) {
     throw transactionError(404, 'STATIC_NOT_FOUND', 'Static asset not found.');
   }
   const root = sharedRequest ? sharedRoot : webRoot;
-  const pathname = sharedRequest ? url.pathname.slice('/shared'.length) : url.pathname;
+  const pathname = sharedRequest ? url.pathname.slice('/shared'.length)
+    : url.pathname === '/debug' ? '/debug.html' : url.pathname;
   const target = staticPath(root, pathname);
   let body;
   try {
@@ -724,6 +784,8 @@ async function serveStatic(context) {
     body =
       !sharedRequest && target === resolve(webRoot, 'index.html')
         ? await bootstrapFor()
+        : !sharedRequest && target === resolve(webRoot, 'debug.html')
+        ? await bootstrapFor(await readFile(target, 'utf8'))
         : await readFile(target);
   } catch (error) {
     if (error.code === 'ENOENT') {
@@ -776,11 +838,17 @@ export async function createCitadelServer(options = {}) {
     throw new Error('QA requires an isolated origin and registry namespace.');
   }
   const sessionToken = options.sessionToken || randomBytes(32).toString('base64url');
+  const diagnostics = new DiagnosticCapture(options.diagnosticOptions);
   const maxConcurrency = options.maxConcurrency ?? 32;
-  const store = options.store || new TransactionStore({ dataRoot, ...(options.transactionOptions || {}) });
+  const maxQueuedStaticRequests = options.maxQueuedStaticRequests ?? 128;
+  if (!Number.isSafeInteger(maxQueuedStaticRequests) || maxQueuedStaticRequests < 0) {
+    throw new Error('Invalid static request queue limit.');
+  }
   const registryStore = options.registryStore || new RegistryStore({ dataRoot });
+  const store = options.store || new TransactionStore({ dataRoot, getEnvironment: (id) => registryStore.getEnvironment(id), ...(options.transactionOptions || {}) });
   const connectionStore = options.connectionStore || new ConnectionProfileStore({ dataRoot });
   const activityStore = options.activityStore || new ActivityStore({ dataRoot });
+  const snapshotStore = options.snapshotStore || new MigrationSnapshotStore({ dataRoot, ...(options.snapshotOptions || {}) });
   // The key is read from a path, never from an environment value: a variable is
   // visible in `docker inspect`, in a process listing, and in a crash report,
   // and would put the master key in all three.
@@ -805,8 +873,9 @@ export async function createCitadelServer(options = {}) {
           activity: activityStore,
           ...(options.githubOptions || {}),
         });
-  await store.initialize();
   await registryStore.initialize();
+  await store.initialize();
+  await snapshotStore.initialize();
   await connectionStore.initialize();
   await credentialVault.initialize();
   await githubRoutes?.creations?.initialize();
@@ -829,42 +898,122 @@ export async function createCitadelServer(options = {}) {
     claimed: injectBootstrapMetadata(indexHtml, 'claimed', registryNamespace, testRuntime),
     unavailable: injectBootstrapMetadata(indexHtml, 'unavailable', registryNamespace, testRuntime),
   };
-  const bootstrapFor = async () => {
+  const bootstrapFor = async (html) => {
+    let state = 'unavailable';
     try {
-      return bootstraps[(await ownerAccount.read()).state] || bootstraps.unavailable;
+      const readState = (await ownerAccount.read()).state;
+      if (Object.hasOwn(bootstraps, readState)) state = readState;
     } catch {
-      return bootstraps.unavailable;
+      // A failed owner read must not reopen the claim on either entry page.
     }
+    return html ? injectBootstrapMetadata(html, state, registryNamespace, testRuntime) : bootstraps[state];
   };
   let active = 0;
+  const staticQueue = [];
+  const waitForStaticSlot = (res) => new Promise((resolve) => {
+    const waiting = {
+      res,
+      grant() {
+        res.off('close', cancel);
+        resolve(true);
+      },
+      cancel() {
+        res.off('close', cancel);
+        const index = staticQueue.indexOf(waiting);
+        if (index !== -1) staticQueue.splice(index, 1);
+        resolve(false);
+      },
+    };
+    const cancel = () => waiting.cancel();
+    staticQueue.push(waiting);
+    res.once('close', cancel);
+    if (res.destroyed) cancel();
+  });
+  const admitQueuedStaticRequests = () => {
+    while (active < maxConcurrency && staticQueue.length) {
+      const waiting = staticQueue.shift();
+      if (waiting.res.destroyed) {
+        waiting.cancel();
+        continue;
+      }
+      // Reserve capacity before the waiting handler resumes.
+      active += 1;
+      waiting.grant();
+    }
+  };
 
   const server = createServer(async (req, res) => {
-    const correlationId = safeCorrelationId(req.headers['x-correlation-id']);
+    // Keep the existing response correlation contract, but never retain or log
+    // a caller-supplied correlation (it may itself contain a secret).
+    const diagnosticCorrelationId = randomUUID();
+    const correlationId = safeCorrelationId(req.headers['x-correlation-id'], diagnosticCorrelationId);
+    let diagnosticOperation = 'api.other';
+    let diagnosticExcluded = true;
+    let diagnosticCode = 'HTTP_ERROR';
+    let diagnosticErrorType = 'UnknownError';
+    const diagnosticContext = { method: safeDiagnosticMethod(req.method), resource: null };
+    let responseFinished = false;
+    res.once('finish', () => {
+      responseFinished = true;
+      if (!diagnosticExcluded && res.statusCode >= 400) {
+        diagnostics.recordRequest(diagnosticOperation, res.statusCode, diagnosticCode, diagnosticErrorType, diagnosticCorrelationId, diagnosticContext);
+      }
+    });
+    res.once('close', () => {
+      if (!responseFinished && !diagnosticExcluded) {
+        diagnostics.recordRequest(diagnosticOperation, 500, 'REQUEST_ABORTED', diagnosticErrorType, diagnosticCorrelationId, diagnosticContext);
+      }
+    });
     if (active >= maxConcurrency) {
-      return sendJson(
-        res,
-        503,
-        { error: { code: 'SERVER_BUSY', message: 'Server concurrency limit reached.', correlationId } },
-        correlationId,
-        { 'Retry-After': '1' }
-      );
+      const pathname = URL.canParse(req.url || '/', allowedOrigin)
+        ? new URL(req.url || '/', allowedOrigin).pathname : '';
+      const canQueue = maxConcurrency > 0 && staticQueue.length < maxQueuedStaticRequests &&
+        req.headers.host === allowedHost && (req.method === 'GET' || req.method === 'HEAD') &&
+        pathname !== '' && pathname !== '/healthz' && pathname !== '/api' && !pathname.startsWith('/api/');
+      if (canQueue) {
+        diagnosticOperation = diagnosticRoute(pathname);
+        diagnosticContext.resource = diagnosticResource(pathname);
+        diagnosticExcluded = excludedFromDiagnostics(pathname);
+        if (!await waitForStaticSlot(res)) return;
+      } else {
+        if (!excludedFromDiagnostics((req.url || '/').split(/[?#]/, 1)[0])) {
+          diagnostics.recordRequest('api.other', 503, 'SERVER_BUSY', 'Error', diagnosticCorrelationId, diagnosticContext);
+        }
+        return sendJson(
+          res,
+          503,
+          { error: { code: 'SERVER_BUSY', message: 'Server concurrency limit reached.', correlationId } },
+          correlationId,
+          { 'Retry-After': '1' }
+        );
+      }
+    } else {
+      active += 1;
     }
-    active += 1;
     let released = false;
     const release = () => {
       if (!released) {
         released = true;
         active -= 1;
+        admitQueuedStaticRequests();
       }
     };
     res.once('finish', release);
     res.once('close', release);
+    if (res.destroyed) {
+      release();
+      return;
+    }
 
     try {
       if (req.headers.host !== allowedHost) {
+        diagnosticExcluded = excludedFromDiagnostics((req.url || '/').split(/[?#]/, 1)[0]);
         throw transactionError(421, 'INVALID_HOST', 'Request host is not allowed.');
       }
       const url = new URL(req.url || '/', allowedOrigin);
+      diagnosticOperation = diagnosticRoute(url.pathname);
+      diagnosticContext.resource = diagnosticResource(url.pathname);
+      diagnosticExcluded = excludedFromDiagnostics(url.pathname);
       if (url.pathname === '/healthz') {
         if (req.method !== 'GET' && req.method !== 'HEAD') {
           return sendEmpty(res, 405, correlationId, { Allow: 'GET, HEAD' });
@@ -876,12 +1025,14 @@ export async function createCitadelServer(options = {}) {
         res,
         url,
         correlationId,
+        diagnostics,
         webRoot,
         sharedRoot,
         bootstrapFor,
         store,
         registryStore,
         activityStore,
+        snapshotStore,
         githubRoutes,
         ownerAccount,
         allowedHost,
@@ -896,6 +1047,8 @@ export async function createCitadelServer(options = {}) {
       }
       return await serveStatic(context);
     } catch (error) {
+      diagnosticCode = safeDiagnosticCode(error.code);
+      diagnosticErrorType = diagnosticException(error);
       if (res.headersSent) {
         res.destroy();
         return;
@@ -930,9 +1083,9 @@ export async function createCitadelServer(options = {}) {
         console.error(
           JSON.stringify({
             event: 'request_error',
-            correlationId,
+            correlationId: diagnosticCorrelationId,
             status,
-            errorType: error?.constructor?.name || 'Error',
+            errorType: diagnosticErrorType,
           })
         );
       }
@@ -948,7 +1101,11 @@ export async function createCitadelServer(options = {}) {
   server.headersTimeout = options.headersTimeout ?? 10_000;
   server.requestTimeout = options.requestTimeout ?? 30_000;
   server.keepAliveTimeout = options.keepAliveTimeout ?? 5_000;
-  server.once('close', () => githubRoutes?.creations?.shutdown());
+  server.once('close', () => {
+    diagnostics.shutdown();
+    githubRoutes?.creations?.shutdown();
+    githubRoutes?.localImports?.shutdown();
+  });
 
   return {
     server,
@@ -957,9 +1114,11 @@ export async function createCitadelServer(options = {}) {
     connectionStore,
     credentialVault,
     activityStore,
+    snapshotStore,
     githubRoutes,
     ownerAccount,
     sessionToken,
+    diagnostics,
   };
 }
 
@@ -984,7 +1143,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       JSON.stringify({
         event: 'citadel_ui_start_failed',
         status: 'failed',
-        errorType: error?.constructor?.name || 'Error',
+        errorType: diagnosticException(error),
       })
     );
     process.exitCode = 1;

@@ -7,7 +7,7 @@ repository access into Electron's main process.
 ## Install the release
 
 The current package is
-[Citadel UI Desktop v1.1.3](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.3).
+[Citadel UI Desktop v1.1.4](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.4).
 Download the
 [Windows installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe)
 or
@@ -47,6 +47,32 @@ storage attaches and reopens an existing environment, rejects a duplicate,
 attaches a second environment, saves one Bicep value, and reads the changed
 bytes through an independent retained handle. Native directory pickers are not
 automated in CI.
+
+## Source identity
+
+Version v1.1.4 combines the current application from `taomar-citadel-orchestrator`
+at `5791d4358f2696c1f4ec2805bd6bcfc2c7d729e8` with this branch's Windows/macOS
+Electron fixes. Earlier desktop packages through v1.1.3 used the September 7
+application and did not include the later modularization, native Terraform and UI
+fixes.
+
+Build from `taomar-electron-desktop-packaging`, not an older `main` checkout.
+`application-source.json` pins the reviewed application commit. Forge compares
+all `server`, `shared` and `web` files with it, then verifies the copied files
+against `resources/desktop-build.json`. Release staging rejects dirty builds.
+The title bar and a small lower-left label show the version and source commit
+(for example `v1.1.4 | 5791d43`); each release also attaches
+`CitadelUI-build-<platform>-<arch>.json` with source/release revisions and hashes.
+
+The packaged test uses the real owner form and Add workspace dialog, checks both
+formats and all four sources, runs the vendored Terraform parser and opens the
+same-origin Diagnostics window. Its screenshot is retained as a CI artifact.
+To check a downloaded Windows ZIP with the same runner, extract it and use
+`node run-packaged-smoke.mjs --package-root="<absolute-extracted-directory>"`.
+
+Quit an older instance before starting an update; the single-instance behavior
+otherwise focuses the already-running application. Replace the complete portable
+folder or `.app` and preserve the existing `userData` profile.
 
 ## Windows release package
 

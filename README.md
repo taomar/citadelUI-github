@@ -2,15 +2,20 @@
 
 # Citadel Control Plane
 
-The configuration surface for the Citadel AI Hub Gateway.
+A browser-based configuration editor for Citadel AI Hub Gateway: edit native
+**Bicep / Citadel** or **Terraform** inputs, review the changes, and save to a
+selected local folder or GitHub working branch. Citadel edits configuration;
+it does not deploy the gateway or manage Terraform state.
 
----
+[User guide](./guides/using-the-control-plane.md) |
+[Deployment](./guides/deployment.md) |
+[Troubleshooting](./CitadelUI/DIAGNOSTICS.md)
 
 ## Install a desktop release
 
 The packaged Electron application needs no Docker, Node.js, or source checkout.
 The current desktop release is
-[Citadel UI Desktop v1.1.3](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.3).
+[Citadel UI Desktop v1.1.4](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.4).
 Download:
 
 - [Windows installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe)
@@ -31,15 +36,46 @@ configured. The desktop app listens only on `127.0.0.1:4174`, stores its state
 in the current user's application-data directory, and keeps local repository
 handles in its own Electron profile.
 
+**Application source:** v1.1.4 packages
+[`5791d43`](https://github.com/taomar/citadelUI-github/tree/5791d4358f2696c1f4ec2805bd6bcfc2c7d729e8)
+from the current delivery branch, including native Terraform, modularization,
+local-source creation and the latest UI fixes, together with the Electron
+Windows/macOS local-folder fixes. Versions through v1.1.3 packaged the older
+September 7 application. The lower-left version label, window title and attached `CitadelUI-build-*.json`
+identify the actual version and source; startup alone is not release verification.
+
+Quit the older application before upgrading. Replace the whole portable folder
+or macOS `.app`, not just its executable, and retain the existing application-data
+profile. See the combined guide for the update procedure.
+
 ## Start with a clone
 
-Clone **main** of this repository. These instructions deploy **Citadel UI only**;
-they do not use sample branches or deploy the gateway.
+These instructions run **Citadel UI only**, not the gateway or sample apps.
+The normal published checkout is:
 
 ```text
 git clone --branch main --single-branch https://github.com/taomar/citadelUI-github.git
 cd citadelUI-github
 ```
+
+**This UI delivery:** published source
+[`8e6fa18`](https://github.com/taomar/citadelUI-github/commit/8e6fa1859a5f1ae2ff786179a03ca6d897f67c9f)
+includes the refreshed desktop UI, literal Bicep resource-tag editor and twelve
+current screenshots. This delivery is on the
+[`taomar-citadel-orchestrator` delivery branch](https://github.com/taomar/citadelUI-github/tree/taomar-citadel-orchestrator),
+not `main`. To use this delivery, choose this checkout **instead of** the
+`main` clone above:
+
+```text
+git clone --branch taomar-citadel-orchestrator --single-branch https://github.com/taomar/citadelUI-github.git
+cd citadelUI-github
+git rev-parse HEAD
+```
+
+Record the returned commit when building an image. Publishing source does not
+update an existing container or Azure deployment; an older image or `main`
+checkout can lack these changes. See
+[release and offline operation](./CitadelUI/RELEASE.md).
 
 The application and its deployment live in **`CitadelUI/`**. Never run `azd up`
 at the repository root: its `azure.yaml` belongs to the gateway.
@@ -47,8 +83,7 @@ at the repository root: its `azure.yaml` belongs to the gateway.
 ## Run locally from source
 
 Install Docker Desktop or Docker Engine 29+ with Compose, start Docker, and use
-Microsoft Edge or Google Chrome. Choose one of these two paths from the cloned
-repository:
+desktop Microsoft Edge or Google Chrome. From the repository, choose one shell:
 
 ### PowerShell
 
@@ -63,173 +98,136 @@ if (-not (Test-Path container.env)) { Copy-Item container.env.example container.
 ```bash
 cd CitadelUI
 if [ ! -f container.env ]; then cp container.env.example container.env; fi
-# Linux Docker Engine: give the container's non-root user its data directory.
+# Linux Docker Engine: prepare storage for the container's non-root user.
 if [ "$(uname -s)" = "Linux" ]; then
   sudo install -d -m 0700 -o 10001 -g 10001 .data
 fi
 bash scripts/start.sh
 ```
 
-Both launchers build the image, start the same container, and wait for it to be
-healthy. Open <http://127.0.0.1:4173> and create the container's owner account.
-Keep port **4173**: local folder permissions are tied to that exact browser
-origin. State is stored in `CitadelUI/.data` by default; for a custom
-`CITADEL_DATA_PATH`, prepare that directory instead.
+The launcher builds from this checkout and waits for a healthy container.
+Open <http://127.0.0.1:4173>, create the owner account on first use, then
+[attach a workspace](./guides/using-the-control-plane.md#workspaces).
+Returning users sign in with the existing owner. There is no password reset.
 
-## Deployment options
-
-Choose a packaged desktop, local Docker, or Azure path below. Azure deployments
-use **`CitadelUI/infra/main.bicepparam`** for settings; azd reads it and the hook
-synchronizes inputs into its environment. Azure examples use PowerShell 7.4+,
-Azure CLI and, where provisioning is needed, Azure Developer CLI (`azd`). Images
-are built in Azure Container Registry; no local Docker daemon is needed for
-Azure deployment.
-
-| Deployment path | Complete commands |
-| --- | --- |
-| Windows or macOS desktop package | [Install the Electron release](./guides/deployment.md#windows-and-macos-desktop-release) |
-| Fresh Azure deployment behind a new VNet | [Scenario 1: private mode](./guides/deployment.md#fresh-azure-deployment) |
-| Fresh Azure deployment on a public endpoint | [Scenario 1: public mode](./guides/deployment.md#fresh-azure-deployment) |
-| Deployment on an existing subnet and existing resources | [Reuse named resources; create anything unnamed](./guides/deployment.md#deploy-on-an-existing-subnet-and-resources) |
-| Local deployment through PowerShell | [Complete PowerShell commands](./guides/deployment.md#local-deployment---powershell) |
-| Local deployment through Bash | [Complete Bash commands](./guides/deployment.md#local-deployment---bash) |
-
-**Create or reuse:** Container Apps, VNet/subnet, Azure Container Registry, Key
-Vault, Log Analytics, storage/Azure Files and managed identity support existing
-resources. Leave existing-resource selectors empty to create the defaults.
-A reused Container Apps environment keeps its own network and logging settings.
-
-All paths use Citadel UI's **owner sign-in**. Azure deployments retain the
-credential-encryption secret in **Key Vault**, create it only when absent, and
-never replace it during a normal redeployment.
-
-For an already configured UI container app, use
-[image-only redeployment](./guides/deployment.md#redeploy-an-existing-citadel-ui-container-app)
-to preserve its mounts, identity, network and owner state. None of these paths
-deploys the gateway or sample applications.
-
-Fresh public deployment and the native parameter-file workflow passed live
-`azd up` tests. Protected-resource reuse also passed live private DNS, sign-in,
-storage, Key Vault and log-query checks, including a repeat deployment with
-unchanged shared settings and retained owner/data/key state. The azd hook
-preserves or initializes the Key Vault key before image deployment.
-
-Private endpoints require an in-network build/deployment host. The guide's
-temporary VM is for isolated staging/testing, **not the Citadel UI runtime**;
-an existing connected workstation or private CI runner can serve that role.
-
----
+Keep the same origin, port and browser profile for local folder access. Durable
+application state defaults to `CitadelUI/.data`; it is not the editable source
+folder. For a custom `CITADEL_DATA_PATH`, prepare that directory instead.
+For an existing installation, use the
+[local image-only update procedure](./guides/deployment.md#update-an-existing-local-container)
+and retain its original data, Compose overrides and any credential-key mount.
 
 ## Overview
 
-Citadel Control Plane is a browser-mediated editor, distributed as a Windows
-desktop package or container, for the declarative configuration of a Citadel AI
-Hub Gateway deployment. It presents Bicep parameter files and their associated
-API Management policy documents as explained forms, and writes surgical changes
-that leave unrelated comments and formatting untouched.
+Choose the workflow by the files you want to change:
 
-Workspace setup offers **Existing GitHub Repo**, **New GitHub Repo**, and **Local**.
-New GitHub Repo can initialize a private repository from the upstream `citadel-v1`
-snapshot (or an overridden GitHub source), then continue through the same
-repository and branch selection. Its temporary creation token requires more
-access than the normal editor token; the inline help explains that distinction.
+| Task | Use | Result |
+| --- | --- | --- |
+| Edit existing Bicep parameters and APIM policy XML | **Bicep / Citadel**, then **Local** or **Existing GitHub Repo** | Reviewed edits to the selected source |
+| Add, edit or remove literal Bicep resource tags | **Azure Deployment > tags** | Source-defined entries staged for normal review/save |
+| Edit Terraform operator inputs | **Terraform (native)**, then **Local** or **Existing GitHub Repo** | Edits to explicitly selected `.tfvars` or `.tfvars.json` files |
+| Produce Terraform inputs from saved Bicep values | **Tools > Export Terraform inputs** (Experimental) in a Bicep workspace | A downloaded ZIP; neither repository is changed |
+| Bring older values into current Bicep templates | **Tools > Migrate configuration** (Experimental) | Reviewed local apply, or preview/sanitized export for GitHub destinations |
+| Start a local Bicep/Citadel project | **Create local from Citadel source** | A verified source snapshot in a new folder, without Git history |
+| Start a private GitHub Bicep/Citadel project | **New GitHub Repo** | A new private snapshot repository, followed by workspace attachment |
 
-After opening a destination workspace, **Migrate Citadel Configuration** can
-compare older local, public GitHub, or private GitHub parameters against its
-current templates. It proposes values only for current parameter names, reports
-unmatched names per file pair, and requires review before applying changes to a
-local destination. GitHub destinations support preview and sanitized export only.
-See [configuration migration](./guides/using-the-control-plane.md#migrate-citadel-configuration).
-
-It is an operations tool, not a gateway runtime component. It does not deploy the
-gateway, send application telemetry, or check for updates. When hosted on Azure,
-its managed identity can read a credential-encryption key from Key Vault; the
-local default needs no Azure access. The gateway it configures is deployed by
-the accelerator's own pipeline, exactly as before.
+Configuration **format** and source **transport** are separate choices.
+A Citadel workspace is a saved editing profile, not a Terraform CLI/state
+workspace. GitHub connections can serve both formats; each Local workspace
+needs its own folder. Formats are not automatically converted or synchronized.
 
 ## How it completes the Citadel AI Hub
 
 The [Citadel AI Hub Gateway](https://github.com/mohamedsaif/ai-hub-gateway-solution-accelerator/tree/citadel-v1)
-is contract-driven. The model backends behind the gateway, the products and
-subscriptions that grant access to them, and the policies that constrain them are
-all declared as files in the repository and then deployed. That design is what
-makes the gateway reviewable, reproducible and auditable.
+defines infrastructure, model backends and access policy as source files.
+The Control Plane presents those inputs as guided forms between deployments.
+Its three areas are **Azure Deployment**, **LLM Onboarding** and **Access Contracts**.
+Native LLM or Access units can be opened without a Deployment unit or Bicep files.
 
-It also means day-to-day operation is editing Bicep parameter files and API
-Management policy XML by hand, in a repository where a misplaced comma in an
-untyped array, or a parameter removed because its purpose was not obvious, is not
-caught until a deployment fails or a policy silently stops applying.
+The header identifies the workspace; the contextual command bar identifies the
+document, source and write destination. **Review & save** stays in the same
+place, separate from **History**, **Discard** and the **Tools** menu.
+The workspace explorer selects an area/file; the document's **Parameters**,
+**Raw file** and category tabs keep its source context visible.
 
-The Control Plane is the interface over exactly those artefacts. It reads the
-banner comments the files already carry and renders them as guidance, so the
-explanation beside a field is the repository's own rather than a second copy that
-drifts. It validates across files, not just within them. And every write is a
-verified transaction: back up, write, verify hashes, restore on failure.
-
-| Gateway concern | Declared in | Control Plane surface |
-| --- | --- | --- |
-| Hub infrastructure, networking, feature flags | `bicep/infra/main.bicepparam` | Azure Deployment |
-| Model backends behind the gateway | `llm-backend-onboarding/main.bicepparam` | LLM Onboarding |
-| Products, subscriptions and per-use-case policy | Access contract folders | Access Contracts |
-
-The accelerator defines and deploys the runtime. The Control Plane is how its
-configuration is operated between deployments.
+The forms use source comments and schema information where available. Supported
+edits splice the selected values rather than reformatting the whole file.
+Validation helps catch supported type, scope and dependency problems; it does
+not prove Terraform/provider behavior, deployment readiness or runtime parity.
 
 ## What it edits
 
-The browser traverses only a directory or repository the operator selects, and the
-scope is limited to `.bicepparam` files, the Bicep templates those parameters refer
-to for schema, and the API Management policy XML belonging to an access contract.
-Generated and unrelated directories are ignored.
+Bicep workspaces edit `.bicepparam` and associated APIM policy XML, with referenced
+Bicep templates supplying schema. Native Terraform workspaces edit only the
+operator value files explicitly selected during attachment. Their `variables.tf`,
+bounded configuration/module dependencies and shared default policy are read-only.
+Examples are templates, not active input selections.
 
-The explicit New GitHub Repo initialization step copies the complete checked-in
-source snapshot, including binary assets and licenses, only into its newly
-created private repository. This does not widen the normal editor's file scope.
+Local Save writes the original file on the **browser's machine**. GitHub Save
+creates a reviewed commit on the workspace's **actual working branch**.
+The container has no source mount, Docker socket or broad host filesystem access.
+It retains application state and Local backups under `/data`.
 
-Repository access is granted by the browser through the File System Access API,
-or by a GitHub token scoped to the repositories it should reach. The server
-runtime receives no source mount, Docker socket, operator cloud credential, or
-broad host filesystem access.
+Known secret-bearing native operator or dependency files are blocked even when
+the requested edit is nonsecret: hiding a field would not make a whole-file
+backup safe. For parser, policy and recovery boundaries, read
+[native workspaces](./guides/using-the-control-plane.md#native-terraform-workspaces).
 
 ## What it looks like
 
-Feature flags decide which capabilities the hub deploys at all. Turning one off
-does not merely hide it: the resources behind it are not created, and the
-parameters belonging only to it stop being asked for.
+Screenshots use synthetic data, not user repositories or deployed environments.
+The format selector leaves Local and GitHub as independent source choices:
 
-![Feature flags](./docs/images/10-deployment-features.png)
+![Terraform format selected, with Local and Existing GitHub Repo available and Bicep starter-copy options disabled](./docs/images/60-native-format-loading.png)
 
-Address planning is checked against Azure's rules rather than a regular
-expression. Overlapping subnets are named on both fields and block the save.
+Native inputs use the shared typed controls. Here, a declared-but-unconsumed
+input remains an advisory; Save does not establish a runtime effect:
 
-![Overlapping subnets](./docs/images/12-vnet-overlap.png)
+![Synthetic native Deployment draft showing an unconsumed-input advisory beside optional_note](./docs/images/61-native-deployment.png)
 
-`llmBackendConfig` is an untyped array in Bicep, so the compiler cannot help and
-neither can a generic form. It gets a purpose-built editor covering every
-supported provider, with credential handling that follows the provider.
+For a literal Bicep `tags` object, edit existing values or use **Tag name**,
+**Tag value** and **Add tag** to stage a new entry, including from an empty
+object. Names come from the source or your explicit input, not a fixed tag list.
+The example below retains the source-shaped `azd-env-name` and `SecurityControl`
+keys; `cost-center` is an explicitly added demonstration tag, not a default.
+See [resource tags](./guides/using-the-control-plane.md#resource-tags) for
+validation, save and History restore.
 
-![LLM backends](./docs/images/21-llm-backends.png)
+![Synthetic Bicep tags with cost-center explicitly added to the draft before Review & save](./docs/images/64-resource-tags.png)
 
-Access contract policies are presented as the blocks they are made of, each one
-switchable, with the raw XML always a click away. A model allowed here but never
-onboarded is flagged by name.
+## Deploy to Azure
 
-![Contract policy](./docs/images/32-contract-policy.png)
+Run all UI deployment commands from `CitadelUI/`. Operator inputs are in
+`CitadelUI/infra/main.bicepparam`; azd reads them and the hook synchronizes
+nonsecret settings before provisioning.
+
+| Deployment path | Instructions |
+| --- | --- |
+| New private VNet | [Fresh deployment: private mode](./guides/deployment.md#fresh-azure-deployment) |
+| New public endpoint | [Fresh deployment: public mode](./guides/deployment.md#fresh-azure-deployment) |
+| Existing subnet or named resources | [Resource reuse](./guides/deployment.md#deploy-on-an-existing-subnet-and-resources) |
+| Local PowerShell | [Complete local commands](./guides/deployment.md#local-deployment---powershell) |
+| Local Bash | [Complete local commands](./guides/deployment.md#local-deployment---bash) |
+| Existing Azure UI instance | [Image-only redeployment](./guides/deployment.md#redeploy-an-existing-citadel-ui-container-app) |
+
+Hosted instances use owner sign-in and retain the credential-encryption key in
+Key Vault. Normal redeployment preserves that key. The guide records which Azure
+paths have live evidence; local native-editor acceptance is not Azure deployment
+evidence.
 
 ## Guides
 
-- [Deployment guide](./guides/deployment.md) — installing the desktop release,
-  running locally, deploying on Azure, and the choices available for each path.
-- [Using Citadel Control Plane](./guides/using-the-control-plane.md) — workspaces,
-  configuration migration, the three editing areas, validation, and how saves
-  are made.
+- [Using Citadel Control Plane](./guides/using-the-control-plane.md): choose a flow,
+  attach/open a workspace, edit, review and save.
+- [Deployment guide](./guides/deployment.md): install the desktop release, deploy,
+  update and roll back without replacing application state.
 
 ## Reference
 
-Detailed reference for the application itself is kept with it:
-[`CitadelUI/README.md`](./CitadelUI/README.md),
-[`CitadelUI/SECURITY.md`](./CitadelUI/SECURITY.md) and
-[`CitadelUI/BACKUP-RECOVERY.md`](./CitadelUI/BACKUP-RECOVERY.md).
+[Application reference](./CitadelUI/README.md) |
+[Security model](./CitadelUI/SECURITY.md) |
+[Backup and recovery](./CitadelUI/BACKUP-RECOVERY.md) |
+[Timed diagnostic capture](./CitadelUI/DIAGNOSTICS.md)
 
 ## License
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { buildMigrationPlan, decideMigration, evaluateMigration, migrationNameReports, migrationRows } from '../shared/parameter-migration.mjs';
-import { MigrationError, MIGRATION_LIMITS, readArmParameters, readBicepParameters } from '../shared/migration-input.mjs';
+import { inspectArmParameterJson, MigrationError, MIGRATION_LIMITS, readArmParameters, readBicepParameters } from '../shared/migration-input.mjs';
 import { readMigrationSchema } from '../shared/migration-schema.mjs';
 import { validateMigrationFeatures } from '../web/js/migration-validation.mjs';
 
@@ -39,6 +39,72 @@ test('migration exact names preserve current casing, using, comments, CRLF, and 
   assert.equal(result.after, target.replace('Count = 2', 'Count = 4'));
   assert.equal(result.canApply, true);
   assert.equal(result.summary.removed, 1);
+});
+
+test('safe independent patches retain unresolved deployment values without certifying or evaluating them', () => {
+  const model = plan({
+    target: "param environmentName = 'new'\nparam aiFoundryInstances = readEnvironmentVariable('UNRESOLVED_INSTANCES')\nparam aiFoundryModelsConfig = [{ aiserviceIndex: 0 }]\n",
+    schema: 'param environmentName string\nparam aiFoundryInstances array\nparam aiFoundryModelsConfig array\n',
+    sources: [{ text: "param environmentName = 'reviewed'\n" }],
+  });
+  accept(model, 'environmentName');
+  keepRest(model);
+  const result = evaluateMigration(model, validateMigrationFeatures);
+  assert.equal(result.canApply, true);
+  assert.deepEqual(result.operations.map((operation) => operation.path), [['environmentName']]);
+  assert.equal(result.after, model.target.text.replace("'new'", "'reviewed'"));
+  assert(result.unverified.some((finding) => finding.code === 'feature-unresolved'));
+  assert.doesNotMatch(result.draft, /UNRESOLVED_INSTANCES/);
+});
+
+test('changing a dependency blocks even when the affected field is retained and its baseline was valid', () => {
+  const model = plan({
+    target: "param aiFoundryInstances = [{ name: 'first' }, { name: 'second' }]\nparam aiFoundryModelsConfig = [{ aiserviceIndex: 1 }]\n",
+    schema: 'param aiFoundryInstances array\nparam aiFoundryModelsConfig array\n',
+    sources: [{ text: "param aiFoundryInstances = [{ name: 'only' }]\n" }],
+  });
+  accept(model, 'aiFoundryInstances');
+  keepRest(model);
+  const result = evaluateMigration(model, validateMigrationFeatures);
+  assert.equal(result.canApply, false);
+  const finding = result.blockers.find((finding) => finding.name === 'aiFoundryModelsConfig');
+  assert.equal(finding.scope, 'selected-dependency');
+  assert.equal(finding.rowId, migrationRows(model).find((row) => row.name === 'aiFoundryInstances').id);
+});
+
+test('selected changes cannot bypass unknown validation of dependencies or the selected configuration', () => {
+  const model = plan({
+    target: "param useTargetFoundry = false\nparam foundry = readEnvironmentVariable('UNAVAILABLE_COORDINATES')\n",
+    schema: 'param useTargetFoundry bool\nparam foundry object\n',
+    sources: [{ text: 'param useTargetFoundry = true\n' }],
+  });
+  accept(model, 'useTargetFoundry');
+  keepRest(model);
+  const result = evaluateMigration(model, validateMigrationFeatures);
+  assert.equal(result.canApply, false);
+  assert(result.blockers.some((finding) => finding.dependencies?.includes('foundry') && finding.rowId));
+  const unknown = plan();
+  accept(unknown, 'Count');
+  assert.equal(evaluateMigration(unknown, () => [{
+    name: null, code: 'feature-constraint', severity: 'error', message: 'Synthetic validator cannot establish safety.',
+  }]).canApply, false);
+});
+
+test('an unchanged unrelated existing validator finding is reported but a newly selected invalid value still blocks', () => {
+  const model = plan({
+    target: "param environmentName = 'new'\nparam apimSku = 'Developer'\nparam apimSkuUnits = 8\n",
+    schema: 'param environmentName string\nparam apimSku string\nparam apimSkuUnits int\n',
+    sources: [{ text: "param environmentName = 'old'\nparam apimSkuUnits = 9\n" }],
+  });
+  accept(model, 'environmentName');
+  keepRest(model);
+  let result = evaluateMigration(model, validateMigrationFeatures);
+  assert.equal(result.canApply, true);
+  assert(result.unverified.some((finding) => finding.name === 'apimSkuUnits'));
+  accept(model, 'apimSkuUnits');
+  result = evaluateMigration(model, validateMigrationFeatures);
+  assert.equal(result.canApply, false);
+  assert(result.blockers.some((finding) => finding.name === 'apimSkuUnits'));
 });
 
 test('migration never copies by position, fuzzy rename, or from an unpaired donor', () => {
@@ -87,11 +153,11 @@ test('migration per-file name reports separate paired sources and distinguish in
   assert.deepEqual(reports[0].matchedNames, ['Count']);
   assert.deepEqual(reports[0].oldOnlyNames, ['retired']);
   assert.deepEqual(reports[0].currentAssignmentsWithoutDonor, ['fresh']);
-  assert.deepEqual(reports[0].inheritedDefaultsWithoutDonor, ['inherited', 'omitted']);
+  assert.deepEqual(reports[0].inheritedDefaultsWithoutDonor, []);
   assert.deepEqual(reports[0].currentSchemaOnlyNames, ['fresh', 'omitted']);
-  assert.deepEqual(reports[1].matchedNames, ['omitted']);
-  assert.deepEqual(reports[1].oldOnlyNames, ['Legacy.Feature.Flag']);
-  assert.deepEqual(reports[1].donorSuppliedSchemaFieldsNotAssigned, ['omitted']);
+  assert.deepEqual(reports[1].matchedNames, []);
+  assert.deepEqual(reports[1].oldOnlyNames, ['omitted', 'Legacy.Feature.Flag']);
+  assert.deepEqual(reports[1].donorSuppliedSchemaFieldsNotAssigned, []);
   assert.equal(reports[1].currentSchemaOnlyNames, null, 'missing old schema cannot establish a version addition');
   assert.equal(evaluateMigration(model).after, model.target.text, 'a name report never accepts schema-only proposals');
   assert.doesNotMatch(JSON.stringify(reports), /"value":/);
@@ -216,7 +282,10 @@ for (const schema of [
     assert.equal(row(model, 'Count').candidates[0].category, 'unknown-schema');
     assert.equal(row(model, 'Count').candidates[0].eligible, false);
     keepRest(model);
-    assert(evaluateMigration(model).blockers.length > 0);
+    const result = evaluateMigration(model);
+    assert(result.unverified.length > 0);
+    assert.equal(result.canApply, false, 'no change is authorized through an unsupported schema');
+    assert.throws(() => accept(model, 'Count'), { code: 'decision' });
   });
 }
 
@@ -249,15 +318,18 @@ test('migration collection replacements retain destination comment templates and
   assert.equal(evaluateMigration(unchanged).after, target);
 });
 
-test('migration multiple explicit missing-schema-parameter additions retain schema ordering and avoid duplicate identifiers', () => {
+test('migration does not add schema-only parameters to a new file without assignments', () => {
   const model = plan({
     target: "using './current.bicep'\n// original file\n",
     schema: 'param first int\nparam second bool\n',
     sources: [{ text: 'param first = 3\nparam second = true\n' }],
   });
-  accept(model, 'first');
-  accept(model, 'second');
-  assert.equal(evaluateMigration(model).after, "using './current.bicep'\n// original file\nparam first = 3\nparam second = true\n");
+  assert.throws(() => accept(model, 'first'), { code: 'decision' });
+  assert.throws(() => accept(model, 'second'), { code: 'decision' });
+  const result = evaluateMigration(model);
+  assert.equal(result.after, model.target.text);
+  assert.equal(result.operations.length, 0);
+  assert(result.blockers.every((entry) => entry.scope === 'retained-destination'));
 });
 
 test('migration unknown typed schemas with potentially inherited secure annotations do not disclose values', () => {
@@ -293,21 +365,22 @@ test('migration malformed supplied donor schemas cannot silently drop unknown se
   assert.doesNotMatch(JSON.stringify(migrationRows(model)), /SYNTHETIC_PRIVATE_MARKER/);
 });
 
-test('migration required fields without valid current/supplied/default values block; optional defaults are retained', () => {
+test('migration reports omitted required fields without adding them or blocking an unrelated literal patch', () => {
   const model = plan({
     target: "using './current.bicep'\nparam label = '<your-resource-name>'\n",
     schema: "param label string\nparam requiredCount int\nparam newFlag bool = true\nparam reference string = resourceGroup().location\n",
     sources: [{ text: "param label = 'current-resource'\nparam requiredCount = 3\n" }],
   });
   const before = evaluateMigration(model);
-  assert(before.blockers.some((entry) => entry.name === 'requiredCount'));
+  assert(before.unverified.some((entry) => entry.name === 'requiredCount'));
   accept(model, 'label');
-  accept(model, 'requiredCount');
+  assert.throws(() => accept(model, 'requiredCount'), { code: 'decision' });
   const result = evaluateMigration(model);
   assert.equal(result.canApply, true);
-  assert.match(result.after, /param requiredCount = 3/);
+  assert.doesNotMatch(result.after, /param requiredCount/);
   assert.doesNotMatch(result.after, /param newFlag|param reference/);
-  assert(result.unresolved.some((entry) => entry.name === 'reference'));
+  assert(result.unverified.some((entry) => entry.name === 'requiredCount' && entry.scope === 'retained-destination'));
+  assert.deepEqual(result.operations.map((operation) => operation.path), [['label']]);
 });
 
 test('migration preserves dynamic current expressions when kept, but does not certify required fallback values', () => {
@@ -315,7 +388,7 @@ test('migration preserves dynamic current expressions when kept, but does not ce
   const model = plan({ target });
   keepRest(model);
   assert.equal(evaluateMigration(model).after, target);
-  assert(evaluateMigration(model).blockers.some((entry) => entry.code === 'required'));
+  assert(evaluateMigration(model).unverified.some((entry) => entry.code === 'required'));
   accept(model, 'Count');
   assert.equal(evaluateMigration(model).canApply, true);
 });
@@ -334,7 +407,7 @@ test('migration explicitly allowed empty required strings do not block an unrela
   assert.equal(result.after, target.replace('count = 1', 'count = 2'));
 });
 
-test('migration empty required strings remain blocked without explicit permission or with conflicting constraints', () => {
+test('retained invalid strings remain unverified; selecting an invalid value is still a hard blocker', () => {
   for (const decorators of ['', "@allowed(['configured'])\n", "@allowed([''])\n@minLength(1)\n"]) {
     const model = plan({
       target: "param prefix = ''\nparam count = 1\n",
@@ -343,9 +416,14 @@ test('migration empty required strings remain blocked without explicit permissio
     });
     accept(model, 'count');
     const result = evaluateMigration(model);
-    assert.equal(result.canApply, false);
-    assert(result.blockers.some((entry) => entry.name === 'prefix'));
+    assert.equal(result.canApply, true);
+    assert(result.unverified.some((entry) => entry.name === 'prefix'));
+    assert.equal(result.after, model.target.text.replace('count = 1', 'count = 2'));
   }
+  const selected = plan({ target: "param prefix = 'configured'\n", schema: 'param prefix string\n', sources: [{ text: "param prefix = ''\n" }] });
+  accept(selected, 'prefix');
+  assert.equal(evaluateMigration(selected).canApply, false);
+  assert(evaluateMigration(selected).blockers.some((entry) => entry.name === 'prefix'));
 });
 
 test('migration secure fields, donor-only @secure, nested credentials, and unsafe URLs are redacted and never copyable', () => {
@@ -447,6 +525,30 @@ test('migration JSON duplicate envelopes, duplicate values/nested keys, referenc
   }
 });
 
+test('automatic JSON inspection distinguishes repository data without relaxing explicit ARM parsing', () => {
+  for (const text of [
+    '{}', '{"appService":"app","keyVault":"kv"}', '{"version":"1.0","release":"preview"}',
+    '{"openapi":"3.0.0","paths":{},"parameters":[]}',
+    '{"version":"2.0","extensions":{}}',
+    '{"$schema":"https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#","contentVersion":"1.0.0.0","parameters":{},"triggers":{},"actions":{}}',
+  ]) {
+    assert.deepEqual(inspectArmParameterJson(text), { kind: 'unrelated' });
+    assert.throws(() => readArmParameters(text), MigrationError);
+  }
+  const valid = arm('"count":{"value":4},"secretValue":{"value":"SYNTHETIC_PRIVATE_MARKER"}');
+  assert.deepEqual(inspectArmParameterJson(valid), { kind: 'parameters' });
+  assert.doesNotMatch(JSON.stringify(inspectArmParameterJson(valid)), /SYNTHETIC_PRIVATE_MARKER/);
+  assert.deepEqual(inspectArmParameterJson(valid.replace('"parameters":', '"parameters":{},"parameters":')),
+    { kind: 'invalid', code: 'json-duplicate' });
+  const missingVersion = JSON.parse(valid);
+  delete missingVersion.contentVersion;
+  assert.deepEqual(inspectArmParameterJson(JSON.stringify(missingVersion)), { kind: 'invalid', code: 'envelope' });
+  assert.deepEqual(inspectArmParameterJson('{"parameters":'), { kind: 'invalid', code: 'format' });
+  const ambiguous = arm('"count":{"value":2,"value":3}');
+  assert.equal(inspectArmParameterJson(ambiguous).kind, 'parameters');
+  assert.equal(readArmParameters(ambiguous).parameters[0].status, 'ambiguous');
+});
+
 test('migration validates format, size, depth, numeric fidelity, and parser-suffix boundaries', () => {
   assert.throws(() => readBicepParameters(' '.repeat(MIGRATION_LIMITS.bytes + 1)), { code: 'limit' });
   assert.throws(() => readBicepParameters(`param count = ${'['.repeat(50)}0${']'.repeat(50)}\n`), { code: 'limit' });
@@ -545,4 +647,33 @@ test('migration actual upgrade schemas can be populated synthetically while pres
     }
     assert.equal(result.after, expected);
   }
+});
+test('identical full object values ignore property order and never rewrite the target just for formatting', () => {
+  const text = 'param Settings = { alpha: 1, beta: 2 }\n';
+  const plan = buildMigrationPlan({
+    target: { text, schemaText: 'param Settings object\n' },
+    donors: [{ id: 'old', alias: 'old.bicepparam', format: 'bicepparam', text: 'param settings = { beta: 2, alpha: 1 }\n' }],
+  });
+  const row = migrationRows(plan)[0];
+  assert.equal(row.candidates[0].matchesCurrent, true);
+  decideMigration(plan, row.id, { kind: 'accept', candidateId: row.candidates[0].id, semanticReviewed: true });
+  const result = evaluateMigration(plan);
+  assert.equal(result.after, text);
+  assert.equal(result.operations.length, 0);
+});
+
+test('truncated display text and unresolved placeholders never establish value equality', () => {
+  const prefix = 'ordinary description '.repeat(120);
+  const plan = buildMigrationPlan({
+    target: { text: `param Value = '${prefix}current'\n`, schemaText: 'param Value string\n' },
+    donors: [{ id: 'old', alias: 'old.bicepparam', format: 'bicepparam', text: `param value = '${prefix}previous'\n` }],
+  });
+  const row = migrationRows(plan)[0];
+  assert.equal(row.current, row.candidates[0].value, 'the displayed prefixes are intentionally identical');
+  assert.equal(row.candidates[0].matchesCurrent, false);
+  const dynamic = buildMigrationPlan({
+    target: { text: "param Value = readEnvironmentVariable('VALUE')\n", schemaText: 'param Value string\n' },
+    donors: [{ id: 'old', alias: 'old.bicepparam', format: 'bicepparam', text: "param value = readEnvironmentVariable('VALUE')\n" }],
+  });
+  assert.equal(migrationRows(dynamic)[0].candidates[0].matchesCurrent, false);
 });

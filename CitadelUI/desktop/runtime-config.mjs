@@ -41,6 +41,16 @@ export function desktopPermissionCheckAllowed(_webContents, permission, requesti
   return desktopPermissionAllowed(permission, requestingOrigin);
 }
 
+export function desktopDiagnosticsAllowed(value) {
+  if (!trustedDesktopOrigin(value)) return false;
+  const url = new URL(value);
+  return ['/debug', '/debug.html'].includes(url.pathname) && !url.search && !url.hash;
+}
+
+export function desktopVersionLabel(info) {
+  return `v${info.version} | ${info.applicationRevision.slice(0, 7)}${info.dirty ? ' (dev)' : ''}`;
+}
+
 export function trustedDesktopFileSystemRequest(details, expectedWebContents) {
   return Boolean(
     expectedWebContents &&

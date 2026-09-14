@@ -1,3 +1,5 @@
+import { invalidatePolicyPreview } from './contract-edit-state.mjs';
+
 /**
  * Record a raw policy draft and refresh only the global pending actions.
  *
@@ -6,6 +8,7 @@
  * can reflect the pending draft immediately without disturbing the raw editor.
  */
 export function setRawPolicyDraft(state, text, refreshPendingActions) {
+  invalidatePolicyPreview(state);
   state.policyRaw = text;
   state.policyChanges = {};
   refreshPendingActions();

@@ -5,8 +5,8 @@ deployments are configured in
 [`CitadelUI/infra/main.bicepparam`](../CitadelUI/infra/main.bicepparam) and use
 azd; no large PowerShell configuration block is needed.
 
-**Citadel UI only:** use `main`, not a sample branch. Run commands from
-`CitadelUI`; the repository-root `azure.yaml` belongs to the gateway.
+**Citadel UI only:** run commands from `CitadelUI`; the repository-root
+`azure.yaml` belongs to the gateway. A sample branch is not required.
 
 | Scenario | Instructions |
 | --- | --- |
@@ -14,7 +14,8 @@ azd; no large PowerShell configuration block is needed.
 | New Azure resources, public or private VNet | [Fresh deployment](#fresh-azure-deployment) |
 | Existing resources or a mixture of existing and new | [Resource reuse](#deploy-on-an-existing-subnet-and-resources) |
 | Local Docker | [PowerShell](#local-deployment---powershell) or [Bash](#local-deployment---bash) |
-| Update an already configured UI | [Image-only update](#redeploy-an-existing-citadel-ui-container-app) |
+| Update a local Docker installation | [Local image-only update](#update-an-existing-local-container) |
+| Update an Azure Container App | [Azure image-only update](#redeploy-an-existing-citadel-ui-container-app) |
 
 **Live status:** fresh public deployment and repeat `azd up` passed in West
 Europe, preserving the owner, stored state and exact Key Vault key version.
@@ -27,8 +28,15 @@ been tested live.
 ## Windows and macOS desktop release
 
 The current Electron release is
-[Citadel UI Desktop v1.1.3](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.3).
+[Citadel UI Desktop v1.1.4](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.4).
 It needs no Docker, Node.js, Azure account, or source checkout.
+
+Version v1.1.4 packages the current application revision `5791d43`, including
+native Terraform, local-source creation, modularization and the latest UI fixes,
+with the Windows/macOS Electron permission fixes retained. Versions through
+v1.1.3 used the older September 7 application. Check the version/source in the
+lower-left label, window title and the release's `CitadelUI-build-*.json`; hashes cover all bundled
+server, shared and browser files.
 
 | Platform | Installer | Portable |
 | --- | --- | --- |
@@ -67,12 +75,22 @@ Electron may show a **Restricted folder** warning. Choose **Allow this folder**
 only when it is the intended Citadel repository. Release `v1.1.2` fixed the
 desktop origin check for these locations; the packaged Windows, Apple Silicon,
 and Intel Mac smoke tests each obtained read permission to a restricted local
-directory handle. Release `v1.1.3` also uses isolated writable File System Access
+directory handle. The current release also uses isolated writable File System Access
 workspaces in Electron's persistent profile to attach and reopen an existing
 environment, reject a duplicate, attach a second environment, change one Bicep
 value through the production directory provider, and verify the saved bytes
 through an independent retained handle. Native directory pickers are not
 automated in CI.
+
+**Upgrading an existing desktop installation:** save pending work and fully quit
+the old instance first. A new launch otherwise focuses that already-running
+instance. Run the new Windows installer, replace the whole extracted portable
+folder, or replace the complete macOS `.app`; copying only the executable leaves
+old resources behind. Keep the existing application-data profile, owner and key.
+The lower-left label should read **v1.1.4 | 5791d43**. The Add workspace
+dialog includes **Configuration format**, **Terraform (native)** and
+**Create local from Citadel source**. The Diagnostics link opens a sandboxed
+window on the same desktop origin.
 
 GitHub connections require a fine-grained personal access token beginning with
 `github_pat_`, limited to the intended repositories. An OAuth credential
@@ -88,6 +106,17 @@ same rules as the container `/data` directory, but never copy the Electron
 profile while the app is running.
 
 ## Azure prerequisites
+
+**Choose the application version first.** The clone examples below retrieve
+published `main`. The reviewed desktop UI, literal Bicep resource-tag editor,
+native workspaces and timed diagnostics are delivered separately on
+`taomar-citadel-orchestrator`. Use the
+[delivery-branch checkout](../README.md#start-with-a-clone) for that version,
+or an operator-supplied image built from its reviewed source. For an existing
+reviewed checkout, skip the clone and enter its `CitadelUI` directory.
+Publishing source does not provision Azure or replace a running container.
+Do not run a launcher from an older checkout expecting newer features.
+See [release and offline operation](../CitadelUI/RELEASE.md).
 
 Azure deployment needs Git, PowerShell 7.4+, Azure CLI and Azure Developer CLI
 1.33+. Use a dedicated UI resource group and an account permitted to create
@@ -311,25 +340,133 @@ Data defaults to `CitadelUI/.data`; stopping retains it. If you change
 `CITADEL_DATA_PATH` in `container.env`, prepare that directory instead; Linux
 requires UID/GID `10001:10001` (adjust for rootless Docker).
 
-For either local path, create the owner account in the browser, then follow
-[Add a GitHub token](./using-the-control-plane.md#add-a-github-token) to connect a
-repository. Tokens are entered in the UI, not in `container.env`. A credential
+For either local path, create the owner account in the browser on first use,
+then [choose a format and workspace source](./using-the-control-plane.md#workspaces).
+Local folders need no GitHub token. For GitHub, follow
+[Add a GitHub token](./using-the-control-plane.md#add-a-github-token).
+Tokens are entered in the UI, not in `container.env`. A credential
 key is optional: the default local deployment supports session-only connections
 without one; only encrypted persistence is disabled.
 
+## Update an existing local container
+
+Use this procedure for an already built, reviewed local image. The normal
+`start.ps1` and `start.sh` launchers rebuild from their own checkout; do not use
+them to activate an image built from a different branch or worktree. A local
+commit is not automatically present in another checkout or on remote `main`.
+
+Save or explicitly discard pending editor and migration choices, and wait for
+any transaction to finish before restarting. Retain the current image for
+rollback. Updating the container must not replace or clear its existing `/data`
+directory, owner account, history or completed source snapshots.
+
+The unmodified PowerShell example below is for a **base-Compose, session-only
+installation**, using the default `citadel-ui` project, `app` service and
+`citadel-ui-app-1` container. Run it from the **original installation's
+`CitadelUI` directory**, not a new checkout with an empty `.data` directory.
+
+For an installation with overrides, retain the **same complete ordered Compose
+file list**, environment files and startup settings for both update and rollback.
+Confirm the original files using the container's
+`com.docker.compose.project.config_files` label and installation records; stop
+if the original configuration is unknown. Adapt the `$compose` declaration below
+to include every original `--file` argument before running any update commands.
+Also retain any customized project and container names.
+
+If encrypted persistence already used `compose.credentials.yaml`, keep
+`--file .\compose.yaml --file .\compose.credentials.yaml` in that order, along
+with any other existing overrides. Retain the existing
+`CITADEL_CREDENTIAL_KEY_PATH`, key file and read-only key mount; never create or
+rotate a key during an image update. Do not enable this overlay merely because
+the file exists: it is checked in even for session-only installations.
+
+Replace the two image-tag placeholders first; the rollback tag must be unused.
+The approved image and current container's image must already exist locally;
+this procedure neither builds nor pulls.
+
+Before running the image-tag and `up` commands, confirm that the original Compose
+file still publishes only `127.0.0.1:4173`, mounts the existing data directory at
+`/data`, and retains its user and runtime restrictions. Confirm the approved tag
+resolves to the image ID that was reviewed. Never print a full container
+environment or copy credentials into update notes.
+
+```powershell
+$ApprovedImage = 'citadel-ui:<approved-immutable-tag>'
+$RollbackTag = 'citadel-ui:<unused-rollback-tag>'
+$PreviousImage = docker inspect citadel-ui-app-1 --format '{{.Image}}'
+if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the current image.' }
+$mountJson = docker inspect citadel-ui-app-1 --format '{{json .Mounts}}'
+if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the existing data mount.' }
+$dataMount = @(($mountJson | ConvertFrom-Json) | Where-Object { $_.Destination -eq '/data' })
+if ($dataMount.Count -ne 1 -or $dataMount[0].Type -ne 'bind' -or -not $dataMount[0].RW) {
+    throw 'Expected one writable /data bind mount. Stop and inspect the existing installation.'
+}
+if (-not (Test-Path -LiteralPath $dataMount[0].Source -PathType Container)) {
+    throw 'The existing data directory is unavailable. Do not create a replacement.'
+}
+$env:CITADEL_DATA_PATH = $dataMount[0].Source
+$env:CITADEL_IMAGE = 'citadel-ui:local'
+$compose = @('compose', '--project-name', 'citadel-ui', '--file', '.\compose.yaml')
+if (Test-Path -LiteralPath '.\container.env') { $compose += @('--env-file', '.\container.env') }
+
+docker image tag $PreviousImage $RollbackTag
+if ($LASTEXITCODE -ne 0) { throw 'Cannot preserve the rollback image.' }
+docker image tag $ApprovedImage citadel-ui:local
+if ($LASTEXITCODE -ne 0) { throw 'Cannot select the approved local image.' }
+docker @compose up --detach --no-build --pull never --no-deps --force-recreate --wait --wait-timeout 120 app
+if ($LASTEXITCODE -ne 0) { throw 'Update failed. Restore the retained image before continuing.' }
+```
+
+Keep the full ordered Compose file list, original data/key-path settings and
+chosen `CITADEL_IMAGE=citadel-ui:local` in the installation's launch configuration
+so later Compose commands select the same mounts and image.
+
+Afterward, confirm the running image is the approved one and the container is
+healthy. Refresh <http://127.0.0.1:4173> to load the new browser code, sign in
+with the existing owner, and reconnect session-only GitHub connections as needed.
+If an established installation unexpectedly asks you to create an owner, stop
+and check its data mount rather than claiming a new empty installation.
+Do not switch to `localhost` or a different port: browser folder grants are
+origin-bound.
+
+If activation fails or rollback is required, restore the retained image tag:
+
+```powershell
+docker image tag $RollbackTag citadel-ui:local
+if ($LASTEXITCODE -ne 0) { throw 'Cannot select the retained rollback image.' }
+```
+
+Then repeat the same no-build Compose `up` command with the complete original
+override list, data/key paths and configuration. Rollback changes application
+code, not stored data; do not delete state or assume an older image can read an
+incompatible newer data format.
+
 ## Redeploy an existing Citadel UI container app
 
-From `CitadelUI`, select the original environment, then update only its image:
+From `CitadelUI`, select the original environment. With a public registry using
+`LegacyRegistryPermissions`, rebuild and deploy the image through azd:
 
 ```powershell
 azd env select '<original-environment-name>'
-.\scripts\deploy-image.ps1
+azd deploy citadelui
 ```
 
 On a new checkout, use `azd env refresh '<original-environment-name>'` to recover
-the deployment's environment first. The script preserves mounts, identity,
-network and owner state, and records the image for later reprovisioning.
-Do not create a new environment to update an existing app.
+the deployment's environment first. The configured remote build creates the
+image in the existing registry; azd updates the Container App revision and
+records the image for later reprovisioning. Mounts, identity, networking and
+owner state are retained. Do not create a new environment to update an existing
+app.
+
+For ABAC or private registries, retain the authenticated/private build route
+described above and `scripts\deploy-image.ps1`, including `-ImageReference`
+when supplying an already-built private image. Ordinary azd remote builds do
+not supply ABAC source authentication or private network connectivity.
+
+Image-only deployment does not run provisioning hooks or initialize a missing
+credential-encryption key. Recover that key separately, or explicitly approve
+a replacement with the understanding that older saved credentials may need
+reconnection. Never reset owner or application data merely to update an image.
 
 Review ownership before `azd down`. Never delete or purge shared resources or
 their resource groups to remove this UI.

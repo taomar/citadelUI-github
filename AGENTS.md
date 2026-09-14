@@ -4,6 +4,12 @@ Working knowledge for anyone — human or agent — picking this repository up. 
 records what is here, the traps that cost real time, and what is deliberately
 unfinished. Read it before changing anything.
 
+## Orchestration policy
+
+The authoritative standing policy is `.github\copilot-instructions.md`.
+Read it before dispatching work or resuming coordination. Historical handovers
+are evidence, not alternative operating policies.
+
 ---
 
 ## What this repository actually is
@@ -29,6 +35,11 @@ file the Azure Deployment editor opens.
 Running `azd up` at the root deploys the wrong product. Generating infrastructure
 there overwrites the data this application exists to edit.
 
+Only `guides/deployment.md` and `guides/using-the-control-plane.md` are published
+from `guides/`. Other guides, including handovers and review plans, are
+local-only and ignored; do not force-add them. Preserve needed internal notes
+outside disposable worktrees before archival.
+
 ---
 
 ## Running the tests
@@ -47,12 +58,32 @@ in `security.test.mjs`. If you see `security.test.mjs` fail, you ran it wrong.
 
 | Suite | Command | Baseline |
 | --- | --- | --- |
-| Control Plane | `cd CitadelUI; node --test "test/*.test.mjs"` | **490 tests, 489 pass** |
+| Control Plane | `cd CitadelUI; node --test "test/*.test.mjs"` | **2,578 entries: 2,535 pass, 8 established failures, 35 skips** |
 | Publish Playground | `cd CitadelSamples/playground; node --test "test/*.test.mjs"` | **181 tests, 180 pass** |
 
-Known failures, both pre-existing and neither yours to fix unless asked:
+The Control Plane baseline was verified on Windows with Node 24.10.0 against
+accepted application source `779d9fd` on 2026-09-13. The full quoted glob ran with
+a loopback-only preload, concurrency 2 and short owned TEMP/TMP/data roots.
+There were no cancellations. All eight failure bodies and all 35 skips matched
+the preceding accepted baseline; this is a qualified result, not a green suite.
+Fixture availability and platform can affect other environments.
+
+Established Control Plane failures, not part of the UI delivery scope:
 
 - `CitadelUI/test/primary-editors.test.mjs` — has failed since the fork.
+- `CitadelUI/test/supplied-repositories.test.mjs` — its external repository
+  fixture directory is unavailable.
+- Six existing registry/source-choice, restore-call and settings-layout
+  structural assertions. Compare the actual failing names and messages with
+  the accepted baseline rather than relying only on the total failure count.
+
+The 35 skips cover 31 infrastructure-template cases, one approved
+public-response-cache case, two Terraform-reference-root cases and one protected
+ARM case. They were not added to hide UI or tag-editor regressions.
+
+The Publish Playground baseline above is unchanged historical evidence; it was
+not rerun for the Control Plane UI delivery. Its known failure remains:
+
 - `CitadelSamples/playground` — `golden: the publish contract writes the notebook's
   exact parameter file`. It writes `runtime/accelerator/...` where the notebook says
   `../bicep/infra/...`. Which is correct is an ownership decision, not a bug fix.
@@ -80,14 +111,22 @@ happened once.
 
 `credential.helper` is additive, and the system-level Git Credential Manager
 resolves `github.com` to `taomar_microsoft`, an account that cannot see this
-repository. The result is a misleading `Repository not found`. Push with:
+repository. The result is a misleading `Repository not found`. For the reviewed
+UI delivery, push only its approved working branch:
 
 ```powershell
+if ((git branch --show-current) -cne 'taomar-citadel-orchestrator') {
+  throw 'Switch to the reviewed delivery branch before publishing.'
+}
 $env:GH_TOKEN=""
+$env:GITHUB_TOKEN=""
 $env:CIT_TOKEN = (gh auth token -u taomar)
 $h = '!f() { echo username=x-access-token; echo "password=$CIT_TOKEN"; }; f'
-git -c credential.helper= -c credential.helper="$h" push origin main
+git -c credential.helper= -c credential.helper="$h" push --set-upstream --no-follow-tags origin HEAD:refs/heads/taomar-citadel-orchestrator
 ```
+
+Publishing or merging `main` requires separate authorization: the checked-in
+Azure DevOps pipeline provisions and deploys the gateway when `main` changes.
 
 ### The checked-out branch is not always `main`
 
@@ -108,8 +147,9 @@ broken intermediate state because someone said "commit all".
 ## Azure deployment
 
 The azd project is `CitadelUI/`. `azd up` runs the key-initialization
-`postprovision` hook before image deployment. Separate `azd provision` and
-`azd deploy citadelui` also run that hook. It calls
+`postprovision` hook before image deployment; `azd provision` also runs that
+hook. Image-only `azd deploy citadelui` does not run provisioning hooks or
+initialize missing keys. The provisioning hook calls
 `scripts\ensure-credential-key.ps1`, which preserves an existing Key Vault
 credential key or creates it once when absent. It must not rotate existing keys.
 Azure provisioning requires PowerShell 7 on every host and private endpoint
@@ -251,6 +291,7 @@ accepts a value and discards it.
 | `e1d6570` | README rewritten; 22 accelerator guides replaced by two; screenshots; VNet deployment added |
 | `1033f3c` | Deployment guide leads with the five deployment types |
 | `46bff50` | Citadel Publish Playground (on `citadel-samples-playground`) |
+| `8e6fa18` | Reviewed desktop UI, Azure-blue styling, literal Bicep tags and twelve current screenshots published on `taomar-citadel-orchestrator`; no deployment |
 
 ---
 

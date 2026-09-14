@@ -114,6 +114,7 @@ export function migrationTransactionApi(hooks = {}) {
   const bodies = [];
   const backups = new Map();
   let preparation;
+  let status = 'preparing';
   const request = async (path, options = {}) => {
     const body = typeof options.body === 'string' ? JSON.parse(options.body) : null;
     if (body) bodies.push({ path, body });
@@ -146,11 +147,13 @@ export function migrationTransactionApi(hooks = {}) {
     if (path.endsWith('/committing')) {
       trace.push('committing');
       await hooks.committing?.();
+      status = 'committing';
       return { status: 'committing' };
     }
     if (path.endsWith('/receipt')) {
       trace.push('receipt');
       await hooks.receipt?.();
+      status = 'committed';
       return { status: 'committed' };
     }
     if (path.includes('/backups/') && options.responseType === 'bytes') {
@@ -158,7 +161,11 @@ export function migrationTransactionApi(hooks = {}) {
       return { bytes: backups.get(path.split('?')[0].split('/').at(-1)).slice() };
     }
     if (path.endsWith('/rollback')) { trace.push('rollback'); return { status: 'rolled-back' }; }
-    if (path.endsWith('/fail')) { trace.push('fail'); return { status: 'failed' }; }
+    if (path.endsWith('/fail')) { trace.push('fail'); status = 'failed'; return { status }; }
+    if (path.startsWith('/api/transactions/synthetic-migration-transaction?')) {
+      trace.push('inspect');
+      return { transaction: { status } };
+    }
     throw new Error('Unexpected synthetic transaction request');
   };
   return { request, trace, bodies, backups };
@@ -169,6 +176,9 @@ export const TEMPLATE = 'bicep/infra/main.bicep';
 export const CURRENT = "using './main.bicep'\n// current documentation\nparam Count = 2\nparam newDefault = true\n";
 export const SCHEMA = "@minValue(1)\n@maxValue(8)\nparam Count int\nparam newDefault bool = true\n";
 export const LEGACY = "using './legacy.bicep'\nparam count = 4\nparam removed = 'legacy-only'\n";
+
+let snapshotTestRequest;
+export function useSnapshotTestRequest(request) { snapshotTestRequest = request; }
 
 export function migrationHarness(options = {}) {
   const targetTrace = [];
@@ -190,7 +200,13 @@ export function migrationHarness(options = {}) {
     provider,
   };
   const state = { context, pending: false, draft: null };
-  const registry = { getDraft: async () => state.draft };
+  const snapshotTargets = new Map();
+  const registry = {
+    getDraft: async () => state.draft,
+    rememberMigrationSnapshotTarget: async (id, handle) => { snapshotTargets.set(id, handle); },
+    migrationSnapshotTarget: async (id) => snapshotTargets.get(id),
+    forgetMigrationSnapshotTarget: async (id) => { snapshotTargets.delete(id); },
+  };
   const api = migrationTransactionApi(options.hooks || {});
   const coordinator = new LocalTransactionCoordinator({
     request: api.request, commitFiles: createTransactionCommit(api.request),
@@ -200,6 +216,7 @@ export function migrationHarness(options = {}) {
     registry, coordinator,
     pendingEdits: () => state.pending,
     projectLabel: 'Synthetic project',
+    snapshotRequest: options.snapshotRequest || snapshotTestRequest,
   });
   const donor = new MigrationDonor({ folder: donorRoot });
   return {

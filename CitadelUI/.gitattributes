@@ -1,1 +1,2 @@
 scripts/*.sh text eol=lf
+shared/terraform/vendor/* -text

@@ -1,0 +1,14 @@
+{
+  "name": "citadel-native-parser-assets",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node vendor.mjs"
+  },
+  "devDependencies": {
+    "@tree-sitter-grammars/tree-sitter-hcl": "1.2.0",
+    "tree-sitter-json": "0.24.8",
+    "web-tree-sitter": "0.25.10"
+  }
+}

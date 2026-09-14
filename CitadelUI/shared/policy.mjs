@@ -150,14 +150,17 @@ function readVariable(xml, key, comments) {
   let fallback = null;
   let m;
   while ((m = re.exec(xml))) {
-    const valueStart = m.index + m[0].indexOf('value="') + 7 + (m[2] ? m[2].length : 0);
+    const attributeStart = m.index + m[0].indexOf('value="') + 7;
+    const valueStart = attributeStart + (m[2] ? m[2].length : 0);
     const raw = m[3];
     const commented = Boolean(m[1]) || inRanges(comments, m.index);
     const found = {
       present: true,
       commented,
       expression: Boolean(m[2]),
-      value: raw,
+      value: decodePolicyAttribute(raw),
+      // Inspection retains both delimiters independently of the legacy typed span.
+      sourceValue: decodePolicyAttribute(xml.slice(attributeStart, valueStart + raw.length + (m[4]?.length || 0))),
       span: { start: valueStart, end: valueStart + raw.length },
       elementSpan: { start: m.index, end: m.index + m[0].length },
     };
@@ -587,7 +590,7 @@ function renderLimit(attributes, tag = 'llm-token-limit') {
  */
 function plainAttributes(limit) {
   const out = {};
-  for (const [k, v] of Object.entries(limit.attributes)) out[k] = unescapeAttr(v.value);
+  for (const [k, v] of Object.entries(limit.attributes)) out[k] = decodePolicyAttribute(v.value);
   return out;
 }
 
@@ -680,15 +683,6 @@ export function readPolicyControls(xml) {
     };
   }
 
-  const headers = /(<set-variable\s+name="enableResponseHeaders"\s+value="@\()(true|false)(\)")/.exec(xml);
-  if (headers) {
-    const start = headers.index + headers[1].length;
-    controls.responseHeaders = {
-      value: headers[2] === 'true',
-      span: { start, end: start + headers[2].length },
-    };
-  }
-
   // Report only live fragments; commented-out examples are documentation.
   const fragments = [];
   const fragRe = /<include-fragment\s+fragment-id="([^"]+)"/g;
@@ -704,6 +698,13 @@ export function readPolicyControls(xml) {
   for (const def of POLICY_VARIABLES) {
     const found = readVariable(xml, def.key, comments);
     controls.variables[def.key] = found || { present: false, commented: false, value: null };
+  }
+  // APIM distinguishes @(true) Booleans from the string value="true".
+  // Use the same live declaration and exact span as the generic variable reader.
+  const headers = controls.variables.enableResponseHeaders;
+  if (headers.present && !headers.commented && headers.expression && /^(true|false)$/.test(headers.value) &&
+    headers.sourceValue === `@(${headers.value})`) {
+    controls.responseHeaders = { value: headers.value === 'true', span: headers.span };
   }
 
   controls.contentSafety = readContentSafety(xml);
@@ -1063,7 +1064,8 @@ function writeControlValues(xml, changes) {
     splices.push({ ...controls.allowedModels.span, text: escapeAttr(changes.allowedModels) });
   }
 
-  if (changes.responseHeaders !== undefined && controls.responseHeaders) {
+  if (changes.responseHeaders !== undefined && controls.responseHeaders &&
+    Boolean(changes.responseHeaders) !== controls.responseHeaders.value) {
     splices.push({ ...controls.responseHeaders.span, text: changes.responseHeaders ? 'true' : 'false' });
   }
 
@@ -1073,9 +1075,11 @@ function writeControlValues(xml, changes) {
       const found = controls.variables?.[key];
       if (!def || next === null || !found?.present || found.commented) continue;
       if (key === 'enableResponseHeaders' && changes.responseHeaders !== undefined) continue;
+      const value = def.type === 'boolean' ? (next ? 'true' : 'false') : String(next);
+      if (value === found.value) continue;
       splices.push({
         ...found.span,
-        text: def.type === 'boolean' ? (next ? 'true' : 'false') : escapeAttr(String(next)),
+        text: escapeAttr(value),
       });
     }
   }
@@ -1283,17 +1287,23 @@ export function applyPolicyChanges(xml, changes) {
 }
 
 function escapeAttr(value) {
-  return String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  return String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
+    .replace(/[\t\n\r]/g, (char) => `&#${char.charCodeAt(0)};`);
 }
 
-/** The inverse of escapeAttr, for values read back out of the file. */
-function unescapeAttr(value) {
-  return String(value)
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&');
+const XML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+
+/** Decode one logical value, never the raw XML or the output of a prior decode. */
+export function decodePolicyAttribute(value) {
+  return String(value).replace(/&(amp|lt|gt|quot|apos|#\d+|#x[\da-fA-F]+);/g, (reference, entity) => {
+    if (entity[0] !== '#') return XML_ENTITIES[entity];
+    const hex = entity[1] === 'x';
+    const point = Number.parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
+    const valid = point === 9 || point === 10 || point === 13 ||
+      (point >= 0x20 && point <= 0xd7ff) || (point >= 0xe000 && point <= 0xfffd) ||
+      (point >= 0x10000 && point <= 0x10ffff);
+    return valid ? String.fromCodePoint(point) : reference;
+  });
 }
 
 /* ----------------------------------------------------------------- create */

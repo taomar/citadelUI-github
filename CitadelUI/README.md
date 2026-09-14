@@ -1,17 +1,37 @@
 # Citadel UI
 
 A browser-mediated editor for user-selected Citadel repositories, packaged for
-Windows, run in a local container, or hosted on Azure Container Apps.
-Citadel UI presents `.bicepparam` files and their associated APIM policy XML as
-explained forms and writes surgical changes without disturbing unrelated
-comments or formatting.
+Windows and macOS, run in a local container, or hosted on Azure Container Apps.
+Citadel UI presents independent Bicep/Citadel and native Terraform workspaces.
+It edits `.bicepparam` and associated APIM XML, or explicitly selected native
+`.tfvars` / `.tfvars.json` inputs, using the shared typed controls. Ordinary
+field edits preserve unrelated comments and formatting. Neither format is
+automatically converted into, or synchronized with, the other.
 
-One installation manages any number of user-labeled environments. Chromium
-grants repository access through the File System Access API; the server process
-never receives a source mount, Docker socket, operator cloud credential, or
-broad host filesystem access. Citadel UI does not deploy the gateway or send
-telemetry. An Azure-hosted instance uses its managed identity only to read the
-optional credential-encryption key from Key Vault.
+One installation manages user-labeled workspaces, grouped into projects. Some
+Settings and storage fields call a workspace an environment; it is an editing
+profile, not a deployed environment or Terraform CLI/state workspace.
+Desktop Microsoft Edge, Google Chrome or Electron grants Local repository access through
+the File System Access API in a secure context (HTTPS or supported loopback);
+the container never receives a source mount, Docker socket, operator cloud
+credential, or broad host filesystem access. Citadel UI does not deploy the
+gateway or send telemetry to external services. An Azure-hosted instance uses
+its managed identity only to read the optional credential-encryption key from
+Key Vault.
+
+For task procedures, start with the [user guide](../guides/using-the-control-plane.md).
+This reference holds the format, storage, transport and parser boundaries.
+
+| Reference | Scope |
+| --- | --- |
+| [Bicep resource tags](#literal-bicep-resource-tags) | Source-defined literal entries, explicit staging and save/restore |
+| [Native Terraform](#native-terraform-workspaces) | Explicit input bindings, source safeguards and offline parser |
+| [Terraform export](#export-to-terraform) | Bicep-to-Terraform ZIP mapping |
+| [Configuration migration](#migrate-citadel-configuration) | Older values into current Bicep targets |
+| [GitHub repositories](#github-repositories) | Connections, branch selection and save outcomes |
+| [Backup and recovery](BACKUP-RECOVERY.md) | Local conflicts, interrupted saves and native creation |
+| [Diagnostics](DIAGNOSTICS.md) | Timed capture procedure and exact report/API schema |
+| [Security](SECURITY.md) | Owner, credentials and source trust boundaries |
 
 ---
 
@@ -23,7 +43,14 @@ Requirements:
 - Microsoft Edge or Google Chrome desktop.
 - A user-owned directory for durable Citadel UI data.
 
-Clone **main**, which contains Citadel UI; no sample branch is needed.
+The examples clone published **main**; no sample branch is needed.
+The refreshed desktop UI, literal Bicep tag editor and screenshots are delivered
+separately on `taomar-citadel-orchestrator`. For that version, use the
+[delivery-branch checkout](../README.md#start-with-a-clone), skip the clone in
+the shell example below and enter that checkout's `CitadelUI` directory.
+Record its exact commit before building. Source publication does not replace
+an existing image or installation. See
+[release and offline operation](RELEASE.md).
 
 ### PowerShell
 
@@ -60,7 +87,7 @@ process you own rather than changing ports.
 
 The Electron release runs the existing Control Panel without Docker, Node.js, or
 a source checkout. The current version is
-[Citadel UI Desktop v1.1.3](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.3).
+[Citadel UI Desktop v1.1.4](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.4).
 Windows users can download the
 [Windows installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe),
 or
@@ -80,6 +107,8 @@ fine-grained GitHub PAT requirements.
 To build or run Electron from source instead:
 
 ```powershell
+git clone --branch taomar-electron-desktop-packaging --single-branch https://github.com/taomar/citadelUI-github.git
+Set-Location .\citadelUI-github
 Set-Location .\CitadelUI\desktop
 npm ci
 npm start
@@ -92,6 +121,15 @@ npm run release:win
 ```
 
 The publishable assets are written to `CitadelUI\desktop\out\release`.
+Version v1.1.4 integrates application revision `5791d43` from
+`taomar-citadel-orchestrator`; versions through v1.1.3 contained the older
+September 7 application. `desktop/application-source.json` pins the accepted
+revision. Packaging refuses a different runtime tree and verifies the shipped
+hashes; the lower-left version label, window title and `CitadelUI-build-*.json`
+identify the installed code.
+The packaged UI check exercises owner sign-in, both configuration formats, all
+four source choices, the vendored Terraform parser and the Diagnostics window.
+
 The desktop app uses the fixed origin `http://127.0.0.1:4174` and stores its
 application data under Electron's `userData` directory, normally
 `%APPDATA%\Citadel UI` on Windows or
@@ -140,8 +178,9 @@ The first time a container starts it has no owner, so it asks you to create one:
 a username and a password of your choosing. That account is the only account this
 container will ever have.
 
-- There is no second user, and no password reset. Keep the password somewhere
-  safe — recovering it means redeploying with fresh state.
+- There is no second user and no password reset. Keep the password somewhere
+  safe. A fresh deployment is a separate identity, not recovery of this account
+  or its existing state; do not delete state as a sign-in repair.
 - The password is never stored, only an scrypt hash of it.
 - Signing in is what issues the session token every other request uses, so
   reaching the URL is no longer enough on its own to use the application.
@@ -152,21 +191,38 @@ container will ever have.
 If two people open a brand-new container at the same moment, exactly one becomes
 the owner; the other is asked to sign in.
 
-On first use, create a project, enter an environment label and display-only
+On first use, **Create local from Citadel source** can prepare the public
+upstream `citadel-v1` snapshot without a GitHub token. Choose an empty parent
+folder, enter the new project subfolder name, and review the exact destination
+and pinned commit before copying. The named child becomes the workspace only
+after full content verification and registration. This is not a Git clone and
+does not run scripts. The same flow is in **Settings > New project**.
+See the [local source walkthrough](../guides/using-the-control-plane.md#create-a-local-project-from-citadel-source)
+for limits, concurrency guarantees, and partial-folder recovery.
+
+To attach existing files instead, choose **Bicep / Citadel** or **Terraform (native)**
+independently of **Local** or **Existing GitHub Repo**. Create a project, enter an environment label and display-only
 **Local path**, and choose the exact Citadel repository through the in-app folder
 picker. Repeat from **Settings** for Development, Test, Production, or any other
 labels. Labels, folder names, and Local paths are informational. Normal attachment
-requires the Main deployment,
+for Bicep requires the Main deployment,
 LLM onboarding, and Access Contracts template paths and signatures; an incomplete
 tree is rejected with the missing capability names and is never activated.
+Terraform instead admits one or more explicitly selected native units; LLM or
+Access can stand alone without Main or a Bicep workspace.
 
 Directory handles remain in the browser profile because they cannot be moved
 into a container. Non-sensitive project and environment metadata, including the
 user-entered display-only Local path, is mirrored to
 `/data/settings/registry.json`. After a container restart, retained browser
 handles reopen normally. After browser-profile loss, labels and fingerprints
-remain visible with their Local paths and each profile asks the user to reconnect
-its folder.
+remain visible with their Local paths. A native Local workspace must reconnect
+its original retained handle. If that handle was lost, selecting the same folder
+does not restore old draft/history identity. Preserve the old record. A new
+workspace has a new identity and must use a folder allowed by the ownership
+checks, such as a distinct operator-managed source copy. Identical or demonstrably
+overlapping Local attachments are refused. See
+[lost-handle limitations](BACKUP-RECOVERY.md#lost-native-folder-handles).
 
 Use `scripts\status.ps1`, `scripts\logs.ps1`, and `scripts\stop.ps1` for local
 operation in PowerShell. In Bash, use `docker compose --env-file container.env ps`,
@@ -174,12 +230,30 @@ operation in PowerShell. In Bash, use `docker compose --env-file container.env p
 `docker compose --env-file container.env down` from `CitadelUI/`.
 Direct `node server/index.mjs` execution is developer-only.
 
+## Troubleshooting with a timed debug report
+
+Choose **Diagnostics** in the application header to open a new tab, or open
+`/debug` on the same instance. The public bootstrap presents the normal owner
+claim/sign-in flow. **Instance-wide debugging** is off by default; enabling it
+starts a fixed 30-minute capture of safe server/API and connected browser error
+metadata. Closing the page does not stop or extend that window. Already-open
+browser profiles normally discover it within the 5-second polling interval.
+
+Reproduce the problem, stop capture if needed, and select **Download debug
+report**. Known codes, request templates and bundled locations have explanations
+and suggested next steps; raw errors, source values, private paths and credentials
+are excluded. Nothing is uploaded automatically. The latest report remains in
+memory after stop/expiry until cleared, replaced or lost on server restart.
+Downloads during capture are snapshots; missing/offline browser errors cannot
+be recovered retrospectively. See [Timed diagnostic capture](DIAGNOSTICS.md) for
+the exact schema, limits, coverage and privacy contract.
+
 ---
 
 ## What it can access
 
 The browser traverses only a directory explicitly selected by the user. The
-source scope is:
+Bicep configuration editor's source scope is:
 
 - `.bicepparam` files.
 - Bicep templates referenced by those parameter files for editor schema.
@@ -202,15 +276,201 @@ copy. It reads the checked-in snapshot of a GitHub source and writes only to the
 new private repository created for that operation. It does not widen the
 Bicep/XML editor's read/write scope or access any local source folder.
 
+**Create local from Citadel source** is also a separate, explicitly confirmed
+full-snapshot copy. The server only reads public GitHub data, pins one commit,
+and verifies the complete bounded source; it receives no destination path or
+directory handle. Only the browser writes the named child of the granted empty
+parent, including ordinary licenses, dotfiles and binary assets. Existing
+children are not adopted and detected conflicts are never overwritten.
+File System Access cannot provide OS-level concurrent-write exclusion or an
+atomic no-replace directory operation: keep the destination untouched.
+Partial folders are retained for explicit retry or manual handling, not deleted.
+Preparation and retry ownership are memory-only, unlike migration's durable
+**Prepared sources**. Neither full-copy workflow changes the editor scope.
+
+## Native Terraform workspaces
+
+Native loading and saving are separate from **Export to Terraform**. One named
+GitHub connection can serve both formats and different repositories or branches.
+Local folders are not reusable connections: each attachment has one workspace
+owner, with any selected native units inside that folder.
+
+| Native area | Schema/configuration root | Explicit input selection |
+| --- | --- | --- |
+| Azure Deployment | Repository root | `environments/<name>.tfvars` |
+| LLM Onboarding | `llm-backend-onboarding/` | A named `.tfvars` in that root |
+| Access Contracts | `citadel-access-contracts/` | One or more named `.tfvars` units in that root |
+
+Each chosen root requires `variables.tf` and `main.tf` with the supported
+native signature. LLM and Access may stand alone; no Deployment or Bicep
+prerequisite is imposed. A workspace can bind up to 24 units.
+
+Explicit `.tfvars.json` is also supported. Examples and `.auto.tfvars` are not
+edit targets. **Choose native root and value files** takes an **Area** and an
+**Operator value file (repository-relative)**. Select **Add native unit** for
+each file, then **Validate native inputs**. The nonsecret confirmation is
+required; selecting inventory alone never grants write authority.
+
+Missing or Git-ignored inputs require choosing another file, using Local for a
+file present only on disk, or explicitly checking **Create an empty operator
+file if absent; never copy examples or defaults**. Opening the unit creates
+nothing. The first reviewed save writes your supplied values, not an example
+or every schema default. JSON files still need the appropriate explicit
+`-var-file` selection in your own Terraform workflow.
+
+Profile/unit IDs, format, native root, value alias and syntax are versioned and
+immutable. Select a new workspace for different bindings.
+Legacy records without a descriptor keep their existing Bicep identity.
+
+Only the selected nonsecret operator inputs are writable. Known root schemas,
+bounded module dependencies and the conventional Access policy source are
+read-only; inventory is not permission to read unselected value files.
+State, plan, credential and `.terraform` files are excluded. The azd subscription
+bridge is Bicep-only. Native policy changes use a service's literal `policy_xml`
+in its owning input file; shared XML is inspectable but not edited.
+
+Known-sensitive whole operator and dependency files are blocked before ordinary
+read/review/save, backup and history exposure, including edits to unrelated fields. Empty/null
+slots are preserved. The pinned source's exact public PII placeholder is
+recognized only as a schema default, not as an allowed operator secret value.
+Detection does not prove arbitrary files secret-free and does not encrypt or
+remove source secrets. Hiding a UI value would not make its whole-file backup
+safe. Supply secrets outside this editor.
+
+For a changed existing Local file, Review/Save offers **Cancel** or **Back up and
+overwrite**. Explicit overwrite backs up the current external version and
+replaces it with the reviewed contents; a further change requires fresh consent.
+Cancel retains the draft. Backup failure prevents writing. There is no watcher,
+automatic reload, merge or rebase. GitHub keeps its exact-head, non-forced atomic
+commit rules.
+
+Local creation uses absence/content/mtime/dependency checks and an exclusive
+writable stream where supported, not OS-level exclusion or atomic create-if-absent.
+Keep the folder untouched during creation: simultaneous same-path creation
+cannot always be distinguished. Detected collisions are refused. Unconfirmed
+creations are not adopted or removed merely because their bytes match a plan.
+Receipt uncertainty and foreign changes retain explicit History recovery, not
+permission to adopt matching bytes. Confirmed creation can offer **Undo creation**;
+unconfirmed creation cannot be completed while a file is present. See
+[native creation recovery](BACKUP-RECOVERY.md#native-file-creation).
+
+The [native walkthrough](../guides/using-the-control-plane.md#native-terraform-workspaces)
+describes controls, draft isolation, limitations and the synthetic screenshots.
+Inputs are source configuration, not effective runtime state. No Terraform,
+provider, state, source script, APIM expression or cloud reference is executed.
+Unevaluated validations and declared-but-unconsumed inputs remain advisory after
+editing; actual type/value, secret, scope and staleness errors remain blocking.
+The same Bicepparam controls use native names/types/defaults, not Bicep semantics.
+Missing, explicit null and inherited defaults are distinct.
+
+### Offline native parser
+
+The browser/server use pinned Tree-sitter CST assets: `web-tree-sitter@0.25.10`
+(MIT), `@tree-sitter-grammars/tree-sitter-hcl@1.2.0` (Apache-2.0) and
+`tree-sitter-json@0.24.8` (MIT). Exact package integrity is retained in
+`tools/native-parser/package-lock.json`; asset hashes, provenance and licenses
+are under `shared/terraform/vendor/`. Published prebuilt WASM is copied
+byte-for-byte, not compiled or fetched by the running application.
+The app's `.gitattributes` keeps vendored bytes unchanged across Git checkouts,
+including Windows line-ending settings.
+
+For a development asset rebuild only:
+
+```powershell
+Set-Location .\tools\native-parser
+npm ci --ignore-scripts
+npm run build
+```
+
+Normal parser operation uses local assets, with no npm runtime or CDN.
+Assets come from the existing app origin; WASM is served as `application/wasm`.
+CSP uses `script-src 'self' 'wasm-unsafe-eval'` for these assets, without
+JavaScript `unsafe-eval` or additional script/connect origins. Owner sign-in
+and origin/transport restrictions still apply.
+
+The supported editor grammar is bounded literal HCL/JSON, not Terraform
+evaluation. Duplicate/error/missing nodes and unsupported expressions are
+refused. Exact number lexemes, supported heredocs, Unicode offsets, CRLF/LF and
+untouched source spans are preserved. Valid HCL integer-mantissa exponents
+such as `2e30` are a selected-grammar limitation: the document stays read-only,
+unchanged, without normalization or JavaScript rounding. Decimal-mantissa
+exponents and explicit JSON exponents are supported.
+Leading-zero numeric spellings are also an explicit read-only literal-reader
+limitation, not silently normalized values.
+
+Limits are 512 KiB per parsed source, 64 literal nesting levels, 32 nested schema
+type levels, 100,000 CST nodes, a 300 ms parser cancellation deadline, 1,000
+operations and 1,024 characters per exact number. A native dependency inventory
+is bounded to 150 files / 4 MiB. Literal `contains` validations are interpreted;
+other Terraform validations are marked unevaluated. BOM files, unsupported
+types/default expressions and untyped absent inputs are not silently rewritten.
+
+## Export to Terraform
+
+**Tools > Export Terraform inputs**, under **Experimental**, opens the
+desktop-only, saved-source export workflow in a Bicep workspace. Bicep and policy XML remain its authoring files; normal
+review/save and migration are unchanged. Save or deliberately discard ordinary
+drafts before entering. Across Deployment, LLM Onboarding and Access Contracts,
+the export screen uses the same Bicepparam controls and groups to display the
+proposed Terraform values: switches, selects, number/text fields, Foundry records,
+backend/model cards and service/policy inspection. Target names and mapping
+status sit at the corresponding field; differing saved values are noted locally.
+Mapped controls are read-only, while explicit export-only inputs remain editable.
+
+Choose included areas and exactly one saved parameter configuration per root.
+XML and Bicep templates are not configuration choices. An empty source list is
+distinguished from several available Access contracts; reopen export after
+creating a new saved configuration. Supply explicit export-only values and
+review service-specific defaults. Unresolved inputs,
+unknown fields and active unsupported wiring block the included configuration;
+there is no partial-settings override. **Review ZIP** shows the generated bytes;
+**Approve & export ZIP** rechecks source/template/policy hashes and downloads only:
+
+| Area | Target-relative file |
+| --- | --- |
+| Azure Deployment | `environments/<environmentName>.tfvars` |
+| LLM Onboarding | `llm-backend-onboarding/terraform.tfvars` |
+| Access Contracts | `citadel-access-contracts/terraform.tfvars` |
+
+The mapping contract is `citadel-terraform-export-v1`, targeting
+`Azure/terraform-ai-gateway-landing-zone` at
+`b54f121b7df912da61cb0302a63b9f870841ac2c`. It uses a checked-in property/type
+contract, not repeated upstream downloads. No Terraform executable, provider,
+state, environment-variable lookup, credential recovery or repository write is
+part of export. The ZIP is not a deployment or resource-identity guarantee.
+It has no wrapper directory and only the produced files: no reports, XML extras,
+modules or target repository. Source XML is embedded as `policy_xml`, preserving
+APIM expressions/named-value references with Terraform template markers escaped.
+Separate Access configurations are never merged; choose one configuration per
+Access output file. Multiple services within that configuration remain supported.
+
+The environment identity is 3-24 lowercase letters, numbers or hyphens, excluding
+reserved device names. Invalid names are rejected, not renamed. Limits are three
+files, 8 MiB per file, 24 MiB total and 64 source dependencies. Export choices
+are memory-only and are never written back to Bicep or the workspace registry.
+
+LLM mapping follows the first exact-case model occurrence in Bicep. The pinned
+Terraform root looks only in backend zero, then falls back to
+`apiVersion = "2024-02-15-preview"`, `timeout = 120` and an empty
+`inferenceApiVersion`. A model first present in a later backend blocks export
+when those effective values differ; absent/default-equivalent metadata can
+export. Later duplicate occurrences cannot override the first model's metadata.
+Active session-aware routing and other unsupported target wiring remain blockers,
+not editable runtime features of export.
+
+See the [export walkthrough](../guides/using-the-control-plane.md#export-to-terraform)
+for the review/download procedure.
+
 ## Migrate Citadel Configuration
 
-Open the **current destination workspace** first, then choose **Migrate Citadel Configuration**
-in its command bar. Migration is separate from workspace attachment: an older
+Open the **current Bicep destination workspace** first, then choose
+**Tools > Migrate configuration**, under **Experimental**. Migration is separate from workspace attachment: an older
 donor does not have to pass the current Citadel compatibility signatures and
 never becomes an editable workspace.
 
-The wizard follows **Source**, **Files**, **Mapping**, and **Review**, using the
-same form controls, compact stepper, typography, and summaries as workspace setup.
+**Migration preview (Experimental)** uses the normal workspace shell, area rail, parameter
+sections, typed fields, object tables and backend/model forms. It has its own
+review/apply/export actions, not the editor's save or subscription bridge.
 For a short walkthrough, see the
 [operator guide](../guides/using-the-control-plane.md#migrate-citadel-configuration).
 
@@ -221,47 +481,68 @@ For a short walkthrough, see the
    unchecked-out branches are not supported. No host path is opened by the server
    or mounted into Docker. GitHub donors instead use an explicitly selected branch, tag or full
    commit SHA, as described below.
-2. Explicitly pair donor parameter file(s) with **one current destination
-   `.bicepparam` file**. Same filenames are listed first to help pairing; only
-   checked donor files contribute values. Use the **Migration area** selector
-   for Deployment, APIM Upgrade, Supporting Services Upgrade, LLM Onboarding,
-   or Access Contracts. Each target names its current `using` template.
-   Missing or unsupported templates are unresolved, not guessed.
-3. Review the source value, destination value/default, provenance, current type
-   and decorators for each parameter. Matching uses exact Bicep identifiers
-   (case-insensitive), preserving the destination's identifier casing. There
-   are no fuzzy renames or release-number rules. Individually accept an eligible
-   candidate after reviewing its meaning, or deliberately keep the destination.
-   **Keep all remaining current values** retains everything not already accepted.
-   Duplicate names across selected files or within a donor remain separate
-   candidates; nothing wins by file order.
-4. Inspect the sanitized value diff and the matched/accepted/unchanged counts.
-   Proposed edits are separate from actual destination copies, which remain
-   zero until a local transaction succeeds. Each explicit old/current file pair has a visible name report:
-   old-only names absent from the current target are listed, or **None**.
-   Current fields not supplied by the donor are distinguished from inherited
-   defaults omitted from both parameter files.
-   Download the report and/or sanitized local draft, or explicitly confirm
-   **Review & apply locally** when all blocking conditions have been resolved.
+2. Prepare the old source once into a private, immutable application copy covering
+   **Deployments**, **LLM Onboarding** and **Access Contracts**. A complete copy
+   survives restart and loss of original access. Only explicit **Refresh old source**
+   reacquires it; failed refresh keeps the existing copy and drafts.
+   Navigate freely between areas. Every target, including multiple Access
+   instances, keeps its own source selection, model choices, filters and preview.
+   Select source configuration and explicitly choose **one current
+   destination `.bicepparam` file**. No filename-based pairing or automatic merge
+   occurs. Loose selected files without a recognizable layout/signature require
+   an explicit area choice. **Other old parameter files** allows explicit selection
+   of parsed, unfamiliar old layouts by matching the actual new-file names.
+3. Check only values to import into parameters already assigned in the NEW file.
+   The current schema validates values; it does not add editable targets.
+   Matching uses exact, case-insensitive Bicep identifiers and preserves new spelling.
+   The primary view is the complete projected target form. Only changed selected
+   values are highlighted **Selected import - not saved**, with current/source
+   values, file/backend/model provenance and **Undo import**. Equal and
+   unselected fields have no import highlight. **Match source values** opens
+   secondary matching controls for competing assignments and backend pairing.
+   Matching starts with **Differences and unresolved matches**. Name search
+   filters as you type without losing focus or text selection. Reopening
+   matching, including from Review, preserves the search and chosen worklist;
+   a field-specific action can reveal the relevant row.
+   Expressions are not presented as runtime values. Edited matching rows stay
+   visible until a new search, a worklist change or **Refresh view** reapplies
+   the filter.
+   Unchecking or undoing restores the current value. Discard is scoped to the named
+   target; source replacement and exit protect pending choices in every target.
+4. **Review migration** records the intent to import selected values and keep all
+   others unchanged. The summary distinguishes changes, kept/already-same values,
+   and items not imported. No-op previews say **Nothing will change** without an
+   empty diff. Remote destinations offer **Export migration** only. Local **Apply
+   selected values** requires confirmation and the validation/freshness safeguards.
+   Downloaded sanitized drafts remain manual handoffs, not deployment-ready files.
    **Review another file** starts another explicit pairing without closing the
    wizard. Earlier per-file name reports remain visible and downloadable,
    including after an apply, until the wizard closes. These historical reports
    contain names, provenance, and statuses, not parameter values or reusable
    write plans.
 
+`llmBackendConfig` uses backend/model review instead of whole-array acceptance.
+Explicitly confirm `new backend <- old backend`, then select model fields within
+that pair. Only exact model identities in the paired backend are compared;
+FLUX routing paths, provider/version/format differences and duplicate identities
+remain visible. Backend prefixes, array positions, pools and catalogue names are
+not identity substitutions. New backend identity, endpoint/auth/routing settings,
+new-only models/order and unselected fields are preserved. Unknown old items are
+reported and excluded by the explicit keep-rest intent; no backends/models are
+automatically added or removed. Sensitive or unresolved arrays remain withheld.
+
 | Area | Existing current target |
 | --- | --- |
-| Deployment | `bicep/infra/main.bicepparam` |
-| APIM Upgrade | `bicep/infra/apim-gateway-upgrade/main.bicepparam` |
-| Supporting Services Upgrade | `bicep/infra/apim-gateway-upgrade/supporting-services.bicepparam` |
+| Deployments | `bicep/infra/main.bicepparam` |
 | LLM Onboarding | `bicep/infra/llm-backend-onboarding/main.bicepparam` |
-| Access Contracts | `bicep/infra/citadel-access-contracts/main.bicepparam`, or the explicitly selected existing contract instance underneath the contract root |
+| Access Contracts | An explicitly selected existing contract instance underneath a `citadel-access-contracts` root |
 
-Access `base-contracts`, `modules`, and `policies` subtrees are not migration
+Access root/base templates, upgrade and publish-contract files, validation/sample
+fixtures, and `modules` and `policies` subtrees are not migration
 targets. Similar names never select another contract automatically. Parameter
 migration does not clone contracts, copy policy XML, or evaluate
-`loadTextContent` references. Other safe parameter files remain available under
-their separate area.
+`loadTextContent` references. Other infrastructure parameter files do not appear
+in the migration inventory.
 
 The destination workspace, project, folder/repository, actual GitHub branch
 where supported, selected file and template are shown in the wizard. Browser
@@ -278,10 +559,20 @@ Enter a repository root URL such as `https://github.com/owner/repo`, or
 repositories, GitHub Enterprise, arbitrary hosts, credential-bearing URLs, and
 file/tree URLs are not accepted.
 
-**Find repository** confirms public visibility; the pinned source records the
-immutable repository ID. The default branch is displayed as metadata only and
-does not fill or select a ref. Choose **Branch**, **Tag**, or **Full commit SHA**,
-enter the explicit ref, then choose **Read GitHub source**.
+**Find repository** confirms repository access and loads its actual branches into
+the **Source branch** dropdown. Listing uses at most five pages of 100 branches;
+the UI reports the limit rather than pretending a partial list is complete.
+Choose a branch explicitly, including slash-containing names. **Refresh branches**
+or **Retry branches** reloads the list. The default branch is metadata only and is
+never selected automatically. Changing repository, access mode, or ref type
+clears the old ref selection.
+
+**Tag** and **Full commit SHA** remain manually entered, explicit refs. After
+choosing the ref, use **Prepare source and continue** beside the revision fields.
+Repository lookup loads branches only; this second action captures the offline
+copy and advances to configuration selection without changing the target.
+The pinned source records the
+immutable repository ID.
 Lightweight and annotated tags are supported, with bounded tag
 resolution. Select the donor parameter files from the resulting pinned tree.
 
@@ -297,13 +588,14 @@ or use the full commit above to remain pinned. Invalid input never falls back
 to a different branch.
 
 The wizard and report identify the public repository, ref kind/name, ref-object
-SHA, pinned commit/tree and each selected file/template fingerprint. Ref and
-public-visibility checks run again before preview/export/apply and at local
-transaction boundaries. Branch/tag movement, a changed repository identity,
-private/unavailable resources, expired snapshots and failed reads require
-reconnection and replanning. A full commit selection remains pinned when an
-unselected branch moves. Identical remote source/destination snapshots, even
-selected through different ref names, are refused.
+SHA, pinned commit/tree and each selected file/template fingerprint.
+Acquisition checks repository/ref identity and public visibility. A complete
+prepared source then depends on its stored integrity, not continued public
+access or an unchanged upstream branch. Only explicit refresh reacquires source;
+failed refresh preserves the old copy and drafts. Current destination identity,
+source/template hashes and branch context remain checked before applying.
+Identical remote source/destination snapshots, even selected through different
+ref names, are refused.
 
 The browser uses an owner-gated, same-origin **GET-only** public-donor endpoint.
 It reuses the app's fixed `api.github.com` transport with **no Authorization
@@ -313,10 +605,17 @@ open proxy. CSP remains `connect-src 'self'`; redirects and caller-supplied API
 paths/hosts are refused. GitHub setup, editable provider scope and authentication
 for already-selected destinations are unchanged.
 
-Public donors support `.bicepparam`, their relative `.bicep` templates, and strict
-ARM deployment-parameters JSON. JSON files are listed by extension, but a
-selected file must pass the standard envelope adapter; arbitrary JSON is not
-imported. The normal hidden/generated exclusions apply. Symlinks, submodules,
+Public and authenticated donors support `.bicepparam`, their relative `.bicep`
+templates, and strict ARM deployment-parameters JSON. Automatic repository
+discovery inspects JSON through a metadata-only classification route: ordinary
+repository JSON does not become a parameter candidate or abort the scan.
+Known module/policy/sample and usage-processing/reporting trees are excluded
+before blob reads to preserve the anonymous request budget; other relocated
+parameter JSON can still be recognized from its parameter signature.
+Malformed parameter candidates are reported, and read/access failures still
+stop discovery. Explicit JSON reads retain the strict envelope adapter;
+arbitrary JSON is never returned as parameter values or imported.
+The normal hidden/generated exclusions apply. Symlinks, submodules,
 Git LFS pointers and oversized sources cannot supply values.
 
 Additional public-read limits:
@@ -325,13 +624,13 @@ Additional public-read limits:
   missing fields/templates, and no quota-heavy recursive fallback is attempted.
 - At most 100,000 raw tree entries, a 24 MiB tree response, and 2,000 scoped
   file/exclusion entries. The ordinary per-file/plan limits below still apply.
-- Up to eight metadata-only snapshots are retained in server memory, expiring
-  after 30 minutes or earlier eviction. Reconnect after expiration.
-- Public source blobs are not persisted by the server. Verified immutable
-  selected blobs are cached only in the short-lived browser donor, bounded to
-  16 MiB of source bytes and 64 blobs even across repeated pairings.
-- GitHub's anonymous quota applies to the server's outgoing IP. Repeated
-  freshness checks consume quota. Rate-limit, not-found, redirect and read errors
+- Acquisition readers keep up to eight temporary metadata selections for 30
+  minutes. These are distinct from completed, durable prepared sources.
+- Prepared sources use owner-only application storage: up to 8 copies, 256 MiB
+  total, and 64 MiB / 256 files per copy. A staged or corrupt copy is never used
+  as a complete source. Retention/deletion is explicit; active copies are not evicted.
+- GitHub's anonymous quota applies during acquisition and explicit refresh,
+  not subsequent mapping, navigation, preview or export. Rate-limit and read errors
   stop the operation explicitly; they never produce an empty successful mapping
   or prompt for a PAT solely to read a public donor.
 
@@ -350,7 +649,7 @@ The existing classic-token policy is unchanged.
 Under **GitHub access**, choose **Personal access token** and **Connect source**,
 or select **Saved GitHub connection**, choose the profile, and use **Use source
 connection**. Once connected, select the repository and an explicit ref, then
-choose **Read GitHub source**. **Token help** explains the read-only permissions
+choose **Prepare source and continue**. **Token help** explains the read-only permissions
 and links to GitHub's fine-grained token creation page.
 
 Source credential sessions are separate from editable-workspace sessions.
@@ -375,18 +674,17 @@ destination's GitHub session manager. Missing, expired, wrong-account,
 insufficient-access, rate-limited, and changed source contexts stop the operation
 explicitly; none silently falls back to anonymous access or another credential.
 
-Authenticated sessions inherit the existing 30-minute idle and 8-hour absolute
-bounds. Private cached reads recheck their source session, and preview/export/
-apply also revalidate repository access, source identity, ref, and fingerprints.
-Changing the selected PAT or saved profile invalidates old donors. Credentials
-and pinned metadata stay in bounded process/browser memory; donor blobs are not
-persisted on the server. Destination apply remains the same local-only reviewed
-backup transaction.
+Authenticated acquisition sessions inherit the existing 30-minute idle and
+8-hour absolute bounds. A COMPLETE private source copy no longer depends on that
+session or upstream authorization. Owner sign-in is required after app restart;
+reconnecting the source PAT is not. Changing acquisition credentials does not
+erase prepared copies or target drafts. Revoking upstream access cannot revoke
+already-downloaded data: the owner must explicitly delete a retained copy.
 
 ### Supported inputs and conservative validation
 
-- **Donor folders:** bounded `.bicepparam` inputs and their local `.bicep`
-  templates only. Normal hidden/generated directory exclusions remain in force,
+- **Donor folders:** bounded `.bicepparam` or strict ARM parameter JSON inputs and
+  referenced `.bicep` templates. Normal hidden/generated exclusions remain in force,
   including `.git`, `.azure`, `.env`, and `CitadelUI`. There is no subscription
   environment bridge for donors.
 - **Explicit files:** `.bicepparam`, optionally selected sibling `.bicep`
@@ -432,24 +730,32 @@ mismatches**, **ambiguous candidates**, **dynamic expressions/references**,
 **feature/semantic review**, **unknown schema**, and **sensitive values**.
 Even a same-name, same-type value requires semantic review. Unsafe replacements
 cannot be accepted. Unreviewed candidate decisions, duplicate destination
-declarations, known invalid final values and required fields without verifiably
-valid supplied/current/default values block local apply. Required unresolved
-expressions must be configured/reviewed outside migration; no fallback is
-silently evaluated. Removed donor fields do not block safe unrelated changes.
+declarations, invalid selected values and unavailable dependencies needed for
+the selected change block local apply. Unrelated retained expressions/findings
+are reported as unverified deployment readiness, not mistaken for missing data
+or used to block an independent safe patch. No fallback is silently evaluated.
+Removed donor fields do not block safe unrelated changes.
 An explicitly allowed empty string remains valid when the current schema permits
 it; that does not disable other constraints or the checks for unresolved required
-values. Names in the current schema but omitted from the parameter file can be
-populated only through explicit acceptance. Defaults omitted in both files are
-not labelled newly introduced version fields.
+values. Names in the current schema but omitted from the new parameter file are
+not import targets and are never added. Missing required current-template
+assignments remain a separate retained-destination check to address outside import.
 
 ### Privacy, freshness, and local apply
 
-Migration decisions and local donor handles stay in this short-lived browser
-session, not in the registry, editor drafts, activity, server logs, or URLs.
-Selected GitHub repository/ref identifiers and relative file aliases go to the same-origin
-read endpoint; its bounded snapshot metadata is held temporarily in server
-memory. Parameter values and GitHub credential headers are never put in those
-request URLs. Sensitive
+Migration decisions remain in the browser session, separate from editor drafts.
+Supported configuration and referenced templates are copied through bounded,
+owner-authenticated binary APIs into private `CITADEL_DATA_ROOT/migration-sources`
+storage (0700 directories, 0600 files on supporting filesystems). A hashed
+manifest records provenance and completeness; reads verify stored bytes without
+original-source fallback. Raw configuration/comments are sensitive application
+data, not guaranteed credential-free or encrypted by this feature. Connection
+PATs, capability/session tokens, headers, `.env`, unrelated files and internal
+candidate objects are never deliberately persisted in these copies or logs.
+Local separation is proven before capture; the browser retains only the checked
+target handle as an identity proof, not original-source handles. A different
+target folder or lost browser proof requires explicit reacquisition.
+Sensitive
 names, `@secure` fields, nested credential material, credential-shaped strings
 and credential-bearing URLs are withheld and cannot be copied. This conservative
 screen can flag nonsecret values; it is not a guarantee of discovering secrets
@@ -469,18 +775,24 @@ heuristic.
 
 Local apply uses the existing `LocalTransactionCoordinator` and verified
 prepare/backup/authorize/hash-check/write/receipt protocol, with normal
-rollback and **Settings > History** undo/recovery. Only accepted AST value
-edits (or explicit additions for missing current-schema parameters) are written.
+rollback and **Settings > History** undo/recovery. Only selected AST value edits
+to existing parameters are written. Structured model choices use nested set or
+explicit optional-property edits, never a replacement old backend array.
 Original `using`, comments, unrelated structure, retained expressions and
 unaccepted new defaults are preserved. As with a normal editor save, authorized
-destination backup bytes go to transaction storage; donor bytes do not.
+destination backup bytes go to transaction storage. Prepared source bytes live
+in the separate immutable source store, never as destination transaction data.
 
 Source/destination/provider/workspace/project identities, all selected parameter
 and template fingerprints, and remote branch/head context bind every preview.
 GitHub source identity also includes the immutable repository ID, selected
 ref/ref-object SHA, pinned commit, tree and Git blob identities.
-They are re-read before export/apply and again at local transaction boundaries.
-A change invalidates the decisions and requires replanning. Workspace changes
+Original sources are read only during capture/explicit refresh. Thereafter,
+source checks concern the stored copy's integrity. Current targets and templates
+are still re-read before export/apply and at transaction boundaries. Target
+failures revoke that preview's write authority while preserving its choices,
+the old source and other target drafts. A changed target must be replanned.
+Workspace changes
 during asynchronous work cannot retarget a write. Repeated apply clicks share
 one transaction. Existing pending editor work and a saved draft for the target
 block migration rather than being overwritten.
@@ -509,13 +821,15 @@ saved-profile isolation, expiry, interrupted login cleanup, and local apply.
 Desktop and mobile browser exercises use the original app styles and synthetic
 files. They do not claim access to a user's private repository or token.
 
-The supplied public upstream `main` sample is pinned to
+Historical parser-only evidence for the public upstream `main` sample is pinned to
 `9ef37ad75a47ca89c179a0db5a4123e60c4c720e`. The five same-path file pairs contain
 97 Deployment, 39 APIM Upgrade, 44 Supporting Services Upgrade, 8 LLM Onboarding,
 and 17 Access root-template name matches: 205 per-file occurrences, not a merged
 global name set. All five actual old-only lists are empty. The current-only
 Deployment assignment `logicAppsSkuName` keeps its default; the current
 `logicAppsSkuCapacityUnits` constraints must still be enforced.
+The upgrade and root-template pairs remain parser fixtures, not selectable
+configuration in the three-area migration workflow.
 
 That sample has no standalone Access Contract instances. Its Deployment file
 has 93 expression-containing assignments out of 97; these are not resolved
@@ -570,24 +884,33 @@ capabilities, status and when it was last opened, and each row opens in one
 click. The list is searchable and filterable by source and status; only the
 search text, filters and sort order are remembered, never the list itself.
 
-A row's status is one word:
+The status and primary action describe the current opening or recovery need:
 
 | Status | Meaning |
 | --- | --- |
 | Ready | Openable now. |
-| Reconnect | Needs a credential or folder permission first. |
+| Reconnect | Restore the named connection or retained folder permission first; the row names the required action. |
 | Missing | Its folder handle, or the connection it was attached through, is gone. |
 | Incompatible | The last validation found it is not a Citadel workspace. |
 | Stale | Attached but never validated or scanned. |
+| Unavailable | Source validation or access could not be completed; use the reported retry/recovery action. |
+| Confirmation pending | Reattachment still needs confirmation or revalidation. Staged metadata is not permission to open. |
+
+More specific labels, such as **Folder permission needed** or **Missing
+connection**, explain the same recovery state. **Actions** holds secondary
+workspace operations. Keep the original record when recovering; a native lost
+handle cannot be repaired by transferring its identity to a different folder.
 
 **Detach** removes Citadel's record of a workspace from this device. It never
 deletes a branch, a commit or a file.
 
 ### GitHub connections
 
-A connection is one GitHub account, under a name you choose. Workspaces reference
-the connection they were attached through, so a repository reached with two
-different credentials is two workspaces rather than one ambiguous row.
+A connection is one GitHub account, under a name you choose. It can serve both
+Bicep and Terraform workspaces and multiple repositories/branches. Each workspace
+records its connection, repository and actual write branch independently.
+A second credential does not bypass native file ownership on the same
+repository/working branch.
 
 Connections are managed in their own section, which shows the account, status,
 when it was last connected, and the repository-and-branch workspaces it reaches.
@@ -609,22 +932,31 @@ Reconnecting a connection requires a token for the **same GitHub account**. A
 token for a different account is refused and you are offered a separate
 connection instead — rebinding would silently point every workspace under that
 connection at repositories you did not choose. Removing a connection deletes its
-saved credential on this device; it revokes no token and deletes no branch, and
+saved credential on the Citadel server; it revokes no token and deletes no branch, and
 the workspaces that used it stay listed as **Reconnect**.
 
-### Saving a connection on this device (optional)
+In **Settings > GitHub repository**, **How to create this token** opens stacked
+help. **Close** and **Escape** return to the same unfinished form and help opener,
+preserving the source choice, environment label and connection name. Help does
+not submit the form or change credential persistence.
 
-One checkbox: **Persist this connection on this device (encrypted)**, unticked by
-default. There is no passphrase, no unlock screen and no key-rotation ceremony.
+### Saving a connection on the server (optional)
 
-- **Unticked** — exactly the previous behaviour. The credential lives in server
-  memory and a container restart requires reconnecting.
-- **Ticked** — the credential is sealed at rest, and the server restores it by
-  itself on the next start. The browser never sees the token, before or after.
+One checkbox: **Save this connection on the Citadel server (encrypted)**,
+unticked for a new connection. There is no passphrase, no unlock screen and no
+key-rotation ceremony.
 
-It is available only when a key file is mounted (see **Encrypted credential
-persistence** in `SECURITY.md`). Without one the checkbox is disabled and says
-so, and session-only connections keep working normally.
+- **Unticked** - the credential lives only in server memory and is cleared on
+  restart or disconnect. A restart requires reconnecting.
+- **Ticked** - the credential is saved encrypted on this server and can be
+  restored after restart. The token is never returned to the browser.
+
+Saving requires a usable credential key: a mounted key file locally or the
+configured Key Vault key on Azure. Without one, the checkbox explains why it is
+disabled; session-only connections still work. While availability is unknown it
+stays disabled, and lookup failures are visible. The storage description reflects
+the selected connection's actual mode, not merely a previously requested option.
+See **Encrypted credential persistence** in `SECURITY.md`.
 
 ### Attaching a repository
 
@@ -636,19 +968,19 @@ review.
    type an owner/repository path.
 2. Pick a branch. **No branch is chosen for you**: the branch decides which tree
    Citadel edits, so it has to be selected.
-3. Citadel UI checks that the selected repository and branch really are a Citadel
-   workspace, using the same discovery the local folder editor is judged by, and
-   names the capabilities it found. **Attach stays disabled until that check
-   passes**, and the server repeats it against the exact branch head immediately
-   before it creates anything — so a repository that is not a Citadel repository
-   never gets a working branch or a registry record.
+3. Citadel checks the selected format: Bicep uses the required Citadel
+   capabilities; Terraform validates explicitly selected native roots/value
+   files. **Attach stays disabled until that check passes**. The server repeats
+   the format-specific check against the exact branch head before attachment
+   can create its working branch or registry record.
 4. Citadel UI creates or reuses the working branch `citadel-ui/<environment-id>`
    from the branch you chose, and every save commits there. Direct writes to the
    selected branch are an explicit opt-in.
 
-The same repository and branch, through the same connection, cannot be attached
-to one project twice; the existing workspace is offered instead. Workspace names
-are unique inside their project.
+Bicep attachment offers an existing workspace for the same repository/source
+branch/connection in one project. Native units also enforce exclusive ownership
+of writable files on the actual working branch across connections and projects.
+Workspace names are unique inside their project.
 
 ### Workspace activity
 
@@ -682,10 +1014,15 @@ oversized blobs, and unsupported file modes are refused rather than edited. The
 container talks only to `https://api.github.com`, accepts no API base URL from
 the user, and never follows a redirect.
 
-GitHub credentials that were not saved on this device are cleared when the
+GitHub credentials not saved with server-side encryption are cleared when the
 container restarts, so those workspaces stay listed and show **Reconnect** until
 a new session is established. A connection saved with the encrypted option is
 restored by the server on the next start, with no user step.
+
+**Create PR** opens GitHub's comparison page; it does not itself create a pull
+request. **View PR** is used when an existing pull-request URL is known.
+Always distinguish the original source branch from the actual working branch
+shown as the write destination.
 
 ### When an attach loses its answer
 
@@ -718,9 +1055,18 @@ duplicate a commit that had already landed.
 
 ### 1. Main deployment
 
-`bicep/main.bicepparam` — the core gateway infrastructure. Around 97 parameters
-covering naming, networking, API Management, observability, and the optional
-capabilities you can switch on.
+These three area sections describe Bicep/Citadel. For native inputs, use
+[Native Terraform workspaces](#native-terraform-workspaces).
+
+The workspace chooser, **Diagnostics** and **Settings** are in the global
+header. The contextual command bar keeps the owning document, source and write
+destination alongside **History**, **Tools**, **Discard** and a stable
+**Review & save** action. The explorer selects an area/file; the document strip
+shows its full source path, **Parameters** / **Raw file** modes and category
+tabs. Draft prompts name the document whose work needs attention.
+
+`bicep/infra/main.bicepparam` configures the core gateway infrastructure:
+naming, networking, API Management, observability and optional capabilities.
 
 Sections come from the file itself. The authors already separate the file with
 `====` banner comments and mark each block `REQUIRED:` or `OPTIONAL:`; the UI
@@ -748,6 +1094,39 @@ injection is enabled. These checks follow Azure's
 [Functions/App Service](https://learn.microsoft.com/azure/azure-functions/functions-networking-options),
 and [Microsoft.App](https://learn.microsoft.com/azure/container-apps/custom-virtual-networks)
 guidance.
+
+### Literal Bicep resource tags
+
+The top-level Bicep `tags` parameter has a key/value editor when its value is a
+literal object, including `{}`. Existing keys and values come from the source.
+There are no required/default `Owner` or `Purpose` entries; those remain valid
+arbitrary names if explicitly chosen by the user.
+
+Edit a value in its row. To add an entry, enter **Tag name** and **Tag value**,
+then choose **Add tag** or press Enter in either new-entry field. Typing alone
+retains an unfinished input, not a property addition; review cannot save it
+until it is staged or both new-entry inputs are cleared. **Remove** stages
+removal of that key. Rename by removing the old key and adding the new one.
+Removing the last entry leaves an empty object rather than deleting `tags`.
+
+Blank/whitespace-only names and exact duplicate names produce visible errors
+without an addition. Valid spelling and case are preserved; empty string values
+are allowed. The editor reserves `__proto__`, `__expr`, `__args` and `__tfNumber`
+for its value/path representation. These are editor constraints, not Azure
+tagging policy. Provider-specific tag rules are not validated or deployed here.
+
+Use ordinary **Review & save**, inspect the exact file/diff, then **Save
+changes**. Reload reads the saved entries. To undo a completed modification,
+use **History > Restore prior**, then confirm **Back up and restore**; current
+source and ownership must still permit the restore. Local restore is a new
+verified transaction; GitHub restore appends an inverse commit.
+
+This is not a whole-object expression evaluator, a generic object-key editor,
+or the native Terraform map workflow. Existing expression-valued entries keep
+their supported syntax controls; adding a neighboring key does not normalize
+untouched expressions, comments or number spellings. Whole-object expressions
+do not gain literal tag add/remove controls. Export's mapped source controls
+remain read-only. See the [tag walkthrough](../guides/using-the-control-plane.md#resource-tags).
 
 ### 2. LLM onboarding
 
@@ -782,9 +1161,9 @@ editor instead:
 
 `bicep/infra/citadel-access-contracts/` — one folder per contract.
 
-Each contract has two editable files: its `.bicepparam` and its APIM policy XML.
-Both are shown, both can be changed. New contracts are created from the fixed
-template pair at the module root:
+Each contract has a `.bicepparam` and may own APIM policy XML. A contract using
+the shared default reports that status, not an independently owned policy file.
+New contracts are created from the fixed template pair at the module root:
 
 - `citadel-access-contracts/main.bicepparam`
 - `citadel-access-contracts/policies/default-ai-product-policy.xml`
@@ -793,19 +1172,22 @@ template pair at the module root:
 
 ## Verified saves, backup, and recovery
 
-Every parameter edit, policy edit, contract creation, environment copy, and
-restore uses one transaction protocol:
+Local parameter/policy edits, creation, copies and restores use the journaled
+backup-before-write protocol. GitHub instead uses its atomic commit protocol;
+it does not copy source backups into `/data`.
 
 1. The browser reads and hashes every current target.
 2. The container creates a journal under `/data`.
-3. Original bytes are stored and hash-verified under `/data` before any source
-   write is authorized.
+3. Existing-file bytes are stored and hash-verified under `/data` before writing.
+   If the operator confirmed **Back up and overwrite**, these are the current
+   external bytes, not the stale version originally loaded.
 4. The browser re-reads each target to detect external edits, writes through its
    retained directory handle, and verifies final SHA-256 hashes.
 5. The container accepts a final receipt and appends a redacted hash-chained
    audit event.
-6. A failed multi-file write restores completed targets from verified backup
-   bytes and removes newly created targets.
+6. A recoverable failure attempts rollback of attributable writes. Unknown
+   ownership, foreign changes or uncertain receipts retain explicit recovery
+   instead of overwriting or deleting an unrecognized file.
 
 The subscription-only azd environment bridge is intentionally outside this
 backup protocol: `.env` may contain unrelated sensitive values, so its bytes
@@ -815,39 +1197,43 @@ writable, rejects stale whole-file hashes, replaces only
 If the exact `.azure/<environmentName>/.env` does not exist yet, entering a
 valid subscription ID creates it with only that one key.
 
-The UI always previews the exact text first. **History** shows transaction state
+Local writes reach the original selected folder on the browser's machine.
+The display-only Local path and `/data` are not substitutes for that handle.
+Review/Save checks external changes; there is no filesystem watcher or automatic
+merge/reload. Cancel retains the draft, backup failure prevents writing and a
+further change requires renewed confirmation.
+
+The UI previews proposed text before the write. **History** shows transaction state
 without values or source content. Backups may contain sensitive configuration;
 protect the host directory mounted at `/data` and exclude it from support
-bundles.
+bundles. Native whole-file secret screening is an additional block, not
+encryption for backups. See [Backup and recovery](BACKUP-RECOVERY.md) for
+creation, interrupted receipts, dependency changes and lost-handle limits.
 
 ---
 
 ## The comment guarantee
 
-This is the constraint the whole design is built around.
+Supported parameter edits use source spans rather than whole-file formatting.
+Text outside the changed spans remains unchanged: comments, ordering, alignment
+and line endings. An explicit whole-value replacement owns that value's span;
+raw XML replacement owns the policy text. These guarantees do not mean comments
+inside a replaced or removed span survive.
 
-The obvious way to edit a parameter file is to parse it, change the model, and
-print it back out. That cannot be done here: `az bicep build-params` — and any
-equivalent round-trip — **discards every comment**. These files carry over 1,300
-comment lines, and that prose is the only documentation the parameters have.
-Reformatting them would destroy more value than the editor adds.
+Native exact numbers avoid JavaScript rounding, and supported source splices
+preserve CRLF/LF. Valid-but-unsupported syntax remains read-only instead of being
+normalized into a different spelling. See [Offline native parser](#offline-native-parser).
+Bicep literals and expressions have their own bounded parser/serializer rules.
+Migration and generated ZIP files have separate output contracts.
 
-So Citadel UI never reprints a file. It parses to a concrete syntax tree that
-records the exact byte span of every value, and applies each change as a
-surgical splice into the original text. Everything outside the spans you edited —
-comments, blank lines, alignment, ordering, line endings — is byte-identical
-afterwards.
+Existing Bicep round-trip and focus tests can be selected from `CitadelUI/`:
 
-This is enforced, not assumed:
-
-```bash
-cd CitadelUI
-node test/roundtrip.test.mjs   # every .bicepparam in the repo, parsed and re-emitted byte-for-byte
-node test/focus.test.mjs       # the three focus areas and their documentation outlines
+```powershell
+node --test "test/{roundtrip,focus}.test.mjs"
 ```
 
-The round-trip gate covers all 17 parameter files, 402 parameters and 1,320
-comments.
+Use the test runner with a glob, not direct `node test/file.test.mjs` execution.
+Historical file/parameter counts are not current release evidence.
 
 ---
 
@@ -876,25 +1262,64 @@ CitadelUI/
     credentials.mjs    optional envelope-encrypted credential store
     activity.mjs       bounded, redacted governance activity log
     transactions.mjs   backup, journal, audit, retention, recovery
+    transaction-manifest.mjs
+                       pure validation, manifest projection and hash serialization
+    diagnostics.mjs    fixed-window, bounded memory-only instance capture
+    diagnostics-routes.mjs
+                       owner-protected capture/report APIs
     github/
-      api.mjs          fixed-host api.github.com client, the only egress
+      api.mjs          fixed-host api.github.com client
       sessions.mjs     in-memory credential sessions, never persisted
       repositories.mjs repository/ref validation and source-tree filtering
-      workspace.mjs    tree, blob, atomic commit, history, inverse commit
-      routes.mjs       same-origin GitHub routes
+      git-reader.mjs   read-only branch, tree, blob, path and reachability access
+      scan-provider.mjs
+                       pinned read-only discovery provider
+      compatibility.mjs
+                       structural compatibility and scan facade
+      workspace.mjs    atomic commit, reconciliation and read/History facades
+      history.mjs      audited History and inverse plans using the existing writer
+      connection-lifecycle.mjs
+                       connection lifecycle through live owner-store ports
+      workspace-routes.mjs
+                       workspace adapters receiving already-resolved authority
+      routes.mjs       same-origin dispatch, source authority and cache ownership
   shared/
     citadel-core.mjs   provider-neutral discovery and document behavior
     source-scope.mjs   one definition of the editable source boundary
+    label-key.mjs      shared label projection; validation stays with callers
     subscription-env.mjs
                        byte-preserving AZURE_SUBSCRIPTION_ID patcher
     policy.mjs         pure APIM policy parser/editor
     bicepparam/        lexer, parser, serializer, span editor
+    workspace-configuration.mjs
+                       format/unit identity and native source scope
+    terraform/         native literal parser, schema, source review and drafts
+    terraform-export.mjs
+                       pinned Bicep-to-Terraform mapping and ZIP inputs
+    diagnostics.mjs    finite diagnostic catalogs and exact report schema
   web/
     index.html
     css/               design tokens and component styles
     js/
       app.mjs          shell, projects/environments, routing, review and save
+      api.mjs          explicit service context, registry and provider composition
+      document-action.mjs
+                       existing view ownership and per-document notice helpers
+      editor-document-session.mjs
+                       staged document loading through the shell's load gate
+      workspace-service.mjs
+                       source workflows, validation, byte assembly and budgets
+      parameter-copy-plan.mjs
+                       pure ordered selection and copy operations
       registry.mjs     IndexedDB labels, metadata, drafts, retained handles
+      registry-sync.mjs
+                       one registry bootstrap, authority and metadata mirror
+      workspace-activation.mjs
+                       retained/open/reconnect and the single active generation
+      workspace-attachment.mjs
+                       distinct Local and Git attachment/recovery protocols
+      workspace-context.mjs
+                       UI composition and existing workspace facades
       directory-provider.mjs
                        selected-folder I/O and exclusion boundary
       github-provider.mjs
@@ -912,13 +1337,22 @@ CitadelUI/
       github-setup.mjs repository and branch selection panel
       workspace-catalog.mjs
                        saved-workspace catalogue and guided attach flow
+      workspace-catalog-list.mjs
+                       supplied-row catalogue rendering, without state ownership
       activity.mjs     browser half of the redacted activity log
       transaction-client.mjs
                        browser half of verified backup-before-write
-      paramview.mjs    sections and parameter rows
+      paramview.mjs    sections, parameter rows and presentation facade
+      deployment-presentation.mjs
+                       pure deployment grouping, visibility and section titles
       llmview.mjs      guided LLM backend editor
       llmschema.mjs    provider, model and validation knowledge
       policyview.mjs   APIM policy editor
+      native-controls.mjs
+                       shared fields bound to native names/types/defaults
+      diagnostics-client.mjs
+                       bounded signed-in browser capture and instance polling
+      debug-page.mjs   header-linked /debug control/report surface
       fields.mjs       generic value controls
   test/
   scripts/             start, stop, status, and local logs
@@ -926,5 +1360,9 @@ CitadelUI/
 
 The production image has no package install or build step. It contains only the
 application runtime and serves ES modules directly. It has no Azure CLI, Bicep
-CLI, `azd`, Git, deployment tooling, or telemetry. Its only outbound network
-dependency is `https://api.github.com`, used exclusively by GitHub environments.
+CLI, `azd`, Git, deployment tooling, or external telemetry exporters.
+GitHub editing, repository initialization and migration acquisition use the
+fixed GitHub API transport. Public local-source creation also reads verified
+files from `raw.githubusercontent.com`. A configured hosted instance can read its
+credential key from Key Vault through managed identity. Local source editing and
+the vendored native parser need none of those outbound services.

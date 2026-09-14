@@ -1,3 +1,7 @@
+import { assertNoWritableOverlap, assertUnchangedConfiguration, assertUnchangedNativeSource, bindingKey, configurationOf, validateConfiguration } from '../../shared/workspace-configuration.mjs';
+import { assertNativeDraft } from '../../shared/terraform/drafts.mjs';
+import { labelKey as stringLabelKey } from '../../shared/label-key.mjs';
+
 const DB_NAME = 'citadel-ui';
 const DB_VERSION = 4;
 const PROJECTS = 'projects';
@@ -18,6 +22,7 @@ const PROFILE_DRAFT_FIELDS = Object.freeze({
   projectLabel: 160,
   environmentLabel: 160,
   localPath: 1024,
+  folderName: 1024,
 });
 
 function profileDraftScope(value) {
@@ -47,6 +52,12 @@ function normalizeProfileDraft(value = {}) {
 
 function uuid() {
   return globalThis.crypto.randomUUID();
+}
+
+async function handlesOverlap(left, right) {
+  return typeof left.isSameEntry === 'function' && await left.isSameEntry(right) ||
+    typeof left.resolve === 'function' && await left.resolve(right) !== null ||
+    typeof right.resolve === 'function' && await right.resolve(left) !== null;
 }
 
 /**
@@ -101,11 +112,7 @@ export function environmentSourceOf(environment) {
 
 /** Labels are compared case- and accent-insensitively, as the server does. */
 export function labelKey(value) {
-  return String(value ?? '')
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .trim()
-    .toLowerCase();
+  return stringLabelKey(String(value ?? ''));
 }
 
 export function isGitHubEnvironment(environment) {
@@ -128,6 +135,7 @@ export function environmentLocation(environment) {
 }
 
 function withSourceProjection(environment) {
+  configurationOf(environment);
   const source = environmentSourceOf(environment);
   return {
     ...environment,
@@ -248,8 +256,16 @@ export class WorkspaceRegistry {
       const rows = projectId
         ? await requestResult(store.index('projectId').getAll(projectId))
         : await requestResult(store.getAll());
+      rows.forEach(configurationOf);
       return rows.sort((a, b) => a.label.localeCompare(b.label));
     });
+  }
+
+  async getEnvironment(id) {
+    const environment = await this.run([ENVIRONMENTS], 'readonly', (tx) =>
+      requestResult(tx.objectStore(ENVIRONMENTS).get(id)));
+    if (environment) configurationOf(environment);
+    return environment || null;
   }
 
   async addEnvironment(projectId, label, handle, fingerprint = null, options = {}) {
@@ -260,13 +276,14 @@ export class WorkspaceRegistry {
     if (!localPath) throw new Error('Local path is required.');
     await this.assertLabelAvailable(projectId, value);
     const duplicate = await this.findSameHandle(handle);
-    if (duplicate && !options.allowDuplicate) {
-      throw new Error(`This folder is already attached as "${duplicate.label}". Reconnect that profile instead.`);
+    if (duplicate) {
+      throw new Error(`This folder is identical to, or overlaps, "${duplicate.label}". Open that workspace or select a separate repository folder.`);
     }
     const environment = {
       id: uuid(),
       projectId,
       label: value,
+      ...(options.configuration ? { configuration: validateConfiguration(options.configuration) } : {}),
       source: localSource(handle.name, localPath),
       folderName: handle.name || 'Selected folder',
       localPath,
@@ -281,6 +298,7 @@ export class WorkspaceRegistry {
       lastOpenedAt: null,
       lastScannedAt: null,
     };
+    assertNoWritableOverlap([...(await this.listEnvironments()), environment]);
     await this.run([ENVIRONMENTS, HANDLES], 'readwrite', (tx) => {
       tx.objectStore(ENVIRONMENTS).add(environment);
       tx.objectStore(HANDLES).add(handle, environment.id);
@@ -314,7 +332,7 @@ export class WorkspaceRegistry {
    * existing" instead of an error: the user asked for that branch, and they
    * already have it.
    */
-  async findAttachedGitHubEnvironment(projectId, source) {
+  async findAttachedGitHubEnvironment(projectId, source, configuration) {
     return (
       (await this.listEnvironments()).find(
         (item) =>
@@ -322,7 +340,9 @@ export class WorkspaceRegistry {
           item.projectId === projectId &&
           (item.source.connectionProfileId ?? null) === (source.connectionProfileId ?? null) &&
           item.source.repositoryId === source.repositoryId &&
-          item.source.sourceBranch === source.sourceBranch
+          item.source.sourceBranch === source.sourceBranch &&
+          (!source.workingBranch || item.source.workingBranch === source.workingBranch) &&
+          bindingKey(item.configuration) === bindingKey(configuration)
       ) || null
     );
   }
@@ -341,7 +361,7 @@ export class WorkspaceRegistry {
     if (source?.kind !== 'github') throw new Error('A GitHub source is required.');
     const normalized = githubSource(source);
     await this.assertLabelAvailable(projectId, value);
-    const duplicate = await this.findAttachedGitHubEnvironment(projectId, normalized);
+    const duplicate = await this.findAttachedGitHubEnvironment(projectId, normalized, options.configuration);
     if (duplicate) {
       throw Object.assign(
         new Error(
@@ -355,6 +375,7 @@ export class WorkspaceRegistry {
       projectId,
       label: value,
       source: normalized,
+      ...(options.configuration ? { configuration: validateConfiguration(options.configuration) } : {}),
       permission: 'granted',
       compatibility: 'unscanned',
       fingerprint: null,
@@ -366,6 +387,7 @@ export class WorkspaceRegistry {
       lastOpenedAt: null,
       lastScannedAt: null,
     });
+    assertNoWritableOverlap([...(await this.listEnvironments()), environment]);
     await this.run([ENVIRONMENTS], 'readwrite', (tx) => {
       tx.objectStore(ENVIRONMENTS).add(environment);
     });
@@ -377,6 +399,7 @@ export class WorkspaceRegistry {
       const store = tx.objectStore(ENVIRONMENTS);
       const prior = await requestResult(store.get(id));
       if (!prior) throw new Error('Unknown environment.');
+      if (Object.hasOwn(updates, 'configuration')) assertUnchangedConfiguration(prior.configuration, updates.configuration);
       const priorSource = environmentSourceOf(prior);
       const nextSource =
         updates.source ||
@@ -394,6 +417,7 @@ export class WorkspaceRegistry {
         projectId: prior.projectId,
         updatedAt: new Date().toISOString(),
       });
+      assertUnchangedNativeSource(prior, next);
       store.put(next);
       return next;
     });
@@ -409,7 +433,16 @@ export class WorkspaceRegistry {
   async restoreEnvironmentSnapshot(snapshot) {
     const { environment, handle } = snapshot || {};
     if (!environment?.id) throw new Error('Invalid environment snapshot.');
-    await this.run([ENVIRONMENTS, HANDLES], 'readwrite', (tx) => {
+    configurationOf(environment);
+    assertNoWritableOverlap([...(await this.listEnvironments()).filter((entry) => entry.id !== environment.id), environment]);
+    await this.assertSnapshotHandle(environment.id, handle);
+    await this.run([ENVIRONMENTS, HANDLES], 'readwrite', async (tx) => {
+      const prior = await requestResult(tx.objectStore(ENVIRONMENTS).get(environment.id));
+      configurationOf(environment);
+      if (prior) {
+        assertUnchangedConfiguration(prior.configuration, environment.configuration);
+        assertUnchangedNativeSource(prior, environment);
+      }
       tx.objectStore(ENVIRONMENTS).put(environment);
       if (handle) tx.objectStore(HANDLES).put(handle, environment.id);
       else tx.objectStore(HANDLES).delete(environment.id);
@@ -419,12 +452,19 @@ export class WorkspaceRegistry {
   async reconnectEnvironment(id, handle, localPath = null) {
     const duplicate = await this.findSameHandle(handle, id);
     if (duplicate) throw new Error(`This folder is already attached as "${duplicate.label}".`);
+    const retained = await this.getHandle(id);
+    if (retained && typeof retained.isSameEntry === 'function' && !(await retained.isSameEntry(handle))) {
+      throw new Error('Reconnect the original owning folder. Attach a new workspace for a different repository.');
+    }
     await this.run([ENVIRONMENTS, HANDLES], 'readwrite', async (tx) => {
       const envStore = tx.objectStore(ENVIRONMENTS);
       const prior = await requestResult(envStore.get(id));
       if (!prior) throw new Error('Unknown environment.');
       if (environmentSourceOf(prior).kind !== 'local') {
         throw new Error('This environment is a GitHub repository. Reconnect GitHub instead.');
+      }
+      if (!retained && configurationOf(prior).format === 'terraform') {
+        throw new Error('The owning native folder handle is unavailable. Attach a new workspace rather than transferring old drafts or history to an unproven folder.');
       }
       tx.objectStore(HANDLES).put(handle, id);
       const priorSource = environmentSourceOf(prior);
@@ -499,10 +539,43 @@ export class WorkspaceRegistry {
 
   async restoreProjectSnapshot(snapshot) {
     if (!snapshot?.project?.id) throw new Error('Invalid project snapshot.');
+    for (const environment of snapshot.environments || []) {
+      if (environment.projectId !== snapshot.project.id) throw new Error('Snapshot workspace belongs to another project.');
+      configurationOf(environment);
+    }
+    const restoredIds = new Set((snapshot.environments || []).map((environment) => environment.id));
+    assertNoWritableOverlap([...(await this.listEnvironments()).filter((environment) => !restoredIds.has(environment.id)), ...(snapshot.environments || [])]);
+    const restored = new Map();
+    for (const entry of snapshot.handles || []) {
+      if (!(snapshot.environments || []).some((environment) => environment.id === entry.environmentId)) {
+        throw new Error('Snapshot handle has no owning workspace.');
+      }
+      await this.assertSnapshotHandle(entry.environmentId, entry.handle);
+      for (const handle of restored.values()) {
+        if (entry.handle && await handlesOverlap(handle, entry.handle)) throw new Error('Snapshot folders have overlapping owners.');
+      }
+      if (entry.handle) restored.set(entry.environmentId, entry.handle);
+    }
     await this.run(
       [PROJECTS, ENVIRONMENTS, HANDLES, DRAFTS],
       'readwrite',
-      (tx) => {
+      async (tx) => {
+        for (const environment of snapshot.environments || []) {
+          const prior = await requestResult(tx.objectStore(ENVIRONMENTS).get(environment.id));
+          configurationOf(environment);
+          if (prior) {
+            assertUnchangedConfiguration(prior.configuration, environment.configuration);
+            assertUnchangedNativeSource(prior, environment);
+          }
+        }
+        for (const draft of snapshot.drafts || []) {
+          const environment = (snapshot.environments || []).find((entry) => entry.id === draft.environmentId);
+          if (!environment) throw new Error('Snapshot draft has no owning workspace.');
+          if (draft.key !== `${draft.environmentId}:${draft.alias}`) throw new Error('Snapshot draft key does not match its owning workspace.');
+          if (configurationOf(environment).format === 'terraform') {
+            assertNativeDraft(configurationOf(environment), draft.alias, draft.operations, draft.nativeIdentity);
+          }
+        }
         tx.objectStore(PROJECTS).put(snapshot.project);
         for (const environment of snapshot.environments || []) {
           tx.objectStore(ENVIRONMENTS).put(environment);
@@ -528,12 +601,25 @@ export class WorkspaceRegistry {
       requestResult(tx.objectStore(HANDLES).get(id)));
   }
 
+  async rememberMigrationSnapshotTarget(id, handle) {
+    if (!/^[a-f0-9-]{36}$/.test(id) || handle?.kind !== 'directory') throw new Error('Invalid migration target identity.');
+    await this.run([HANDLES], 'readwrite', (tx) => tx.objectStore(HANDLES).put(handle, `migration-source:${id}`));
+  }
+
+  async migrationSnapshotTarget(id) {
+    return this.getHandle(`migration-source:${id}`);
+  }
+
+  async forgetMigrationSnapshotTarget(id) {
+    await this.run([HANDLES], 'readwrite', (tx) => tx.objectStore(HANDLES).delete(`migration-source:${id}`));
+  }
+
   async findSameHandle(handle, exceptId = null) {
     const environments = await this.listEnvironments();
     for (const environment of environments) {
       if (environment.id === exceptId) continue;
       const retained = await this.getHandle(environment.id);
-      if (retained && typeof retained.isSameEntry === 'function' && await retained.isSameEntry(handle)) {
+      if (retained && await handlesOverlap(retained, handle)) {
         return environment;
       }
 
@@ -541,7 +627,20 @@ export class WorkspaceRegistry {
     return null;
   }
 
-  async saveDraft(environmentId, alias, sourceHash, operations) {
+  async assertSnapshotHandle(id, handle) {
+    if (!handle) return;
+    const retained = await this.getHandle(id);
+    if (retained?.isSameEntry && !await retained.isSameEntry(handle)) {
+      throw new Error('A snapshot cannot replace the original owning folder.');
+    }
+    if (await this.findSameHandle(handle, id)) throw new Error('The snapshot folder already has another workspace owner.');
+  }
+
+  async saveDraft(environmentId, alias, sourceHash, operations, identity = null) {
+    const environment = await this.getEnvironment(environmentId);
+    if (!environment) throw new Error('The draft workspace no longer exists.');
+    const configuration = configurationOf(environment);
+    if (configuration.format === 'terraform') assertNativeDraft(configuration, alias, operations, identity);
     const key = `${environmentId}:${alias}`;
     const draft = {
       key,
@@ -549,6 +648,7 @@ export class WorkspaceRegistry {
       alias,
       sourceHash,
       operations,
+      ...(identity ? { nativeIdentity: identity } : {}),
       updatedAt: new Date().toISOString(),
     };
     await this.run([DRAFTS], 'readwrite', (tx) => {
@@ -558,8 +658,14 @@ export class WorkspaceRegistry {
   }
 
   async getDraft(environmentId, alias) {
-    return this.run([DRAFTS], 'readonly', (tx) =>
+    const environment = await this.getEnvironment(environmentId);
+    if (!environment) throw new Error('The draft workspace no longer exists.');
+    const draft = await this.run([DRAFTS], 'readonly', (tx) =>
       requestResult(tx.objectStore(DRAFTS).get(`${environmentId}:${alias}`)));
+    if (draft && configurationOf(environment).format === 'terraform') {
+      assertNativeDraft(configurationOf(environment), alias, draft.operations, draft.nativeIdentity);
+    }
+    return draft;
   }
 
   async removeDraft(environmentId, alias) {
@@ -578,6 +684,8 @@ export class WorkspaceRegistry {
   async replaceMetadata(snapshot) {
     const projects = Array.isArray(snapshot?.projects) ? snapshot.projects : [];
     const environments = Array.isArray(snapshot?.environments) ? snapshot.environments : [];
+    environments.forEach(configurationOf);
+    assertNoWritableOverlap(environments);
     const projectIds = new Set(projects.map((project) => project.id));
     const environmentIds = new Set(environments.map((environment) => environment.id));
     await this.run([PROJECTS, ENVIRONMENTS, HANDLES, DRAFTS], 'readwrite', async (tx) => {
@@ -600,6 +708,10 @@ export class WorkspaceRegistry {
       for (const item of projects) projectStore.put(item);
       for (const item of environments) {
         const existing = await requestResult(environmentStore.get(item.id));
+        if (existing) {
+          assertUnchangedConfiguration(existing.configuration, item.configuration);
+          assertUnchangedNativeSource(existing, item);
+        }
         const source = environmentSourceOf(item);
         environmentStore.put(
           withSourceProjection({
@@ -644,6 +756,7 @@ export class WorkspaceRegistry {
         projectId: environment.projectId,
         label: environment.label,
         source: environmentSourceOf(environment),
+        ...(environment.configuration ? { configuration: validateConfiguration(environment.configuration) } : {}),
         fingerprint: environment.fingerprint,
         toolVersion: environment.toolVersion,
         settingsVersion: environment.settingsVersion,
@@ -774,17 +887,19 @@ export class WorkspaceRegistry {
   pendingAttachments() {
     const raw = this.storage?.getItem?.(this.pendingAttachmentKey);
     if (!raw) return [];
-    try {
-      const value = JSON.parse(raw);
-      const entries = Array.isArray(value) ? value : [value];
-      return entries.filter(
-        (entry) =>
-          entry && typeof entry.operationKey === 'string' && typeof entry.environmentId === 'string'
-      );
-    } catch {
-      this.storage?.removeItem?.(this.pendingAttachmentKey);
-      return [];
+    let value;
+    try { value = JSON.parse(raw); }
+    catch { throw new Error('Pending attachment metadata is unreadable. Its retry data was retained; restore it before attaching again.'); }
+    const entries = Array.isArray(value) ? value : [value];
+    if (entries.some((entry) => !entry || typeof entry.operationKey !== 'string' || typeof entry.environmentId !== 'string')) {
+      throw new Error('Pending attachment identities are invalid. No retry data was discarded.');
     }
+    if (new Set(entries.map((entry) => entry.operationKey)).size !== entries.length ||
+        new Set(entries.map((entry) => entry.environmentId)).size !== entries.length) {
+      throw new Error('Pending attachment identities overlap. No retry data was discarded.');
+    }
+    for (const entry of entries) if (entry.configuration !== undefined) validateConfiguration(entry.configuration);
+    return entries;
   }
 
   /** The unresolved attempt for one selection, if there is one. */
@@ -796,15 +911,34 @@ export class WorkspaceRegistry {
         (entry) =>
           entry.repositoryId === selection.repositoryId &&
           entry.sourceBranch === selection.sourceBranch &&
-          entry.writeMode === selection.writeMode
+          entry.writeMode === selection.writeMode &&
+          Boolean(entry.adoptExisting) === Boolean(selection.adoptExisting) &&
+          (entry.workingBranch || null) === (selection.workingBranch || null) &&
+          (entry.projectId || null) === (selection.projectId || null) &&
+          (entry.connectionProfileId || null) === (selection.connectionProfileId || null) &&
+          bindingKey(entry.configuration) === bindingKey(selection.configuration)
       ) || null
     );
   }
 
   savePendingAttachment(value) {
-    const entries = this.pendingAttachments().filter(
-      (entry) => entry.operationKey !== value.operationKey
-    );
+    if (!value || typeof value.operationKey !== 'string' || !value.operationKey ||
+        typeof value.environmentId !== 'string' || !value.environmentId) throw new Error('A pending attachment needs its exact attempt and workspace identities.');
+    if (value.configuration !== undefined) validateConfiguration(value.configuration);
+    const saved = this.pendingAttachments();
+    const previous = saved.find((entry) => entry.operationKey === value.operationKey);
+    if (previous) {
+      const fields = ['environmentId', 'repositoryId', 'sourceBranch', 'workingBranch', 'writeMode', 'projectId', 'connectionProfileId'];
+      if (fields.some((field) => (previous[field] ?? null) !== (value[field] ?? null)) ||
+          Boolean(previous.adoptExisting) !== Boolean(value.adoptExisting)) {
+        throw new Error('A pending attachment cannot be retargeted. Its original retry identity was retained.');
+      }
+      assertUnchangedConfiguration(previous.configuration, value.configuration);
+    }
+    if (saved.some((entry) => entry.operationKey !== value.operationKey && entry.environmentId === value.environmentId)) {
+      throw new Error('Another pending attachment owns this workspace identity.');
+    }
+    const entries = saved.filter((entry) => entry.operationKey !== value.operationKey);
     entries.push(value);
     this.storage?.setItem?.(this.pendingAttachmentKey, JSON.stringify(entries));
     return value;

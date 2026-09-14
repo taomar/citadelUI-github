@@ -1,4 +1,5 @@
 const path = require('node:path');
+const fs = require('node:fs/promises');
 
 const desktopRoot = __dirname;
 const applicationRoot = path.resolve(desktopRoot, '..');
@@ -29,6 +30,25 @@ if (notarization && !macSigning) {
 }
 
 module.exports = {
+  hooks: {
+    prePackage: async () => {
+      const { createBuildInfo } = await import('./source-integrity.mjs');
+      const source = JSON.parse(await fs.readFile(path.join(desktopRoot, 'application-source.json'), 'utf8'));
+      const { version } = JSON.parse(await fs.readFile(path.join(desktopRoot, 'package.json'), 'utf8'));
+      const info = await createBuildInfo(path.resolve(applicationRoot, '..'), { source, version });
+      await fs.mkdir(path.join(desktopRoot, '.generated'), { recursive: true });
+      await fs.writeFile(path.join(desktopRoot, '.generated', 'desktop-build.json'), `${JSON.stringify(info, null, 2)}\n`);
+    },
+    postPackage: async (_config, { platform, outputPaths }) => {
+      const { verifyPackagedSources } = await import('./source-integrity.mjs');
+      for (const output of outputPaths) {
+        const resources = platform === 'darwin'
+          ? path.join(output, 'Citadel UI.app', 'Contents', 'Resources')
+          : path.join(output, 'resources');
+        await verifyPackagedSources(resources);
+      }
+    },
+  },
   packagerConfig: {
     name: 'Citadel UI',
     executableName: 'CitadelUI',
@@ -42,10 +62,12 @@ module.exports = {
       path.join(applicationRoot, 'shared'),
       path.join(applicationRoot, 'web'),
       path.join(desktopRoot, 'server-process.mjs'),
+      path.join(desktopRoot, '.generated', 'desktop-build.json'),
       path.resolve(applicationRoot, '..', 'LICENSE'),
     ],
     ignore: [
       /^\/out($|\/)/,
+      /^\/\.generated($|\/)/,
       /^\/run-packaged-smoke\.mjs$/,
       /^\/run-smoke\.mjs$/,
       /^\/stage-release\.mjs$/,

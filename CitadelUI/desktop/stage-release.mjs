@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { verifyPackagedSources } from './source-integrity.mjs';
 
 const desktopRoot = dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(await readFile(resolve(desktopRoot, 'package.json'), 'utf8'));
@@ -18,6 +19,15 @@ const arch = options.get('arch') || process.arch;
 const checksumName = options.get('checksum-name') || `SHA256SUMS-${platform}-${arch}.txt`;
 if (!['win32', 'darwin'].includes(platform) || !['x64', 'arm64'].includes(arch)) {
   throw new Error(`Unsupported release target: ${platform}/${arch}.`);
+}
+const packageRoot = resolve(outputRoot, `Citadel UI-${platform}-${arch}`);
+const resources = platform === 'darwin'
+  ? resolve(packageRoot, 'Citadel UI.app', 'Contents', 'Resources')
+  : resolve(packageRoot, 'resources');
+const build = await verifyPackagedSources(resources);
+const source = JSON.parse(await readFile(resolve(desktopRoot, 'application-source.json'), 'utf8'));
+if (build.dirty || build.version !== manifest.version || build.applicationRevision !== source.revision) {
+  throw new Error('Only a clean package of the pinned application revision can be staged for release.');
 }
 
 async function filesBelow(root) {
@@ -76,6 +86,10 @@ const sources =
           name: `CitadelUI-macOS-${arch}.zip`,
         },
       ];
+sources.push({
+  source: resolve(resources, 'desktop-build.json'),
+  name: `CitadelUI-build-${platform}-${arch}.json`,
+});
 
 function sha256(path) {
   return new Promise((resolveHash, rejectHash) => {

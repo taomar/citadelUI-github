@@ -6,9 +6,18 @@ import {
   relativeAlias,
   resolveAlias,
 } from '../../shared/citadel-core.mjs';
-import { activeWorkspace, workspaceRegistry } from './workspace-context.mjs';
+import { activeWorkspace, workspaceRegistry } from './workspace-activation.mjs';
 import { LocalTransactionCoordinator } from './mutation-coordinator.mjs';
 import { createProvider } from './source-factory.mjs';
+import { configurationKey, configurationOf } from '../../shared/workspace-configuration.mjs';
+import { discoverConfiguredWorkspace, nativeDocument, nativeUnit, NATIVE_AREA_TITLES, NATIVE_SOURCE_NOTICE, validateNativeReview } from '../../shared/terraform/workspace.mjs';
+import { nativePreview, nativeTransactionProof, validateNativeAfter } from '../../shared/terraform/review.mjs';
+import { nativeError } from '../../shared/terraform/parser.mjs';
+import { assertNativeDraft, sameNativeDraftBinding } from '../../shared/terraform/drafts.mjs';
+import { environmentSourceOf } from './registry.mjs';
+import { encodeSourceText } from '../../shared/source-text.mjs';
+import { mutationComplete, withMutationOutcome } from '../../shared/mutation-outcome.mjs';
+import { parameterCopyPlan } from './parameter-copy-plan.mjs';
 import {
   applyPolicyChanges,
   assertBalancedXml,
@@ -26,8 +35,19 @@ export const STALE_SOURCE_MESSAGE = 'File changed outside Citadel UI. Reload bef
 
 function assertLoadedHash(source, expectedHash) {
   if (typeof expectedHash !== 'string' || source.hash !== expectedHash) {
-    throw new Error(STALE_SOURCE_MESSAGE);
+    const error = new Error(STALE_SOURCE_MESSAGE);
+    error.code = 'SOURCE_CHANGED';
+    throw error;
   }
+}
+
+function documentMutationResult(result, path) {
+  return {
+    ...result, path,
+    archived: result.outcome === 'applied' ? result.commit || result.transactionId : null,
+    ...(mutationComplete(result) && result.files?.find((file) => file.alias === path)?.hash
+      ? { hash: result.files.find((file) => file.alias === path).hash } : {}),
+  };
 }
 
 function values(document) {
@@ -133,6 +153,8 @@ export function rewriteContractTemplate(text, usingPath) {
 }
 
 export class WorkspaceService {
+  #localOverwriteReviews = new WeakMap();
+
   constructor(options = {}) {
     this.request = options.request;
     this.contextProvider = options.contextProvider || activeWorkspace;
@@ -152,6 +174,7 @@ export class WorkspaceService {
           getHandle: (id) => this.registry.getHandle(id),
         }));
     this.catalog = null;
+    this.catalogs = new WeakMap();
   }
 
   get context() {
@@ -162,12 +185,22 @@ export class WorkspaceService {
     return this.context.provider;
   }
 
-  commitFiles(files, options = {}) {
-    return this.coordinator.commit(files, options);
+  async commitFiles(files, options = {}) {
+    return this.acceptMutationResult(await this.coordinator.commit(files, options), options.context || this.context);
+  }
+
+  acceptMutationResult(result, context) {
+    const outcome = withMutationOutcome(result);
+    if (mutationComplete(outcome)) {
+      this.catalog = null;
+      this.catalogs.delete(context.provider);
+    }
+    return outcome;
   }
 
   reset() {
     this.catalog = null;
+    this.catalogs = new WeakMap();
   }
 
   async health() {
@@ -180,26 +213,38 @@ export class WorkspaceService {
   }
 
   async deployments(options = {}) {
-    if (options.refresh) this.catalog = null;
-    if (!this.catalog) {
+    const context = options.context || this.context;
+    const catalogs = this.catalogs;
+    if (options.refresh) catalogs.delete(context.provider);
+    if (!catalogs.has(context.provider)) {
       // Adopt the catalog the open path already produced for this exact
       // context, once. Opening scanned every parameter file and every template
       // to decide the workspace was usable at all; discarding that and doing it
       // again doubled the cost of opening a 170-file repository over the
       // network. The handoff is consumed rather than kept, so a later refresh —
       // after a save, an undo or an explicit reload — really does rescan.
-      const handed = this.context.catalog || null;
-      if (handed) this.context.catalog = null;
-      this.catalog = handed || (await discoverWorkspace(this.provider));
+      const handed = context.catalog || null;
+      if (handed) context.catalog = null;
+      const catalog = handed ? Promise.resolve(handed) : discoverConfiguredWorkspace(context.provider, context.environment);
+      catalogs.set(context.provider, catalog);
     }
-    return this.catalog;
+    const pending = catalogs.get(context.provider);
+    try { return await pending; }
+    catch (error) {
+      if (catalogs.get(context.provider) === pending) catalogs.delete(context.provider);
+      throw error;
+    }
   }
 
-  async deployment(alias) {
-    const catalog = await this.deployments();
+  async deployment(alias, options = {}) {
+    const context = options.context || this.context;
+    const provider = context.provider;
+    const catalog = await this.deployments({ context });
     const meta = catalog.files.find((file) => file.path === alias);
     if (!meta) throw new Error(`Unknown source alias: ${alias}`);
-    const source = await this.provider.read(alias);
+    const configuration = configurationOf(context.environment);
+    if (configuration.format === 'terraform') return nativeDocument(provider, configuration, nativeUnit(configuration, alias));
+    const source = await provider.read(alias);
     const document = documentFromText(alias, source.text, source);
     const result = { ...document, meta, schema: meta.schema };
     if (meta.capability === 'main') {
@@ -217,9 +262,9 @@ export class WorkspaceService {
           hash: null,
           error: 'Set environmentName before reading the azd subscription.',
         };
-      } else if (typeof this.provider.readSubscriptionId === 'function') {
+      } else if (typeof provider.readSubscriptionId === 'function') {
         try {
-          result.subscription = await this.provider.readSubscriptionId(environmentName);
+          result.subscription = await provider.readSubscriptionId(environmentName);
         } catch (error) {
           result.subscription = {
             available: false,
@@ -237,15 +282,21 @@ export class WorkspaceService {
     return result;
   }
 
-  async saveSubscriptionId(environmentName, value, expectedHash) {
-    if (typeof this.provider.writeSubscriptionId !== 'function') {
+  async saveSubscriptionId(environmentName, value, expectedHash, context = this.context) {
+    if (typeof context.provider.writeSubscriptionId !== 'function') {
       throw new Error('Subscription environment editing is unavailable for this workspace.');
     }
-    return this.provider.writeSubscriptionId(environmentName, value, expectedHash);
+    return context.provider.writeSubscriptionId(environmentName, value, expectedHash);
   }
 
-  async focus() {
-    const catalog = await this.deployments();
+  async focus(context = this.context) {
+    const catalog = await this.deployments({ context });
+    if (catalog.format === 'terraform') {
+      return { areas: catalog.files.map((file) => ({
+        id: `native-${file.unit.id}`, kind: 'param', title: NATIVE_AREA_TITLES[file.unit.area],
+        subtitle: file.path, path: file.path, blurb: NATIVE_SOURCE_NOTICE,
+      })) };
+    }
     const areas = [];
     if (catalog.capabilities.main) {
       areas.push({
@@ -280,40 +331,137 @@ export class WorkspaceService {
     return { areas };
   }
 
-  async preview(alias, operations, expectedHash) {
-    const source = await this.provider.read(alias);
+  async preview(alias, operations, expectedHash, nativeIdentity, context = this.context) {
+    const configuration = configurationOf(context.environment);
+    if (configuration.format === 'terraform') {
+      const document = await this.nativeReviewedDocument(context, alias, expectedHash, nativeIdentity);
+      const { after, findings } = nativePreview(document, operations);
+      if (document.text !== after) await this.coordinator.validateRequest?.([{
+        alias, create: document.absent, beforeHash: expectedHash, after: new TextEncoder().encode(after),
+      }], { context, action: 'parameter-edit', nativeProof: nativeTransactionProof(configuration, document),
+        nativeIdentity: document.nativeIdentity, expectedHead: document.nativeIdentity.head });
+      return { path: alias, before: document.text, after, changed: document.text !== after,
+        beforeHash: expectedHash, nativeIdentity: document.nativeIdentity, findings };
+    }
+    const source = await context.provider.read(alias);
     assertLoadedHash(source, expectedHash);
     const after = previewDocumentText(source.text, operations);
+    const bytes = encodeSourceText(after, source);
+    if (source.text !== after) await this.coordinator.validateRequest?.([{
+      alias, beforeHash: expectedHash, after: bytes,
+    }], { context, action: 'parameter-edit' });
     return {
       path: alias,
       before: source.text,
       after,
       changed: source.text !== after,
       beforeHash: expectedHash,
+      bom: source.bom,
     };
   }
 
-  async save(alias, operations, expectedHash) {
-    const source = await this.provider.read(alias);
+  async nativeReviewedDocument(context, alias, expectedHash, identity) {
+    if (!identity?.hash) throw nativeError('Reopen the native unit before editing; its dependency review identity is missing.', null, 'NATIVE_REVIEW_REQUIRED');
+    await context.provider.tree?.({ refresh: true });
+    const document = await this.deployment(alias, { context });
+    if (document.hash !== expectedHash || document.nativeIdentity.hash !== identity.hash) {
+      throw nativeError('The native source, schema/module/policy dependency or shared GitHub branch head changed. Your draft is preserved; reopen and review it against the current source.', null, 'NATIVE_REVIEW_STALE');
+    }
+    return document;
+  }
+
+  async prepareLocalOverwrite(loaded, operations, context = this.context) {
+    if (environmentSourceOf(context.environment).kind !== 'local' || !loaded?.hash || loaded.absent) {
+      throw new Error('Overwrite confirmation is only available for an already-open existing Local file.');
+    }
+    const configuration = configurationOf(context.environment);
+    const native = configuration.format === 'terraform';
+    this.catalogs.delete(context.provider);
+    context.catalog = null;
+    const current = await this.deployment(loaded.path, { context });
+    if (!current.hash || current.absent) throw new Error('The existing file is missing. Overwrite cannot create or adopt a file.');
+    if (native) {
+      assertNativeDraft(configuration, loaded.path, operations, loaded.nativeIdentity);
+      if (!sameNativeDraftBinding(loaded.nativeIdentity, current.nativeIdentity)) {
+        throw nativeError('The native unit, schema or dependencies changed. Reopen it before reviewing an overwrite.', null, 'NATIVE_REVIEW_STALE');
+      }
+    } else if (loaded.meta?.template !== current.meta?.template ||
+        JSON.stringify(loaded.schema) !== JSON.stringify(current.schema)) {
+      throw new Error('The Bicep template or schema changed. Reopen the file before reviewing an overwrite.');
+    }
+    if (current.hash === loaded.hash) throw new Error('The file no longer differs from the loaded version. Review the draft again.');
+    const after = native ? nativePreview(loaded, operations).after : previewDocumentText(loaded.text, operations);
+    if (native) validateNativeAfter(current, after);
+    const dependencies = [];
+    if (!native && current.meta?.template) {
+      const source = await context.provider.read(current.meta.template);
+      dependencies.push({ alias: current.meta.template, hash: source.hash });
+    }
+    if (!native) encodeSourceText(after, current);
+    const review = Object.freeze({ kind: 'local-overwrite', path: loaded.path, before: current.text, after, beforeHash: current.hash, bom: current.bom });
+    this.#localOverwriteReviews.set(review, {
+      context, configuration: configurationKey(configuration), current, dependencies, after,
+      changed: [...new Set(operations.map((operation) => operation.path[0]))],
+    });
+    return review;
+  }
+
+  async saveLocalOverwrite(review) {
+    const prepared = this.#localOverwriteReviews.get(review);
+    if (!prepared) throw new Error('This overwrite review is missing or was already attempted. Review again before overwriting.');
+    this.#localOverwriteReviews.delete(review);
+    const { context, current, dependencies, after, changed } = prepared;
+    const configuration = configurationOf(context.environment);
+    if (configurationKey(configuration) !== prepared.configuration ||
+        environmentSourceOf(context.environment).kind !== 'local') {
+      throw new Error('The overwrite workspace binding changed. Nothing was written.');
+    }
+    const native = configuration.format === 'terraform';
+    const validateBeforeWrite = async () => {
+      if (native) return validateNativeReview(context.provider, configuration, current.unit, current);
+      assertLoadedHash(await context.provider.read(current.path), current.hash);
+      for (const dependency of dependencies) {
+        if ((await context.provider.read(dependency.alias)).hash !== dependency.hash) {
+          throw new Error('The Bicep schema changed after overwrite confirmation. Nothing was written.');
+        }
+      }
+    };
+    await validateBeforeWrite();
+    const source = await context.provider.read(current.path);
+    assertLoadedHash(source, current.hash);
+    if (native) validateNativeAfter(current, after);
+    const result = await this.commitFiles([{
+      alias: current.path, before: source.bytes, beforeHash: source.hash,
+      after: native ? new TextEncoder().encode(after) : encodeSourceText(after, source), changed,
+    }], { action: prepared.action || 'parameter-edit', context, validateBeforeWrite, confirmReceiptOutcome: true,
+      ...(native ? { nativeProof: nativeTransactionProof(configuration, current), nativeIdentity: current.nativeIdentity } : {}) });
+    return documentMutationResult(result, current.path);
+  }
+
+  async save(alias, operations, expectedHash, nativeIdentity, context = this.context) {
+    const configuration = configurationOf(context.environment);
+    if (configuration.format === 'terraform') {
+      const document = await this.nativeReviewedDocument(context, alias, expectedHash, nativeIdentity);
+      const { after } = nativePreview(document, operations);
+      if (after === document.text) return { path: alias, applied: false, outcome: 'unchanged', changed: false, archived: null };
+      const result = await this.commitFiles([{
+        alias, before: document.absent ? null : document.source.bytes, beforeHash: expectedHash,
+        after: new TextEncoder().encode(after), create: document.absent,
+        changed: [...new Set(operations.map((operation) => operation.path[0]))],
+      }], { action: 'parameter-edit', context, nativeProof: nativeTransactionProof(configuration, document),
+        nativeIdentity: document.nativeIdentity, expectedHead: document.nativeIdentity.head,
+        validateBeforeWrite: (phase) => validateNativeReview(context.provider, configuration, document.unit, document,
+          { includeValue: !(document.absent && phase?.created && phase.alias === alias) }) });
+      return documentMutationResult(result, alias);
+    }
+    const source = await context.provider.read(alias);
     assertLoadedHash(source, expectedHash);
     const after = previewDocumentText(source.text, operations);
-    if (after === source.text) return { path: alias, changed: false, archived: null };
+    if (after === source.text) return { path: alias, applied: false, outcome: 'unchanged', changed: false, archived: null };
     const result = await this.commitFiles([
-      { alias, before: source.bytes, beforeHash: expectedHash, after: new TextEncoder().encode(after), changed: operations.map((operation) => operation.path?.[0]).filter(Boolean) },
-    ], { action: 'parameter-edit' });
-    this.catalog = null;
-    return {
-      path: alias,
-      changed: true,
-      archived: result.transactionId,
-      hash: result.files[0].hash,
-      // Anything the source could not confirm after the write landed. Never a
-      // failure, so the caller reports it alongside a successful save.
-      warnings: result.warnings || [],
-      // The intended branch refused this commit and Citadel created nothing.
-      // The caller has to ask the user what to do with it.
-      unresolved: result.unresolved || null,
-    };
+      { alias, before: source.bytes, beforeHash: expectedHash, after: encodeSourceText(after, source), changed: operations.map((operation) => operation.path?.[0]).filter(Boolean) },
+    ], { action: 'parameter-edit', context });
+    return documentMutationResult(result, alias);
   }
 
   /**
@@ -322,18 +470,19 @@ export class WorkspaceService {
    * Only meaningful for a Git-backed workspace; a local one has no refs and no
    * refusal to resolve.
    */
-  async createCommitBranch(commit, branch) {
+  async createCommitBranch(commit, branch, context = this.context) {
     const coordinator = this.coordinator;
     if (typeof coordinator.createCommitBranch !== 'function') {
       throw new Error('This workspace does not use branches.');
     }
-    return coordinator.createCommitBranch(commit, branch);
+    return coordinator.createCommitBranch(commit, branch, { context });
   }
 
-  async onboardedModels() {
-    const catalog = await this.deployments();
+  async onboardedModels(context = this.context) {
+    const catalog = await this.deployments({ context });
+    if (configurationOf(context.environment).format === 'terraform') return { models: [] };
     if (!catalog.capabilities.llmOnboarding) return { models: [] };
-    const document = await this.deployment(catalog.capabilities.llmOnboarding);
+    const document = await this.deployment(catalog.capabilities.llmOnboarding, { context });
     const config = document.params.find((parameter) => parameter.name === 'llmBackendConfig')?.value || [];
     const seen = new Map();
     for (const entry of Array.isArray(config) ? config : []) {
@@ -363,8 +512,12 @@ export class WorkspaceService {
     };
   }
 
-  async contracts() {
-    const catalog = await this.deployments();
+  async contracts(context = this.context) {
+    const catalog = await this.deployments({ context });
+    if (catalog.format === 'terraform') return { root: 'citadel-access-contracts', template: null, recoverable: [],
+      contracts: catalog.files.filter((file) => file.unit.area === 'access').map((file) => ({
+        id: file.unit.id, dir: file.unit.rootAlias, paramFile: file.path, policyFile: null, hasPolicy: false, isTemplate: false,
+      })) };
     const aliases = new Set(catalog.sourceAliases || catalog.files.map((file) => file.path));
     const contracts = catalog.files
       .map((file) => contractInfo(file, aliases))
@@ -375,18 +528,19 @@ export class WorkspaceService {
     return { root, parent: 'contracts', template, contracts, recoverable: [] };
   }
 
-  async contract(id) {
-    const listing = await this.contracts();
+  async contract(id, context = this.context) {
+    const listing = await this.contracts(context);
     const entry = listing.contracts.find((contract) => contract.id === id);
     if (!entry) throw new Error(`Unknown access contract: ${id}`);
-    const param = await this.deployment(entry.paramFile);
+    const param = await this.deployment(entry.paramFile, { context });
     let policy = null;
     if (entry.hasPolicy) {
-      const source = await this.provider.read(entry.policyFile);
+      const source = await context.provider.read(entry.policyFile);
       policy = {
         path: entry.policyFile,
         name: entry.policyFile.split('/').at(-1),
         text: source.text,
+        bom: source.bom,
         hash: source.hash,
         mtimeMs: source.lastModified,
         controls: readPolicyControls(source.text),
@@ -395,32 +549,36 @@ export class WorkspaceService {
     return { ...entry, param, policy };
   }
 
-  async accessContractTargets() {
-    const catalog = await this.deployments();
+  async accessContractTargets(context = this.context) {
+    if (configurationOf(context.environment).format === 'terraform') {
+      return { environment: null, environmentFile: null, apim: {}, keyVault: {}, foundries: [], partialFoundries: [] };
+    }
+    const catalog = await this.deployments({ context });
     if (!catalog.capabilities.main || !catalog.capabilities.llmOnboarding) {
       return { environment: null, environmentFile: null, apim: {}, keyVault: {}, foundries: [], partialFoundries: [] };
     }
     const [main, onboarding] = await Promise.all([
-      this.deployment(catalog.capabilities.main),
-      this.deployment(catalog.capabilities.llmOnboarding),
+      this.deployment(catalog.capabilities.main, { context }),
+      this.deployment(catalog.capabilities.llmOnboarding, { context }),
     ]);
     return accessTargets(main, onboarding);
   }
 
-  async createContract({ name }) {
+  async createContract({ name }, context = this.context) {
+    if (configurationOf(context.environment).format === 'terraform') throw nativeError('Native Access configurations are explicit root/value-file units selected at attachment, not Bicep template directories.');
     const clean = String(name || '').trim().toLowerCase();
     if (!/^[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?$/.test(clean)) {
       throw new Error('Use lowercase letters, numbers and hyphens.');
     }
-    const listing = await this.contracts();
+    const listing = await this.contracts(context);
     const template = listing.template;
     if (!template?.policyFile) throw new Error('The selected repository has no complete access-contract template pair.');
     const targetDir = `${template.dir}/contracts/${clean}`;
     const paramAlias = `${targetDir}/main.bicepparam`;
     const policyAlias = `${targetDir}/${CONTRACT_POLICY_NAME}`;
     const [paramSource, policySource] = await Promise.all([
-      this.provider.read(template.paramFile),
-      this.provider.read(template.policyFile),
+      context.provider.read(template.paramFile),
+      context.provider.read(template.policyFile),
     ]);
     const templateDocument = documentFromText(template.paramFile, paramSource.text, paramSource);
     const usingTarget = templateDocument.using
@@ -429,61 +587,93 @@ export class WorkspaceService {
     const usingPath = relativeAlias(targetDir, usingTarget);
     const paramText = rewriteContractTemplate(paramSource.text, usingPath);
     const created = await this.commitFiles([
-      { alias: paramAlias, before: null, beforeHash: null, after: new TextEncoder().encode(paramText), changed: ['using', 'policyXml'], create: true },
+      { alias: paramAlias, before: null, beforeHash: null, after: encodeSourceText(paramText, paramSource), changed: ['using', 'policyXml'], create: true },
       { alias: policyAlias, before: null, beforeHash: null, after: policySource.bytes, changed: ['policyXml'], create: true },
-    ], { action: 'contract-create' });
-    this.catalog = null;
-    return { id: `contracts/${clean}`, dir: targetDir, created: created.files.map((file) => file.alias), using: usingPath };
+    ], { action: 'contract-create', context });
+    const intended = { id: `contracts/${clean}`, dir: targetDir, using: usingPath };
+    return mutationComplete(created)
+      ? { ...created, ...intended, created: created.outcome === 'applied' ? created.files.map((file) => file.alias) : [] }
+      : { ...created, intended };
   }
 
-  async previewPolicy(alias, changes, text = null, expectedHash) {
-    const source = await this.provider.read(alias);
+  async previewPolicy(alias, changes, text = null, expectedHash, context = this.context) {
+    if (configurationOf(context.environment).format === 'terraform') throw nativeError('Edit an eligible per-service policy_xml literal through its owning native values file. Shared default policy XML is read-only.');
+    const source = await context.provider.read(alias);
     assertLoadedHash(source, expectedHash);
     if (typeof text === 'string') {
       assertBalancedXml(text);
+      const bytes = encodeSourceText(text, source);
+      if (text !== source.text) await this.coordinator.validateRequest?.([{
+        alias, beforeHash: expectedHash, after: bytes,
+      }], { context, action: 'policy-edit' });
       return {
         path: alias,
         before: source.text,
         after: text,
         changed: text !== source.text,
         beforeHash: expectedHash,
+        bom: source.bom,
       };
     }
     const after = applyPolicyChanges(source.text, changes || {});
     assertBalancedXml(after);
+    const bytes = encodeSourceText(after, source);
+    if (after !== source.text) await this.coordinator.validateRequest?.([{
+      alias, beforeHash: expectedHash, after: bytes,
+    }], { context, action: 'policy-edit' });
     return {
       path: alias,
       before: source.text,
       after,
       changed: after !== source.text,
       beforeHash: expectedHash,
+      bom: source.bom,
       controls: readPolicyControls(after),
     };
   }
 
-  async savePolicy(payload) {
+  async prepareLocalPolicyOverwrite(loaded, changes, text, context = this.context) {
+    const configuration = configurationOf(context.environment);
+    if (environmentSourceOf(context.environment).kind !== 'local' || configuration.format === 'terraform' || !loaded?.hash) {
+      throw new Error('Only an already-open existing Local Bicep policy has this overwrite workflow.');
+    }
+    const source = await context.provider.read(loaded.path);
+    if (source.hash === loaded.hash) throw new Error('The policy no longer differs from the loaded version. Review it again.');
+    const after = typeof text === 'string' ? text : applyPolicyChanges(loaded.text, changes || {});
+    assertBalancedXml(after);
+    encodeSourceText(after, source);
+    const review = Object.freeze({ kind: 'local-overwrite', path: loaded.path, before: source.text, after, beforeHash: source.hash, bom: source.bom });
+    this.#localOverwriteReviews.set(review, {
+      context, configuration: configurationKey(configuration),
+      current: { path: loaded.path, ...source }, dependencies: [], after,
+      changed: Object.keys(changes || { raw: true }), action: 'policy-edit',
+    });
+    return review;
+  }
+
+  async savePolicy(payload, context = this.context) {
     const preview = await this.previewPolicy(
       payload.path,
       payload.changes,
       payload.text,
-      payload.expectedHash
+      payload.expectedHash,
+      context
     );
-    if (!preview.changed) return { path: payload.path, changed: false, archived: null };
-    const source = await this.provider.read(payload.path);
+    if (!preview.changed) return { path: payload.path, applied: false, outcome: 'unchanged', changed: false, archived: null };
+    const source = await context.provider.read(payload.path);
     assertLoadedHash(source, payload.expectedHash);
     const result = await this.commitFiles([
-      { alias: payload.path, before: source.bytes, beforeHash: payload.expectedHash, after: new TextEncoder().encode(preview.after), changed: Object.keys(payload.changes || { raw: true }) },
-    ], { action: 'policy-edit' });
-    this.catalog = null;
-    return { path: payload.path, changed: true, archived: result.transactionId };
+      { alias: payload.path, before: source.bytes, beforeHash: payload.expectedHash, after: encodeSourceText(preview.after, source), changed: Object.keys(payload.changes || { raw: true }) },
+    ], { action: 'policy-edit', context });
+    return documentMutationResult(result, payload.path);
   }
 
   async restoreContract() {
     throw new Error('Use History to restore a contract through a new verified transaction.');
   }
 
-  async contextForEnvironment(environmentId) {
-    const environments = await this.registry.listEnvironments(this.context.projectId);
+  async contextForEnvironment(environmentId, context = this.context) {
+    const environments = await this.registry.listEnvironments(context.projectId);
     const environment = environments.find((item) => item.id === environmentId);
     if (!environment) throw new Error('Unknown target environment.');
     const handle = await this.registry.getHandle(environment.id);
@@ -492,10 +682,13 @@ export class WorkspaceService {
     return { projectId: environment.projectId, environment, handle, provider };
   }
 
-  async compareEnvironment(environmentId, alias) {
-    const target = await this.contextForEnvironment(environmentId);
+  async compareEnvironment(environmentId, alias, context = this.context) {
+    const target = await this.contextForEnvironment(environmentId, context);
+    if (configurationOf(context.environment).format === 'terraform' || configurationOf(target.environment).format === 'terraform') {
+      throw nativeError('Native workspaces save their own inputs. Cross-format or cross-unit parameter copying is not an implicit conversion.');
+    }
     const [sourceCatalog, targetCatalog] = await Promise.all([
-      this.deployments(),
+      this.deployments({ context }),
       discoverWorkspace(target.provider),
     ]);
     const sourceMeta = sourceCatalog.files.find((file) => file.path === alias);
@@ -515,7 +708,7 @@ export class WorkspaceService {
       throw new Error('The target environment has no compatible parameter document.');
     }
     const [sourceFile, targetFile] = await Promise.all([
-      this.provider.read(alias),
+      context.provider.read(alias),
       target.provider.read(targetMeta.path),
     ]);
     const source = documentFromText(alias, sourceFile.text, sourceFile);
@@ -550,32 +743,25 @@ export class WorkspaceService {
     };
   }
 
-  async copyParameters(environmentId, alias, names, expectedSourceHash, expectedTargetHash) {
-    const comparison = await this.compareEnvironment(environmentId, alias);
+  async copyParameters(environmentId, alias, names, expectedSourceHash, expectedTargetHash, context = this.context) {
+    const comparison = await this.compareEnvironment(environmentId, alias, context);
     assertLoadedHash(comparison.source, expectedSourceHash);
     assertLoadedHash(comparison.destination, expectedTargetHash);
     const definitions = comparison.source.schema?.parameters || {};
     if (names.some((name) => !definitions[name] || definitions[name].secure)) {
       throw new Error('Secure or untyped parameters cannot be copied between environments.');
     }
-    const selected = comparison.parameters.filter(
-      (parameter) => names.includes(parameter.name) && parameter.status === 'different'
-    );
+    const { selected, operations, changed } = parameterCopyPlan(comparison.parameters, names);
     if (!selected.length) throw new Error('No compatible differences were selected.');
-    const operations = selected.map((parameter) => ({
-      op: 'set',
-      path: [parameter.name],
-      value: parameter.source,
-    }));
     const after = previewDocumentText(comparison.destination.text, operations);
-    const bytes = new TextEncoder().encode(after);
+    const bytes = encodeSourceText(after, comparison.destination);
     return this.commitFiles([
       {
         alias: comparison.targetAlias,
         before: comparison.destination.bytes,
         beforeHash: expectedTargetHash,
         after: bytes,
-        changed: selected.map((parameter) => parameter.name),
+        changed,
       },
     ], {
       action: 'environment-copy',
@@ -583,47 +769,45 @@ export class WorkspaceService {
     });
   }
 
-  async previewCopy(environmentId, alias, names, expectedSourceHash) {
-    const comparison = await this.compareEnvironment(environmentId, alias);
+  async previewCopy(environmentId, alias, names, expectedSourceHash, context = this.context) {
+    const comparison = await this.compareEnvironment(environmentId, alias, context);
     assertLoadedHash(comparison.source, expectedSourceHash);
     const definitions = comparison.source.schema?.parameters || {};
     if (names.some((name) => !definitions[name] || definitions[name].secure)) {
       throw new Error('Secure or untyped parameters cannot be copied between environments.');
     }
-    const selected = comparison.parameters.filter(
-      (parameter) => names.includes(parameter.name) && parameter.status === 'different'
-    );
-    const after = previewDocumentText(
-      comparison.destination.text,
-      selected.map((parameter) => ({ op: 'set', path: [parameter.name], value: parameter.source }))
-    );
+    const { operations, changed } = parameterCopyPlan(comparison.parameters, names);
+    const after = previewDocumentText(comparison.destination.text, operations);
+    const bytes = encodeSourceText(after, comparison.destination);
+    if (after !== comparison.destination.text) await this.coordinator.validateRequest?.([{
+      alias: comparison.targetAlias, beforeHash: comparison.destination.hash, after: bytes,
+    }], { context: comparison.target, action: 'environment-copy' });
     return {
       before: comparison.destination.text,
       after,
       changed: after !== comparison.destination.text,
-      selected: selected.map((parameter) => parameter.name),
+      selected: changed,
       sourceHash: expectedSourceHash,
       targetHash: comparison.destination.hash,
       targetLabel: comparison.target.environment.label,
       targetAlias: comparison.targetAlias,
+      bom: comparison.destination.bom,
     };
   }
 
-  async history() {
-    return this.coordinator.history();
+  async history(context = this.context) {
+    return this.coordinator.history({ context });
   }
 
-  async inspectRecovery(transactionId) {
-    return this.coordinator.inspect(transactionId);
+  async inspectRecovery(transactionId, context = this.context) {
+    return this.coordinator.inspect(transactionId, { context });
   }
 
-  async recoverTransaction(transactionId, action) {
-    return this.coordinator.recover(transactionId, action);
+  async recoverTransaction(transactionId, action, context = this.context) {
+    return this.coordinator.recover(transactionId, action, { context });
   }
 
-  async restoreTransaction(transactionId) {
-    const result = await this.coordinator.revert(transactionId);
-    this.catalog = null;
-    return result;
+  async restoreTransaction(transactionId, context = this.context) {
+    return this.acceptMutationResult(await this.coordinator.revert(transactionId, { context }), context);
   }
 }

@@ -45,6 +45,8 @@
  * "did not start" into "failed" would make a dropped double-click look like an
  * error to every caller that checks the result.
  */
+import { reportClientError } from './diagnostics-client.mjs';
+
 export const SKIPPED = Symbol('single-flight-skipped');
 
 /**
@@ -75,7 +77,10 @@ export function createSingleFlight() {
      */
     run(key, fn) {
       if (active.has(key)) return SKIPPED;
-      const promise = (async () => fn())().finally(() => {
+      const promise = (async () => fn())().catch((error) => {
+        reportClientError(error, 'app.action', { module: '/js/single-flight.mjs' });
+        throw error;
+      }).finally(() => {
         // Only clear our own entry. A key released by a later run would let a
         // third invocation overlap the second.
         if (active.get(key) === promise) active.delete(key);

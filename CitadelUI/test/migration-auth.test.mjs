@@ -9,7 +9,7 @@ import { MigrationGitHubConnection } from '../web/js/migration-github-connection
 import { createCitadelServer } from '../server/index.mjs';
 import { MIGRATION_ATTEMPT_HEADER, MIGRATION_SOURCE_ENDPOINT, MIGRATION_SOURCE_HEADER } from '../shared/migration-github-auth.mjs';
 import { acceptCount, deferred } from './_migration-fixture.mjs';
-import { PUBLIC_FILE, PUBLIC_REPO, PUBLIC_SCHEMA, PUBLIC_TEMPLATE, PUBLIC_TEXT } from './_migration-public-fixture.mjs';
+import { armParameters, PUBLIC_FILE, PUBLIC_REPO, PUBLIC_SCHEMA, PUBLIC_TEMPLATE, PUBLIC_TEXT } from './_migration-public-fixture.mjs';
 import { AuthenticatedGitHubMock, authenticatedHarness } from './_migration-auth-fixture.mjs';
 
 test('migration authenticated donor accepts Contents Read without push/admin and applies one local transaction', async () => {
@@ -59,6 +59,45 @@ test('migration saved source connection is cloned without revoking or replacing 
   assert.deepEqual(h.vaultReads, []);
 });
 
+for (const mode of ['token', 'saved']) {
+  test(`migration ${mode} source lists real branches and inspects JSON without changing destination credentials`, async () => {
+    const h = authenticatedHarness();
+    h.github.seed('release/older', { [PUBLIC_FILE]: PUBLIC_TEXT });
+    h.github.seed('legacy-main', {
+      [PUBLIC_FILE]: PUBLIC_TEXT, [PUBLIC_TEMPLATE]: PUBLIC_SCHEMA,
+      'bicep/infra/main.json': armParameters({ Count: { value: 5 } }),
+      'bicep/infra/abbreviations.json': '{"appService":"app"}',
+      'package.json': '{}',
+    });
+    await h.connection.connect(mode === 'saved' ? { profileId: 'existing-connection' } : { token: h.token });
+    const metadata = await h.connection.inspectRepository(PUBLIC_REPO);
+    const result = await h.connection.listBranches(metadata);
+    assert.deepEqual(result.branches.map((branch) => branch.name), ['legacy-main', 'release/older']);
+    const donor = h.selectDonor();
+    const inventory = await h.session.inventory(donor);
+    assert.equal(inventory.items.length, 2);
+    assert.equal(inventory.ignored, 2);
+    assert.deepEqual(inventory.issues, []);
+    assert(h.github.authCalls.every((call) => call.authenticated && call.method === 'GET'));
+    assert.equal(h.sessions.resolve(h.destination.id).token, h.destinationToken);
+    assert.deepEqual(h.vaultWrites, []);
+    await assert.rejects(donor.read('package.json'), { code: 'private-scope' });
+    await h.connection.disconnect();
+  });
+}
+
+test('migration branch lookup honors Contents Read and invalidates a revoked source instead of falling back', async () => {
+  const h = authenticatedHarness();
+  await h.connection.connect({ token: h.token });
+  const metadata = await h.connection.inspectRepository(PUBLIC_REPO);
+  h.github.credentials.get(h.token).contentsRead = false;
+  await assert.rejects(h.connection.listBranches(metadata), { code: 'private-access' });
+  h.github.credentials.get(h.token).revoked = true;
+  await assert.rejects(h.connection.listBranches(metadata), { code: 'private-auth-invalid' });
+  assert.equal(h.connection.connected, false);
+  assert.equal(h.sessions.resolve(h.destination.id).token, h.destinationToken);
+  assert(h.github.authCalls.every((call) => call.authenticated));
+});
 test('migration saved encrypted opt-in can supply a new isolated source session but is never rewritten', async () => {
   const h = authenticatedHarness();
   h.sessions.destroy(h.destination.id);

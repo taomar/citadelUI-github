@@ -1,3 +1,6 @@
+import { configurationOf, unitForAlias, unconfirmedNativeCreation } from '../../shared/workspace-configuration.mjs';
+import { nativeHistoryProof } from '../../shared/terraform/workspace.mjs';
+
 /**
  * Source-owning mutation boundary.
  *
@@ -12,6 +15,9 @@
  * operation and inverse commits for undo.
  */
 export class MutationCoordinator {
+  /** Local bytes travel in separate bounded backup/write steps, not an aggregate JSON request. */
+  async validateRequest(_files, _options = {}) {}
+
   /** Apply every file change as one all-or-nothing operation. */
   async commit(_files, _options = {}) {
     throw new Error('Mutation coordinator does not implement commit.');
@@ -35,6 +41,66 @@ export class MutationCoordinator {
 
 function isNotFound(error) {
   return error?.name === 'NotFoundError' || /not found/i.test(error?.message || '');
+}
+
+export function localRecoveryFailure(error, transactionId, detail) {
+  return Object.assign(new Error(`${error.message} ${detail}`, { cause: error }),
+    { code: 'LOCAL_RECOVERY_REQUIRED', transactionId, applied: null, recoveryRequired: true });
+}
+
+/** Normal commits and History Complete must reconcile the same durable receipt boundary. */
+export async function commitLocalReceipt(request, {
+  transactionId, environmentId, transactionToken, authorizationToken, receipts,
+}) {
+  const base = `/api/transactions/${encodeURIComponent(transactionId)}`;
+  const headers = { 'X-Citadel-Environment': environmentId, 'X-Citadel-Transaction': transactionToken };
+  const recoveryFailure = (error, detail) => localRecoveryFailure(error, transactionId, detail);
+  const inspect = () => request(`${base}?environmentId=${encodeURIComponent(environmentId)}`);
+  try {
+    const result = await request(`${base}/receipt`, {
+      method: 'POST',
+      headers: { ...headers, 'X-Citadel-Authorization': authorizationToken },
+      body: JSON.stringify({ receipts }),
+    });
+    return { ...result, transactionId, applied: true, outcome: 'applied' };
+  } catch (error) {
+    // An unanswered receipt may already be committed. Never undo source bytes
+    // while that durable outcome is uncertain.
+    let recorded;
+    try { recorded = await inspect(); }
+    catch (inspectionError) {
+      throw recoveryFailure(error, `The receipt could not be confirmed. Source bytes were retained; inspect History recovery. ${inspectionError.message}`);
+    }
+    const confirmed = (record) => ({
+      transactionId, status: 'committed', committedAt: record.transaction.committedAt,
+      applied: true, outcome: 'applied',
+      warnings: [
+        'The receipt response failed, but the committed journal confirms this save.',
+        ...(record.transaction.auditRecorded === false
+          ? ['The terminal audit is still pending. Inspect History before another change.'] : []),
+      ],
+    });
+    if (recorded.transaction.status === 'committed') return confirmed(recorded);
+    // Recovery is already durable here; repeating /fail is an invalid transition.
+    if (recorded.transaction.status === 'failed' && recorded.transaction.recoveryRequired) {
+      throw recoveryFailure(error, 'The save receipt is not confirmed. Source bytes were retained; inspect History recovery.');
+    }
+    try {
+      await request(`${base}/fail`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ changedAliases: receipts.map((file) => file.alias) }),
+      });
+    } catch (recoveryError) {
+      let latest;
+      try { latest = await inspect(); }
+      catch (inspectionError) {
+        throw recoveryFailure(error, `Source bytes were retained, but recovery could not be recorded or confirmed. Inspect History. ${recoveryError.message} ${inspectionError.message}`);
+      }
+      if (latest.transaction.status === 'committed') return confirmed(latest);
+      throw recoveryFailure(error, `Source bytes were retained, but recovery could not be recorded. Inspect History. ${recoveryError.message}`);
+    }
+    throw recoveryFailure(error, 'The save receipt is not confirmed. Source bytes were retained; inspect History recovery.');
+  }
 }
 
 function contractCreationBoundary(transaction) {
@@ -61,8 +127,8 @@ function contractCreationBoundary(transaction) {
  * Local folder coordinator.
  *
  * This is the existing prepare/backup/authorize/commit/receipt protocol plus the
- * journal-driven recovery and History behavior that previously lived inside
- * `WorkspaceService`. Behavior is unchanged; only ownership moved.
+ * journal-driven recovery and History behavior. Ordinary saves and History
+ * Complete share receipt reconciliation; rollback keeps its source-safety rules.
  */
 export class LocalTransactionCoordinator extends MutationCoordinator {
   constructor(options = {}) {
@@ -120,8 +186,9 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
     return {
       transaction: result.transaction,
       files,
+      unconfirmedCreation: Boolean(unconfirmedNativeCreation(result.transaction)),
       canComplete:
-        result.transaction.status === 'reverting'
+        unconfirmedNativeCreation(result.transaction) ? false : result.transaction.status === 'reverting'
           ? files.every((file) => file.state === 'absent')
           : files.every((file) => file.state === 'final'),
     };
@@ -141,25 +208,24 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
       }
     );
     const transaction = inspection.transaction;
+    const configuration = configurationOf(context.environment);
+    const native = configuration.format === 'terraform';
+    if (native) await nativeHistoryProof(provider, configuration, transaction);
     const transactionHeaders = {
       'X-Citadel-Environment': environmentId,
       'X-Citadel-Transaction': recovery.transactionToken,
     };
     if (action === 'complete' && transaction.status !== 'reverting') {
+      if (inspection.unconfirmedCreation) throw new Error('This native creation is unconfirmed. Citadel will not adopt a present file. Keep or move the file outside Citadel; rollback can close this attempt once the selected path is absent.');
       if (!inspection.canComplete) throw new Error('Not every target matches its planned final hash.');
-      return this.request(`/api/transactions/${encodeURIComponent(transactionId)}/receipt`, {
-        method: 'POST',
-        headers: {
-          ...transactionHeaders,
-          'X-Citadel-Authorization': recovery.authorizationToken,
-        },
-        body: JSON.stringify({
-          receipts: inspection.files.map((file) => ({
-            alias: file.alias,
-            hash: file.currentHash,
-            size: file.currentSize,
-          })),
-        }),
+      return commitLocalReceipt(this.request.bind(this), {
+        transactionId, environmentId, transactionToken: recovery.transactionToken,
+        authorizationToken: recovery.authorizationToken,
+        receipts: inspection.files.map((file) => ({
+          alias: file.alias,
+          hash: file.currentHash,
+          size: file.currentSize,
+        })),
       });
     }
     if (action !== 'rollback' && !(action === 'complete' && transaction.status === 'reverting')) {
@@ -168,6 +234,7 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
 
     const receipts = [];
     for (const file of [...transaction.files].reverse()) {
+      if (native) await nativeHistoryProof(provider, configuration, transaction);
       let current = null;
       try {
         current = await provider.read(file.alias);
@@ -176,6 +243,7 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
       }
       if (!file.existed) {
         if (current) {
+          if (inspection.unconfirmedCreation) throw new Error('This native creation is unconfirmed. Citadel will not remove a present file, even when it matches the proposed bytes. Keep or move it outside Citadel before retrying rollback.');
           if (current.hash !== file.finalHash || current.size !== file.finalSize) {
             throw new Error(`Created source changed outside Citadel UI: ${file.alias}`);
           }
@@ -192,6 +260,9 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
         continue;
       }
       if (current?.hash !== file.originalHash || current?.size !== file.originalSize) {
+        if (native && (current?.hash !== file.finalHash || current?.size !== file.finalSize)) {
+          throw new Error('The native recovery target has foreign or missing bytes. No backup was applied.');
+        }
         const backup = await this.request(
           `/api/transactions/${encodeURIComponent(transactionId)}/backups/${encodeURIComponent(file.id)}?environmentId=${encodeURIComponent(environmentId)}`,
           {
@@ -203,6 +274,7 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
           create: !current,
           expectedHash: current?.hash ?? null,
           finalHash: file.originalHash,
+          ...(native ? { validateBeforeWrite: () => nativeHistoryProof(provider, configuration, transaction) } : {}),
         });
         current = verified;
       }
@@ -226,6 +298,9 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
     if (!restorable.length) {
       return this.revertCreation(detail.transaction, { context });
     }
+    const configuration = configurationOf(context.environment);
+    const native = configuration.format === 'terraform';
+    const proof = native ? await nativeHistoryProof(provider, configuration, detail.transaction) : null;
     const token = await this.request(
       `/api/transactions/${encodeURIComponent(transactionId)}/restore-token`,
       {
@@ -249,6 +324,9 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
       } catch (error) {
         if (!isNotFound(error)) throw error;
       }
+      if (native && (current?.hash !== file.finalHash || current?.size !== file.finalSize)) {
+        throw new Error('The native History target no longer matches the saved transaction. Its current bytes were not overwritten.');
+      }
       files.push({
         alias: file.alias,
         before: current?.bytes || null,
@@ -258,16 +336,21 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
         create: !current,
       });
     }
-    return this.commit(files, { action: 'history-restore', context });
+    return this.commit(files, { action: 'history-restore', context,
+      ...(native ? { nativeProof: proof, validateBeforeWrite: () => nativeHistoryProof(provider, configuration, detail.transaction) } : {}) });
   }
 
   async revertCreation(transaction, options = {}) {
     const context = this.resolve(options);
     const provider = context.provider;
     const boundary = contractCreationBoundary(transaction);
-    if (!boundary || transaction.status !== 'committed') {
+    const configuration = configurationOf(context.environment);
+    const nativeCreation = configuration.format === 'terraform' && transaction.files.length &&
+      transaction.files.every((file) => !file.existed && unitForAlias(configuration, file.alias)?.allowCreate);
+    if ((!boundary && !nativeCreation) || transaction.status !== 'committed') {
       throw new Error('This transaction has no prior file bytes to restore.');
     }
+    if (nativeCreation) await nativeHistoryProof(provider, configuration, transaction);
     const current = new Map();
     for (const file of transaction.files) {
       let source;
@@ -304,6 +387,7 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
 
     const receipts = [];
     for (const file of [...transaction.files].reverse()) {
+      if (nativeCreation) await nativeHistoryProof(provider, configuration, transaction);
       await provider.remove(file.alias, {
         expectedHash: file.finalHash,
         removeEmptyDirectories: (revert.cleanupDirectories || []).filter((directory) =>
@@ -325,6 +409,8 @@ export class LocalTransactionCoordinator extends MutationCoordinator {
     );
     return {
       ...result,
+      applied: true,
+      outcome: 'applied',
       transactionId: transaction.transactionId,
       removed: receipts.map((item) => item.alias),
     };

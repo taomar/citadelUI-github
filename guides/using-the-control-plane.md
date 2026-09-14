@@ -1,382 +1,710 @@
 # Using Citadel Control Plane
 
-Citadel Control Plane edits the configuration of a Citadel AI Hub Gateway
-repository. It reads the banner comments those files already carry and renders
-them as guidance, so the explanation beside a field is the repository's own.
+Citadel edits Bicep/Citadel configuration and native Terraform inputs in
+independent workspaces. Changes remain drafts until you review and save.
+It does not run Terraform, deploy resources or manage state.
 
-Nothing is written until you review and save, and every save is a verified
-transaction.
+This guide and its refreshed screenshots describe the reviewed desktop/tag UI
+on `taomar-citadel-orchestrator`, not an older `main` checkout or running image.
+Use the [delivery-branch checkout](../README.md#start-with-a-clone) or an
+operator-supplied image built from that reviewed source. Publishing the branch
+does not update an existing installation.
+Screenshots use synthetic files, labels and endpoints, not deployed services.
 
----
+| Start here | Task |
+| --- | --- |
+| [First run](#first-run) | Claim a new instance or sign in |
+| [Workspaces](#workspaces) | Choose format and Local/GitHub source |
+| [Native Terraform](#native-terraform-workspaces) | Select roots and operator value files |
+| [Open a saved workspace](#open-a-saved-workspace) | Resume an existing editing profile |
+| [The three areas](#the-three-areas) | Work with Bicep configuration and policy |
+| [Resource tags](#resource-tags) | Stage source-defined literal Bicep tag additions, edits and removals |
+| [Reviewing and saving](#reviewing-and-saving) | Confirm the destination and handle conflicts |
+| [Migration](#migrate-citadel-configuration) | Bring older values into current Bicep templates |
+| [Terraform export](#export-to-terraform) | Download Terraform inputs from saved Bicep values |
+| [Timed diagnostics](#troubleshooting-with-debug) | Capture a bounded support report |
 
 ## First run
 
-A new container or desktop data store has no owner. The first person to open it
-creates the account, and it is the only account that installation will ever
-have.
+Use the **Electron desktop application**, or desktop **Microsoft Edge or Google
+Chrome** for container/hosted instances. Local folder access requires
+the File System Access API and a secure browser context: HTTPS when hosted,
+or the supported container origin <http://127.0.0.1:4173>. Electron uses
+<http://127.0.0.1:4174>. Keep the same origin and browser/Electron profile to
+retain folder permissions.
 
-![Create the owner account](../docs/images/01-first-run-owner.png)
+1. Open the instance supplied by your operator.
+2. On a new instance, enter a username and password and choose **Create owner
+   and continue**. The first person to claim it becomes its only owner.
+3. On an existing instance, choose **Sign in** with that owner's credentials.
 
-There is no second user and no password reset. Signing in is what issues the
-session token every other request uses, so reaching the URL is not on its own
-enough to use the application.
+![Empty first-use owner form in an isolated example instance](../docs/images/01-first-run-owner.png)
 
----
+There is no second account or password reset. Store the password safely.
+If an established instance unexpectedly asks you to create an owner, stop and
+have the operator check the original data mount. Do not create a replacement
+identity or delete state to repair sign-in.
+
+### After a local app update
+
+Save or deliberately discard pending work before a planned restart. After an
+[image-only update](./deployment.md#update-an-existing-local-container), refresh
+the page to load the new browser code and sign in with the existing owner.
+Session-only GitHub connections need **Reconnect**. Encrypted saved connections
+can be restored when their original credential key is available.
+
+![Empty returning-owner Sign in form in the same synthetic instance, with no new-account action](../docs/images/06-sign-in.png)
+
+Keep the original browser origin, profile and local folders. Completed migration
+**Prepared sources** survive in preserved application data. Unsaved editor,
+policy, migration and export choices are not a general restart/reload recovery
+mechanism. A local source import's retry record is memory-only: keep its dialog
+open while copying or retrying.
 
 ## Workspaces
 
-A workspace is one Citadel repository. It can be a folder on this machine, or a
-GitHub repository on a branch you choose. Attached workspaces are listed and open
-in one click.
+A **project** groups named editing profiles. A **workspace** binds a configuration
+format to a source and its editing state; some Settings and storage fields call
+it an **environment**. These names do not create a deployed environment or a
+Terraform CLI/state workspace. A native **unit** is one supported root plus one
+explicit operator value file within a workspace.
 
-![Citadel workspaces](../docs/images/03-workspaces.png)
+Choose the flow that matches your task:
 
-Adding one is a guided sequence. Choose **Existing GitHub Repo**, **New GitHub Repo**, or
-**Local**. The repository is checked for the capabilities the editors need before
-it is attached; an incomplete tree is rejected rather than half-opened.
+| Task | Format and action |
+| --- | --- |
+| Edit existing Bicep parameters and policy | **Bicep / Citadel**, then **Local** or **Existing GitHub Repo** |
+| Edit native Terraform values | **Terraform (native)**, then **Local** or **Existing GitHub Repo** |
+| Make a new local Bicep/Citadel source copy | **Bicep / Citadel > Create local from Citadel source** |
+| Make a new private GitHub Bicep/Citadel repository | **Bicep / Citadel > New GitHub Repo** |
+| Import older configuration values | Open the current Bicep destination, then **Tools > Migrate configuration** (Experimental) |
+| Convert saved Bicep values to a download | Open the Bicep workspace, then **Tools > Export Terraform inputs** (Experimental) |
 
-![Add workspace](../docs/images/04-add-workspace.png)
+Native editing needs neither a Bicep workspace nor an export first. The two
+starter-copy options are Bicep-only; neither prepares a native Terraform root.
 
 A **local folder** is granted through the browser's folder picker; the handle
 stays in the Chrome, Edge, or Electron profile and never enters the server
-process. **Existing GitHub Repo** needs a fine-grained token with Contents read
-and write, limited to the repositories it should reach. Saves become one commit
-on a working branch.
+process.
 
-![GitHub connection](../docs/images/05-github-connection.png)
+1. Choose **Add workspace** or **Add your first workspace**.
+2. Set **Configuration format**, then choose the source.
+3. For **Local**, enter the project/workspace details and display-only **Local
+   path**, then use **Choose Citadel folder**. Select the repository folder that
+   contains the configuration, not `CitadelUI/` or the application's `.data`.
+4. For **Existing GitHub Repo**, select a named connection or
+   [add a token](#add-a-github-token). Choose a repository and explicitly select
+   its source branch. No branch is selected automatically.
+5. For Terraform, complete [native input selection](#native-terraform-workspaces).
+   For Bicep, the attachment checks the Main deployment, LLM onboarding and
+   Access template capabilities and reports anything missing.
+6. Review the format, source, names and destination, then choose **Attach workspace**.
+
+![Add workspace with Terraform selected, Local and GitHub choices available, and Bicep starter-copy options disabled](../docs/images/60-native-format-loading.png)
+
+In this repository's Bicep layout, choose the root containing `bicep/infra/`.
+A Terraform attachment instead needs the native layout below. A source folder
+does not become compatible simply because it contains this application.
+
+The Local path is a display label, **not filesystem authority**. The browser's
+selected folder handle determines every read and write. If the display path is
+invalid, use **Back**, correct it, and retry attachment.
+
+A Local folder has one workspace owner. Use a distinct folder for another
+workspace, not the same folder under a different label or an overlapping
+parent/child. A named GitHub connection can serve both formats and multiple
+repositories/branches. Each workspace retains its own repository, actual working
+branch and drafts. Native files on the same repository/working branch cannot
+have overlapping owners, even through different credentials.
+
+### Native Terraform workspaces
+
+During attachment, **Choose native root and value files** lists candidates from
+the selected source. File inventory is not automatic selection or permission
+to edit every listed file.
+
+| Area | Root relative to the selected repository | Operator value file |
+| --- | --- | --- |
+| Azure Deployment | Repository root | `environments/<name>.tfvars` |
+| LLM Onboarding | `llm-backend-onboarding/` | A named `.tfvars` directly in that directory |
+| Access Contracts | `citadel-access-contracts/` | A named `.tfvars` directly in that directory |
+
+Each selected root must contain `variables.tf` and `main.tf` with the supported
+native schema. Explicit `.tfvars.json` files are also supported in these
+locations. Examples such as `.tfvars.example` are templates, not active values;
+`.auto.tfvars` is not an edit target. JSON selection does not configure your
+external Terraform invocation; use the appropriate explicit `-var-file` there.
+
+1. Choose **Area** and enter **Operator value file (repository-relative)**.
+   Use a listed candidate or the exact intended path, including its extension.
+2. If the file is missing and creation is intended, check **Create an empty
+   operator file if absent; never copy examples or defaults**. Otherwise select
+   an existing file. Git-ignored inputs may exist locally but be absent from
+   GitHub; choosing Local is an option when the needed file is on your machine.
+3. Confirm **This is a nonsecret operator file. Whole-file backups and commits
+   must not contain credentials.**
+4. Choose **Add native unit**. Repeat for each root/file pair, then choose
+   **Validate native inputs** and review the attachment.
+
+Any area can stand alone. Multiple Access configurations are separate units,
+not Bicep-style contract directories. Opening an absent input creates no file;
+the first reviewed save creates an empty-start operator file with your supplied
+values. Citadel never copies an example or writes missing defaults merely
+because you opened the editor.
+
+Native inputs use the same parameter fields, switches, object/list controls and
+backend/model cards as Bicep, bound to native names, types and defaults. For
+example, LLM uses `llm_backend_config`, `backend_id` and `supported_models`.
+Do not substitute the Bicep names.
+
+| Control or state | Meaning |
+| --- | --- |
+| **Not supplied in this file** | Absent input; a schema default may be shown but is not written |
+| **Set value** | Start an explicit value that you must complete and review |
+| **Use schema default** | Explicitly copy a supported default into your draft |
+| **Set null** | Write explicit null where allowed; null is not absence |
+| **Omit; inherit default** / **Omit input** | Remove an eligible supplied value |
+| Unsupported or untyped input | Preserved read-only rather than assigned a guessed type |
+
+![Synthetic native Deployment draft showing optional_note and its declared-but-unconsumed advisory](../docs/images/61-native-deployment.png)
+
+**Inputs are not effective runtime state.** Unevaluated validations and
+declared-but-unconsumed inputs remain advisories, including after editing.
+Real type/value, secret, scope and staleness errors still block review or Save.
+A variable reference does not prove its nested settings affect deployed
+resources. No Terraform, provider, module, script, cloud ID or APIM expression
+is evaluated. Export's equivalence rules are separate from native editing.
+
+**Only selected nonsecret operator files are writable.** `variables.tf`,
+bounded `.tf` dependencies and conventional shared policy XML are read-only.
+State, plans, provider/backend/output configuration, credentials, `.terraform`
+and unrelated value files are not writable targets. The Bicep subscription
+environment bridge is not available in native workspaces.
+
+Known secret-bearing operator **or dependency files** block the workflow,
+including edits to unrelated nonsecret fields. Whole-file backups and commits
+would otherwise carry that material; hiding a value in the UI does not make
+them safe. Empty/null slots can remain. The pinned schema's exact public PII
+placeholder is a schema-default exception only, not permission to save an
+operator secret. Detection is conservative, not a guarantee that arbitrary
+files are secret-free. Configure real credentials outside this editor.
+
+Native Access policies belong to each service's literal `policy_xml` input.
+The editor escapes Terraform template markers on disk while preserving
+unrelated source. An empty string selects the pinned root's conventional default;
+the `.tf` configuration owns that behavior. Use **Inspect shared policy source
+(read-only)** to examine it, not to change a file shared by other units.
+`file()` is not valid in `.tfvars`; the default's `file()` belongs in `.tf`.
+XML checking is tag-balance validation, not APIM runtime validation.
+
+![Synthetic native Access service with its own policy_xml editor and literal template-looking text](../docs/images/62-native-access-policy.png)
+
+#### Switching and reconnecting
+
+Switch through **Settings** or the workspace catalog without reloading the page.
+Eligible independent parameter drafts, nonsecret policy buffers, selections and
+editor state are retained per workspace/unit. During a load, the previous
+editor and navigation are disabled. Values typed before navigation are recorded
+in that document's draft; Cancel or a failed load returns to the predecessor.
+
+Nonsecret parameter drafts also carry source and native identity in browser
+storage. Changed file/schema identity can quarantine a draft instead of applying
+it. In-app preservation is not multi-tab synchronization or a promise of full
+page-close/reboot recovery. Unsaved external XML policy buffers are not durable,
+and known-secret buffers are not persisted.
+
+Native format/root/file/repository/branch bindings are immutable. Use a new
+workspace for different bindings. Older Bicep profiles keep their IDs/history;
+unknown future descriptor versions are refused.
+
+**Lost native folder handle:** restoring permission to the retained original
+handle is different from losing the handle. After browser-profile loss, selecting
+the same folder does not reconnect the old native identity. Preserve the old
+record/history; a new workspace has a new identity and must use a folder the
+ownership checks permit. If the existing folder is refused, use a separate
+operator-managed source copy or stop for support. Do not clear registry/history
+or claim that old drafts have moved to the new workspace.
+
+Disjoint GitHub units still share a branch head. A commit in one invalidates
+old approvals in another while preserving drafts for fresh review. Commits
+remain exact-head and non-forced. An explicitly named recovery branch does not
+silently retarget a native workspace.
+
+#### Local creation and parser boundaries
+
+Keep the destination untouched by other applications during new-file creation.
+The confirmation explains the browser's optimistic concurrency limit:
+absence/content/mtime/dependency checks and supported exclusive streams are
+**not atomic create-if-absent or OS-level exclusion**. Detected collisions stop;
+they do not offer existing-file overwrite. Simultaneous same-path creation
+cannot always be distinguished.
+
+A confirmed creation can offer **History > Undo creation** while its committed
+bytes and dependencies still match. An uncertain creation is not adopted or
+deleted just because bytes match. See
+[native creation recovery](../CitadelUI/BACKUP-RECOVERY.md#native-file-creation)
+before handling a partial result.
+
+The bounded parser preserves untouched spans, supported exact numbers,
+comments and CRLF/LF; it does not accept all valid HCL. Integer-mantissa
+exponents such as `2e30` and leading-zero forms stay read-only, unchanged.
+They are **unsupported editor syntax**, not necessarily invalid Terraform.
+Decimal-mantissa exponents and explicit JSON exponents are supported.
+The pinned upstream Access example's stray dot is a separate genuine source
+syntax error; Citadel does not repair it silently.
+
+Duplicates, malformed/ambiguous literals and unsupported expressions are
+refused. Some types/defaults cannot be edited. Read the
+[parser reference](../CitadelUI/README.md#offline-native-parser) for limits and
+packaging; use your own Terraform workflow for runtime validation.
+
+### Create a local project from Citadel source
+
+Choose **Bicep / Citadel > Create local from Citadel source** in **Add workspace**,
+or use **Settings > New project**. To edit existing files, choose **Local** instead.
+Neither Local flow needs a GitHub token.
+
+1. Review **GitHub source URL**. The default is the upstream accelerator's
+   `citadel-v1`, not `main`. **Prepare source and continue** pins one commit and
+   transfers the complete bounded source to the browser.
+2. Enter project/workspace labels, the display-only parent **Local path** and
+   **New project folder name**. Choose an empty parent folder. Hidden files and
+   `.git` make it nonempty; the child name must be one Windows-safe name.
+3. Review the source revision, full commit and exact child destination. Confirm
+   the checkbox, then choose **Import and open workspace**. Keep the destination
+   untouched until copying, byte verification and registration finish.
+
+![Local-copy review of a synthetic read-only source, pinned revision and exact example child-folder destination](../docs/images/04b-local-source-review.png)
+
+This example uses an offline synthetic source and destination; its displayed
+commit illustrates the review rather than identifying a live upstream release.
+
+The child becomes the workspace root. This copies the complete snapshot,
+including licenses, scripts, dotfiles and binary assets. It is not a Git clone:
+there is no Git history, remote, executable-mode restoration, script execution,
+deployment or old-value migration. Existing projects are not modified.
+
+**Pause** stops at a checkpoint; retry keeps the pinned commit. Source
+preparations expire after 30 minutes or a server restart. Once transferred,
+verified browser bytes support local retry without another download.
+Public reads are anonymous and do not borrow editable-workspace credentials.
+
+An existing child is rejected, even if empty. File System Access cannot prevent
+all concurrent writes or promise atomic directory creation. Detected conflicts
+stop without overwriting them. **Retry verified import** resumes only attributable,
+unchanged entries. **Choose another destination** retains the partial folder.
+**Keep folder and close**, reload or tab closure loses the retry record; a later
+import needs a fresh empty destination. No automatic cleanup deletes files.
+A completed but unregistered folder may use ordinary existing-folder attachment
+after reported registry recovery is resolved.
+
+For supported URLs, size/path limits and the copy boundary, see
+[local source creation](../CitadelUI/SECURITY.md#new-local-source-creation).
 
 ### Add a GitHub token
 
-Choose **Add workspace** (or **Add your first workspace**), then **Existing
-GitHub Repo**. If connections already exist, choose **Add a new connection**.
-Enter a **New connection name** first to enable the **GitHub token** field, paste
-your fine-grained personal access token, and select **Continue**. Choose a
-repository and explicitly select its branch, such as `main`.
+For **Existing GitHub Repo**, select a connection or **Add a new connection**.
+Name the connection first to enable **GitHub token**, paste a fine-grained
+personal access token, then select **Continue**.
 
-**Token help** beside the token label expands inline creation steps and a link
-to GitHub, without clearing your entries. It is available before you name the
-connection and when replacing a token through **Reconnect**.
+Create the token in GitHub **Settings > Developer settings > Personal access
+tokens > Fine-grained tokens**. Select the intended resource owner and **Only
+select repositories**, with **Contents: Read and write**. **Metadata: Read-only**
+is automatic. Ordinary editing does not need Administration, Actions, Workflows
+or Pull requests permissions. A pending organization approval can limit access.
+Classic tokens and the OAuth token from `gh auth token` are not accepted by default.
 
-Create the token in GitHub's **Settings > Developer settings > Personal access
-tokens > Fine-grained tokens**. Select the intended resource owner and
-**Only select repositories**, with **Contents: Read and write**.
-**Metadata: Read-only** is included automatically. Classic tokens and the OAuth
-token returned by `gh auth token` are not accepted.
+**Token help** expands instructions without clearing entries. In Settings,
+**How to create this token** opens help over the unfinished form; **Close** or
+**Escape** returns to that form without submitting it or enabling storage.
 
-Leave other permissions unset: Pull requests, Actions, Workflows and
-administration permissions are not needed. Contents read-only cannot create
-branches or save edits; Citadel does not offer a read-only workspace mode.
-If the organization requires approval, a pending token can only read public
-resources until an organization owner approves it.
+Enter tokens only in the UI, never `container.env`, Compose or Azure parameters.
+**Save this connection on the Citadel server (encrypted)** is optional and
+unchecked for a new connection. Without it, credentials are held in server
+memory and cleared on restart/disconnect. Reconnect with a token for the same
+GitHub account; another account requires a separate connection.
 
-Enter the token only in the UI, not in `container.env`, a Compose file, or an Azure
-parameter file. Local-folder workspaces do not need a GitHub token.
+Encrypted saving needs a configured credential key. The default local setup has
+none, so the checkbox is disabled with an explanation; session-only editing
+still works. Saved credentials live on the Citadel server, not in the browser.
+For details, see [connection storage](../CitadelUI/README.md#saving-a-connection-on-the-server-optional).
+Reading a migration source needs only read access; new-repository creation
+requires the separate broader permissions described below.
 
-The default local deployment has no credential key mounted. This disables only
-**Persist this connection on this device (encrypted)**, not token entry or
-GitHub access. Session-only connections work normally; after a container restart,
-use **Reconnect** on the saved connection and supply a token for the same account.
 The Electron release instead protects its credential key with the operating
 system's secure storage. Persistence remains unavailable rather than falling
 back to plaintext if that protection cannot be used.
 
-These permissions apply to editable workspaces. Reading an older GitHub source
-for migration needs only Contents read access, as described below.
+## Open a saved workspace
 
----
+1. Sign in and find the workspace under **Saved workspaces**. Search by label,
+   repository or branch; source/status filters narrow the list.
+2. Check its format, repository/folder and branch. **Ready** can be opened;
+   **Reconnect** needs credentials or permission. A missing native folder handle
+   has the recovery limitation described above.
+3. Choose **Open**, then select an area and file. Review the header's destination
+   before editing. Settings and the catalog switch profiles without combining
+   their state.
 
-## Migrate Citadel Configuration
+![Synthetic Bicep, native Terraform and export-source workspaces with separate Local folders](../docs/images/63-native-workspace-isolation.png)
 
-Open the **current destination workspace**, then choose **Migrate Citadel
-Configuration** in its command bar. The older repository is a read-only source:
-it does not need to pass current workspace compatibility checks and is not
-attached as another editable workspace. The destination's current parameter
-names and templates remain authoritative.
+The primary row action names the next step, such as **Open**, **Reconnect
+folder** or a connection review. **Actions** holds secondary operations.
+**Confirmation pending** means the retained reattachment still needs
+confirmation or revalidation, not that the workspace is ready. Follow the
+specific reason/action rather than detaching a workspace to clear its status.
 
-### Source
-
-Choose **Local folder**, **Parameter files**, or **GitHub repository**.
-
-| Source | Access |
-| --- | --- |
-| Local folder | Read-only browser permission for the currently checked-out files |
-| Parameter files | Explicit `.bicepparam` files or strict ARM deployment-parameters JSON; selected `.bicep` files can provide source schema metadata |
-| Public GitHub | **GitHub access > Public repository (anonymous)**; no PAT |
-| Private GitHub | **GitHub access > Personal access token** or **Saved GitHub connection** |
-
-For a source PAT, select only the repository to read and grant **Contents:
-Read-only**; **Metadata: Read-only** is automatic. Write, Administration, Actions,
-and all-repository access are not required. **Token help** links to GitHub's token
-creation page. A pasted source token is session-only and is cleared from the
-form on submission. Reusing a saved connection creates a separate source session
-without replacing or signing out the destination connection.
-
-Select **Connect source** for a PAT, or **Use source connection** for a saved
-connection. Enter the repository root URL, use **Find repository**, and explicitly
-choose a branch, tag, or full commit SHA before **Read GitHub source**. A URL ending
-in `/tree/main` must be entered as the repository root plus the separate `main`
-branch field. The default branch is shown as metadata, not selected automatically.
-Local folder selection reads files already on disk; it does not check out a branch.
-
-### Files and mapping
-
-In **Files**, choose a migration area, one current destination parameter file,
-and the source parameter files to compare. Deployment, APIM Upgrade, Supporting
-Services Upgrade, LLM Onboarding, and Access Contracts are separate areas.
-Select an existing Access Contract instance explicitly; similarly named contracts
-are never paired automatically.
-
-Choose **Inspect mapping**. Names match using Bicep's case-insensitive identifier
-rules, preserving the destination's casing. Only current names can receive values;
-legacy-only parameters are never introduced. Each source/current file pair reports
-its old-only names, or **None** when there are none, without exposing unused values.
-Duplicate candidates remain separate for review rather than being resolved by
-file order.
-
-Review each proposed value against the current type, constraints, and feature
-guidance before accepting it. Keeping current values preserves defaults for fields
-not supplied by the source. Expressions, references, sensitive values, unsupported
-schemas, and incompatible types remain unresolved rather than being evaluated or
-coerced. Matching names do not prove that feature behavior or meaning is unchanged.
-
-### Review and apply
-
-Choose **Preview draft & report** to inspect the sanitized diff. **Download report**
-and **Download sanitized draft** do not write either repository. The draft omits
-sensitive and unresolved expression values; it is a manual handoff, not a
-deployment-ready replacement file.
-
-For a local destination, **Review & apply locally** asks for explicit confirmation
-and uses the normal backup, verification, and rollback transaction. Pending editor
-work, changed files or schemas, a moved GitHub source ref, or a switched workspace
-invalidate the plan rather than overwriting newer work. Source repositories are
-never written. GitHub destinations remain **preview/local-export-only**, even
-when the ordinary workspace connection has write permission.
-
-Use **Review another file** for another area or file pair. Separate name reports
-remain available in the wizard, including after an apply; **Download all per-file
-name reports** saves that history before closing. Changing or leaving an
-authenticated source erases its source session. If erasure cannot be confirmed,
-retry the reported cleanup instead of assuming the token has been removed.
-
-Migration does not run deployment or upgrade scripts, clone Access Contract
-policies, or translate resource outputs between upgrade files. For exact target
-paths, supported formats, limits, and the pinned older `main` sample, see the
-[migration reference](../CitadelUI/README.md#migrate-citadel-configuration).
-
----
-
-## Create a new private GitHub repository
-
-**New GitHub Repo** creates a repository in the connected token's personal account.
-It is always **private**; there is no public option or organization-owner selector.
-An existing repository with the requested name is never overwritten.
-
-1. Connect the account with a temporary creation token. **Token help** in this
-   mode explains the additional permissions below. Use **Update token for
-   repository creation** if a saved connection only covers existing repositories.
-2. Enter the new repository name. **Source repository URL** starts at
-   `https://github.com/mohamedsaif/ai-hub-gateway-solution-accelerator/blob/citadel-v1/`.
-   You can replace it with another GitHub repository or branch URL. The explicit
-   `citadel-v1` ref is used, not the upstream repository's default `main`.
-   Use an unencoded `https://github.com/owner/repository` or `/tree/ref` URL.
-   File/subdirectory URLs, credentials, query strings, fragments and other hosts
-   are not accepted.
-3. Choose **Check source**. Citadel pins a commit, checks compatibility and the
-   complete file snapshot, and shows its file count and size. This creates
-   nothing on GitHub. Review it, then choose **Create private repository**.
-4. After the full snapshot is verified, **Continue to repository** returns to the
-   normal repository, branch, details and attachment review steps. Branch choice
-   and later editing behave exactly as for Existing GitHub Repo.
-
-Creation needs **All repositories** access under the connected personal account:
-the new repository cannot be selected before it exists. Grant **Administration:
-Read and write** to create it and **Contents: Read and write** to populate it.
-**Metadata: Read-only** is automatic. This is broader than the normal editor
-token; afterward narrow it to the new repository and remove Administration, or
-reconnect with a regular Contents-only token.
-
-Only if the source preview reports `.github/workflows` files, also grant
-**Workflows: Read and write**. Citadel disables Actions on that new repository
-before copying those files and leaves Actions disabled for your review.
-No Actions, Pull requests or organization permission is required.
-
-The result is a fresh snapshot on `main`, not a fork or a copy of upstream commit
-history. All checked-in files, including binary assets, dotfiles and license
-notices, are part of the copy; the editor's normal Bicep/XML filter is not used.
-Unsupported files, unsafe URLs, oversized snapshots and incomplete trees are
-reported rather than silently omitted.
-
-GitHub initially creates a small bootstrap commit. If the account's default
-branch is not `main`, Citadel publishes the verified snapshot on that known
-branch and then renames it to `main`. It does not delete a bootstrap ref or force
-a branch update. A concurrent branch or default-branch change pauses setup
-instead of being overwritten.
-
-Supported source files are regular Git files (`100644`) and executable files
-(`100755`); bytes and modes are preserved. Symlinks, submodules and Git LFS
-pointers are rejected before repository creation.
-
-| Source limit | Maximum |
-| --- | --- |
-| Total checked-in file bytes | 64 MiB |
-| Individual file | 8 MiB |
-| Files | 10,000 |
-| Directories | 2,000 |
-| Git manifest entries | 20,000 |
-| Manifest response | 8 MiB |
-| One directory's encoded tree request | 16 MiB |
-
-The tree-request limit includes JSON escaping, so a source below the total-byte
-limit can still exceed a per-directory limit. These limits are enforced during
-preflight, not by dropping files. Import writes are paced and pause at the
-importer's rolling 60-per-minute or 450-per-hour budget, or when GitHub reports
-a rate limit.
-
-**Pause setup** preserves progress. If a repository has already been created,
-it remains private and is never automatically deleted. Return through **New
-GitHub Repo**, open **Previous setup attempts**, and resume the same attempt instead
-of creating another. After a container restart or token expiry, reconnect the
-same account first. Permission and rate-limit failures are shown with the
-retained repository; a successful import is not reported until the complete
-snapshot is verified.
-
-If recovery state cannot be written, the importer stops further GitHub requests.
-Restore access to the persistent data directory, then resume the retained
-attempt. Confirmed publication is never replayed over a later external reset.
-
----
+GitHub attachment normally creates/reuses `citadel-ui/<environment-id>` from
+the source branch. Direct writes to the selected branch are an explicit opt-in.
+The source branch and actual write branch are not interchangeable.
+**Detach** removes the workspace record, not repository files or Git history;
+do not use it as a way to repair an unresolved transaction.
 
 ## The three areas
 
-Everything the gateway is operated through falls into three areas, shown down the
-left. Every other parameter file in the repository stays reachable under **All
-parameter files**.
+The following area walkthroughs describe **Bicep / Citadel**. For native names,
+files and semantics, use [Native Terraform workspaces](#native-terraform-workspaces).
 
-| Area | Edits | Answers |
+| Area | Bicep path in this repository | Task |
 | --- | --- | --- |
-| Azure Deployment | `bicep/infra/main.bicepparam` | How the hub itself is built |
-| LLM Onboarding | `llm-backend-onboarding/main.bicepparam` | Which models sit behind the gateway |
-| Access Contracts | One folder per contract | Who may use them, and under what limits |
+| Azure Deployment | `bicep/infra/main.bicepparam` | Configure the gateway infrastructure |
+| LLM Onboarding | `bicep/infra/llm-backend-onboarding/main.bicepparam` | Configure model backends |
+| Access Contracts | `bicep/infra/citadel-access-contracts/` | Configure use cases and their policies |
 
----
+The **Workspace explorer** selects the guided areas and their files.
+**All parameter files** exposes the other supported files; its search narrows
+that local inventory, not cloud resources. Contract labels retain source context
+so similarly named entries can be distinguished.
+
+The global header contains the workspace chooser, **Diagnostics** and
+**Settings**. Beneath it, the contextual command bar shows the document,
+configuration format, source and actual write destination. **Review & save**
+stays separate from **History**, **Discard** and **Tools**; the menu groups
+**Compare & copy** and the experimental migration/export workflows.
+
+The document strip shows the file path, **Parameters** / **Raw file** modes and
+category tabs. Check that context before editing or confirming a save.
+Draft prompts identify the owning document; navigating to another file does
+not turn an old input or notice into authority to change the new one.
 
 ## Azure Deployment
 
-The hub's own parameters, grouped into the sections the file already declares:
-Basics, Features, Resources, Networking, Inference logs, Compute and Accelerator.
+Parameters are grouped using the source file's sections and comments. Review
+the guidance beside a field rather than assuming another workspace has the
+same defaults.
+
+### Resource tags
+
+For a literal Bicep `tags` object, the rows are the keys actually present in
+your file. The editor does not require or insert `Owner` or `Purpose`; they
+are valid optional names if you choose them. In these root-shaped examples,
+`azd-env-name` and `SecurityControl` come from the source, while `cost-center`
+is an explicit demonstration addition.
+
+1. Open **Azure Deployment > tags** and check the owning file/source.
+2. Edit an existing value in its row, or enter **Tag name** and **Tag value**.
+   Choose **Add tag** to stage the new entry; Enter in either new-entry input
+   also stages it. Typing alone does not add a property. Review cannot save an
+   unfinished addition; stage it or clear both new-entry inputs.
+3. Use the row's **Remove** action to stage a removal. To rename, remove the
+   old key and add the new one. Removing the last key leaves an empty object.
+   If the source already has `tags = {}`, the same add controls are available.
+4. Choose **Review & save**, inspect the destination and proposed source, then
+   **Save changes**. Reopen or reload to read the saved entries.
+5. To undo a completed tag modification, open **History**, choose **Restore
+   prior**, and confirm **Back up and restore**. Restore still checks current
+   source/ownership; it is not a force overwrite or a Git history rewrite.
+
+![Synthetic literal Bicep tags with source-defined entries and cost-center staged before saving](../docs/images/64-resource-tags.png)
+
+Blank or whitespace-only names and exact duplicate names show an inline error
+and do not add a tag. Valid names retain their spelling and case; an empty
+string value is allowed. The editor's representation reserves `__proto__`,
+`__expr`, `__args` and `__tfNumber`; this is not an Azure tag-policy list.
+
+This control is for literal top-level Bicep `tags`, not a whole-object
+expression, every generic object, or a native Terraform map. Existing
+expression-valued entries retain their supported syntax/fallback controls.
+Unchanged source spans, including neighboring expressions and comments, are
+preserved. The UI neither evaluates those expressions nor validates deployed
+provider-specific tagging rules.
 
 ### Feature flags turn capabilities on and off
 
-Each flag decides whether a capability is deployed at all. Turning one off does not
-merely hide it — the resources behind it are not created, and the parameters that
-belong only to it stop being asked for.
-
-![Feature flags](../docs/images/10-deployment-features.png)
-
-The flags are grouped by what they affect: gateway APIs such as model inference,
-document intelligence and realtime; data, safety and governance such as AI Search,
-managed Redis, PII redaction and API Center; identity and observability such as
-Entra authentication and Application Insights dashboards; and network topology.
-
-A disabled capability hides only the inputs proven exclusive to it by the Bicep
-module graph. Shared settings, and any unsaved edits that depend on them, stay
-visible rather than vanishing with unsaved work inside them.
+In Bicep, capability flags determine what the gateway deploys, not merely what
+the form displays. The editor hides only inputs proven exclusive to a disabled
+capability by the Bicep module graph. Shared settings and unsaved dependent
+edits remain visible. Native inputs do not inherit this as a runtime guarantee.
 
 ### Networking understands the address plan
 
-Address fields are checked when you leave the control, against Azure's own rules
-rather than a regular expression.
-
-![Networking parameters](../docs/images/11-deployment-networking.png)
-
-Each prefix reports what it actually buys — `64 total addresses · 59 usable after
-Azure reserves the first four and last address` — so an undersized subnet is
-visible before deployment rather than after it.
-
-Subnets are checked against one another. An overlap is named precisely, on both
-fields involved, and blocks the save:
-
-![Overlapping subnets](../docs/images/12-vnet-overlap.png)
-
-The header keeps a running count of blocking errors, and **Review & save** stays
-disabled while any remain. The same checks cover malformed and non-canonical
-CIDRs, ranges Azure prohibits, subnets that fall outside the VNet, unsupported
-prefix sizes, and insufficient capacity for the services and private endpoints
-that must fit inside them.
-
----
+Leaving a network field runs the supported IPv4/CIDR, range, containment,
+overlap, prefix-size and capacity checks. Counts distinguish total addresses
+from those usable after Azure reservations. Field-level errors explain the
+affected subnets; blocking findings disable **Review & save**.
+These input checks do not test deployed network connectivity.
 
 ## LLM Onboarding
 
-Everything about the models behind the gateway: the API Management instance they
-are registered on, the managed identity used to reach them, the backends
-themselves, circuit breaking, session affinity and model aliases.
+Open `llmBackendConfig` to work with backend and model cards rather than edit
+the untyped Bicep array by hand. Choose a provider, review its authentication
+default, and supply the appropriate named value or Key Vault URI. Plaintext
+secrets are flagged.
 
-![LLM onboarding](../docs/images/20-llm-onboarding.png)
+Priority and weight control backend routing inputs. **Add model** offers
+provider-specific suggestions and still accepts an explicit model ID.
+The editor checks supported required fields, duplicate identities and bounds;
+the routing preview is not a live gateway probe.
 
-`llmBackendConfig` is an untyped array in Bicep, which means the compiler cannot
-help you and neither can a generic form. It gets a purpose-built editor instead.
-
-![LLM backends](../docs/images/21-llm-backends.png)
-
-Each backend names its provider, endpoint and authentication mode. The editor
-knows the default authentication mode for each provider type, shows the derived
-default, lets you override it, and asks for a named value or Key Vault URI only
-when the chosen mode actually needs one. Plain-text secrets are flagged.
-
-Priority and weight control routing between backends. Adding a model offers the
-models known to work with that provider, rather than requiring the exact string
-from memory.
-
----
+Use the picker's search and provider grouping, or enter an explicit model ID.
+Advanced details remain available without treating catalogue suggestions as
+proof that a model is deployed or reachable.
 
 ## Access Contracts
 
-One contract is one use case: a product, its subscriptions, and the API Management
-policy that constrains it. Each is a folder holding a parameter file and its own
-policy document, created from a template and then edited independently.
-
-![Access contracts](../docs/images/30-access-contracts.png)
-
-Opening one gives its parameters, its policy, and the raw file.
-
-![Contract parameters](../docs/images/31-contract-parameters.png)
+One Bicep contract represents a use case, its subscriptions and policy.
+Select the contract before editing its parameters or XML. The catalog
+distinguishes an owned policy from **Policy (default)**; the latter is not a
+separate per-contract file.
 
 ### Editing the policy
 
-The policy is API Management XML. The editor presents it as the blocks it is
-actually made of, each of which can be switched on or off, with the raw XML always
-one click away.
+Policy blocks expose scope, allowed models, budgets, rate limits and other
+supported settings. Raw XML remains available. Cross-file checks can flag a
+policy model that is not onboarded. Advanced/source details retain expressions;
+unsupported guided predicates are inspect-only rather than guessed values.
+Neither the guided preview nor XML checks evaluate APIM expressions.
 
-![Contract policy](../docs/images/32-contract-policy.png)
-
-Scope, allowed models, token limits, request rate limits, quotas, content safety,
-semantic caching, authentication, PII handling, alerting, response headers and
-policy fragments each appear as a block. The header shows how many are active.
-
-The editor checks the policy against the rest of the repository, not just against
-itself. A model allowed here that has not been onboarded in LLM Onboarding is
-flagged by name — a mistake that would otherwise surface as a runtime rejection
-long after the deployment succeeded.
-
----
+Editing the Bicep **Template** policy changes the starting point for future
+contracts. Native Access instead edits
+the selected service's embedded `policy_xml` and keeps shared XML read-only.
 
 ## Reviewing and saving
 
-Edits accumulate as pending changes. The header shows how many there are and
-whether anything blocks the save.
+1. Edit the selected file. The header shows pending changes and blocking findings.
+2. Choose **Review & save** (or **Review & save policy** for Bicep XML). Inspect
+   the destination and proposed bytes; resolve any reported conflict before proceeding.
+3. Confirm Save and wait for its receipt. Repeated clicks do not create separate
+   concurrent saves.
+4. Reopen the file to read saved source. After a page refresh, sign in/reconnect
+   if required; do not treat page refresh as a way to preserve every unsaved buffer.
 
-**Review & save** shows what will be written before it is written. On confirmation
-the browser backs up every target, writes, verifies the resulting hashes, and
-restores from the verified backup bytes if any part fails. A failed multi-file
-write leaves the repository as it was.
+| Workspace source | Where Save writes | What `/data` holds |
+| --- | --- | --- |
+| Local | The original selected file on the browser's machine, through its folder handle | Transaction journals and verified original-byte backups, not a mounted editable repository |
+| GitHub | One reviewed commit on the workspace's registered working branch | Application metadata; original source revisions remain in Git history |
 
-For a GitHub workspace, a save becomes one commit on a working branch you choose.
-For a local folder it is written through the same verified transaction directly to
-disk.
+For an **existing Local file changed outside Citadel**, Review/Save offers
+**Cancel** or **Back up and overwrite**. Cancel retains the draft. Confirmed
+overwrite backs up the **current external on-disk bytes**, not the stale loaded
+copy, then writes the reviewed replacement. Backup failure writes nothing.
+Another change after confirmation stops and requires renewed consent.
 
-**Discard** abandons every pending change without touching the repository.
+This is intentionally an overwrite, not a merge or rebase. Checks occur at
+Review/Save, not through a background watcher, auto-refresh or automatic reload.
+New-file collisions use the separate optimistic-creation rules, not this option.
+Secret, schema, scope, permission and workspace guards remain in force.
 
-Each save appends a redacted, hash-chained entry to the activity log, reachable
-from the landing page.
+For GitHub, a moved branch invalidates approval and retains edits for fresh
+review. Citadel never force-pushes. If the outcome is **indeterminate**, follow
+the shown reconciliation/reload instruction rather than blindly retrying:
+the commit may already exist.
+
+**Discard** abandons pending changes without writing the repository. For an
+interrupted save, open **History** in the command bar or **Settings > History** and follow
+[Backup and recovery](../CitadelUI/BACKUP-RECOVERY.md). Automatic rollback is
+bounded by source identity and ownership; an uncertain result can need explicit
+recovery. Never delete `/data` or overwrite unknown files to clear an error.
+
+## Migrate Citadel Configuration
+
+Use **Tools > Migrate configuration**, under **Experimental**, to compare older values
+with an existing **current Bicep destination**. It is not native Terraform
+editing, Terraform export or source-repository creation. Save or deliberately
+discard ordinary editor work before entering; refused entry keeps your drafts.
+
+### Source
+
+Choose **Local folder**, **Parameter files** or **GitHub repository**. A local
+source is read-only and uses its current checked-out files. Explicit inputs are
+`.bicepparam` or strict ARM deployment-parameters JSON; selected `.bicep` files
+can supply schema. The older source need not pass current workspace signatures.
+
+For GitHub, select **Public repository (anonymous)**, **Personal access token**,
+or **Saved GitHub connection** under **GitHub access**. A private-source token
+needs only selected-repository Contents read access. Its source session is
+separate from the editable destination connection.
+
+Enter the repository root URL, choose **Find repository**, explicitly select
+**Source branch**, then choose **Prepare source and continue**. Finding the
+repository only lists branches; it does not capture files. Tags and full commit
+SHAs have explicit ref modes. Local selection does not switch Git branches.
+
+### Files and mapping
+
+Preparation creates an immutable, sensitive application copy. Completed
+**Prepared sources** survive restart and loss of original access until explicitly
+deleted by the owner. **Refresh old source** alone reacquires files; a failed
+refresh retains the prior copy and drafts. Protect `/data`; these copies are not
+guaranteed secret-free or encrypted by migration.
+
+Select a source configuration and one existing current destination. Names and
+filenames do not automatically pair files. Loose inputs may need an explicit
+area; **Other old parameter files** handles parsed unfamiliar layouts.
+Each target, including separate Access instances, retains its own selections.
+
+**Inspect mapping** proposes only parameters already assigned in the new file.
+Old-only names are reported per pair, never added. **Use source value** chooses
+an import; **Match source values** resolves competing sources and backend/model
+pairing. Its default worklist is **Differences and unresolved matches**.
+**Find a new parameter** searches names; **Show imported** focuses the typed preview.
+
+Only changed selected fields show **Selected import - not saved** and
+**Undo import**. Unchecking a value restores the current value. Equal and
+unselected fields are not highlighted. Expressions, credentials, unsupported
+schemas and incompatible values remain unresolved; matching names do not prove
+equivalent behavior.
+
+### Review and apply
+
+For LLM, explicitly pair each backend, then choose model fields within that
+pair. No old backend array is imported wholesale; unselected identities,
+endpoints, authentication, models and fields remain current.
+
+Choose **Review migration**. **Nothing will change** means no write is proposed.
+Local **Apply selected values** requires confirmation and uses the verified
+backup/write protocol. Changed target files/templates, pending editor work or a
+switched workspace block it. Other target drafts and the prepared source remain.
+
+GitHub destinations are **preview/local-export-only**, even with normal write
+permission. **Download report** and **Download sanitized draft** write neither
+repository. Sanitized drafts omit sensitive/unresolved values and are manual
+handoffs, not deployment-ready replacements.
+
+Use **Review another file** to continue. **Download all per-file name reports**
+preserves the report history before closing. Leaving an authenticated source
+erases its source session; retry an unconfirmed cleanup rather than assuming
+erasure succeeded.
+
+Migration does not clone policy XML, execute expressions/scripts or infer
+resource-output handoffs. For exact formats, limits, target exclusions and the
+pinned older sample, use the [migration reference](../CitadelUI/README.md#migrate-citadel-configuration).
+
+## Export to Terraform
+
+**Tools > Export Terraform inputs**, under **Experimental**, downloads fresh Terraform variable files
+from **saved Bicep configuration**. This export workflow is not the native editor,
+a deployment or a Terraform state migration. It does not change the Bicep source,
+attach a Terraform workspace or write to a target repository.
+
+1. Save or deliberately discard ordinary parameter/policy drafts, then open
+   **Tools > Export Terraform inputs**. Refused entry retains drafts.
+2. Use **Include in ZIP** and choose one **Saved source** per included root.
+   Select one Access configuration explicitly. Its file may contain multiple
+   services, but separate contracts are never merged into one output.
+3. Inspect the proposed values in the shared parameter, Foundry, backend/model
+   and Access service controls. Mapped controls are read-only. Enter required
+   export-only values, such as `subscription_id`, and review target defaults.
+4. Resolve all blockers in included configurations, then choose **Review ZIP**
+   to inspect exact files and hashes.
+5. Choose **Approve & export ZIP** to download. If the source, template, policy
+   or workspace changed, use **Reload saved source** and review again.
+
+![Synthetic saved-source Terraform export with read-only Foundry controls and separate export-only inputs](../docs/images/50-terraform-main.png)
+
+| Mapping state | Meaning |
+| --- | --- |
+| Mapped | A consumed target input preserves the setting |
+| Transformed | An explicit conversion, fixed equivalent or inactive setting is explained |
+| Needs input | A literal or deliberate target choice is missing/invalid |
+| Requires Terraform change | The pinned target lacks a faithful mapping for active source behavior |
+
+Target-wiring differences can block naming, logging, Redis HA, Foundry/model,
+session-routing or extended Access settings. Excluding a whole area is a scope
+decision; it cannot waive blocked settings within an included area. Empty name
+overrides are not evidence that Terraform will address existing Bicep resources.
+Expand marked backend/model cards to inspect field-level reasons.
+
+![Synthetic Access export for one saved configuration, with read-only service and policy controls](../docs/images/53-terraform-access.png)
+
+The ZIP has **no wrapper directory** and contains only the produced files:
+
+| Included area | Default target-relative path |
+| --- | --- |
+| Azure Deployment | `environments/<environmentName>.tfvars` |
+| LLM Onboarding | `llm-backend-onboarding/terraform.tfvars` |
+| Access Contracts | `citadel-access-contracts/terraform.tfvars` |
+
+The environment identity must be 3-24 lowercase letters, numbers or hyphens,
+with no reserved device name. Invalid names are rejected, not renamed.
+Policy XML is embedded literally as `policy_xml`, with Terraform template
+markers escaped. The archive has no XML extras, reports, modules, providers,
+credentials or state. It is not a complete runnable Terraform repository.
+
+![Synthetic ZIP byte review with three target-relative paths and Approve & export ZIP](../docs/images/52-terraform-zip.png)
+
+**Mapping contract** identifies `citadel-terraform-export-v1`, targeting
+`Azure/terraform-ai-gateway-landing-zone` at
+`b54f121b7df912da61cb0302a63b9f870841ac2c`. It checks known shapes and local
+dependencies, not cloud permissions or deployment parity. Keep source files
+stable while approving; the browser cannot lock a whole repository.
+
+Area navigation retains independent export choices. **Exit export** clears only
+those in-memory choices and restores the editor; Cancel keeps export open.
+The [export reference](../CitadelUI/README.md#export-to-terraform) holds the
+mapping details and limits.
+
+## Create a new private GitHub repository
+
+Choose **Bicep / Citadel > New GitHub Repo**. This creates a private snapshot
+repository in the connected personal account, not a fork or a history copy.
+Existing repositories are never overwritten; organization destinations are not
+offered.
+
+1. Connect a temporary creation token. It needs **All repositories**,
+   **Administration: Read and write**, and **Contents: Read and write**;
+   **Metadata: Read-only** is automatic.
+2. Enter the new name and review **Source repository URL**. The default is the
+   upstream accelerator's `citadel-v1`, not its default `main`.
+3. Choose **Check source** to pin and validate the complete snapshot without
+   creating anything. Review it, then choose **Create private repository**.
+4. After verification, choose **Continue to repository** and complete the normal
+   branch/details/attachment flow. Narrow the token to the new repository and
+   remove Administration, or reconnect with a regular editing token.
+
+Only if preflight reports workflow files, also grant **Workflows: Read and write**.
+Citadel disables Actions before copying them and leaves Actions disabled for
+your review. It does not require Actions or Pull requests permissions.
+
+All checked-in supported files, modes, assets and licenses are copied.
+Unsafe/incomplete/oversized trees, symlinks, submodules and Git LFS pointers are
+refused, not silently dropped. See
+[repository creation reference](../CitadelUI/README.md#github-repositories)
+and [security boundaries](../CitadelUI/SECURITY.md#private-repository-initialization).
+
+**Pause setup** retains progress and any private repository already created.
+Use **Previous setup attempts** to resume it after reconnecting the same account.
+Rate limits, permission failures or unavailable recovery storage pause the
+operation; no automatic cleanup deletes the repository. A later external reset
+is not permission to replay confirmed publication.
+
+## Troubleshooting with /debug
+
+Choose **Diagnostics** in the application header to open a new tab, or open
+the exact **`/debug` route on the same instance**, for example
+<http://127.0.0.1:4173/debug> locally, and sign in as the normal owner.
+Visiting the page does not enable capture.
+
+Turn on **Instance-wide debugging**, reproduce the problem, turn it off, then
+choose **Download debug report**. Capture lasts at most a fixed 30 minutes
+across this server and connected signed-in browsers. Activity, reloads and
+closing the debug page do not extend or stop it. Running browsers normally sync
+within up to five seconds; sleeping/offline/crashed tabs can miss events.
+
+The report contains code-owned categories and static guidance, not raw messages,
+stacks, URLs, source values, headers, tokens or arbitrary console output.
+It does not sanitize or replace the original browser console. Sharing is manual.
+The bounded latest report is memory-only and lost on server restart, which
+leaves capture off. An empty report does not certify that the app is healthy.
+Use [Timed diagnostic capture](../CitadelUI/DIAGNOSTICS.md) for the full procedure,
+snapshot/final distinction and coverage limits.

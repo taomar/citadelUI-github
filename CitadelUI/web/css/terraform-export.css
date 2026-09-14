@@ -1,0 +1,367 @@
+/* Export decorates the incumbent datasheet; normal authoring is unchanged. */
+.tf-export-workspace,
+.tf-export-preview,
+.tf-source-row,
+.tf-target,
+.tf-field {
+  min-width: 0;
+}
+
+.tf-export-preview .prows {
+  display: block;
+}
+
+.tf-export-preview .prow:not(.prow-full) {
+  display: grid;
+  grid-template-columns: .125rem minmax(22ch, 29ch) minmax(0, 1fr);
+}
+
+.tf-export-preview .prow-full {
+  display: block;
+}
+
+.tf-export-preview .prow-name {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.tf-export-preview .pcell-ident {
+  align-items: start;
+  flex-wrap: wrap;
+}
+
+.tf-target {
+  overflow-wrap: anywhere;
+}
+
+.tf-row-notes {
+  flex-basis: 100%;
+  width: 100%;
+  margin-top: var(--sp-3);
+}
+
+.tf-row-choices {
+  grid-column: 3;
+  padding: var(--sp-5);
+  background: var(--band);
+}
+
+.tf-export-preview .prow-fullhead {
+  flex-wrap: wrap;
+}
+
+.tf-export-preview .prow-fullhead .tf-mapping-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-4) var(--sp-6);
+}
+
+.tf-export-preview .prow-fullhead .tf-mapping-details,
+.tf-export-preview .prow-fullhead .tf-mapping-note > .field-error {
+  flex-basis: 100%;
+}
+
+.tf-source-row {
+  border-bottom: 1px solid var(--rule);
+}
+
+.tf-mapping-head,
+.tf-input-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.tf-status-mapped { color: var(--success); background: var(--success-wash); }
+.tf-status-transformed { color: var(--cloud); background: var(--cloud-wash); }
+.tf-status-input { color: var(--warning); background: var(--warning-wash); }
+.tf-status-change { color: var(--danger); background: var(--danger-wash); }
+.tf-success { color: var(--success); }
+
+.tf-target-names,
+.tf-property-list {
+  margin-block: var(--sp-4);
+}
+
+.tf-target-names code,
+.tf-property-list code,
+.tf-unused code,
+.tf-review-provenance code {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.tf-output-path {
+  display: block;
+  color: var(--ink-3);
+  font: var(--t-meta) var(--mono);
+}
+
+.tf-mapping-details,
+.tf-service-inputs {
+  margin-top: var(--sp-5);
+}
+
+.tf-mapping-details > summary,
+.tf-service-inputs > summary,
+.tf-review-file > summary {
+  cursor: pointer;
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.tf-property-list > div,
+.tf-input-row,
+.tf-extra {
+  padding-block: var(--sp-4);
+  border-bottom: 1px solid var(--rule);
+}
+
+.tf-property-list dt,
+.tf-property-list dd {
+  margin: 0;
+}
+
+.tf-property-list dd {
+  margin-top: var(--sp-2);
+  color: var(--ink-2);
+}
+
+.tf-input-row > label {
+  display: block;
+  margin-bottom: var(--sp-3);
+  font-weight: 600;
+}
+
+.tf-input-row .ctl {
+  max-width: 100%;
+}
+
+.tf-input-row .hint,
+.tf-mapping-note p {
+  margin-block: var(--sp-3);
+}
+
+.tf-json-input {
+  width: 38ch;
+  resize: vertical;
+}
+
+.tf-fixed-value {
+  white-space: pre-wrap;
+  font: var(--t-meta) var(--mono);
+}
+
+.tf-export-preview .ctl:disabled {
+  opacity: 1;
+  color: var(--ink-2);
+  cursor: default;
+}
+
+.tf-source-selection,
+.tf-caption,
+.tf-notice,
+.tf-unused,
+.tf-extra-section,
+.tf-review {
+  padding: var(--sp-5) var(--gutter);
+}
+
+.tf-source-selection > label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-5);
+  font-weight: 600;
+}
+
+.tf-source-selector {
+  max-width: 100%;
+}
+
+.tf-column-head {
+  display: grid;
+  grid-template-columns: minmax(22ch, 29ch) minmax(0, 1fr);
+  gap: var(--sp-6);
+  padding: var(--sp-4) var(--gutter);
+  background: var(--band);
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--rule-strong);
+  font-weight: 600;
+}
+
+.tf-field-mapping {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2) var(--sp-3);
+  margin-top: var(--sp-3);
+  color: var(--ink-2);
+  font-size: var(--t-meta);
+}
+
+.tf-field-name,
+.tf-exact-value,
+.tf-structure-path,
+.tf-derived-field code,
+.tf-source-difference,
+.tf-blocker-summary {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.tf-field-name {
+  min-width: 0;
+}
+
+.tf-structure-path {
+  display: block;
+  margin-top: var(--sp-4);
+  color: var(--ink-2);
+  font-size: var(--t-meta);
+}
+
+.tf-field-status {
+  padding: .1em .4em;
+  border-radius: var(--r-2);
+  font-weight: 600;
+}
+
+.tf-source-difference,
+.tf-derived-field {
+  margin-top: var(--sp-3);
+}
+
+.tf-derived-field {
+  display: grid;
+  gap: var(--sp-2);
+  font-size: var(--t-meta);
+}
+
+.tf-local-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-5) var(--sp-7);
+}
+
+.tf-local-values > .hint {
+  flex-basis: 100%;
+}
+
+.tf-local-value {
+  min-width: 18ch;
+  max-width: 100%;
+}
+
+.tf-local-value .tf-field-mapping {
+  margin-bottom: var(--sp-3);
+}
+
+.tf-export-preview .pcell-val > .tf-field,
+.tf-export-preview .tf-field > .ctl:not(.ctl-num),
+.tf-export-preview .tf-field .lf-ctl > .ctl:not(.ctl-num) {
+  width: 100%;
+  max-width: 100%;
+}
+
+.tf-export-preview .lb,
+.tf-export-preview .lm-model-cell,
+.tf-export-preview .rec-cell,
+.tf-export-preview .lf-ctl {
+  min-width: 0;
+}
+
+.tf-export-preview .lm-name,
+.tf-export-preview .lb-id {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+
+.tf-export-preview .rec .raw-editor {
+  height: 22rem;
+  min-height: 12rem;
+}
+
+.tf-export-preview .rec-field:has(.raw-editor) {
+  grid-column: 1 / -1;
+}
+
+.tf-export-preview .policy-raw:disabled {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.tf-export-preview .pcell-val > .defs {
+  width: 100%;
+  grid-template-columns: minmax(16ch, .35fr) minmax(0, 1fr);
+}
+
+.tf-export-preview .defs-key {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  overflow: visible;
+}
+
+.tf-area-option {
+  border-bottom: 1px solid var(--rule);
+}
+
+.tf-include {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5) 0;
+  color: var(--nav-ink);
+  font-size: var(--t-meta);
+}
+
+.tf-include input {
+  accent-color: var(--brand);
+}
+
+.tf-rail-note {
+  padding: var(--sp-6) var(--sp-5);
+  color: var(--nav-ink);
+  font-size: var(--t-meta);
+  overflow-wrap: anywhere;
+}
+
+.tf-review-file {
+  margin-block: var(--sp-7);
+  padding-bottom: var(--sp-5);
+  border-bottom: 1px solid var(--rule);
+}
+
+.tf-hcl {
+  max-height: 30rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.terraform-export-mode .tf-target .btn {
+  white-space: normal;
+}
+
+.terraform-export-mode .tf-notice {
+  margin: 0;
+}
+
+.terraform-export-mode .sheet {
+  scroll-behavior: auto;
+}
+
+.tf-input-row [aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.tf-format-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}

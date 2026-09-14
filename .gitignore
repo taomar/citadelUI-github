@@ -404,9 +404,15 @@ local/**/*
 
 .debug
 .git*
-!.github/
-!.github/workflows/
-!.github/workflows/citadel-ui-desktop-release.yml
+
+# Track the standing policy without exposing other ignored Git metadata.
+!/.github/
+/.github/*
+!/.github/copilot-instructions.md
+!/.github/workflows/
+/.github/workflows/*
+!/.github/workflows/citadel-ui-desktop-release.yml
+
 .vscode
 **/__azurite_db*__.json
 **/__blobstorage__
@@ -450,6 +456,7 @@ CitadelUI/.srv.log
 !CitadelUI/test/
 !CitadelUI/test/**
 CitadelUI/desktop/out/
+CitadelUI/desktop/.generated/
 
 # Citadel UI shell line-ending rules are source, despite the .git* rule.
 !CitadelUI/.gitattributes
@@ -463,3 +470,8 @@ CitadelUI/desktop/out/
 credential.key
 CitadelUI/container.env
 CitadelUI/.data/
+
+# Publish only the operator-facing Control Plane guides.
+/guides/*
+!/guides/deployment.md
+!/guides/using-the-control-plane.md

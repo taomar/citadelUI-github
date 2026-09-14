@@ -28,9 +28,11 @@ import {
   isRepositorySelectable,
   repositoryBlockedReason,
 } from './github-selection.mjs';
-import { closeDialog, showDialog } from './dialog.mjs';
+import { dismissDialog, showDialog } from './dialog.mjs';
 import { CONNECT_STAGES, StageTracker, createStageRegion } from './stage-progress.mjs';
 import {
+  CONNECTION_PERSISTENCE_LABEL,
+  connectionStorageDescription,
   connectionStatusLabel,
   isConnectionLive,
   isConnectionResumable,
@@ -338,8 +340,8 @@ function openTokenGuide() {
         'GitHub shows the token once. If the repository belongs to an organisation, an owner may need to approve the token before it works.'
       )
     ),
-    [element('button', { class: 'btn btn-primary', onclick: () => closeDialog() }, 'Close')],
-    { initialFocus: browserTab }
+    [element('button', { class: 'btn btn-primary', onclick: () => dismissDialog() }, 'Close')],
+    { stack: true, initialFocus: browserTab }
   );
 }
 
@@ -361,6 +363,7 @@ export function createGitHubPanel(options = {}) {
     listBranches = listGitHubBranches,
     checkCompatibility = checkGitHubCompatibility,
     sessions = githubSessions,
+    connections = listConnections,
   } = options;
 
   const selection = new RepositorySelection({
@@ -448,9 +451,11 @@ export function createGitHubPanel(options = {}) {
     id: 'setup-github-persist',
     type: 'checkbox',
     class: 'ctl-check',
+    'aria-describedby': 'setup-github-storage',
   });
+  const storageHint = element('small', { class: 'hint', id: 'setup-github-storage' });
   let savedConnections = [];
-  let vaultAvailable = false;
+  let vaultAvailable = null;
 
   /** The chosen saved connection, or null when the user is adding one. */
   function chosenConnection() {
@@ -458,6 +463,7 @@ export function createGitHubPanel(options = {}) {
   }
 
   function renderConnections() {
+    const selected = connectionSelect.value;
     connectionSelect.replaceChildren(
       element('option', { value: '' }, 'Add a new connection\u2026'),
       ...savedConnections.map((profile) =>
@@ -468,20 +474,22 @@ export function createGitHubPanel(options = {}) {
         )
       )
     );
+    if (savedConnections.some((profile) => profile.id === selected)) connectionSelect.value = selected;
     connectionSelect.hidden = savedConnections.length === 0;
     persistInput.disabled = !vaultAvailable;
   }
 
   async function loadConnections() {
     try {
-      const result = await listConnections();
+      const result = await connections();
       savedConnections = (result?.profiles || []).filter(
         (profile) => isConnectionLive(profile) || isConnectionResumable(profile)
       );
       vaultAvailable = Boolean(result?.vault?.available);
-    } catch {
+    } catch (error) {
       savedConnections = [];
-      vaultAvailable = false;
+      vaultAvailable = null;
+      selection.error = `Saved connections could not be loaded: ${error.message}`;
     }
     renderConnections();
     render();
@@ -582,9 +590,16 @@ export function createGitHubPanel(options = {}) {
     // here is refused after the fact rather than prevented.
     const busy =
       selection.loading || selection.connecting || restoring || attaching || Boolean(sessions?.busy);
-    accountLine.textContent = selection.connected
-      ? `Connected as ${selection.account.login}. The token stays in server memory only and is cleared on restart or disconnect.`
-      : TOKEN_REQUIREMENTS;
+    accountLine.textContent = selection.connected ? `Connected as ${selection.account.login}.` : TOKEN_REQUIREMENTS;
+    const profile = selection.connected
+      ? savedConnections.find((profile) => profile.id === selection.account.profileId) || selection.account.profile
+      : chosenConnection();
+    const persist = profile ? Boolean(profile.persisted || profile.credentialMode === 'persistent')
+      : selection.connected ? Boolean(selection.account.persisted) : Boolean(vaultAvailable && persistInput.checked);
+    persistInput.checked = persist;
+    storageHint.textContent = connectionStorageDescription({
+      available: vaultAvailable, persist, saved: Boolean(profile || selection.connected),
+    });
 
     // The attempt has to be visible, not merely inferable from a disabled
     // control. A user who cannot see that anything is happening reads a slow
@@ -835,6 +850,7 @@ export function createGitHubPanel(options = {}) {
       class: 'btn btn-sm',
       type: 'button',
       onclick: async () => {
+        const ownedFocus = document.activeElement === disconnectButton;
         try {
           const result = sessions ? await sessions.disconnect() : await disconnect();
           selection.reset();
@@ -843,6 +859,10 @@ export function createGitHubPanel(options = {}) {
               ? 'That GitHub session had already expired. The token is not in server memory.'
               : 'Disconnected from GitHub. The token was erased from server memory.'
           );
+          render();
+          if (ownedFocus && (document.activeElement === document.body || document.activeElement === disconnectButton)) {
+            (tokenInput.disabled ? connectButton : tokenInput).focus({ preventScroll: true });
+          }
         } catch (error) {
           // The credential may still be live, so the session id is deliberately
           // kept and the failure is shown rather than swallowed.
@@ -860,6 +880,8 @@ export function createGitHubPanel(options = {}) {
       connectButton.click();
     }
   });
+  connectionSelect.addEventListener('change', render);
+  persistInput.addEventListener('change', render);
   searchInput.addEventListener('input', () => selection.setRepositoryFilter(searchInput.value));
   branchSearch.addEventListener('input', () => selection.setBranchFilter(branchSearch.value));
   repositorySelect.addEventListener('change', async () => {
@@ -897,20 +919,21 @@ export function createGitHubPanel(options = {}) {
 
   root.replaceChildren(
     element(
-      'label',
-      { for: 'setup-github-connection' },
-      'Connection',
+      'div',
+      { class: 'setup-connection' },
+      element('label', { for: 'setup-github-connection' }, 'Connection'),
       element(
         'span',
         { class: 'setup-stack' },
         connectionSelect,
         connectionName,
         element(
-          'span',
-          { class: 'setup-github-mode' },
+          'label',
+          { class: 'setup-github-mode', for: 'setup-github-persist' },
           persistInput,
-          element('span', {}, 'Persist this connection on this device (encrypted)')
-        )
+          element('span', {}, CONNECTION_PERSISTENCE_LABEL)
+        ),
+        storageHint
       )
     ),
     element(

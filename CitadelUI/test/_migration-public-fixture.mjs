@@ -12,8 +12,8 @@ export const PUBLIC_MAIN_SAMPLE = Object.freeze({
   commit: '9ef37ad75a47ca89c179a0db5a4123e60c4c720e',
 });
 export const PUBLIC_REPO = 'synthetic/older-configuration';
-export const PUBLIC_FILE = 'legacy/main.bicepparam';
-export const PUBLIC_TEMPLATE = 'legacy/main.bicep';
+export const PUBLIC_FILE = 'legacy/bicep/infra/main.bicepparam';
+export const PUBLIC_TEMPLATE = 'legacy/bicep/infra/main.bicep';
 export const PUBLIC_TEXT = "using './main.bicep'\nparam count = 4\nparam retired = 'legacy-only'\n";
 export const PUBLIC_SCHEMA = 'param count int\nparam retired string\n';
 export const armParameters = (parameters) => JSON.stringify({
@@ -87,6 +87,17 @@ export class PublicGitHubMock {
     if (override) return override(this, target);
     const prefix = `/repos/${this.repository.full_name}`;
     if (path === prefix || path === `/repositories/${this.repository.id}`) return this.json(200, this.repository);
+    if (path === `${prefix}/branches`) {
+      const page = Number(target.searchParams.get('page') || 1);
+      const perPage = Number(target.searchParams.get('per_page') || 100);
+      const branches = [...this.refs.entries()].filter(([name]) => name.startsWith('heads/'))
+        .map(([name, ref]) => ({ name: name.slice('heads/'.length), commit: { sha: ref.object.sha }, protected: false }))
+        .sort((left, right) => left.name.localeCompare(right.name));
+      const next = page * perPage < branches.length;
+      return this.json(200, branches.slice((page - 1) * perPage, page * perPage), next ? {
+        link: `<https://api.github.com${prefix}/branches?per_page=${perPage}&page=${page + 1}>; rel="next"`,
+      } : {});
+    }
     let data;
     if (path.startsWith(`${prefix}/git/ref/`)) data = this.refs.get(path.slice(`${prefix}/git/ref/`.length));
     else if (path.startsWith(`${prefix}/git/commits/`)) data = this.commits.get(path.slice(`${prefix}/git/commits/`.length));

@@ -31,6 +31,8 @@ jobs:
         working-directory: CitadelUI/desktop
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -79,6 +81,12 @@ jobs:
         run: npx electron-forge make --platform=${{ matrix.platform }} --arch=${{ matrix.arch }}
       - name: Smoke test packaged application
         run: node run-packaged-smoke.mjs --platform=${{ matrix.platform }} --arch=${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-ui-evidence-${{ matrix.platform }}-${{ matrix.arch }}
+          path: CitadelUI/desktop/.generated/source-step-*.png
+          if-no-files-found: error
+          retention-days: 7
       - name: Stage release assets
         run: node stage-release.mjs --platform=${{ matrix.platform }} --arch=${{ matrix.arch }} --checksum-name=SHA256SUMS-${{ matrix.platform }}-${{ matrix.arch }}.txt
       - uses: actions/upload-artifact@v4
@@ -113,7 +121,10 @@ jobs:
             CitadelUI-macOS-arm64.dmg \
             CitadelUI-macOS-arm64.zip \
             CitadelUI-macOS-x64.dmg \
-            CitadelUI-macOS-x64.zip |
+            CitadelUI-macOS-x64.zip \
+            CitadelUI-build-win32-x64.json \
+            CitadelUI-build-darwin-arm64.json \
+            CitadelUI-build-darwin-x64.json |
             awk '{ print toupper($1) "  " $2 }' > SHA256SUMS.txt
       - name: Publish release
         shell: bash
@@ -122,8 +133,17 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#citadel-ui-desktop-v}"
+          source_revision="$(jq -r '.applicationRevision' release-assets/CitadelUI-build-win32-x64.json)"
+          for identity in release-assets/CitadelUI-build-*.json; do
+            jq -e --arg revision "$source_revision" --arg version "$version" \
+              '.applicationRevision == $revision and .version == $version and .dirty == false' "$identity" > /dev/null
+          done
           cat > release-notes.md <<EOF
           Citadel UI Desktop ${version} packages the existing Citadel Control Plane for Windows x64, macOS Apple Silicon, and macOS Intel.
+
+          Application source: [\`${source_revision}\`](https://github.com/${GITHUB_REPOSITORY}/tree/${source_revision}). This includes the current Bicep/native Terraform UI, modularized application, local-source creation, Diagnostics, and the Electron local-folder fixes. Versions through 1.1.3 packaged an older application baseline.
+
+          Every native package verifies the complete server/shared/web source inventory and hashes. The packaged UI test signs into an isolated instance, opens Add workspace, checks both formats and all four source choices, initializes the vendored native parser, and opens Diagnostics. Local-folder permission and persistent-workspace save checks run separately; native folder pickers are not automated.
 
           ## Assets
 
@@ -132,6 +152,9 @@ jobs:
           - \`CitadelUI-macOS-arm64.dmg\` and \`.zip\` - Apple Silicon
           - \`CitadelUI-macOS-x64.dmg\` and \`.zip\` - Intel Macs
           - \`SHA256SUMS.txt\` - checksums for every package
+          - \`CitadelUI-build-*.json\` - application/release revisions and bundled runtime hashes for each platform
+
+          Quit any older Citadel UI instance before opening this release. Replace the complete portable folder or macOS application, not only the executable. The window title and lower-left label display the desktop version and application source revision.
 
           Unless signing secrets were configured for this workflow, these packages are unsigned and the macOS packages are not notarized. Verify the checksum before opening a package. Production macOS distribution requires an Apple Developer ID certificate and notarization.
           EOF

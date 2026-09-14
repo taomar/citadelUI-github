@@ -170,6 +170,13 @@ export const ATTACH_STAGES = Object.freeze([
   { id: 'ready', label: 'Ready' },
 ]);
 
+export const LOCAL_ATTACH_STAGES = Object.freeze([
+  { id: 'revalidate', label: 'Checking local folder' },
+  { id: 'read', label: 'Reading Citadel configuration' },
+  { id: 'metadata', label: 'Saving workspace metadata' },
+  { id: 'ready', label: 'Ready' },
+]);
+
 /**
  * Bringing a saved connection back from its encrypted credential.
  *
@@ -258,7 +265,7 @@ export function createStageRegion(options = {}) {
     const slow = tracker.running && tracker.isSlow();
     waiting.hidden = !slow;
     waiting.textContent = slow
-      ? 'Still waiting for GitHub\u2026 large accounts and organisation approval can take a moment.'
+      ? options.waitingMessage || 'Still waiting for GitHub\u2026 large accounts and organisation approval can take a moment.'
       : '';
 
     failure.hidden = !tracker.error;

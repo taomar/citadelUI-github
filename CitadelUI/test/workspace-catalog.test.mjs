@@ -11,6 +11,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import vm from 'node:vm';
 
 import { installDom, readText } from './_dom-stub.mjs';
 import { TEST_TOKEN } from './_github-mock.mjs';
@@ -29,9 +30,19 @@ const {
 } = await import('../web/js/workspace-catalog.mjs');
 const { RESUME_STAGES } = await import('../web/js/stage-progress.mjs');
 const { closeDialog } = await import('../web/js/dialog.mjs');
+const { nativeConfiguration } = await import('./_native-fixture.mjs');
+
+test('native catalog rows expose format and selected units independently of transport and labels', () => {
+  const row = workspaceRow(localEnvironment({ label: 'Operator source', configuration: nativeConfiguration(['access']) }));
+  assert.equal(row.kind, 'local');
+  assert.equal(row.formatLabel, 'Terraform (1 unit)');
+  assert.deepEqual(row.capabilities, ['Access Contracts']);
+  assert.equal(workspaceRow(githubEnvironment()).formatLabel, 'Bicep');
+});
 
 const styles = readFileSync(new URL('../web/css/components.css', import.meta.url), 'utf8');
 const catalogSource = readFileSync(new URL('../web/js/workspace-catalog.mjs', import.meta.url), 'utf8');
+const catalogListSource = readFileSync(new URL('../web/js/workspace-catalog-list.mjs', import.meta.url), 'utf8');
 const contextSource = readFileSync(new URL('../web/js/workspace-context.mjs', import.meta.url), 'utf8');
 
 function githubEnvironment(overrides = {}) {
@@ -135,20 +146,27 @@ test('a local workspace is Missing when its folder handle is gone', () => {
   );
   assert.equal(
     workspaceStatus(localEnvironment({ compatibility: 'unavailable' }), { hasHandle: true }),
-    'incompatible'
+    'unavailable'
   );
 });
 
-test('every status has a word and a chip, and none of them is two words of hedging', () => {
+test('every status has an explicit label and chip, including pending confirmation', () => {
   assert.deepEqual(Object.keys(WORKSPACE_STATUS).sort(), [
     'incompatible',
     'missing',
+    'pending',
     'ready',
     'reconnect',
     'stale',
+    'unavailable',
   ]);
   for (const [key, meta] of Object.entries(WORKSPACE_STATUS)) {
-    assert.match(meta.label, /^[A-Z][a-z]+$/, key);
+    if (key === 'pending') {
+      assert.equal(meta.label, 'Confirmation pending');
+      assert.equal(meta.chip, 'chip-warn');
+    } else {
+      assert.match(meta.label, /^[A-Z][a-z]+$/, key);
+    }
     assert.match(meta.chip, /^chip-/, key);
   }
 });
@@ -339,7 +357,7 @@ test('the connections section names its account, status and attached workspaces'
   assert.match(text, /GitHub connections/);
   assert.match(text, /@octo-dev/);
   assert.match(text, /Session only/);
-  assert.match(text, /Persist this connection on this device \(encrypted\)/);
+  assert.match(text, /Save this connection on the Citadel server \(encrypted\)/);
   // A connected profile exposes what it actually reaches.
   assert.match(text, /taomar\/citadelQA @ main/);
 });
@@ -417,6 +435,53 @@ async function clickDialogButton(label) {
     await handler({ target: button });
   }
 }
+
+test('local attachment reports local stages and presents one actionable error through retry', async (t) => {
+  t.after(() => closeDialog());
+  const pathError = 'Enter an absolute local folder path.';
+  let attempts = 0;
+  let completed = null;
+  runAddWorkspace({
+    connections: [], vault: { available: false }, rows: [],
+    onDone: (workspace) => { completed = workspace; },
+    actions: {
+      createSelection: () => new RepositorySelection({ listRepositories: async () => ({ repositories: [] }) }),
+      pickFolder: async () => ({ name: 'fixture', kind: 'directory' }),
+      attachLocal: async ({ stage, localPath }) => {
+        stage('revalidate');
+        attempts += 1;
+        if (localPath === 'relative-fixture') throw new Error(pathError);
+        assert.equal(localPath, 'C:\\fixtures\\fixture');
+        stage('read');
+        stage('metadata');
+        stage('ready');
+        return { id: 'local-fixture' };
+      },
+    },
+  });
+  descendants(document.getElementById('modal')).find((node) => node.tagName === 'BUTTON' &&
+    readText(node).startsWith('LocalEdit')).click();
+  connectionControl('catalog-details-project-label').value = 'Fixture project';
+  connectionControl('catalog-details-environment').value = 'Fixture workspace';
+  connectionControl('catalog-details-path').value = 'relative-fixture';
+  await clickDialogButton('Choose Citadel folder');
+  await clickDialogButton('Continue');
+  await clickDialogButton('Attach workspace');
+  const modal = document.getElementById('modal');
+  const failures = descendants(modal).filter((node) => node.getAttribute('role') === 'alert' && !node.hidden);
+  assert.equal(failures.length, 1);
+  assert.equal(readText(failures[0]), pathError);
+  const labels = descendants(modal).filter((node) => node.classList.contains('stage-label')).map(readText);
+  assert.deepEqual(labels, ['Checking local folder', 'Reading Citadel configuration', 'Saving workspace metadata', 'Ready']);
+  assert.doesNotMatch(readText(modal), /Revalidating Citadel branch|working branch|waiting for GitHub/);
+  await clickDialogButton('Back');
+  connectionControl('catalog-details-path').value = 'C:\\fixtures\\fixture';
+  await clickDialogButton('Continue');
+  await clickDialogButton('Attach workspace');
+  assert.equal(attempts, 2);
+  assert.deepEqual(completed, { id: 'local-fixture' });
+  assert.equal(modal.open, false);
+});
 
 async function openConnectionStep(t, { connections = [], available = false, actions = {} } = {}) {
   t.after(() => closeDialog());
@@ -640,6 +705,13 @@ test('saved-connection reconnect also offers inline GitHub token help', async (t
   token.value = TEST_TOKEN;
   await clickDialogButton('Token help');
   assert.equal(help.hidden, false);
+  const links = descendants(help).filter((node) => node.tagName === 'A');
+  assert.equal(links.length, 1);
+  assert.equal(links[0].getAttribute('href'), 'https://github.com/settings/personal-access-tokens/new');
+  assert.equal(links[0].getAttribute('target'), '_blank');
+  assert.equal(links[0].getAttribute('rel'), 'noopener noreferrer');
+  assert.match(readText(help), /Only select repositories/);
+  assert.doesNotMatch(readText(help), /All repositories|Administration: Read and write|prefill|1-day/);
   await clickDialogButton('Token help');
   assert.equal(help.hidden, true);
   assert.equal(connectionControl('catalog-reconnect-token'), token);
@@ -717,8 +789,9 @@ test('the dropdown lists every saved connection and defaults to a usable one', (
 
 test('no branch is preselected, and the local path is a shorter flow', () => {
   assert.match(catalogSource, /h\('option', \{ value: '', selected: !selection\.branch \}, 'Select a branch/);
-  assert.match(catalogSource, /if \(state\.kind === 'local'\) return \['source', 'details', 'review'\];/);
+  assert.match(catalogSource, /const order = state\.kind === 'local' \? \['source', 'details', 'review'\]/);
   assert.match(catalogSource, /state\.githubIntent === 'new'\s*\? \['source', 'connection', 'creation', 'repository', 'branch', 'details', 'review'\]\s*: steps/);
+  assert.match(catalogSource, /state\.format === 'terraform' \? \[\.\.\.order\.slice\(0, -1\), 'native', 'review'\] : order/);
 });
 
 test('the review step names the exact commit the attach will be checked against', () => {
@@ -817,12 +890,12 @@ test('the table stacks into labelled blocks at a phone width', () => {
   // Specificity has to match the wide rule, or end-alignment survives the stack.
   assert.match(narrow, /\.catalog-table td:last-child:not\(\[colspan\]\) \{\s*text-align: start;/);
   // Every cell carries the label the stacked layout reveals.
-  const cells = catalogSource.match(/h\(\s*'td',\s*\{[^}]*\}/gs) || [];
+  const cells = `${catalogSource}\n${catalogListSource}`.match(/h\(\s*'td',\s*\{[^}]*\}/gs) || [];
   const unlabelled = cells.filter((cell) => !cell.includes('data-label') && !cell.includes('colspan'));
   assert.deepEqual(unlabelled, [], 'a table cell has no data-label to show when stacked');
   // The action buttons are one grid item. Placed straight into the cell they
   // become cells of their own, and every second button lands under the label.
-  assert.match(catalogSource, /\{ 'data-label': 'Actions' \},\s*\n\s*h\('div', \{ class: 'catalog-actions' \}/);
+  assert.match(catalogListSource, /\{ 'data-label': 'Actions' \},\s*\n\s*h\('div', \{ class: 'catalog-actions' \}/);
   assert.ok(styles.includes('@media (max-width: 30rem)'), 'no 320px rule');
 });
 
@@ -840,16 +913,62 @@ test('nothing in the catalogue is sized in pixels', () => {
 
 test('the catalogue survives a breakpoint change', () => {
   const app = readFileSync(new URL('../web/js/app.mjs', import.meta.url), 'utf8');
-  // `render()` is wired to two media-query listeners. Without a guard, resizing
-  // the window paints the empty workspace over whatever the setup screen has
-  // mounted — leaving a screen with no controls and an `ensureWorkspace` promise
-  // that can never resolve.
-  assert.match(app, /SECTIONS_IN_RAIL\.addEventListener\('change', \(\) => render\(\)\)/);
-  assert.match(app, /COMPACT_NAV\.addEventListener\('change', \(\) => render\(\)\)/);
-  assert.match(
-    app,
-    /function render\(\) \{\s*\n\s*if \(els\.shell\.dataset\.workspace !== 'active'\) \{\s*\n\s*updateHeaderContext\(\);\s*\n\s*return;/
-  );
+  const section = (start, end) => {
+    const first = app.indexOf(start), last = app.indexOf(end, first);
+    assert(first >= 0 && last > first, `Missing production section ${start}`);
+    return app.slice(first, last);
+  };
+  const compact = app.match(/^const COMPACT_NAV = window\.matchMedia\(.+\);$/m);
+  assert(compact, 'Use the actual compact media query, not a substitute listener.');
+  const calls = [], listeners = [];
+  const scope = {
+    els: {},
+    window: { matchMedia: (query) => ({ addEventListener: (event, callback) => {
+      assert.equal(event, 'change');
+      listeners.push({ query, callback });
+    } }) },
+    updateHeaderContext: () => calls.push('header'),
+    renderSidebar: () => calls.push('sidebar'),
+    renderEditor: () => calls.push('editor'),
+    renderStatus: () => calls.push('status'),
+  };
+  vm.runInNewContext([
+    compact[0],
+    section('function render() {', 'function renderEditor() {'),
+    section('function renderAfterBootstrap()', 'function renderContextRail()'),
+  ].join('\n'), scope);
+  assert.deepEqual(listeners.map(({ query }) => query).sort(), ['(max-width: 48rem)', '(min-width: 100rem)']);
+  assert.equal(listeners[0].callback, listeners[1].callback);
+  for (const { callback } of listeners) assert.doesNotThrow(() => callback());
+  assert.deepEqual(calls, []);
+  assert.deepEqual(Object.keys(scope.els), [], 'Pre-owner callbacks must not initialize or access shell content.');
+
+  const dom = installDom(), shell = dom.node('div'), catalog = dom.node('main'), search = dom.node('input');
+  shell.dataset.workspace = 'setup';
+  search.value = 'finance';
+  catalog.append(search);
+  shell.append(catalog);
+  dom.root.append(shell);
+  search.focus();
+  Object.assign(scope.els, { shell, workspace: catalog });
+  for (const { callback } of listeners) {
+    callback();
+    assert.deepEqual(calls.splice(0), ['header']);
+    assert.equal(catalog.children[0], search);
+    assert.equal(search.isConnected, true);
+    assert.equal(search.value, 'finance');
+    assert.equal(document.activeElement, search);
+  }
+  shell.dataset.workspace = 'active';
+  for (const { callback } of listeners) {
+    callback();
+    assert.deepEqual(calls.splice(0), ['header', 'sidebar', 'editor', 'status']);
+  }
+  for (const workflow of ['migration', 'terraform-export']) {
+    shell.dataset.workspace = workflow;
+    for (const { callback } of listeners) callback();
+    assert.deepEqual(calls, [], `${workflow} keeps ownership of its surface.`);
+  }
 });
 test('the catalogue is reachable and announced without sight', () => {
   assert.match(catalogSource, /'aria-label': 'Citadel workspaces'/);
@@ -857,7 +976,7 @@ test('the catalogue is reachable and announced without sight', () => {
   assert.match(catalogSource, /'aria-label': 'Search saved workspaces'/);
   assert.match(catalogSource, /'aria-label': 'Filter by source'/);
   assert.match(catalogSource, /'aria-label': 'Filter by status'/);
-  assert.match(catalogSource, /'aria-label': 'Saved workspaces table'/);
+  assert.match(catalogListSource, /'aria-label': 'Saved workspaces table'/);
   assert.match(catalogSource, /'aria-label': 'Add workspace progress'/);
   assert.match(catalogSource, /'aria-current': position === index \? 'step' : null/);
   assert.match(catalogSource, /'aria-expanded': String\(open_\)/);
@@ -867,9 +986,9 @@ test('the catalogue is reachable and announced without sight', () => {
   assert.match(catalogSource, /class: 'field-error catalog-error', role: 'alert'/);
   assert.match(catalogSource, /class: 'catalog-progress', role: 'status', 'aria-live': 'polite'/);
   // A horizontally scrollable region is focusable, so it is reachable by keyboard.
-  assert.match(catalogSource, /class: 'catalog-scroller',\s*\n\s*tabindex: '0'/);
+  assert.match(catalogListSource, /class: 'catalog-scroller',\s*\n\s*tabindex: '0'/);
   // The actions column header is named for a screen reader even though the
   // sighted header is empty.
-  assert.match(catalogSource, /class: 'sr-only' \}, 'Actions'/);
+  assert.match(catalogListSource, /class: 'sr-only' \}, 'Actions'/);
   assert.match(styles, /\.sr-only \{[^}]*clip-path: inset\(50%\);/s);
 });

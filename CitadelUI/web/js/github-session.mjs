@@ -183,10 +183,17 @@ export async function listGitHubBranches(repositoryId) {
  * the same check server-side against the head it is about to branch from, so a
  * stale or skipped result cannot create anything.
  */
-export async function checkGitHubCompatibility(repositoryId, branch) {
+export async function checkGitHubCompatibility(repositoryId, branch, configuration) {
+  if (configuration) return githubRequest(`/api/github/repos/${encodeURIComponent(repositoryId)}/compatibility`, {
+    method: 'POST', body: JSON.stringify({ branch, configuration }),
+  });
   return githubRequest(
     `/api/github/repos/${encodeURIComponent(repositoryId)}/compatibility?branch=${encodeURIComponent(branch)}`
   );
+}
+
+export async function nativeGitHubInventory(repositoryId, branch) {
+  return githubRequest(`/api/github/repos/${encodeURIComponent(repositoryId)}/native-inventory?branch=${encodeURIComponent(branch)}`);
 }
 
 export async function attachGitHubRepository(payload) {

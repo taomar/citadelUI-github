@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coverage-01 isolated synthetic component fixture</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/web/css/app.css">
+  <link rel="stylesheet" href="/web/css/components.css">
+  <link rel="stylesheet" href="/web/css/terraform-export.css">
+  <style>
+    body { display:block; margin:0; overflow:hidden; }
+    #review-sentinel { position:absolute; top:0; left:0; width:1px; height:1px; opacity:0; }
+    #workspace { height:100vh; padding:24px; overflow:auto; }
+    #review-host { min-width:0; }
+    #review-host > h1 { margin:0 0 20px; font-size:20px; }
+  </style>
+</head>
+<body>
+  <button id="review-sentinel" type="button" aria-label="Fixture keyboard start"></button>
+  <main id="workspace" aria-label="Isolated synthetic UI fixture"><div id="review-host"></div></main>
+  <dialog id="modal"></dialog>
+  <script type="module" src="./native-page.mjs"></script>
+</body>
+</html>

@@ -14,11 +14,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const lf = (s) => s.replace(/\r\n/g, '\n');
 const app = lf(readFileSync(new URL('../web/js/app.mjs', import.meta.url), 'utf8'));
 const html = lf(readFileSync(new URL('../web/index.html', import.meta.url), 'utf8'));
 const components = lf(readFileSync(new URL('../web/css/components.css', import.meta.url), 'utf8'));
+const foundation = lf(readFileSync(new URL('../web/css/app.css', import.meta.url), 'utf8'));
+
+test('the catalog retains the area frame without showing stale editor navigation', () => {
+  assert.match(html, /class="rail rail-areas catalog-rail" aria-label="Workspace overview"/);
+  assert.match(foundation, /\.shell \.catalog-rail,\s*\.shell\[data-workspace='setup'\] \.rail:not\(\.catalog-rail\)\s*\{[^}]*display:\s*none/);
+  assert.match(foundation, /\.shell\[data-workspace='setup'\] \.rail:not\(\.catalog-rail\)\s*\{[^}]*display:\s*none/);
+  assert.match(foundation, /\.shell\[data-workspace='setup'\] \.catalog-rail\s*\{[^}]*display:\s*flex/);
+  assert.match(foundation, /\.shell\[data-workspace='setup'\]\s*\{[^}]*--ctx-track:\s*0px/);
+  assert.match(html, /id="workspace" class="sheet" tabindex="-1"/);
+});
+
+test('the owner gate is a centered card on the navigation background', () => {
+  const gate = components.slice(components.indexOf('\n.gate {'));
+  assert.match(gate, /place-items:\s*center/);
+  assert.match(gate, /background:\s*var\(--nav\)/);
+  assert.match(gate, /\.gate-panel\s*\{[^}]*width:\s*min\(100%, 32ch \+ 12rem\)/);
+  assert.match(gate, /\.gate-panel\s*\{[^}]*box-shadow:/);
+  assert.match(gate, /\.gate-brand \.tb-mark\s*\{/);
+  assert.doesNotMatch(gate, /grid-template-columns:\s*var\(--rail-areas\)/);
+});
 
 test('the source line is suppressed when it only repeats the path above it', () => {
   const fn = app.slice(app.indexOf('function setSourceLine'));
@@ -55,6 +77,10 @@ test('the frame is sized for the row it actually has', () => {
   assert.doesNotMatch(components, /\.titleblock\s*\{[^}]*min-height:\s*3\.5rem/);
 });
 
+test('long context labels yield to desktop commands instead of painting underneath them', () => {
+  assert.match(components, /\.tb-crumb\s*\{[^}]*flex:\s*0 1 auto;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis/);
+});
+
 test('the brand divider is drawn from the frame ramp, not the sheet ramp', () => {
   // `--rule` is a paper tint. On the navy frame it read as a bright bar, which
   // is what made the brand look bolted on rather than part of the frame.
@@ -71,7 +97,40 @@ test('startup does not announce a wait while the catalogue is being read', () =>
   const init = app.slice(app.indexOf("els.shell.dataset.workspace = 'setup'"));
   const upToEnsure = init.slice(0, init.indexOf('await ensureWorkspace()'));
   assert.doesNotMatch(upToEnsure, /setStatus\(/);
-  // It is announced immediately after, where the work really is.
+  // Actual opening is owned by the document-session entry, not catalog browsing.
   const afterEnsure = init.slice(init.indexOf('await ensureWorkspace()'));
-  assert.match(afterEnsure.slice(0, 400), /setStatus\('Opening workspace/);
+  assert.match(afterEnsure.slice(0, 400), /await activateWorkspaceView\(workspace\)/);
+  const activation = app.slice(app.indexOf('async function activateWorkspaceView('), app.indexOf('/**\n * Never leave the sheet empty.'));
+  assert.match(activation, /withEditorLoad\('Opening workspace/);
+});
+
+test('header action colors cover interaction states without recoloring light-page buttons', () => {
+  const foundation = lf(readFileSync(new URL('../web/css/app.css', import.meta.url), 'utf8'));
+  assert.match(foundation, /\.btn-ghost\s*\{[^}]*color:\s*var\(--ink-2\)/);
+  assert.match(components, /\.titleblock \.btn\s*\{[^}]*color:\s*var\(--nav-ink\)/);
+  assert.match(components, /\.titleblock \.btn:hover:not\(:disabled\)\s*\{[^}]*background:\s*var\(--nav-hover\)/);
+  assert.match(components, /\.titleblock \.btn\[aria-pressed='true'\]:not\(:disabled\)/);
+  assert.match(components, /\.titleblock \.btn\[aria-expanded='true'\]:not\(:disabled\)/);
+  assert.match(components, /\.titleblock \.btn-primary\s*\{[^}]*background:\s*var\(--header-primary\)/);
+  assert.match(components, /\.titleblock \.btn:disabled\s*\{[^}]*opacity:\s*1;[^}]*color:\s*var\(--header-disabled-ink\)/);
+  assert.match(components, /\.titleblock \.btn-primary\[aria-busy='true'\]\s*\{[^}]*color:\s*var\(--header-primary-ink\)/);
+  assert.match(components, /\.titleblock :is\(a, button\):focus-visible\s*\{[^}]*outline:[^;]*var\(--header-focus\);[^}]*box-shadow:\s*none/);
+});
+
+test('header contrast covers secondary, primary, selected, disabled, focus and status surfaces', () => {
+  const report = JSON.parse(execFileSync(process.execPath, [
+    fileURLToPath(new URL('../tools/contrast.mjs', import.meta.url)), '--json',
+  ], { encoding: 'utf8' }));
+  assert.equal(report.failures, 0);
+  const header = report.results.filter((result) => result.scope === 'header');
+  assert.ok(header.length >= 20);
+  assert.ok(header.every((result) => result.ratio >= result.required));
+  assert.ok(header.some((result) => result.foreground === 'header-disabled-ink'));
+  assert.ok(header.some((result) => result.foreground === 'header-focus'));
+});
+
+test('narrow header commands wrap instead of clipping actions or their focus outlines', () => {
+  assert.match(components, /\.tb-command-set\s*\{[^}]*flex-wrap:\s*wrap;[^}]*overflow:\s*visible/);
+  assert.match(components, /\.tb-command-set > \*\s*\{[^}]*max-width:\s*100%;[^}]*white-space:\s*normal/);
+  assert.match(components, /\.tb-pending,\s*\.tb-clean\s*\{[^}]*white-space:\s*normal/);
 });

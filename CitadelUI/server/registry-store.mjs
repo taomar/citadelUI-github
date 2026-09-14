@@ -4,6 +4,8 @@ import { join } from 'node:path';
 
 import { atomicJson } from './atomic-json.mjs';
 import { transactionError } from './transactions.mjs';
+import { labelKey as stringLabelKey } from '../shared/label-key.mjs';
+import { assertNoWritableOverlap, assertUnchangedConfiguration, assertUnchangedNativeSource, bindingKey, configurationOf, validateConfiguration } from '../shared/workspace-configuration.mjs';
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
@@ -253,6 +255,7 @@ function environment(value) {
     'projectId',
     'label',
     'source',
+    'configuration',
     'folderName',
     'localPath',
     'fingerprint',
@@ -290,6 +293,7 @@ function environment(value) {
     projectId: id(value.projectId, 'project id'),
     label: label(value.label, 'environment label'),
     source,
+    ...(value.configuration === undefined ? {} : { configuration: validateConfiguration(value.configuration) }),
     fingerprint,
     toolVersion: label(value.toolVersion || '1.0.0-local', 'tool version'),
     settingsVersion: positiveInteger(value.settingsVersion || 1, 'settings version'),
@@ -415,7 +419,7 @@ function uniqueLabel(value, projectId, taken) {
 }
 
 function labelKey(value) {
-  return String(value).normalize('NFKD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+  return stringLabelKey(String(value));
 }
 
 /**
@@ -452,6 +456,8 @@ function assertUnique(environments) {
       item.source.connectionProfileId || '',
       item.source.repositoryId,
       item.source.sourceBranch,
+      item.source.workingBranch,
+      bindingKey(item.configuration),
     ].join('\u0000');
     if (attachments.has(attachmentIdentity)) {
       throw transactionError(
@@ -462,6 +468,7 @@ function assertUnique(environments) {
     }
     attachments.add(attachmentIdentity);
   }
+  assertNoWritableOverlap(environments);
 }
 
 export class RegistryStore {
@@ -509,7 +516,9 @@ export class RegistryStore {
    */
   async getEnvironment(environmentId) {
     const current = await this.read();
-    return current.environments.find((item) => item.id === environmentId) || null;
+    const environment = current.environments.find((item) => item.id === environmentId) || null;
+    if (environment) configurationOf(environment);
+    return environment;
   }
 
   async reconcile(input = {}) {
@@ -553,6 +562,11 @@ export class RegistryStore {
       }
       for (const candidate of input.environments || []) {
         const item = environment(candidate);
+        const prior = environments.get(item.id);
+        if (prior) {
+          assertUnchangedConfiguration(prior.configuration, item.configuration);
+          assertUnchangedNativeSource(prior, item);
+        }
         if (!projects.has(item.projectId)) {
           throw transactionError(400, 'UNKNOWN_REGISTRY_PROJECT', 'Environment project is unknown.');
         }

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <title>Terraform configuration</title>
+  <rect x="1" y="1" width="22" height="22" rx="5" fill="#f3effc"/>
+  <path d="m12 4 8 4-8 4-8-4 8-4Z" fill="#e5ddf8" stroke="#6a3fb5" stroke-width="1.8" stroke-linejoin="round"/>
+  <path d="m4 12 8 4 8-4M4 16l8 4 8-4" fill="none" stroke="#6a3fb5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

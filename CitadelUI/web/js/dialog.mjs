@@ -18,24 +18,27 @@ function setBackgroundInert(value) {
 }
 
 function focusFrame(frame) {
+  const shownAt = sequence;
   requestAnimationFrame(() => {
-    const target =
-      (frame.initialFocus instanceof Element && frame.initialFocus) ||
-      frame.body.querySelector('[autofocus], input:not(:disabled), select:not(:disabled), textarea:not(:disabled)') ||
-      frame.actions.at(-1) ||
-      host().querySelector('.modal-close');
-    target?.focus();
+    if (sequence !== shownAt || !host().open || stack.at(-1) !== frame) return;
+    const target = [frame.initialFocus, frame.body.querySelector('[autofocus]'),
+      frame.heading, host().querySelector('.modal-close')]
+      .find((node) => node instanceof Element && node.isConnected && !node.disabled &&
+        !node.closest('[inert]') && node.getClientRects().length);
+    target?.focus({ preventScroll: true });
   });
 }
 
 function renderFrame(frame) {
   const dialog = host();
+  frame.heading = h('h2', { id: frame.titleId, tabindex: '-1' }, frame.title);
+  frame.scroller = h('div', { class: 'modal-body' }, frame.status, frame.body);
   mount(
     dialog,
     h(
       'header',
       { class: 'modal-head' },
-      h('h2', { id: frame.titleId }, frame.title),
+      frame.heading,
       h(
         'button',
         {
@@ -47,22 +50,37 @@ function renderFrame(frame) {
         '\u2715'
       )
     ),
-    h('div', { class: 'modal-body' }, frame.body),
+    frame.scroller,
     h('footer', { class: 'modal-foot' }, frame.actions)
   );
+  frame.scroller.scrollTop = frame.scrollTop;
   dialog.setAttribute('aria-labelledby', frame.titleId);
   focusFrame(frame);
 }
 
-function closeHost() {
+function closeHost(restore = true) {
   const dialog = host();
+  const closedAt = sequence;
+  const target = restore ? restoreFocus : null;
   stack = [];
+  restoreFocus = null;
   setBackgroundInert(false);
   if (dialog.open) dialog.close();
   else dialog.replaceChildren();
-  const target = restoreFocus;
-  restoreFocus = null;
-  requestAnimationFrame(() => target?.isConnected && target.focus());
+  requestAnimationFrame(() => {
+    if (sequence !== closedAt || dialog.open || !restore) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== target && !dialog.contains(active) &&
+        active.isConnected && !active.disabled && !active.closest('[inert]') && active.getClientRects().length) return;
+    const replacement = target?.id ? document.getElementById(target.id)
+      : target?.dataset.shellFocus ? [...document.body.querySelectorAll('[data-shell-focus]')]
+        .find((node) => node.dataset.shellFocus === target.dataset.shellFocus)
+        : target?.dataset.editorFocus ? [...document.body.querySelectorAll('[data-editor-focus]')]
+          .find((node) => node.dataset.editorFocus === target.dataset.editorFocus) : null;
+    const destination = target?.isConnected && target !== document.body && !target.disabled ? target
+      : replacement && !replacement.disabled ? replacement : document.getElementById('workspace');
+    if (destination?.isConnected) destination.focus({ preventScroll: true });
+  });
 }
 
 function installListeners() {
@@ -80,7 +98,8 @@ function installListeners() {
     dismissDialog();
   });
   dialog.addEventListener('close', () => {
-    dialog.replaceChildren();
+    // Native close events are queued; a successor may already own this host.
+    if (!dialog.open) dialog.replaceChildren();
   });
   dialog.addEventListener('click', (event) => {
     if (event.target !== dialog) return;
@@ -119,9 +138,14 @@ function installListeners() {
 export function showDialog(title, body, actions = [], options = {}) {
   installListeners();
   const dialog = host();
+  const previous = stack.at(-1);
+  if (previous?.scroller) previous.scrollTop = previous.scroller.scrollTop;
   const frame = {
     title,
     body,
+    status: h('p', {
+      class: 'modal-status hint', role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true', hidden: true,
+    }),
     actions: actions.filter(Boolean),
     initialFocus: options.initialFocus || null,
     onDismiss: options.onDismiss || null,
@@ -129,20 +153,43 @@ export function showDialog(title, body, actions = [], options = {}) {
     // in flight. Without this, Escape or the backdrop would resolve the dialog
     // as cancelled while the work it launched carried on.
     preventDismiss: options.preventDismiss || null,
-    opener: document.activeElement,
+    opener: options.returnFocus instanceof Element ? options.returnFocus : document.activeElement,
     titleId: `modal-title-${++sequence}`,
+    scrollTop: 0,
   };
   if (!dialog.open) {
-    restoreFocus = document.activeElement;
+    restoreFocus = options.returnFocus instanceof Element ? options.returnFocus : document.activeElement;
     stack = [frame];
     setBackgroundInert(true);
     dialog.showModal();
   } else if (options.stack) {
     stack.push(frame);
+  } else if (options.replaceTop) {
+    frame.opener = stack.at(-1).opener;
+    stack[stack.length - 1] = frame;
   } else {
     stack = [frame];
   }
   renderFrame(frame);
+}
+
+/** Keep asynchronous feedback with its original frame, not a successor modal. */
+export function captureDialogStatus() {
+  const frame = stack.at(-1);
+  const announce = (message, tone = 'info') => {
+    if (!frame || !stack.includes(frame) || !host().open) return false;
+    frame.status.className = `modal-status ${tone === 'error' ? 'field-error' : 'hint'}`;
+    frame.status.hidden = !message;
+    frame.status.textContent = message || '';
+    return true;
+  };
+  announce.isCurrent = () => Boolean(frame && stack.at(-1) === frame && host().open);
+  announce.close = () => {
+    if (!announce.isCurrent()) return false;
+    closeHost();
+    return true;
+  };
+  return announce;
 }
 
 export function dismissDialog(result) {
@@ -150,21 +197,30 @@ export function dismissDialog(result) {
   // dialog exactly as it was, still owning the stack, and must not report itself
   // as cancelled.
   const current = stack.at(-1);
-  if (current?.preventDismiss?.()) return false;
+  if (current?.preventDismiss?.() || current?.actions.some((action) => action.getAttribute('aria-busy') === 'true')) {
+    current.status.hidden = false;
+    current.status.textContent = 'This action is still running. Wait for its outcome before closing.';
+    return false;
+  }
+  const dismissedAt = sequence;
   const frame = stack.pop();
+  const previous = stack.at(-1);
   frame?.onDismiss?.(result);
+  // A dismissal callback can synchronously transfer ownership to a new frame.
+  if (sequence !== dismissedAt || stack.at(-1) !== previous) return true;
   if (!stack.length) {
     closeHost();
     return true;
   }
-  const previous = stack.at(-1);
   renderFrame(previous);
-  requestAnimationFrame(() => frame?.opener?.isConnected && frame.opener.focus());
+  requestAnimationFrame(() => {
+    if (sequence === dismissedAt && host().open && stack.at(-1) === previous && frame?.opener?.isConnected) frame.opener.focus({ preventScroll: true });
+  });
   return true;
 }
 
-export function closeDialog() {
-  closeHost();
+export function closeDialog({ restoreFocus = true } = {}) {
+  closeHost(restoreFocus);
 }
 
 export function confirmDialog({

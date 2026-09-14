@@ -281,6 +281,7 @@ export class MockGitHub {
       return this.json(200, {
         sha: commit.sha,
         tree: { sha: commit.tree },
+        author: commit.author,
         parents: (commit.parents || []).map((sha) => ({ sha })),
       });
     }

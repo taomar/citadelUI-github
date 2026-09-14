@@ -6,6 +6,7 @@
  * repository cannot silently redirect a selection.
  */
 import { githubError } from './api.mjs';
+import { nativeInventoryAlias, workspaceScope } from '../../shared/workspace-configuration.mjs';
 import { refNameProblem } from '../../shared/git-refs.mjs';
 import {
   isSkippedDirectory,
@@ -175,12 +176,18 @@ export async function getRepository(client, token, repositoryId) {
 
 export async function listBranches(client, token, repositoryId) {
   const repository = await getRepository(client, token, repositoryId);
+  return listRepositoryBranches(client, token, repository);
+}
+
+export async function listRepositoryBranches(client, token, repository) {
   const { items, truncated } = await client.paginate(
     `/repos/${repository.fullName}/branches`,
-    { token, maxPages: 5, perPage: 100, maxItems: 500 }
+    { token, maxPages: 5, perPage: 100, maxItems: 500, requireArray: true }
   );
+  if (items.some((item) => !item || typeof item.name !== 'string')) {
+    throw githubError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an invalid branch list.');
+  }
   const branches = items
-    .filter((item) => item && typeof item.name === 'string')
     .map(describeBranch);
   branches.sort((left, right) => left.name.localeCompare(right.name));
   return { repository, branches, truncated };
@@ -193,7 +200,8 @@ export async function listBranches(client, token, repositoryId) {
  * rather than skipped when they fall inside the scope, because silently ignoring
  * them would let a repository hide a file the editor believes it enumerated.
  */
-export function filterSourceTree(entries) {
+export function filterSourceTree(entries, configuration = undefined, { nativeInventory = false } = {}) {
+  const scope = workspaceScope(configuration);
   const files = [];
   const rejected = [];
   for (const entry of entries || []) {
@@ -217,7 +225,9 @@ export function filterSourceTree(entries) {
     }
     if (parts.slice(0, -1).some(isSkippedDirectory)) continue;
     const leaf = parts.at(-1);
-    if (!isSourceExtension(leaf)) continue;
+    if (nativeInventory || scope.native) {
+      if (!(nativeInventory ? nativeInventoryAlias(path) : scope.includes(path))) continue;
+    } else if (!isSourceExtension(leaf)) continue;
     if (entry.mode === SYMLINK_MODE) {
       rejected.push({ path, reason: 'symlink' });
       continue;
