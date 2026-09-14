@@ -35,8 +35,14 @@ test('deployment docs: Electron release assets are operator-facing deployment op
     assert.match(text, /releases\/latest\/download\/CitadelUI-macOS-x64\.dmg/);
     assert.match(text, /releases\/latest\/download\/SHA256SUMS\.txt/);
   }
-  assert.match(section('Windows and macOS desktop release'), /127\.0\.0\.1:4174/);
-  assert.match(section('Windows and macOS desktop release'), /not notarized/i);
+  const desktop = section('Windows and macOS desktop release');
+  assert.match(desktop, /127\.0\.0\.1:4174/);
+  assert.match(desktop, /not notarized/i);
+  assert.match(desktop, /M1, M2, M3, M4/);
+  assert.match(desktop, /right-click \*\*Citadel UI\*\*.*choose \*\*Open\*\*/s);
+  assert.match(desktop, /restricted local\s+directory handle/);
+  assert.match(desktop, /github_pat_/);
+  assert.match(desktop, /gho_/);
 });
 
 test('deployment docs: Azure examples configure a Bicep parameter file instead of a shell parameter map', () => {

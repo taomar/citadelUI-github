@@ -72,7 +72,10 @@ or
 Portable macOS ZIPs are attached to the same release. Verify packages using
 [SHA-256 checksums](https://github.com/taomar/citadelUI-github/releases/latest/download/SHA256SUMS.txt).
 Packages are unsigned and the macOS builds are not notarized until signing
-credentials are configured.
+credentials are configured. See the
+[combined Windows and macOS guide](../guides/deployment.md#windows-and-macos-desktop-release)
+for architecture selection, Gatekeeper opening steps, local-folder access, and
+fine-grained GitHub PAT requirements.
 
 To build or run Electron from source instead:
 
@@ -94,7 +97,8 @@ application data under Electron's `userData` directory, normally
 `%APPDATA%\Citadel UI` on Windows or
 `~/Library/Application Support/Citadel UI` on macOS. Directory handles retained
 by another browser do not transfer to Electron, so existing local environments
-must be reconnected once.
+must be reconnected once. The `v1.1.2` native package tests verified restricted
+local-directory access on Windows, Apple Silicon, and Intel Mac.
 
 ## Deploy to Azure
 

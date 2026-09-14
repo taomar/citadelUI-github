@@ -64,7 +64,9 @@ under `desktop\out\release` with stable asset names:
 The first cross-platform release tag is `citadel-ui-desktop-v1.1.0`. A matching
 tag triggers `.github/workflows/citadel-ui-desktop-release.yml`, which builds and
 smoke-tests Windows x64, macOS Apple Silicon, and macOS Intel packages before
-publishing one GitHub Release with combined checksums.
+publishing one GitHub Release with combined checksums. The packaged smoke test
+also obtains read permission to a restricted local directory handle, so a
+release cannot publish when Electron local-folder access is broken.
 
 For local macOS builds, run on the matching Mac:
 

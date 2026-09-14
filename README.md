@@ -19,6 +19,11 @@ Download:
 - [macOS Intel DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-x64.dmg)
 - [SHA-256 checksums](https://github.com/taomar/citadelUI-github/releases/latest/download/SHA256SUMS.txt)
 
+See the
+[combined Windows and macOS deployment guide](guides/deployment.md#windows-and-macos-desktop-release)
+for Mac architecture selection, first launch, local-folder access, and GitHub
+PAT guidance.
+
 ZIP packages for both Mac architectures are also attached to the release.
 Verify the downloaded file against `SHA256SUMS.txt` before opening it. Packages
 are unsigned and the macOS builds are not notarized until Apple credentials are

@@ -21,6 +21,13 @@ Then verify it with
 Packages are unsigned and the macOS packages are not notarized until signing
 credentials are configured.
 
+Use the Apple Silicon download for M-series Macs and the Intel download for
+Intel Macs. On the first unsigned macOS launch, right-click the application in
+Finder, choose **Open**, and confirm **Open** only after verifying its checksum.
+The
+[combined desktop deployment guide](../../guides/deployment.md#windows-and-macos-desktop-release)
+also covers local-folder access and GitHub PAT requirements.
+
 ## Development
 
 ```powershell
@@ -33,7 +40,8 @@ The desktop application uses the fixed origin `http://127.0.0.1:4174`.
 Application state is stored under Electron's `userData` directory, normally
 `%APPDATA%\Citadel UI`. Browser directory handles are kept in the persistent
 `citadel-ui-desktop` Electron session and are separate from handles retained by
-Chrome or Edge.
+Chrome or Edge. Release `v1.1.2` passed packaged tests on Windows and both Mac
+architectures that granted read access to a restricted local directory handle.
 
 ## Windows release package
 

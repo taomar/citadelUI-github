@@ -36,10 +36,19 @@ It needs no Docker, Node.js, Azure account, or source checkout.
 | macOS Apple Silicon | [DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-arm64.dmg) | [ZIP](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-arm64.zip) |
 | macOS Intel | [DMG](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-x64.dmg) | [ZIP](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUI-macOS-x64.zip) |
 
+Use the Apple Silicon package for an M1, M2, M3, M4, or later Apple processor.
+Use the Intel package when **About This Mac** identifies an Intel processor.
+
 Verify every package against
 [SHA256SUMS.txt](https://github.com/taomar/citadelUI-github/releases/latest/download/SHA256SUMS.txt).
 Use the Windows installer or macOS DMG for the normal platform installation
 flow. For a ZIP package, extract the complete archive before running the app.
+
+On macOS, open the DMG and drag **Citadel UI** into **Applications**. These
+packages are currently unsigned and not notarized, so the first launch may be
+blocked by Gatekeeper. In Finder, right-click **Citadel UI**, choose **Open**,
+then choose **Open** in the warning. Do not bypass a warning if the downloaded
+file does not match the published checksum.
 
 Packages are unsigned and the macOS packages are not notarized until release
 signing credentials are configured. Windows therefore reports an unknown
@@ -52,6 +61,21 @@ the current user's Electron `userData` directory, and uses operating-system
 secure storage for the credential-encryption key: DPAPI on Windows and Keychain
 on macOS. Browser directory handles do not transfer between Chrome, Edge, and
 Electron, so reconnect an existing local workspace once.
+
+When choosing a repository under the user home directory, Desktop, or Downloads,
+Electron may show a **Restricted folder** warning. Choose **Allow this folder**
+only when it is the intended Citadel repository. Release `v1.1.2` fixed the
+desktop origin check for these locations; the packaged Windows, Apple Silicon,
+and Intel Mac smoke tests each obtained read permission to a restricted local
+directory handle.
+
+GitHub connections require a fine-grained personal access token beginning with
+`github_pat_`, limited to the intended repositories. An OAuth credential
+beginning with `gho_`, such as the credential normally used internally by the
+`gh` CLI, is not a fine-grained PAT and is intentionally refused by the Citadel
+connection form. The release was checked with a live, read-only GitHub request,
+and the PAT transport, session isolation, redaction, and repository flows passed
+their automated tests without writing to GitHub.
 
 On first launch, create the one owner account for this desktop data store. There
 is no password reset. Back up the desktop `userData\data` directory using the
