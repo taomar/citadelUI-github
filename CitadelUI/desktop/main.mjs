@@ -1,6 +1,8 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
+  ClipboardItem,
   dialog,
   safeStorage,
   session,
@@ -9,8 +11,10 @@ import {
 import squirrelStartup from 'electron-squirrel-startup';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   DESKTOP_ALLOWED_HOST,
@@ -23,6 +27,7 @@ import {
   resourceRoot,
   serverProcessPath,
   trustedDesktopOrigin,
+  trustedDesktopFileSystemRequest,
 } from './runtime-config.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -229,11 +234,20 @@ function configureSession() {
   });
   desktopSession.on('file-system-access-restricted', async (_event, details, callback) => {
     if (
-      details.origin !== DESKTOP_ORIGIN ||
       !mainWindow ||
-      details.webContents !== mainWindow.webContents
+      !trustedDesktopFileSystemRequest(details, mainWindow.webContents)
     ) {
       callback('deny');
+      return;
+    }
+    if (smokeTest) {
+      callback(
+        details.isDirectory &&
+          typeof details.path === 'string' &&
+          resolve(details.path) === resolve(homedir())
+          ? 'allow'
+          : 'deny'
+      );
       return;
     }
     const result = await dialog.showMessageBox(mainWindow, {
@@ -249,6 +263,71 @@ function configureSession() {
     callback(result.response === 1 ? 'allow' : result.response === 0 ? 'tryAgain' : 'deny');
   });
   return desktopSession;
+}
+
+async function probeRestrictedFileSystemAccess(window) {
+  const previousClipboard = await clipboard.read();
+  try {
+    await window.webContents.executeJavaScript(`
+      (() => {
+        globalThis.__citadelDesktopFileProbe = {
+          done: false,
+          error: null,
+          handle: null
+        };
+        document.addEventListener('paste', (event) => {
+          event.preventDefault();
+          const item = event.clipboardData?.items?.[0];
+          if (!item || typeof item.getAsFileSystemHandle !== 'function') {
+            globalThis.__citadelDesktopFileProbe.done = true;
+            globalThis.__citadelDesktopFileProbe.error = 'File-system clipboard handle unavailable';
+            return;
+          }
+          item.getAsFileSystemHandle().then(
+            (handle) => {
+              globalThis.__citadelDesktopFileProbe.handle = handle;
+              globalThis.__citadelDesktopFileProbe.done = true;
+            },
+            (error) => {
+              globalThis.__citadelDesktopFileProbe.error = String(error);
+              globalThis.__citadelDesktopFileProbe.done = true;
+            }
+          );
+        }, { capture: true, once: true });
+        window.focus();
+        document.body.focus();
+      })()
+    `);
+    await clipboard.write([
+      new ClipboardItem({ 'text/uri-list': pathToFileURL(homedir()).href }),
+    ]);
+    window.webContents.focus();
+    window.webContents.paste();
+
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const result = await window.webContents.executeJavaScript(`
+        (async () => {
+          const probe = globalThis.__citadelDesktopFileProbe;
+          if (!probe?.done) return { done: false };
+          return {
+            done: true,
+            error: probe.error,
+            kind: probe.handle?.kind || null,
+            permission: probe.handle
+              ? await probe.handle.queryPermission({ mode: 'read' })
+              : null
+          };
+        })()
+      `);
+      if (result.done) return result;
+      await delay(50);
+    }
+    return { done: false, error: 'Restricted local file access probe timed out' };
+  } finally {
+    clipboard.clear();
+    if (previousClipboard.length > 0) await clipboard.write(previousClipboard);
+  }
 }
 
 async function createWindow(desktopSession) {
@@ -289,7 +368,7 @@ async function createWindow(desktopSession) {
 
   await window.loadURL(DESKTOP_ORIGIN);
   if (smokeTest) {
-    const result = await window.webContents.executeJavaScript(
+    const browser = await window.webContents.executeJavaScript(
       `({
         title: document.title,
         secureContext: globalThis.isSecureContext,
@@ -298,13 +377,23 @@ async function createWindow(desktopSession) {
         origin: globalThis.location.origin
       })`
     );
+    const localFiles = await probeRestrictedFileSystemAccess(window);
     const passed =
-      result.title === 'Citadel Control Panel' &&
-      result.secureContext === true &&
-      result.directoryPicker === true &&
-      result.indexedDB === true &&
-      result.origin === DESKTOP_ORIGIN;
-    console.log(JSON.stringify({ event: 'citadel_desktop_smoke', passed, ...result }));
+      browser.title === 'Citadel Control Panel' &&
+      browser.secureContext === true &&
+      browser.directoryPicker === true &&
+      browser.indexedDB === true &&
+      browser.origin === DESKTOP_ORIGIN &&
+      localFiles.done === true &&
+      localFiles.error === null &&
+      localFiles.kind === 'directory' &&
+      localFiles.permission === 'granted';
+    console.log(JSON.stringify({
+      event: 'citadel_desktop_smoke',
+      passed,
+      ...browser,
+      localFiles,
+    }));
     process.exitCode = passed ? 0 : 1;
     app.quit();
   }

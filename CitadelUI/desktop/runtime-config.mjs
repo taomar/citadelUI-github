@@ -35,6 +35,14 @@ export function desktopPermissionAllowed(permission, requestingOrigin) {
   return DESKTOP_PERMISSIONS.has(permission) && trustedDesktopOrigin(requestingOrigin);
 }
 
+export function trustedDesktopFileSystemRequest(details, expectedWebContents) {
+  return Boolean(
+    expectedWebContents &&
+    details?.webContents === expectedWebContents &&
+    trustedDesktopOrigin(details?.origin)
+  );
+}
+
 export function decodeCredentialKey(value) {
   if (
     typeof value !== 'string' ||

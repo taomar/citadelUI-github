@@ -7,7 +7,7 @@ repository access into Electron's main process.
 ## Install the release
 
 The current package is
-[Citadel UI Desktop v1.1.0](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.0).
+[Citadel UI Desktop v1.1.1](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.1).
 Download the
 [Windows installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe)
 or

@@ -12,6 +12,7 @@ import {
   desktopPermissionAllowed,
   resourceRoot,
   serverProcessPath,
+  trustedDesktopFileSystemRequest,
   trustedDesktopOrigin,
 } from '../desktop/runtime-config.mjs';
 
@@ -38,6 +39,31 @@ test('desktop permission allow-list is origin-bound', () => {
   assert.equal(desktopPermissionAllowed('loopback-network', DESKTOP_ORIGIN), true);
   assert.equal(desktopPermissionAllowed('media', DESKTOP_ORIGIN), false);
   assert.equal(desktopPermissionAllowed('fileSystem', 'https://example.test'), false);
+});
+
+test('desktop restricted local paths accept Electron serialized origins', () => {
+  const webContents = {};
+  assert.equal(
+    trustedDesktopFileSystemRequest(
+      { origin: `${DESKTOP_ORIGIN}/`, webContents },
+      webContents
+    ),
+    true
+  );
+  assert.equal(
+    trustedDesktopFileSystemRequest(
+      { origin: 'https://example.test/', webContents },
+      webContents
+    ),
+    false
+  );
+  assert.equal(
+    trustedDesktopFileSystemRequest(
+      { origin: `${DESKTOP_ORIGIN}/`, webContents: {} },
+      webContents
+    ),
+    false
+  );
 });
 
 test('desktop resource paths distinguish development and packaged layouts', () => {
@@ -77,7 +103,7 @@ test('desktop package declares pinned Electron and Forge dependencies', async ()
   );
   assert.equal(packageJson.main, 'main.mjs');
   assert.equal(packageJson.license, 'MIT');
-  assert.equal(packageJson.version, '1.1.0');
+  assert.equal(packageJson.version, '1.1.1');
   assert.equal(packageJson.devDependencies.electron, '44.3.0');
   assert.equal(packageJson.devDependencies['@electron-forge/cli'], '7.11.2');
   assert.equal(packageJson.devDependencies['@electron-forge/maker-dmg'], '7.11.2');
