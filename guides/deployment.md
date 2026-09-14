@@ -1,14 +1,16 @@
 # Deploy Citadel UI
 
-Configure the UI in
-[`CitadelUI/infra/main.bicepparam`](../CitadelUI/infra/main.bicepparam), then deploy
-with azd. No large PowerShell configuration block is needed.
+Choose the packaged Windows desktop application, local Docker, or Azure. Azure
+deployments are configured in
+[`CitadelUI/infra/main.bicepparam`](../CitadelUI/infra/main.bicepparam) and use
+azd; no large PowerShell configuration block is needed.
 
 **Citadel UI only:** use `main`, not a sample branch. Run commands from
 `CitadelUI`; the repository-root `azure.yaml` belongs to the gateway.
 
 | Scenario | Instructions |
 | --- | --- |
+| Windows desktop release, no Docker | [Installer or portable ZIP](#windows-desktop-release) |
 | New Azure resources, public or private VNet | [Fresh deployment](#fresh-azure-deployment) |
 | Existing resources or a mixture of existing and new | [Resource reuse](#deploy-on-an-existing-subnet-and-resources) |
 | Local Docker | [PowerShell](#local-deployment---powershell) or [Bash](#local-deployment---bash) |
@@ -22,7 +24,32 @@ and private log-query checks, repeated after redeployment. The eight shared
 resource configuration snapshots were unchanged. Fresh private mode has not
 been tested live.
 
-## Prerequisites
+## Windows desktop release
+
+The current Windows x64 Electron release is
+[Citadel UI Desktop v1.0.0](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.0.0).
+It needs no Docker, Node.js, Azure account, or source checkout. Download:
+
+- [CitadelUISetup.exe](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe)
+- [CitadelUIPortable.zip](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUIPortable.zip)
+- [SHA256SUMS.txt](https://github.com/taomar/citadelUI-github/releases/latest/download/SHA256SUMS.txt)
+
+Verify the installer or ZIP against `SHA256SUMS.txt`. Use the installer for a
+normal per-user installation. For the portable package, extract the complete ZIP
+and run `CitadelUI.exe`; do not run the executable from inside the archive.
+
+The first release is unsigned, so Windows reports an unknown publisher. The
+desktop app binds only to `127.0.0.1:4174`, stores application state under the
+current user's Electron `userData` directory, and uses operating-system secure
+storage for the credential-encryption key. Chrome and Edge directory handles do
+not transfer into Electron, so reconnect an existing local workspace once.
+
+On first launch, create the one owner account for this desktop data store. There
+is no password reset. Back up the desktop `userData\data` directory using the
+same rules as the container `/data` directory, but never copy the Electron
+profile while the app is running.
+
+## Azure prerequisites
 
 Azure deployment needs Git, PowerShell 7.4+, Azure CLI and Azure Developer CLI
 1.33+. Use a dedicated UI resource group and an account permitted to create

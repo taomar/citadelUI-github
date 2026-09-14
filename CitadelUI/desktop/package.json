@@ -1,0 +1,40 @@
+{
+  "name": "citadel-ui-desktop",
+  "productName": "Citadel UI",
+  "version": "1.0.0",
+  "description": "Desktop package for the Citadel Control Panel",
+  "author": "Citadel UI contributors",
+  "license": "MIT",
+  "homepage": "https://github.com/taomar/citadelUI-github",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/taomar/citadelUI-github.git",
+    "directory": "CitadelUI/desktop"
+  },
+  "private": true,
+  "type": "module",
+  "main": "main.mjs",
+  "scripts": {
+    "start": "electron-forge start",
+    "test": "node --test \"../test/desktop-*.test.mjs\"",
+    "smoke": "node run-smoke.mjs",
+    "package": "electron-forge package",
+    "package:win": "electron-forge package --platform=win32 --arch=x64",
+    "make": "electron-forge make",
+    "make:win": "electron-forge make --platform=win32 --arch=x64",
+    "release:stage": "node stage-release.mjs",
+    "release:win": "npm run make:win && npm run release:stage"
+  },
+  "config": {
+    "forge": "./forge.config.cjs"
+  },
+  "dependencies": {
+    "electron-squirrel-startup": "1.0.1"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "7.11.2",
+    "@electron-forge/maker-squirrel": "7.11.2",
+    "@electron-forge/maker-zip": "7.11.2",
+    "electron": "44.3.0"
+  }
+}

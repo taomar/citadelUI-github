@@ -27,6 +27,16 @@ test('deployment docs: README starts with a main-only clone before the product o
   assert.match(readme, /Never run `azd up`/);
 });
 
+test('deployment docs: Electron release assets are operator-facing deployment options', () => {
+  for (const text of [readme, guide, appReadme]) {
+    assert.match(text, /releases\/latest\/download\/CitadelUISetup\.exe/);
+    assert.match(text, /releases\/latest\/download\/CitadelUIPortable\.zip/);
+    assert.match(text, /releases\/latest\/download\/SHA256SUMS\.txt/);
+  }
+  assert.match(section('Windows desktop release'), /127\.0\.0\.1:4174/);
+  assert.match(section('Windows desktop release'), /first release is unsigned/i);
+});
+
 test('deployment docs: Azure examples configure a Bicep parameter file instead of a shell parameter map', () => {
   for (const heading of ['Fresh Azure deployment', 'Deploy on an existing subnet and resources']) {
     const text = section(heading);

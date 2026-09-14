@@ -1,17 +1,17 @@
 # Citadel UI
 
-A containerized editor for user-selected Citadel repositories, run locally or
-hosted on Azure Container Apps.
+A browser-mediated editor for user-selected Citadel repositories, packaged for
+Windows, run in a local container, or hosted on Azure Container Apps.
 Citadel UI presents `.bicepparam` files and their associated APIM policy XML as
 explained forms and writes surgical changes without disturbing unrelated
 comments or formatting.
 
-One container manages any number of user-labeled environments. Microsoft Edge
-or Google Chrome grants repository access through the File System Access API;
-the container never receives a source mount, Docker socket, operator cloud
-credential, or broad host filesystem access. Citadel UI does not deploy the
-gateway or send telemetry. An Azure-hosted instance uses its managed identity
-only to read the optional credential-encryption key from Key Vault.
+One installation manages any number of user-labeled environments. Chromium
+grants repository access through the File System Access API; the server process
+never receives a source mount, Docker socket, operator cloud credential, or
+broad host filesystem access. Citadel UI does not deploy the gateway or send
+telemetry. An Azure-hosted instance uses its managed identity only to read the
+optional credential-encryption key from Key Vault.
 
 ---
 
@@ -55,6 +55,39 @@ shell; if you customize it on Linux, prepare that directory instead of `.data`.
 Open <http://127.0.0.1:4173>. The origin and port are fixed because retained
 directory handles are origin-bound. If the port is occupied, stop the conflicting
 process you own rather than changing ports.
+
+## Run the Windows desktop application
+
+The Electron release runs the existing Control Panel without Docker, Node.js, or
+a source checkout. The current version is
+[Citadel UI Desktop v1.0.0](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.0.0).
+Download the
+[Windows installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe),
+the
+[portable ZIP](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUIPortable.zip),
+and
+[SHA-256 checksums](https://github.com/taomar/citadelUI-github/releases/latest/download/SHA256SUMS.txt).
+Verify the package before opening it. The first release is unsigned.
+
+To build or run Electron from source instead:
+
+```powershell
+Set-Location .\CitadelUI\desktop
+npm ci
+npm start
+```
+
+Build and stage the release assets with:
+
+```powershell
+npm run release:win
+```
+
+The publishable assets are written to `CitadelUI\desktop\out\release`.
+The desktop app uses the fixed origin `http://127.0.0.1:4174` and stores its
+application data under Electron's `userData` directory, normally
+`%APPDATA%\Citadel UI`. Directory handles retained by Chrome or Edge do not
+transfer to Electron, so existing local environments must be reconnected once.
 
 ## Deploy to Azure
 

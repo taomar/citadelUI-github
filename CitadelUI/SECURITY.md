@@ -1,7 +1,8 @@
 # Local Security Model
 
-Citadel UI is a single-user local editor. The supported origin is
-`http://127.0.0.1:4173`.
+Citadel UI is a single-user local editor. The supported container origin is
+`http://127.0.0.1:4173`; the packaged desktop origin is
+`http://127.0.0.1:4174`.
 
 ## Owner credential
 
@@ -63,6 +64,22 @@ credential, or cloud-service mount. Compose publishes only
 `127.0.0.1:4173:4173`, uses an isolated bridge, a read-only root filesystem,
 non-root UID/GID 10001, dropped capabilities, `no-new-privileges`, a bounded
 `/tmp` tmpfs, and CPU/memory/PID limits.
+
+The desktop package keeps the same repository boundary in a sandboxed Electron
+renderer with Node integration disabled and context isolation enabled. The
+existing server runs in a separate Electron utility process bound only to
+`127.0.0.1:4174`. Navigation, popup creation, and renderer permissions are
+denied except for the exact desktop origin and the file-system, clipboard-write,
+and loopback permissions the application uses. Chromium profile data and
+directory handles live in a persistent Electron session under the current
+user's Electron `userData` directory.
+
+For desktop credential persistence, the existing AES-256-GCM envelope key is
+generated once and protected on disk with Electron `safeStorage` before being
+handed to the utility process. On Windows this uses DPAPI for the current user.
+The plaintext key is not placed in an environment variable, command line, log,
+or renderer. If operating-system encryption is unavailable, credential
+persistence is unavailable; the application does not fall back to plaintext.
 
 ## GitHub credentials
 

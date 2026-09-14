@@ -41,3 +41,32 @@ only with `127.0.0.1:4173`; the application has no outbound runtime integration.
 Store archives, signatures, attestations, SBOMs, and checksums outside the source
 repository. Never package `/data`, browser profiles, Citadel repositories,
 credentials, or local logs.
+
+## Windows desktop package
+
+The Electron package is built separately from the container:
+
+```powershell
+Set-Location desktop
+npm ci
+npm test
+npm run smoke
+npm run release:win
+```
+
+The publishable installer, portable ZIP, and generated checksum file are staged
+under `desktop\out\release` with stable asset names:
+
+- `CitadelUISetup.exe`
+- `CitadelUIPortable.zip`
+- `SHA256SUMS.txt`
+
+The first release tag is `citadel-ui-desktop-v1.0.0`. Publish a later version
+only after updating `desktop/package.json`, rebuilding the assets, and committing
+the exact source used for the package.
+
+Local output is unsigned. A distributed Windows release must configure a
+user-owned code-signing certificate outside the repository and verify the
+installed application's publisher before publication. Do not package Electron
+profile data, the desktop `userData` directory, Citadel repositories, or
+credentials.

@@ -11,8 +11,9 @@ transaction.
 
 ## First run
 
-A new container has no owner. The first person to open it creates the account,
-and it is the only account that container will ever have.
+A new container or desktop data store has no owner. The first person to open it
+creates the account, and it is the only account that installation will ever
+have.
 
 ![Create the owner account](../docs/images/01-first-run-owner.png)
 
@@ -36,10 +37,11 @@ it is attached; an incomplete tree is rejected rather than half-opened.
 
 ![Add workspace](../docs/images/04-add-workspace.png)
 
-A **local folder** is granted through the browser's folder picker; the handle stays
-in the browser profile, because it cannot be moved into a container. **Existing
-GitHub Repo** needs a fine-grained token with Contents read and write, limited to
-the repositories it should reach. Saves become one commit on a working branch.
+A **local folder** is granted through the browser's folder picker; the handle
+stays in the Chrome, Edge, or Electron profile and never enters the server
+process. **Existing GitHub Repo** needs a fine-grained token with Contents read
+and write, limited to the repositories it should reach. Saves become one commit
+on a working branch.
 
 ![GitHub connection](../docs/images/05-github-connection.png)
 
@@ -74,6 +76,9 @@ The default local deployment has no credential key mounted. This disables only
 **Persist this connection on this device (encrypted)**, not token entry or
 GitHub access. Session-only connections work normally; after a container restart,
 use **Reconnect** on the saved connection and supply a token for the same account.
+The Electron release instead protects its credential key with the operating
+system's secure storage. Persistence remains unavailable rather than falling
+back to plaintext if that protection cannot be used.
 
 These permissions apply to editable workspaces. Reading an older GitHub source
 for migration needs only Contents read access, as described below.

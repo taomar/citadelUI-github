@@ -6,6 +6,23 @@ The configuration surface for the Citadel AI Hub Gateway.
 
 ---
 
+## Install the Windows desktop release
+
+The packaged Electron application needs no Docker, Node.js, or source checkout.
+The current desktop release is
+[Citadel UI Desktop v1.0.0](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.0.0).
+Download:
+
+- [Windows installer](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUISetup.exe)
+- [Portable Windows ZIP](https://github.com/taomar/citadelUI-github/releases/latest/download/CitadelUIPortable.zip)
+- [SHA-256 checksums](https://github.com/taomar/citadelUI-github/releases/latest/download/SHA256SUMS.txt)
+
+Verify the downloaded file against `SHA256SUMS.txt` before opening it. The first
+desktop release is unsigned, so Windows reports an unknown publisher. The
+desktop app listens only on `127.0.0.1:4174`, stores its state in the current
+user's application-data directory, and keeps local repository handles in its
+own Electron profile.
+
 ## Start with a clone
 
 Clone **main** of this repository. These instructions deploy **Citadel UI only**;
@@ -19,7 +36,7 @@ cd citadelUI-github
 The application and its deployment live in **`CitadelUI/`**. Never run `azd up`
 at the repository root: its `azure.yaml` belongs to the gateway.
 
-## Run locally
+## Run locally from source
 
 Install Docker Desktop or Docker Engine 29+ with Compose, start Docker, and use
 Microsoft Edge or Google Chrome. Choose one of these two paths from the cloned
@@ -51,17 +68,18 @@ Keep port **4173**: local folder permissions are tied to that exact browser
 origin. State is stored in `CitadelUI/.data` by default; for a custom
 `CITADEL_DATA_PATH`, prepare that directory instead.
 
-## Deploy to Azure
+## Deployment options
 
-Choose a path below. Edit **`CitadelUI/infra/main.bicepparam`** for deployment
-settings; azd reads it and the hook synchronizes inputs into its environment.
-Each linked section starts from a fresh clone and ends at the deployed app. Azure
-examples use PowerShell 7.4+, Azure CLI and, where provisioning is needed, Azure
-Developer CLI (`azd`). Images are built in Azure Container Registry; no local
-Docker daemon is needed for Azure deployment.
+Choose a packaged desktop, local Docker, or Azure path below. Azure deployments
+use **`CitadelUI/infra/main.bicepparam`** for settings; azd reads it and the hook
+synchronizes inputs into its environment. Azure examples use PowerShell 7.4+,
+Azure CLI and, where provisioning is needed, Azure Developer CLI (`azd`). Images
+are built in Azure Container Registry; no local Docker daemon is needed for
+Azure deployment.
 
 | Deployment path | Complete commands |
 | --- | --- |
+| Windows desktop installer or portable ZIP | [Install the Electron release](./guides/deployment.md#windows-desktop-release) |
 | Fresh Azure deployment behind a new VNet | [Scenario 1: private mode](./guides/deployment.md#fresh-azure-deployment) |
 | Fresh Azure deployment on a public endpoint | [Scenario 1: public mode](./guides/deployment.md#fresh-azure-deployment) |
 | Deployment on an existing subnet and existing resources | [Reuse named resources; create anything unnamed](./guides/deployment.md#deploy-on-an-existing-subnet-and-resources) |
@@ -73,9 +91,9 @@ Vault, Log Analytics, storage/Azure Files and managed identity support existing
 resources. Leave existing-resource selectors empty to create the defaults.
 A reused Container Apps environment keeps its own network and logging settings.
 
-All Azure paths use Citadel UI's **owner sign-in**, with the credential-encryption
-secret retained in **Key Vault**. The deployment creates the key only when absent
-and never replaces it during a normal redeployment.
+All paths use Citadel UI's **owner sign-in**. Azure deployments retain the
+credential-encryption secret in **Key Vault**, create it only when absent, and
+never replace it during a normal redeployment.
 
 For an already configured UI container app, use
 [image-only redeployment](./guides/deployment.md#redeploy-an-existing-citadel-ui-container-app)
@@ -96,10 +114,11 @@ an existing connected workstation or private CI runner can serve that role.
 
 ## Overview
 
-Citadel Control Plane is a containerised, browser-based editor for the declarative
-configuration of a Citadel AI Hub Gateway deployment. It presents Bicep parameter
-files and their associated API Management policy documents as explained forms, and
-writes surgical changes that leave unrelated comments and formatting untouched.
+Citadel Control Plane is a browser-mediated editor, distributed as a Windows
+desktop package or container, for the declarative configuration of a Citadel AI
+Hub Gateway deployment. It presents Bicep parameter files and their associated
+API Management policy documents as explained forms, and writes surgical changes
+that leave unrelated comments and formatting untouched.
 
 Workspace setup offers **Existing GitHub Repo**, **New GitHub Repo**, and **Local**.
 New GitHub Repo can initialize a private repository from the upstream `citadel-v1`
@@ -159,10 +178,10 @@ The explicit New GitHub Repo initialization step copies the complete checked-in
 source snapshot, including binary assets and licenses, only into its newly
 created private repository. This does not widen the normal editor's file scope.
 
-Repository access is granted by the browser through the File System Access API, or
-by a GitHub token scoped to the repositories it should reach. The container
-receives no source mount, no Docker socket, no operator cloud credential and no broad host
-filesystem access.
+Repository access is granted by the browser through the File System Access API,
+or by a GitHub token scoped to the repositories it should reach. The server
+runtime receives no source mount, Docker socket, operator cloud credential, or
+broad host filesystem access.
 
 ## What it looks like
 
@@ -191,8 +210,8 @@ onboarded is flagged by name.
 
 ## Guides
 
-- [Deployment guide](./guides/deployment.md) — running on Azure, running locally,
-  and the choices available during deployment.
+- [Deployment guide](./guides/deployment.md) — installing the desktop release,
+  running locally, deploying on Azure, and the choices available for each path.
 - [Using Citadel Control Plane](./guides/using-the-control-plane.md) — workspaces,
   configuration migration, the three editing areas, validation, and how saves
   are made.

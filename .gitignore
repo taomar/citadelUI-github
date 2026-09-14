@@ -411,6 +411,7 @@ local/**/*
 **/local.settings.json
 **/test
 **/package-lock.json
+!CitadelUI/desktop/package-lock.json
 **/.vscode
 **/*.local.parameters.json
 infra/usecase-onboarding/samples/financial-assistant-usecase-local.sh
@@ -445,6 +446,7 @@ CitadelUI/.srv.log
 # Citadel UI tests are source, despite the repository-wide **/test rule.
 !CitadelUI/test/
 !CitadelUI/test/**
+CitadelUI/desktop/out/
 
 # Citadel UI shell line-ending rules are source, despite the .git* rule.
 !CitadelUI/.gitattributes

@@ -2,6 +2,8 @@
 
 Every mutation uses one transaction journal under
 `/data/environments/<environment-id>/transactions/<transaction-id>/`.
+In the Electron release, `/data` maps to the `data` directory beneath Electron's
+current-user `userData` directory.
 
 ## States
 
