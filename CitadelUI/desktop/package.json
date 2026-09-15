@@ -1,7 +1,7 @@
 {
   "name": "citadel-ui-desktop",
   "productName": "Citadel UI",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "Desktop package for the Citadel Control Panel",
   "author": "Citadel UI contributors",
   "license": "MIT",
@@ -16,7 +16,7 @@
   "main": "main.mjs",
   "scripts": {
     "start": "electron-forge start",
-    "test": "node --test \"../test/desktop-*.test.mjs\"",
+    "test": "node --test \"../test/desktop-*.test.mjs\" \"../test/custom-regions.test.mjs\" \"../test/github-managed-logins.test.mjs\"",
     "smoke": "node run-smoke.mjs",
     "smoke:packaged": "node run-packaged-smoke.mjs",
     "package": "electron-forge package",

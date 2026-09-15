@@ -152,6 +152,8 @@ jobs:
 
           Application source: [\`${source_revision}\`](https://github.com/${GITHUB_REPOSITORY}/tree/${source_revision}). This includes the current Bicep/native Terraform UI, modularized application, local-source creation, Diagnostics, and the Electron local-folder fixes. Versions through 1.1.3 packaged an older application baseline.
 
+          Region lists are now suggestions: unlisted region identifiers can be typed, reviewed, saved and reloaded as normal values, with no unsupported/custom marker. Bicep/native Terraform, nested fields, expression fallbacks, migration and export retain this behavior. Deployment templates and service availability are not changed or guaranteed. GitHub Enterprise Managed User logins such as \`name_company\` are accepted without weakening numeric account ownership checks.
+
           Every native package verifies the complete server/shared/web source inventory and hashes. The packaged UI test signs into an isolated instance, opens Add workspace, checks both formats and all four source choices, initializes the vendored native parser, and opens Diagnostics. Local-folder permission and persistent-workspace save checks run separately; native folder pickers are not automated.
 
           ## Assets

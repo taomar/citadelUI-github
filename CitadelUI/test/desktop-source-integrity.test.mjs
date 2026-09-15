@@ -28,8 +28,8 @@ async function fixture(t) {
 
 test('desktop build identity pins the current application, not the old main snapshot', async () => {
   const source = JSON.parse(await readFile(new URL('../desktop/application-source.json', import.meta.url), 'utf8'));
-  assert.equal(source.revision, '5791d4358f2696c1f4ec2805bd6bcfc2c7d729e8');
-  assert.equal(source.ref, 'taomar-citadel-orchestrator');
+  assert.equal(source.revision, '128d269ca6f4dcd8a1d3ea011dc345dc8d153c3c');
+  assert.equal(source.ref, 'taomar-electron-desktop-packaging');
 });
 
 test('desktop packaging records the exact reviewed application and release revision', async (t) => {

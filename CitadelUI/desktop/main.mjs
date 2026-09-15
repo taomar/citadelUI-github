@@ -706,6 +706,29 @@ async function runInterfaceAcceptance(window) {
     return parseNativeValues(result).value.environment_name === 'after';
   })()`);
   if (!nativeParser) throw new Error('Packaged native Terraform parser failed to edit a value.');
+  const customRegions = await window.webContents.executeJavaScript(`(async () => {
+    const { renderValue } = await import('/js/fields.mjs');
+    const { validateDocument } = await import('/js/validation.mjs');
+    let saved = null;
+    const control = renderValue('eastus', ['location'], {
+      onChange(path, value) { saved = value; }
+    }, { name: 'location', type: 'string', allowedValues: ['eastus'] });
+    document.body.append(control);
+    try {
+      const input = control.querySelector('input');
+      input.focus();
+      input.value = 'austriaeast';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      const findings = validateDocument({
+        params: [{ name: 'location', value: saved }],
+        schema: { parameters: { location: { type: 'string', allowedValues: ['eastus'] } } }
+      });
+      return saved === 'austriaeast' && findings.length === 0 &&
+        !/unsupported|not one of/i.test(control.textContent);
+    } finally { control.remove(); }
+  })()`);
+  if (!customRegions) throw new Error('Packaged region controls did not accept an unlisted value normally.');
 
   const created = new Promise((resolveWindow, rejectWindow) => {
     const onCreated = (child) => {
@@ -730,7 +753,7 @@ async function runInterfaceAcceptance(window) {
   } finally {
     diagnostics.destroy();
   }
-  return { ownerSignIn: true, currentSourceChoices: true, nativeParser, diagnostics: true, versionBadge, updates, ...controls };
+  return { ownerSignIn: true, currentSourceChoices: true, nativeParser, customRegions, diagnostics: true, versionBadge, updates, ...controls };
 }
 
 function protectNavigation(window) {

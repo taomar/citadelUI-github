@@ -1,12 +1,36 @@
 # Local Release and Offline Operation
 
 The current packaged desktop delivery is
-[Citadel UI Desktop v1.1.4](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.4).
-Its full build source is `bb6b7cae2f42ff5f4f3dac6dd9cfcd6aedcb7a9f`, not `main`.
-That commit integrates the application baseline from `taomar-citadel-orchestrator`
-with the Electron Windows/macOS fixes, visible version and update controls.
+[Citadel UI Desktop v1.1.5](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.5).
+Its full build source is the release tag target, recorded as `releaseRevision`
+in the attached `CitadelUI-build-*.json`. It integrates the compatibility fixes
+with the current application, Electron Windows/macOS fixes, version and updater.
 Follow the [pinned release checkout](../README.md#start-with-a-clone).
 Internal handovers and detailed review records remain local-only.
+
+## Desktop v1.1.5 compatibility release
+
+Application baseline:
+[`128d269ca6f4dcd8a1d3ea011dc345dc8d153c3c`](https://github.com/taomar/citadelUI-github/commit/128d269ca6f4dcd8a1d3ea011dc345dc8d153c3c).
+The release preserves the complete current UI and earlier Electron fixes.
+
+- Region fields accept values absent from the dropdown as normal entries,
+  including nested fields, expression fallbacks, native Terraform, migration
+  and export. There is no unsupported/custom marker. Other type, enum, required
+  and sensitive-value rules remain enforced. Underlying deployment templates
+  are not silently rewritten and service availability is not certified.
+- GitHub Enterprise Managed User logins such as `name_company` pass connection
+  validation, registry metadata and source flows. Authentication, token scope
+  and numeric-account ownership checks are unchanged.
+- The lower-left label reads `v1.1.5 | 128d269`. Windows installed updates still
+  need download and restart consent; macOS and portable Windows notify only.
+
+The native workflow runs region and managed-login regressions on all three
+targets, tests an unlisted region inside the packaged renderer, and verifies a
+real installed Windows upgrade from v1.1.4. Package source/hash gates remain
+required. Exact full-build identity and hashes are in the versioned artifacts,
+not inferred from a moving branch. v1.1.4's historical record and assets below
+are not modified.
 
 ## Desktop v1.1.4 release record
 
@@ -155,13 +179,13 @@ downloads, not part of the application image or release archive.
 
 ## Windows and macOS desktop packages
 
-Desktop v1.1.4 packages application revision
-`5791d4358f2696c1f4ec2805bd6bcfc2c7d729e8` from the delivery branch, including the
+Desktop v1.1.5 packages application revision
+`128d269ca6f4dcd8a1d3ea011dc345dc8d153c3c` from the delivery branch, including the
 latest modularization and fixes. It retains the Windows/macOS Electron fixes.
 Desktop versions through v1.1.3 incorrectly used the September 7 application
 baseline. Do not use a version label or a startup smoke check as source proof.
 
-To rebuild this release's source, use tag `citadel-ui-desktop-v1.1.4`, separately
+To rebuild this release's source, use tag `citadel-ui-desktop-v1.1.5`, separately
 from the container. The development branch can advance beyond the released
 commit. `desktop/application-source.json` pins the embedded application baseline:
 
@@ -207,7 +231,7 @@ picker or claim that it selected a specific runner filesystem path.
 
 Windows staging validates the Squirrel feed's version, file sizes and package
 hashes and publishes the referenced packages. The native Windows CI check
-installs the checksum-pinned v1.1.3 fixture on a disposable runner, applies the
+installs the checksum-pinned v1.1.4 fixture on a disposable runner, applies the
 candidate feed with `Update.exe`, verifies the installed runtime identity, and
 runs the current packaged acceptance from that installation. It never runs on
 the operator's workstation or overwrites a pre-existing installation.

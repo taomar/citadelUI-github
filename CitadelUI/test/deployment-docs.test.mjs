@@ -14,6 +14,7 @@ const releaseRecord = await readFile(new URL('../RELEASE.md', import.meta.url), 
 const desktopPackage = JSON.parse(await readFile(new URL('../desktop/package.json', import.meta.url), 'utf8'));
 const releaseTag = `citadel-ui-desktop-v${desktopPackage.version}`;
 const buildCommit = 'bb6b7cae2f42ff5f4f3dac6dd9cfcd6aedcb7a9f';
+const applicationSource = JSON.parse(await readFile(new URL('../desktop/application-source.json', import.meta.url), 'utf8'));
 const clone = `git clone --branch ${releaseTag} --single-branch https://github.com/taomar/citadelUI-github.git`;
 
 function section(heading) {
@@ -32,7 +33,7 @@ test('deployment docs: checkout instructions pin the exact published build, not 
   assert.match(readme, /Never run `azd up`/);
   assert.match(readme, /git rev-parse HEAD/);
   for (const text of [readme, guide, appReadme, desktopReadme]) {
-    assert.ok(text.includes(buildCommit));
+    assert.ok(text.includes(applicationSource.revision));
     assert.doesNotMatch(text, /git clone --branch main\b/);
   }
 });
@@ -63,6 +64,8 @@ test('deployment docs: release record separates the full build from its applicat
   assert.match(releaseRecord, /Documentation-only follow-ups do not move this tag/);
   assert.match(releaseRecord, /simulated newer release/);
   assert.match(releaseRecord, /Native\s+folder pickers.*are not\s+automated/s);
+  assert.ok(releaseRecord.includes(applicationSource.revision));
+  assert.match(releaseRecord, /Desktop v1\.1\.5 compatibility release/);
 });
 test('deployment docs: Azure examples configure a Bicep parameter file instead of a shell parameter map', () => {
   for (const heading of ['Fresh Azure deployment', 'Deploy on an existing subnet and resources']) {
