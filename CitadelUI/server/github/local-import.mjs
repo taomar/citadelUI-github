@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
-import { discoverWorkspace } from '../../shared/citadel-core.mjs';
-import { citadelSourcePlan, planScope } from '../../shared/source-plan.mjs';
-import { isEnvironmentFile, isSkippedDirectory, isSourceExtension, sourceExtension } from '../../shared/source-scope.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { DEFAULT_REPOSITORY_SOURCE, parseRepositorySource } from '../../shared/repository-source.mjs';
 import {
   REPOSITORY_SNAPSHOT_LIMITS, snapshotError as fail, validateLocalSnapshot, validateLocalSnapshotPaths,
 } from '../../shared/repository-snapshot.mjs';
 import { objectSha, readRepositoryManifest, verifySnapshotBytes } from './repository-snapshot.mjs';
+import { assertSnapshotCompatibility } from './snapshot-compatibility.mjs';
+import { transientImportRead } from './import-errors.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -22,7 +22,11 @@ function sourceFailure(error) {
   if (['PUBLIC_DONOR_RATE_LIMIT', 'GITHUB_RATE_LIMITED'].includes(error?.code)) {
     return { code: 'LOCAL_IMPORT_RATE_LIMIT', message: 'GitHub public-read rate limit reached. Wait before retrying this pinned source; no token or repository creation is required.' };
   }
-  if (error?.code === 'PUBLIC_DONOR_READ_FAILED') {
+  if (transientImportRead(error)) {
+    return { code: 'LOCAL_IMPORT_READ_TIMEOUT',
+      message: `The pinned public source read failed${error.upstreamStatus ? ` (GitHub HTTP ${error.upstreamStatus})` : ''} after bounded retries. Check connectivity or the proxy, then retry the same preparation; verified source bytes remain in memory. No personal or organization credential is used and no folder was changed.` };
+  }
+  if (['PUBLIC_DONOR_READ_FAILED', 'LOCAL_IMPORT_READ_FAILED'].includes(error?.code)) {
     return { code: 'LOCAL_IMPORT_READ_FAILED', message: 'The public repository or selected revision could not be read. Check the source URL; private repositories are not supported here.' };
   }
   if (error?.github && /^(IMPORT_|LOCAL_IMPORT_|GITHUB_)/.test(error.code || '')) {
@@ -72,7 +76,8 @@ export class LocalSourceImportService {
     return {
       id: op.id, sourceUrl: op.sourceUrl, source: op.source ? { ...op.source } : null,
       state: op.state, stage: STAGES[op.stage] || 'Source preparation stopped.',
-      progress: { ...op.progress }, error: op.error, retryAt: op.retryAt,
+      stageId: op.stage, progress: { ...op.progress }, error: op.error, retryAt: op.retryAt,
+      readRetry: op.readRetry ? { ...op.readRetry } : null,
       running: Boolean(op.running), expiresAt: new Date(op.expiresAt).toISOString(),
     };
   }
@@ -108,6 +113,7 @@ export class LocalSourceImportService {
     op.expiresAt = this.now() + this.ttlMs;
     op.state = 'preparing';
     op.error = null;
+    op.readRetry = null;
     op.retryAt = null;
     op.running = Promise.resolve().then(() => this.acquire(op)).catch((error) => {
       op.state = op.controller.signal.aborted ? 'cancelled' : 'failed';
@@ -120,7 +126,7 @@ export class LocalSourceImportService {
         op.retryAt = Math.max(this.now() + (Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 86_400) * 1000 : 60_000),
           Number.isFinite(reset) ? Math.min(reset, this.now() + 86_400_000) : 0);
       }
-    }).finally(() => { op.running = null; });
+    }).finally(() => { op.running = null; op.readRetry = null; });
   }
 
   check(op) {
@@ -128,11 +134,29 @@ export class LocalSourceImportService {
     if (this.now() > op.deadline) throw fail('LOCAL_IMPORT_TIMEOUT', 'Source preparation exceeded its ten-minute deadline. Retry the same pinned source.', 408);
   }
 
+  async retryRead(op, work) {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      this.check(op);
+      try {
+        const result = await work();
+        this.check(op);
+        op.readRetry = null;
+        return result;
+      } catch (error) {
+        if (!transientImportRead(error) || attempt === 3 || op.controller.signal.aborted) throw error;
+        op.readRetry = { attempt: attempt + 1, maximum: 3 };
+        await delay(attempt * 1000, undefined, { signal: op.controller.signal });
+      }
+    }
+  }
+
   async read(op, path, options = {}) {
-    this.check(op);
-    const result = await this.client.request(path, { ...options, method: 'GET', anonymous: true, signal: op.controller.signal });
-    this.check(op);
-    return result.data;
+    return this.retryRead(op, async () => {
+      const result = await this.client.request(path, {
+        ...options, method: 'GET', anonymous: true, signal: op.controller.signal, timeoutMs: 60_000,
+      });
+      return result.data;
+    });
   }
 
   async acquire(op) {
@@ -172,9 +196,9 @@ export class LocalSourceImportService {
         const entry = op.manifest.files[cursor++];
         op.progress.currentPath = entry.path;
         if (!op.blobs.has(entry.sha)) {
-          const bytes = await this.client.publicFile(parsed.fullName, head, entry.path, {
-            limit: this.limits.blobBytes, signal: op.controller.signal,
-          });
+          const bytes = await this.retryRead(op, () => this.client.publicFile(parsed.fullName, head, entry.path, {
+            limit: this.limits.blobBytes, signal: op.controller.signal, timeoutMs: 60_000,
+          }));
           this.check(op);
           const blob = verifySnapshotBytes(bytes, entry, this.limits.blobBytes);
           op.blobs.set(entry.sha, { ...blob, hash: sha256(bytes) });
@@ -191,23 +215,7 @@ export class LocalSourceImportService {
     if (rejected) throw rejected.reason;
     this.check(op);
     op.stage = 'compatibility';
-    const files = op.manifest.files.filter((file) =>
-      !file.path.split('/').slice(0, -1).some(isSkippedDirectory) &&
-      !isEnvironmentFile(file.path.split('/').at(-1)) && isSourceExtension(file.path)
-    ).map((file) => ({ ...file, alias: file.path, kind: sourceExtension(file.path).slice(1) }));
-    const byPath = new Map(files.map((file) => [file.alias, file]));
-    const provider = {
-      remote: true,
-      entries: async () => files,
-      read: async (alias) => {
-        const file = byPath.get(alias);
-        const blob = file && op.blobs.get(file.sha);
-        if (!blob || blob.text === null) throw fail('IMPORT_SOURCE_UNSUPPORTED', 'A required Citadel source is missing or is not UTF-8 text.');
-        return { text: blob.text, hash: blob.hash, size: blob.bytes.length };
-      },
-    };
-    const catalog = await discoverWorkspace(provider, { scope: planScope(citadelSourcePlan(files), 'capabilities') });
-    if (catalog.compatibility !== 'supported') throw fail('IMPORT_SOURCE_UNSUPPORTED', 'The complete snapshot is not a supported Citadel workspace.');
+    await assertSnapshotCompatibility(op.manifest, op.blobs);
     validateLocalSnapshot(this.manifest(op.id, true));
     this.check(op);
     op.stage = 'ready';

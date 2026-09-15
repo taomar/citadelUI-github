@@ -25,8 +25,8 @@ assert.deepEqual(LOGIC_APPS_TEMPLATE.workerSizes, {
 assert.match(logicAppsWorkerGuidance('WS2'), /WS2 provides 2 vCPU and 7 GB memory/);
 
 const regions = PRIMARY_REGIONS.map((value) => ({ value, meta: value }));
-assert.equal(filterPickerItems(regions, '').length, 14);
-assert.deepEqual(filterPickerItems(regions, 'sweden').map((item) => item.value), ['swedencentral']);
+assert.equal(filterPickerItems(regions, '').length, 69);
+assert.deepEqual(filterPickerItems(regions, 'sweden').map((item) => item.value), ['swedencentral', 'swedensouth']);
 
 const instances = [
   { name: 'one', location: 'eastus' },

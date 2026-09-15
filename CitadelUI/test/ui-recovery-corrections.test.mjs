@@ -267,6 +267,7 @@ function composedActions(workspaceActivation, registry, workspaceReattachment = 
   const bindings = {
     workspaceActivation, workspaceReattachment, registry, withSourceUnavailable, environmentSourceOf, validateLocalPath,
     getGitHubRepository: unused, listGitHubRepositoryCreations: unused, prepareGitHubRepository: unused,
+    listRepositoryOwners: unused, checkRepositoryOwner: unused,
     gitHubRepositoryCreationStatus: unused, startGitHubRepositoryCreation: unused,
     resumeGitHubRepositoryCreation: unused, pauseGitHubRepositoryCreation: unused, scanProvider: unused, attachLocalSourceEnvironment: unused,
   };

@@ -394,11 +394,18 @@ All reads and writes still use the fixed, redirect-refusing `api.github.com`
 transport. Preflight pins an immutable source commit and fully checks the
 snapshot before the user confirms repository creation.
 
-The server fixes visibility to private and destination ownership to the
-authenticated personal account. Browser-supplied owner/visibility overrides are
-refused. Name collisions are never overwritten or adopted. An operation records
+The server fixes visibility to private. The client explicitly selects a Personal
+or Organization owner, and the server verifies its type, handle and immutable ID.
+Personal destinations must match the authenticated account. Organization
+destinations must match GitHub's organization identity and active membership;
+known member creation-policy denials are enforced. Token rights unavailable
+through read-only metadata remain "not verified", not assumed granted.
+Name collisions are never overwritten or adopted. An operation records
 its intent before creation and verifies repository provenance, immutable ID,
-account, privacy and expected branch heads on recovery. It never automatically
+actor account, destination owner, privacy and expected branch heads on recovery.
+The actor ID is never conflated with the organization ID. Old journal entries
+without an explicit owner retain their original Personal destination; a resume
+cannot switch namespaces. It never automatically
 deletes repositories or forces a ref update.
 
 For an account whose initial default branch is not `main`, the importer publishes
@@ -416,10 +423,23 @@ setup reports completion.
 
 Creation uses a temporary fine-grained token with All repositories access and
 Administration/Contents read-write permissions. Normal editing retains its
-selected-repository Contents-only recommendation. Workflows permission is
+selected-repository Contents-only recommendation. Organization discovery and
+membership checks require Members read access for the selected organization.
+The UI distinguishes verified membership, policy denial and unverified create
+rights; it does not treat a failed lookup as an empty organization list.
+Workflows permission is
 conditional on source workflow files; for those imports, Actions are disabled
-before copying and remain disabled for operator review. No Actions or Pull
-requests permission is requested.
+before copying and remain disabled for operator review. GitHub must permit that
+settings change. No Pull requests permission is requested.
+
+Only transient GET failures and short-lived visibility delays after a confirmed
+create receive bounded retries (at most three attempts, each read capped at
+60 seconds). Writes are never blindly replayed. A lost write response requires
+same-attempt provenance/state reconciliation. Immutable verified source blobs
+can be reused in the bounded in-memory cache after a transient read failure;
+authorization failure, cancellation, restart or eviction prevents continued
+use. Failure messages retain only the selected owner, known action/stage and
+HTTP status, not upstream response bodies or credentials.
 
 The durable operation journal contains source/destination identifiers, file
 metadata, checkpoints and safe status information, never tokens, credential

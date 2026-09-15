@@ -52,6 +52,7 @@ import { LocalSourceImportService } from './local-import.mjs';
 import { assertNoWritableOverlap, configurationKey, configurationOf, nativeInventoryAlias, unitForAlias, validateConfiguration, workspaceScope } from '../../shared/workspace-configuration.mjs';
 import { assertNativeDependencySafe, assertNativeFileSafe, decodeNativeBytes, readUnitSchema } from '../../shared/terraform/workspace.mjs';
 import { githubScanProvider } from './scan-provider.mjs';
+import { repositoryOwner } from '../../shared/repository-owner.mjs';
 
 const SESSION_HEADER = 'x-citadel-github-session';
 
@@ -423,6 +424,20 @@ export class GitHubRoutes {
       const session = this.session(req);
       return getRepository(this.client, session.token, validateRepositoryId(tail[1]));
     }
+    if (tail[0] === 'repository-owners') {
+      const session = this.session(req);
+      if (!this.creations) throw githubError(503, 'REPOSITORY_CREATION_UNAVAILABLE', 'Repository creation is unavailable in this deployment.');
+      if (method === 'GET' && tail.length === 1) return this.creations.listOwners(session);
+      if (method === 'POST' && tail.length === 1) {
+        const body = await readBody();
+        assertKeys(body, new Set(['owner', 'organization']));
+        if (Boolean(body.owner) === Boolean(body.organization)) {
+          throw githubError(400, 'IMPORT_INVALID_INPUT', 'Choose one owner or one explicit organization handle.');
+        }
+        return this.creations.checkOwner(session, body.owner || body.organization);
+      }
+      throw githubError(404, 'ROUTE_NOT_FOUND', 'API route not found.');
+    }
     if (tail[0] === 'repository-creations') {
       const session = this.session(req);
       if (!this.creations) {
@@ -431,7 +446,11 @@ export class GitHubRoutes {
       if (method === 'GET' && tail.length === 1) return this.creations.list(session);
       if (method === 'POST' && tail.length === 1) {
         const body = await readBody();
-        assertKeys(body, new Set(['name', 'sourceUrl', 'operationKey']));
+        assertKeys(body, new Set(['name', 'sourceUrl', 'operationKey', 'owner']));
+        if (body.owner !== undefined) {
+          try { repositoryOwner(body.owner); }
+          catch { throw githubError(400, 'IMPORT_INVALID_OWNER', 'Choose a valid Personal or Organization owner.'); }
+        }
         return this.creations.prepare(session, body);
       }
       if (method === 'GET' && tail.length === 2) return this.creations.status(session, tail[1]);

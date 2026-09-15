@@ -66,6 +66,201 @@ test('repository creation: strict Git object model has known real SHA-1 blob and
   }), /not source/);
 });
 
+test('repository creation: authenticated membership discovery prefers Organization and separates identical display names', async (t) => {
+  const cx = await context(t);
+  cx.mock.identity.name = 'Same display name';
+  const org = cx.mock.organization('fixture-enterprise', { name: 'Same display name' });
+  const owners = await cx.service.listOwners(cx.session);
+  assert.deepEqual(owners.defaultOwner, { type: 'Organization', id: org.id, login: org.login });
+  assert.deepEqual(owners.owners.map((item) => item.type), ['Organization', 'User']);
+  assert.ok(owners.owners.every((item) => item.access === 'not-verified'));
+  assert.equal(owners.organizationLookup.status, 'complete');
+  assert.ok(cx.mock.calls.some((call) => call.path.startsWith('/user/memberships/orgs?')));
+  assert.ok(!cx.mock.calls.some((call) => call.path === '/user/orgs'));
+  assert.equal(writes(cx.mock).length, 0);
+});
+
+test('repository creation: denied organization discovery is not reported as no organizations', async (t) => {
+  const cx = await context(t);
+  const org = cx.mock.organization('private-org');
+  cx.mock.before = (call) => {
+    if (call.path.startsWith('/user/memberships/orgs?')) throw githubError(403, 'GITHUB_REQUEST_FAILED', 'Not authorized');
+  };
+  const owners = await cx.service.listOwners(cx.session);
+  assert.equal(owners.defaultOwner, null);
+  assert.equal(owners.organizationLookup.status, 'denied');
+  assert.match(owners.organizationLookup.message, /does not mean.*no organizations/);
+  const checked = await cx.service.checkOwner(cx.session, org.login);
+  assert.equal(checked.id, org.id);
+  assert.equal(checked.type, 'Organization');
+  assert.equal(writes(cx.mock).length, 0);
+});
+
+test('repository creation: no visible organization defaults to Personal without claiming create permission', async (t) => {
+  const cx = await context(t);
+  const owners = await cx.service.listOwners(cx.session);
+  assert.equal(owners.defaultOwner.type, 'User');
+  assert.equal(owners.defaultOwner.id, cx.session.accountId);
+  assert.equal(owners.owners[0].access, 'not-verified');
+});
+
+test('repository creation: Organization policy denial is explicit before any source transfer or write', async (t) => {
+  const cx = await context(t);
+  const org = cx.mock.organization('locked-org', { members_can_create_private_repositories: false }, { role: 'member' });
+  const owner = { type: org.type, id: org.id, login: org.login };
+  const access = await cx.service.checkOwner(cx.session, owner);
+  assert.equal(access.access, 'denied');
+  const op = await cx.service.prepare(cx.session, creation('policy-blocked', { owner }));
+  await cx.service.settled();
+  const result = await cx.service.status(cx.session, op.id);
+  assert.equal(result.error.code, 'IMPORT_OWNER_ACCESS_DENIED');
+  assert.match(result.error.message, /Organization @locked-org/);
+  assert.equal(result.error.stageId, 'owner');
+  assert.equal(cx.mock.calls.some((call) => call.path.includes('/fixture-upstream/')), false);
+  assert.equal(writes(cx.mock).length, 0);
+});
+
+test('repository creation: Personal and Organization destinations use separate IDs and endpoints', async (t) => {
+  const cx = await context(t);
+  const org = cx.mock.organization('fixture-enterprise');
+  const owner = { type: org.type, id: org.id, login: org.login };
+  const organizational = await ready(cx, creation('same-name', { owner }));
+  const completed = await finish(cx, organizational);
+  assert.equal(completed.state, 'complete', JSON.stringify(completed.error));
+  assert.equal(completed.destination.fullName, 'fixture-enterprise/same-name');
+  assert.equal(completed.destination.owner.id, org.id);
+  assert.equal(completed.actor.id, cx.session.accountId);
+  assert.equal(cx.mock.repos.get('fixture-enterprise/same-name').owner.type, 'Organization');
+  assert.equal(writes(cx.mock).filter((call) => call.path === '/orgs/fixture-enterprise/repos').length, 1);
+  assert.equal(writes(cx.mock).filter((call) => call.path === '/user/repos').length, 0);
+  const personal = await ready(cx, creation('same-name', { operationKey: 'different-personal-key' }));
+  assert.equal((await finish(cx, personal)).destination.fullName, 'fixture-owner/same-name');
+});
+
+test('repository creation: an existing operation cannot change Personal/Organization owner through retry', async (t) => {
+  const cx = await context(t);
+  const personal = await ready(cx);
+  const org = cx.mock.organization('fixture-enterprise');
+  await assert.rejects(cx.service.prepare(cx.session, creation('private-copy', {
+    owner: { type: org.type, id: org.id, login: org.login },
+  })), { code: 'IMPORT_KEY_CONFLICT' });
+  const retained = await cx.service.status(cx.session, personal.id);
+  assert.equal(retained.destination.owner.type, 'User');
+  assert.equal(retained.destination.owner.id, cx.session.accountId);
+  assert.equal(writes(cx.mock).length, 0);
+});
+
+test('repository creation: a lost Organization create response is reconciled without another create', async (t) => {
+  const cx = await context(t);
+  const org = cx.mock.organization('fixture-enterprise');
+  const owner = { type: org.type, id: org.id, login: org.login };
+  const op = await ready(cx, creation('org-recovery', { owner }));
+  cx.mock.after = (call) => { if (call.path === '/orgs/fixture-enterprise/repos') throw lost(); };
+  const failed = await finish(cx, op);
+  assert.equal(failed.error.code, 'IMPORT_TIMEOUT');
+  assert.match(failed.error.message, /Organization @fixture-enterprise\/org-recovery/);
+  assert.match(failed.error.message, /write was not automatically retried/);
+  assert.equal(failed.created, false);
+  cx.mock.after = null;
+  const restarted = new RepositoryCreationService(cx.config);
+  await restarted.initialize();
+  await restarted.resume(cx.session, op.id);
+  await restarted.settled();
+  assert.equal((await restarted.status(cx.session, op.id)).state, 'complete');
+  assert.equal(writes(cx.mock).filter((call) => call.path === '/orgs/fixture-enterprise/repos').length, 1);
+  restarted.shutdown();
+});
+
+test('repository creation: changed Organization identity is refused rather than redirected', async (t) => {
+  const cx = await context(t);
+  const org = cx.mock.organization('fixture-enterprise');
+  const op = await ready(cx, creation('org-identity', { owner: { type: org.type, id: org.id, login: org.login } }));
+  org.id += 100;
+  const failed = await finish(cx, op);
+  assert.equal(failed.error.code, 'IMPORT_OWNER_CHANGED');
+  assert.equal(writes(cx.mock).length, 0);
+});
+
+test('repository creation: denied create identifies the owner and GitHub status without leaking raw text', async (t) => {
+  const cx = await context(t);
+  const op = await ready(cx);
+  cx.mock.before = (call) => {
+    if (call.path === '/user/repos') throw githubError(403, 'GITHUB_REQUEST_FAILED', 'secret fixture text should never appear');
+  };
+  const failed = await finish(cx, op);
+  assert.equal(failed.error.code, 'IMPORT_ACCESS_DENIED');
+  assert.equal(failed.error.httpStatus, 403);
+  assert.match(failed.error.message, /Personal @fixture-owner\/private-copy/);
+  assert.match(failed.error.message, /create the private repository/);
+  assert.doesNotMatch(failed.error.message, /secret fixture/);
+  assert.equal(writes(cx.mock).length, 1);
+});
+
+test('repository creation: transient source reads retry only the current GET and use cached compatibility', async (t) => {
+  const cx = await context(t);
+  let failed = false;
+  cx.mock.before = (call) => {
+    if (!failed && call.method === 'GET' && call.path.includes('/git/blobs/')) { failed = true; throw lost(); }
+  };
+  const op = await ready(cx);
+  assert.equal(op.state, 'ready');
+  assert.equal(writes(cx.mock).length, 0);
+  const calls = cx.mock.calls.filter((call) => call.path.includes('/git/blobs/'));
+  const distinct = new Set(cx.mock.snapshot(cx.mock.source, 'citadel-v1').map((entry) => entry.sha));
+  assert.equal(calls.length, distinct.size + 1, 'No complete re-download for the compatibility scan.');
+});
+
+test('repository creation: an initial source failure is not attributed to destination permissions', async (t) => {
+  const cx = await context(t);
+  cx.mock.before = (call) => { if (call.path === '/repos/fixture-upstream/source') throw lost(); };
+  const op = await cx.service.prepare(cx.session, creation('initial-read'));
+  await cx.service.settled();
+  const failed = await cx.service.status(cx.session, op.id);
+  assert.equal(failed.error.code, 'IMPORT_TIMEOUT');
+  assert.equal(failed.error.target, 'source');
+  assert.doesNotMatch(failed.error.message, /Personal @fixture-owner/);
+  assert.equal(cx.mock.calls.length, 3);
+  assert.equal(writes(cx.mock).length, 0);
+});
+
+test('repository creation: exhausted source retries preserve verified blobs for same-attempt resume', async (t) => {
+  const cx = await context(t, { files: citadelRepositoryFiles({ 'late-failure.bin': Buffer.from([0, 17, 255]) }) });
+  const failedSha = cx.mock.snapshot(cx.mock.source, 'citadel-v1').at(-1).sha;
+  cx.mock.before = (call) => { if (call.path.endsWith(`/git/blobs/${failedSha}`)) throw lost(); };
+  const pending = await cx.service.prepare(cx.session, creation('read-recovery'));
+  await cx.service.settled();
+  const failed = await cx.service.status(cx.session, pending.id);
+  assert.equal(failed.error.code, 'IMPORT_TIMEOUT');
+  assert.match(failed.error.message, /source fixture-upstream\/source/);
+  assert.equal(failed.readRetry, null, 'A stopped attempt must not look like an active retry.');
+  assert.ok(cx.service.cache.blobs.size > 0);
+  const cachedReads = new Map([...cx.service.cache.blobs.keys()].map((sha) =>
+    [sha, cx.mock.calls.filter((call) => call.path.endsWith(`/git/blobs/${sha}`)).length]));
+  assert.equal(cx.mock.calls.filter((call) => call.path.endsWith(failedSha)).length, 3);
+  cx.mock.before = null;
+  await cx.service.resume(cx.session, pending.id);
+  await cx.service.settled();
+  assert.equal((await cx.service.status(cx.session, pending.id)).state, 'ready');
+  for (const [sha, count] of cachedReads) {
+    assert.equal(cx.mock.calls.filter((call) => call.path.endsWith(`/git/blobs/${sha}`)).length, count,
+      'A verified cached blob must not be downloaded again.');
+  }
+  assert.equal(writes(cx.mock).length, 0);
+});
+
+test('repository creation: brief visibility delay after confirmed create does not fail or recreate', async (t) => {
+  const cx = await context(t);
+  const op = await ready(cx);
+  let misses = 0;
+  cx.mock.before = (call) => {
+    if (call.path === '/repos/fixture-owner/private-copy' && destination(cx.mock) && misses++ < 2) {
+      throw githubError(404, 'GITHUB_REQUEST_FAILED', 'Not visible yet');
+    }
+  };
+  assert.equal((await finish(cx, op)).state, 'complete');
+  assert.equal(writes(cx.mock).filter((call) => call.path === '/user/repos').length, 1);
+});
+
 test('repository creation: managed account logins remain valid through preparation and journal reload', async (t) => {
   const cx = await context(t);
   cx.mock.identity.login = 'fixture-owner_acme';

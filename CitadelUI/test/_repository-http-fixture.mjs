@@ -23,10 +23,16 @@ export async function repositoryHttpFixture(options = {}) {
     github.repos.set(options.sourceFullName.toLowerCase(), github.source);
   }
   const unexpected = [];
-  const metadata = (repo) => ({
-    ...github.metadata(repo),
-    permissions: { push: repo.owner.id === github.identity.id, admin: repo.owner.id === github.identity.id },
-  });
+  const metadata = (repo) => {
+    const membership = repo.owner.type === 'Organization' && github.memberships.get(repo.owner.login.toLowerCase());
+    return {
+      ...github.metadata(repo),
+      permissions: {
+        push: repo.owner.id === github.identity.id || membership?.state === 'active',
+        admin: repo.owner.id === github.identity.id || membership?.state === 'active' && membership?.role === 'admin',
+      },
+    };
+  };
   const client = new GitHubApiClient({
     fetch: async (href, init) => {
       const url = new URL(href);

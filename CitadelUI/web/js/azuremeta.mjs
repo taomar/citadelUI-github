@@ -2,6 +2,7 @@
  * Versioned, offline Azure product metadata used only for editor guidance.
  * Region lists are suggestions, not deployment-availability validation.
  */
+import { AZURE_REGION_NAMES, AZURE_REGIONS } from '../../shared/azure-regions.mjs';
 
 export const AZURE_META = Object.freeze({
   verifiedAt: '2026-08-30',
@@ -15,40 +16,9 @@ export const AZURE_META = Object.freeze({
   }),
 });
 
-export const REGION_NAMES = Object.freeze({
-  uaenorth: 'UAE North',
-  southafricanorth: 'South Africa North',
-  westeurope: 'West Europe',
-  southcentralus: 'South Central US',
-  australiaeast: 'Australia East',
-  canadaeast: 'Canada East',
-  canadacentral: 'Canada Central',
-  centralindia: 'Central India',
-  eastus: 'East US',
-  eastus2: 'East US 2',
-  francecentral: 'France Central',
-  japaneast: 'Japan East',
-  northcentralus: 'North Central US',
-  swedencentral: 'Sweden Central',
-  switzerlandnorth: 'Switzerland North',
-  uksouth: 'UK South',
-});
-
-const NON_PRIMARY_REGIONS = new Set(['canadacentral', 'centralindia']);
-export const PRIMARY_REGIONS = Object.freeze(
-  Object.keys(REGION_NAMES).filter((region) => !NON_PRIMARY_REGIONS.has(region))
-);
-
-export const API_CENTER_REGIONS = Object.freeze([
-  'australiaeast',
-  'canadacentral',
-  'centralindia',
-  'eastus',
-  'francecentral',
-  'swedencentral',
-  'uksouth',
-  'westeurope',
-]);
+export const REGION_NAMES = AZURE_REGION_NAMES;
+export const PRIMARY_REGIONS = AZURE_REGIONS;
+export const API_CENTER_REGIONS = AZURE_REGIONS;
 
 export const APIC_LOCATION_VALUES = Object.freeze(['', ...API_CENTER_REGIONS]);
 

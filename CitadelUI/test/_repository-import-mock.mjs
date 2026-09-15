@@ -38,6 +38,8 @@ export class ImportGitHub {
     this.repos = new Map();
     this.nextId = 1000;
     this.identity = { id: 101, login: 'fixture-owner', type: 'User' };
+    this.organizations = new Map();
+    this.memberships = new Map();
     this.bootstrapBranch = bootstrapBranch;
     this.before = null;
     this.after = null;
@@ -61,6 +63,16 @@ export class ImportGitHub {
     };
     this.repos.set(fullName.toLowerCase(), repository);
     return repository;
+  }
+
+  organization(login, extra = {}, membership = {}) {
+    const organization = {
+      id: this.nextId++, login, type: 'Organization', name: 'Shared display name',
+      members_can_create_private_repositories: true, ...extra,
+    };
+    this.organizations.set(login.toLowerCase(), organization);
+    this.memberships.set(login.toLowerCase(), { state: 'active', role: 'admin', organization, ...membership });
+    return organization;
   }
 
   metadata(repo) {
@@ -187,14 +199,31 @@ export class ImportGitHub {
 
   dispatch(path, method, body) {
     if (path === '/user' && method === 'GET') return this.identity;
-    if (path === '/user/repos' && method === 'POST') {
+    if (path.startsWith('/user/memberships/orgs?') && method === 'GET') {
+      const page = Number(new URL(path, 'https://api.github.com').searchParams.get('page') || 1);
+      return page === 1 ? [...this.memberships.values()] : [];
+    }
+    const membership = /^\/user\/memberships\/orgs\/([^/]+)$/.exec(path);
+    if (membership && method === 'GET') {
+      if (!this.memberships.has(membership[1].toLowerCase())) throw error(404);
+      return this.memberships.get(membership[1].toLowerCase());
+    }
+    const org = /^\/orgs\/([^/]+)(\/repos)?$/.exec(path);
+    if (org && !org[2] && method === 'GET') {
+      if (!this.organizations.has(org[1].toLowerCase())) throw error(404);
+      return this.organizations.get(org[1].toLowerCase());
+    }
+    if ((path === '/user/repos' || org?.[2] === '/repos') && method === 'POST') {
       assert.deepEqual(Object.keys(body).sort(), ['auto_init', 'description', 'name', 'private']);
       assert.equal(body.private, true);
       assert.equal(body.auto_init, true);
       assert.match(body.description, /^Citadel full snapshot operation [0-9a-f-]{36}$/);
-      const name = `${this.identity.login}/${body.name}`;
+      const owner = org ? this.organizations.get(org[1].toLowerCase()) : this.identity;
+      if (!owner) throw error(404);
+      const name = `${owner.login}/${body.name}`;
       if (this.repos.has(name.toLowerCase())) throw error(422);
-      const repo = this.repository(name, { description: body.description, default_branch: this.bootstrapBranch });
+      const repo = this.repository(name, { owner: { id: owner.id, login: owner.login, type: owner.type },
+        description: body.description, default_branch: this.bootstrapBranch });
       this.seed(repo, this.bootstrapBranch, { 'README.md': `# ${body.name}\n${body.description}\n` });
       return this.metadata(repo);
     }

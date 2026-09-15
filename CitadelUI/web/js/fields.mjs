@@ -276,13 +276,12 @@ function isLocationSchema(schema, path = []) {
 }
 
 export function regionOptionsFor(schema, path = []) {
-  if (schema?.native) return null;
   if (!isLocationSchema(schema, path)) return null;
-  if (schema && Array.isArray(schema.allowedValues) && schema.allowedValues.length) {
-    return schema.allowedValues.map(String);
-  }
+  if (schema?.type && !['string', 'any'].includes(schema.type)) return null;
   const name = (schema && schema.name) || semanticFieldName(path);
-  return name === 'apicLocation' ? APIC_LOCATION_VALUES : PRIMARY_REGIONS;
+  const defaults = name === 'apicLocation' || name === 'apic_location' ? APIC_LOCATION_VALUES : PRIMARY_REGIONS;
+  const supplied = Array.isArray(schema?.allowedValues) ? schema.allowedValues : [];
+  return [...new Set([...defaults, ...supplied.filter((value) => typeof value === 'string')])];
 }
 
 function withRegionSchema(schema, path) {
@@ -429,7 +428,7 @@ function validatedNumber(input, path, ctx, read) {
  * and provenance appears nowhere in them.
  */
 function scalarControl(value, path, ctx, schema) {
-  schema = ctx.readOnly || ctx.native || ctx.resourceTags && path[0] === 'tags' ? schema : withRegionSchema(schema, path);
+  schema = ctx.readOnly || ctx.resourceTags && path[0] === 'tags' ? schema : withRegionSchema(schema, path);
   const commit = (next) => ctx.onChange(path, next);
   const type = schema && schema.type;
   const label = valueLabel(path, schema);

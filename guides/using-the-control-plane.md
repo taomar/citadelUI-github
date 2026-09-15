@@ -374,6 +374,13 @@ applies to region fields in nested objects, expression fallbacks, native
 Terraform, migration and export controls. Unrelated enums, types, secret
 boundaries and required-value checks remain in place.
 
+Every region dropdown includes the same offline catalog of 69 documented
+Azure region identifiers: public Azure plus China, US Government/DoD and the
+documented Sweden South paired region. The catalog was checked against
+Microsoft's region tables on 15 September 2026. A short template `@allowed`
+list does not hide other region suggestions, including in native Terraform.
+Catalog inclusion is not evidence of subscription access or service availability.
+
 Saving a region does not edit a Bicep `@allowed` decorator or a Terraform
 validation block. The deployment template and service availability still govern
 deployment; maintain those outside the value editor when needed.
@@ -673,24 +680,34 @@ mapping details and limits.
 ## Create a new private GitHub repository
 
 Choose **Bicep / Citadel > New GitHub Repo**. This creates a private snapshot
-repository in the connected personal account, not a fork or a history copy.
-Existing repositories are never overwritten; organization destinations are not
-offered.
+repository under the explicitly selected **Organization** or **Personal**
+owner, not a fork or a history copy. Existing repositories are never overwritten.
 
 1. Connect a temporary creation token. It needs **All repositories**,
    **Administration: Read and write**, and **Contents: Read and write**;
-   **Metadata: Read-only** is automatic.
-2. Enter the new name and review **Source repository URL**. The default is the
+   **Metadata: Read-only** is automatic. Set its **Resource owner** to the intended
+   destination. Organization discovery/access checks also need **Members: Read-only**.
+2. Citadel checks visible organization memberships first. **Repository owner**
+   defaults to an available organization, with the personal account also offered.
+   Check the **Personal/Organization** type, GitHub handle and numeric ID; display
+   names can be alike. A failed organization lookup is not reported as "no
+   organizations." Use **Refresh owners** or **Organization not listed?** to
+   check an exact handle. Policy denials block preparation; unverified creation
+   permissions are labeled honestly rather than claimed as granted.
+3. Enter the new name and review **Source repository URL**. The default is the
    upstream accelerator's `citadel-v1`, not its default `main`.
-3. Choose **Check source** to pin and validate the complete snapshot without
-   creating anything. Review it, then choose **Create private repository**.
-4. After verification, choose **Continue to repository** and complete the normal
+4. Choose **Check source** to pin and validate the complete snapshot without
+   creating anything. Review the owner and full `owner/repository` destination,
+   then choose **Create private repository**.
+5. After verification, choose **Continue to repository** and complete the normal
    branch/details/attachment flow. Narrow the token to the new repository and
    remove Administration, or reconnect with a regular editing token.
 
 Only if preflight reports workflow files, also grant **Workflows: Read and write**.
 Citadel disables Actions before copying them and leaves Actions disabled for
-your review. It does not require Actions or Pull requests permissions.
+your review. GitHub must allow that settings change; no Pull requests permission
+is needed. Enterprise policies and SSO can still restrict the operation even
+when repository permissions are present.
 
 All checked-in supported files, modes, assets and licenses are copied.
 Unsafe/incomplete/oversized trees, symlinks, submodules and Git LFS pointers are
@@ -703,6 +720,26 @@ Use **Previous setup attempts** to resume it after reconnecting the same account
 Rate limits, permission failures or unavailable recovery storage pause the
 operation; no automatic cleanup deletes the repository. A later external reset
 is not permission to replay confirmed publication.
+
+Progress separates **Owner/access**, **Read source**, **Create**, **Copy**,
+**Verify**, and **Ready**. Percentages apply only to the current file-count
+phase, never the whole operation. Source timeouts retry the same GET at most
+three times with bounded waits; writes are not automatically retried.
+Already verified source bytes can be reused by the same attempt while the
+server retains its in-memory cache. Restart, cancellation or cache eviction
+requires re-reading the same pinned source, not silently switching revisions.
+
+Errors identify the Personal/Organization destination, failed action and GitHub
+HTTP status where available. A 403 means GitHub denied that action, not necessarily
+that the user lacks all permissions. A timeout/network failure is described
+separately. After an uncertain create/write, resume the same operation so its
+repository ID, ownership, operation marker and branch state can be reconciled.
+Do not create another attempt or change a retained attempt's owner.
+
+**Create local from Citadel source** likewise separates source validation,
+browser transfer, local copy, verification and registration, with elapsed time
+and explicit bounded read-retry notices. "All files copied" is not "workspace
+ready"; registration and verification must finish first.
 
 ## Troubleshooting with /debug
 

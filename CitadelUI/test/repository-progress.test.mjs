@@ -3,7 +3,7 @@ import test from 'node:test';
 import { installDom, readText } from './_dom-stub.mjs';
 
 installDom();
-const { createRepositoryProgress, STATUS_DELAY_MS, ACTIVITY_DELAY_MS } = await import('../web/js/repository-progress.mjs');
+const { createRepositoryProgress, createTransferProgress, STATUS_DELAY_MS, ACTIVITY_DELAY_MS } = await import('../web/js/repository-progress.mjs');
 const nodes = (root) => [root, ...root.children.flatMap(nodes)];
 const find = (root, name) => nodes(root).find((node) => node.className.split(' ').includes(name));
 const timestamp = Date.parse('2026-09-08T01:00:00Z');
@@ -121,4 +121,37 @@ test('repository progress: old status payloads and untrusted file names cannot i
   }), lastStatusAt: timestamp });
   assert.equal(nodes(view.root).some((node) => node.tagName === 'IMG'), false);
   assert.match(readText(view.root), /<img src=x onerror=alert\(1\)>/);
+});
+
+test('repository progress: Organization and bounded read retry are visible without claiming another create', () => {
+  const view = createRepositoryProgress({ now: () => timestamp });
+  view.update({ operation: copying({
+    state: 'preparing', stageId: 'blobs',
+    destination: { fullName: 'client-org/new-repo', owner: { type: 'Organization', id: 3, login: 'client-org' } },
+    readRetry: { attempt: 2, maximum: 3, action: 'download a file', target: 'source' },
+    progress: { phase: 'source', completed: 17, total: 100 },
+  }), lastStatusAt: timestamp });
+  const output = readText(view.root);
+  assert.match(output, /Organization @client-org/);
+  assert.match(output, /17 of 100 files validated/);
+  assert.match(output, /attempt 2 of 3/);
+  assert.match(output, /No write is retried automatically/);
+  assert.match(output, /Owner\/access.*Read source.*Create.*Copy.*Verify.*Ready/);
+});
+
+test('local import progress: transfer, copy, verification and registration never share a false overall completion', () => {
+  let clock = timestamp;
+  const view = createTransferProgress({ now: () => clock });
+  view.update('Transferring to browser', { phase: 'transfer', completed: 50, total: 100 });
+  assert.match(readText(view.root), /50% of browser transfer/);
+  view.update('Verifying files', { phase: 'verify', completed: 4, total: 100 });
+  assert.match(readText(view.root), /4% of file verification/);
+  view.update('Registering the workspace', { phase: 'register', completed: 100, total: 100 });
+  assert.equal(find(view.root, 'repository-progress-meter').hidden, true);
+  assert.equal(find(view.root, 'stage').classList.contains('stage-done'), false);
+  clock += ACTIVITY_DELAY_MS + 1;
+  view.tick();
+  assert.match(readText(view.root), /No new progress is confirmed/);
+  view.update('Local workspace ready', { phase: 'complete', completed: 100, total: 100 }, false);
+  assert.ok(find(view.root, 'stage').classList.contains('stage-done'));
 });

@@ -92,6 +92,12 @@ function harness(t, overrides = {}, connections = [profile]) {
     createConnection: async () => account,
     reconnectConnection: async () => account,
     listRepositoryCreations: async () => ({ operations: [] }),
+    repositoryOwners: async () => ({
+      owners: [{ type: 'User', id: account.accountId, login: account.login }],
+      organizationLookup: { status: 'complete', message: 'No accessible organizations returned.' },
+      defaultOwner: { type: 'User', id: account.accountId, login: account.login },
+    }),
+    checkRepositoryOwner: async (owner) => ({ ...owner, access: 'not-verified', message: 'Membership checked; creation rights not verified.' }),
     prepareRepository: async (body) => { calls.push(['prepare', body]); return current; },
     repositoryCreationStatus: async (id) => { calls.push(['status', id]); return current; },
     startRepositoryCreation: async (id) => { calls.push(['start', id]); current = complete(); return current; },
@@ -138,13 +144,13 @@ function assertCreationTokenHelp() {
   const text = readText(help);
   for (const term of [
     'only prefills a fine-grained token form', 'does not create a token or grant permissions automatically',
-    'temporary token', '1-day expiration', 'Verify Resource owner is your connected personal account',
+    'temporary token', '1-day expiration', 'Resource owner that matches the intended Organization or Personal destination',
     'All repositories', 'does not exist yet, so it cannot be selected beforehand',
     'Administration: Read and write to create the private repository',
     'Contents: Read and write to read branches and import files (write includes read)',
     'Administration alone cannot read branches or populate the repository',
     'Metadata: Read-only', 'Workflows: Read and write only if the source preview reports .github/workflows files',
-    'disables Actions', 'No Actions, Pull requests or organization permission is needed',
+    'disables Actions', 'Members: Read-only', 'No Pull requests permission is needed',
     'After setup, narrow the token to Only select repositories and the new repository',
     'remove Administration and any unneeded Workflows permission', 'regular Contents-only token', 'always private',
   ]) assert.ok(text.includes(term), term);
@@ -206,14 +212,15 @@ test('repository creation UI: source preflight precedes one private creation and
   const { calls, selection } = harness(t);
   await openCreation();
   assert.equal(control('catalog-create-repository-source').value, SOURCE);
-  assert.match(readText(document.getElementById('modal')), /personal account @octo-dev/);
+  assert.match(readText(document.getElementById('modal')), /Personal @octo-dev/);
   assert.equal(nodes().some((node) => node.getAttribute('type') === 'checkbox'), false, 'no public toggle');
   input('catalog-create-repository-name', 'new-citadel');
   await click('Check source');
   const prepare = calls.find((item) => item[0] === 'prepare')[1];
   assert.equal(prepare.sourceUrl, SOURCE);
   assert.equal(prepare.name, 'new-citadel');
-  assert.deepEqual(Object.keys(prepare).sort(), ['name', 'operationKey', 'sourceUrl']);
+  assert.deepEqual(Object.keys(prepare).sort(), ['name', 'operationKey', 'owner', 'sourceUrl']);
+  assert.deepEqual(prepare.owner, { type: 'User', id: account.accountId, login: account.login });
   assert.match(prepare.operationKey, /^[A-Za-z0-9-]+$/);
   assert.equal(calls.some((item) => item[0] === 'start'), false);
   assert.match(readText(document.getElementById('modal')), /citadel-v1/);
@@ -225,6 +232,69 @@ test('repository creation UI: source preflight precedes one private creation and
   assert.equal(selection.repository.id, repository.id);
   assert.equal(selection.branch, '', 'normal branch selection remains explicit');
   assert.ok(selection.repositories.some((item) => item.id === repository.id), 'created repo must appear even if listing omitted it');
+});
+
+test('repository creation UI: detected Organization is preferred and Personal remains an explicit choice', async (t) => {
+  const org = { type: 'Organization', id: 8001, login: 'work-org' };
+  const personal = { type: 'User', id: account.accountId, login: account.login };
+  const { calls } = harness(t, {
+    repositoryOwners: async () => ({
+      owners: [org, personal], defaultOwner: org,
+      organizationLookup: { status: 'complete', message: 'Organization membership checked.' },
+    }),
+  });
+  await openCreation();
+  const chooser = control('catalog-create-repository-owner');
+  assert.ok(nodes(chooser).some((node) => readText(node).includes('Organization @work-org')));
+  assert.match(readText(document.getElementById('modal')), /Organization @work-org.*ID 8001/);
+  chooser.value = 'User:4242';
+  chooser.dispatch('change');
+  await drain();
+  input('catalog-create-repository-name', 'personal-copy');
+  await click('Check source');
+  assert.deepEqual(calls.find((item) => item[0] === 'prepare')[1].owner, personal);
+  assert.equal(control('catalog-create-repository-owner').disabled, true);
+});
+
+test('repository creation UI: missing organization permissions are visible and do not silently select Personal', async (t) => {
+  harness(t, {
+    repositoryOwners: async () => ({
+      owners: [{ type: 'User', id: account.accountId, login: account.login }], defaultOwner: null,
+      organizationLookup: { status: 'denied', message: 'Organization discovery denied. Members: Read-only is not confirmed.' },
+    }),
+  });
+  await openCreation();
+  assert.match(readText(document.getElementById('modal')), /Organization discovery denied/);
+  assert.equal(button('Check source').disabled, true);
+  assert.equal(button('Check organization').disabled, false);
+});
+
+test('repository creation UI: denied Organization policy is visible before Check source', async (t) => {
+  const org = { type: 'Organization', id: 8001, login: 'restricted-org' };
+  harness(t, {
+    repositoryOwners: async () => ({ owners: [org], defaultOwner: org,
+      organizationLookup: { status: 'complete', message: 'Discovered organizations.' } }),
+    checkRepositoryOwner: async () => ({ ...org, access: 'denied',
+      message: 'Organization @restricted-org does not allow private repository creation.' }),
+  });
+  await openCreation();
+  assert.match(readText(document.getElementById('modal')), /Organization @restricted-org does not allow/);
+  assert.equal(button('Check source').disabled, true);
+});
+
+test('repository creation UI: explicit organization lookup is checked and remains distinct from the signed-in Personal account', async (t) => {
+  const org = { type: 'Organization', id: 8001, login: 'same-display-name' };
+  harness(t, {
+    checkRepositoryOwner: async (owner) => typeof owner === 'string'
+      ? { ...org, access: 'not-verified', message: 'Membership confirmed; creation rights not verified.' }
+      : { ...owner, access: 'not-verified', message: 'Personal account authenticated.' },
+  });
+  await openCreation();
+  input('catalog-create-organization', org.login);
+  await click('Check organization');
+  assert.match(readText(document.getElementById('modal')), /Organization @same-display-name/);
+  assert.match(readText(document.getElementById('modal')), /Personal @octo-dev/);
+  assert.equal(button('Check source').disabled, false);
 });
 
 test('repository creation UI: invalid names and unsafe sources never reach preparation', async (t) => {
@@ -425,6 +495,11 @@ test('repository creation UI: switching accounts resets only local creation stat
   const original = complete();
   harness(t, {
     useConnection: async (id) => { activeAccount = id === otherProfile.id ? otherAccount : account; return activeAccount; },
+    repositoryOwners: async () => ({
+      owners: [{ type: 'User', id: activeAccount.accountId, login: activeAccount.login }],
+      defaultOwner: { type: 'User', id: activeAccount.accountId, login: activeAccount.login },
+      organizationLookup: { status: 'complete', message: 'No organizations returned.' },
+    }),
     listRepositoryCreations: async () => ({ operations: activeAccount.accountId === account.accountId ? [original] : [] }),
     repositoryCreationStatus: async () => original,
   }, [profile, otherProfile]);
@@ -437,7 +512,7 @@ test('repository creation UI: switching accounts resets only local creation stat
   chooser.dispatch('change');
   await click('Continue');
   await drain();
-  assert.match(readText(document.getElementById('modal')), /personal account @second-user/);
+  assert.match(readText(document.getElementById('modal')), /Personal @second-user/);
   assert.equal(control('catalog-create-repository-name').value, '');
   assert.equal(control('catalog-create-repository-source').value, SOURCE);
   assert.equal(button('Check source').hidden, false);

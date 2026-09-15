@@ -6,39 +6,12 @@ import { validateLocalPath, localPathMatchesHandle, localChildDisplayPath } from
 import { validateLocalFolderName } from '../../shared/repository-snapshot.mjs';
 import { createLocalSourceClient } from './local-source-client.mjs';
 import { LocalSourceCopy } from './local-source-copy.mjs';
+import { createTransferProgress } from './repository-progress.mjs';
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const field = (id, label, control, hint = null) => h('label', { class: 'catalog-field', for: id },
   h('span', { class: 'catalog-field-label' }, label), control, hint ? h('small', { class: 'hint' }, hint) : null);
 const row = (label, value) => h('div', { class: 'catalog-summary-row' }, h('dt', {}, label), h('dd', {}, value));
-
-function progressRegion() {
-  const heading = h('p', { class: 'stage stage-active', role: 'status', 'aria-live': 'polite' },
-    h('span', { class: 'stage-mark', 'aria-hidden': 'true' }), h('strong'));
-  const count = h('p', { role: 'status', 'aria-live': 'polite' });
-  const meter = h('progress', { class: 'repository-progress-meter', 'aria-label': 'Local import file progress' });
-  const path = h('code', { class: 'repository-progress-item' });
-  const root = h('section', { class: 'repository-progress', hidden: true, 'aria-label': 'Local source import progress' },
-    heading, count, meter, path);
-  return {
-    root,
-    update(message, progress = null, running = true) {
-      root.hidden = false;
-      heading.className = `stage ${running ? 'stage-active' : 'stage-pending'}`;
-      heading.children[1].textContent = message;
-      const measured = Number.isSafeInteger(progress?.total) && progress.total > 0;
-      meter.hidden = !measured;
-      count.hidden = !measured;
-      path.hidden = !progress?.currentPath;
-      path.textContent = progress?.currentPath || '';
-      if (measured) {
-        meter.max = progress.total;
-        meter.value = progress.completed;
-        count.textContent = `${progress.completed} of ${progress.total} files`;
-      }
-    },
-  };
-}
 
 /** One local import journey, shared by Settings > New project and the catalog. */
 export function openLocalSourceImport(options) {
@@ -70,6 +43,7 @@ export function openLocalSourceImport(options) {
   let refresh = () => {};
   let notice = null;
   let progress = null;
+  let progressTicker = null;
   let resolve;
   const promise = new Promise((done) => { resolve = done; });
 
@@ -80,6 +54,7 @@ export function openLocalSourceImport(options) {
   function finish(result) {
     if (closed) return;
     closed = true;
+    clearInterval(progressTicker);
     resolve(result || null);
   }
   async function releaseSource() {
@@ -137,11 +112,12 @@ export function openLocalSourceImport(options) {
   }
   function controls() {
     notice = h('p', { class: 'catalog-error', role: 'alert', hidden: true });
-    progress = progressRegion();
+    progress = createTransferProgress();
   }
   async function run(action) {
     if (busy || closed) return;
     busy = true;
+    progressTicker = setInterval(() => progress?.tick(), 1000);
     say();
     refresh();
     try { await action(); }
@@ -150,6 +126,8 @@ export function openLocalSourceImport(options) {
       say(error?.name === 'AbortError' ? 'Source transfer paused. No folder was changed; retry this same preparation.' : error.message);
       progress.update(copy?.root ? 'Import stopped; the partial folder is retained.' : 'Preparation stopped; no local files were written.', null, false);
     } finally {
+      clearInterval(progressTicker);
+      progressTicker = null;
       busy = false;
       if (!closed) refresh();
     }
@@ -207,7 +185,7 @@ export function openLocalSourceImport(options) {
         if (!operation.running && operation.state !== 'ready') operation = await client.resume(key);
       }
       while (operation.running || operation.state === 'preparing') {
-        progress.update(operation.stage, operation.progress);
+        progress.update(operation.stage, { ...operation.progress, phase: 'source' }, true, { readRetry: operation.readRetry });
         summary.replaceChildren(...[sourceSummary()].filter(Boolean));
         if (pauseRequested) { operation = await client.cancel(key); break; }
         await wait(pollDelay);
@@ -218,10 +196,10 @@ export function openLocalSourceImport(options) {
         const retry = operation.retryAt ? ` Retry after ${new Date(operation.retryAt).toLocaleTimeString()}.` : '';
         throw new Error((operation.error?.message || 'Source preparation paused. Retry this same attempt.') + retry);
       }
-      progress.update('Transferring the verified snapshot to this browser.');
+      progress.update('Transferring the verified snapshot to this browser.', null, true, { phase: 'transfer' });
       prepared = await client.download(key, {
         source: operation.source, signal: downloadController.signal,
-        onProgress: (count) => progress.update('Transferring and verifying every source file in this browser.', count),
+        onProgress: (count) => progress.update('Transferring and verifying every source file in this browser.', { ...count, phase: 'transfer' }),
       });
       copy = new LocalSourceCopy(prepared);
       destinationStep();

@@ -1,4 +1,5 @@
 import { h } from './dom.mjs';
+import { repositoryOwnerLabel } from '../../shared/repository-owner.mjs';
 
 export const STATUS_DELAY_MS = 10_000;
 export const ACTIVITY_DELAY_MS = 15_000;
@@ -33,8 +34,17 @@ function text(node, value) {
   if (node.textContent !== value) node.textContent = value;
 }
 
+function phaseStrip(labels, current, finished = false) {
+  return labels.map((label, index) => h('li', {
+    class: `catalog-step${index === current ? ' catalog-step-current' : ''}${index < current || finished ? ' catalog-step-done' : ''}`,
+    'aria-current': index === current && !finished ? 'step' : null,
+  }, label));
+}
+
 /** Percentages describe confirmed files in one phase, never overall time left. */
 export function createRepositoryProgress({ now = () => Date.now() } = {}) {
+  const phases = h('ol', { class: 'catalog-steps', 'aria-label': 'Repository import phases' });
+  const owner = h('p', { class: 'repository-progress-owner', hidden: true });
   const mark = h('span', { class: 'stage-mark', 'aria-hidden': 'true' });
   const title = h('strong');
   const heading = h('p', { class: 'stage repository-progress-heading', role: 'status', 'aria-live': 'polite' }, mark, title);
@@ -47,7 +57,7 @@ export function createRepositoryProgress({ now = () => Date.now() } = {}) {
   const waiting = h('p', { class: 'repository-progress-waiting', role: 'status', 'aria-live': 'polite', hidden: true });
   const root = h('section', {
     class: 'repository-progress', hidden: true, 'aria-label': 'Repository setup progress',
-  }, heading, detail, count, meter, item, timing, waiting);
+  }, phases, owner, heading, detail, count, meter, item, timing, waiting);
   let state = {};
   let watchedId = null;
   let observedAt = now();
@@ -65,11 +75,22 @@ export function createRepositoryProgress({ now = () => Date.now() } = {}) {
     const retrying = Number.isFinite(operation?.retryAt) && operation.retryAt > at;
     const publishing = PUBLISHING.has(operation?.stageId);
     const finished = operation?.state === 'complete' && !uncertain && !unknown;
+    const stage = operation?.error?.stageId || operation?.stageId;
+    const step = stage === 'owner' ? 0 : ['source', 'manifest', 'blobs', 'compatibility'].includes(stage) ? 1
+      : stage === 'ready' || operation?.state === 'creating' || stage === 'creating-private-repository' ? 2
+        : operation?.state === 'copying' || PUBLISHING.has(stage) || stage === 'objects' ? 3
+          : operation?.state === 'verifying' || stage?.startsWith('verify-') ? 4 : finished ? 5 : -1;
+    phases.replaceChildren(...phaseStrip(['Owner/access', 'Read source', 'Create', 'Copy', 'Verify', 'Ready'], step, finished));
+    owner.hidden = !operation?.destination;
+    text(owner, operation?.destination
+      ? `${operation.destination.owner ? repositoryOwnerLabel(operation.destination.owner) + ' - ' : ''}Destination: ${operation.destination.fullName}`
+      : '');
     let label = TITLES[operation?.state] || 'Contacting GitHub';
     if (publishing && running) label = 'Publishing the snapshot on main';
     if (operation?.stageId === 'verify-settings' && running) label = 'Checking private repository settings';
     if (retrying) label = 'Waiting to resume';
     if (uncertain) label = 'Confirming the last request';
+    if (operation?.readRetry && !uncertain) label = `Retrying a GitHub read (${operation.readRetry.attempt}/${operation.readRetry.maximum})`;
     if (unknown) label = 'Waiting for a status update';
     text(title, label);
     heading.className = `stage repository-progress-heading ${unknown || retrying ? 'stage-pending'
@@ -88,6 +109,11 @@ export function createRepositoryProgress({ now = () => Date.now() } = {}) {
         : 'The snapshot is on GitHub. Reading files back before confirming the repository is ready.';
     } else if (finished) {
       description = 'The private repository is created and verified. Continue to repository to choose a branch.';
+    }
+    if (operation?.error?.action) {
+      description = `Stopped while trying to ${operation.error.action}${operation.error.httpStatus ? ` (GitHub HTTP ${operation.error.httpStatus})` : ''}. The same attempt and its destination are retained.`;
+    } else if (operation?.readRetry) {
+      description = `Retrying ${operation.readRetry.action}. Already verified source files remain available; this is not another repository creation.`;
     }
     text(detail, description);
 
@@ -132,6 +158,8 @@ export function createRepositoryProgress({ now = () => Date.now() } = {}) {
       waitText = 'A status response is taking longer than expected. The import may still be running. Use Refresh status to check this same attempt.';
     } else if (retrying) {
       waitText = 'GitHub needs a cooldown before this attempt can resume. The private repository is retained.';
+    } else if (operation?.readRetry) {
+      waitText = `Transient read failure; bounded attempt ${operation.readRetry.attempt} of ${operation.readRetry.maximum}. No write is retried automatically.`;
     } else if (uncertain) {
       waitText = 'The last request may have finished. Confirming this attempt before allowing another action.';
     } else if (running && at - activityAt >= ACTIVITY_DELAY_MS) {
@@ -157,5 +185,64 @@ export function createRepositoryProgress({ now = () => Date.now() } = {}) {
     tick();
   }
 
+  return { root, update, tick };
+}
+
+/** Phase-aware local source transfer/copy progress, with no invented overall %. */
+export function createTransferProgress({ now = () => Date.now() } = {}) {
+  const heading = h('p', { class: 'stage', role: 'status', 'aria-live': 'polite' },
+    h('span', { class: 'stage-mark', 'aria-hidden': 'true' }), h('strong'));
+  const phases = h('ol', { class: 'catalog-steps', 'aria-label': 'Local import phases' });
+  const count = h('p', { class: 'repository-progress-count', role: 'status', 'aria-live': 'polite' });
+  const meter = h('progress', { class: 'repository-progress-meter' });
+  const path = h('code', { class: 'repository-progress-item' });
+  const timing = h('p', { class: 'repository-progress-timing', 'aria-live': 'off' });
+  const waiting = h('p', { class: 'repository-progress-waiting', role: 'status', hidden: true });
+  const root = h('section', { class: 'repository-progress', hidden: true, 'aria-label': 'Local source import progress' },
+    phases, heading, count, meter, path, timing, waiting);
+  let state = null, started = null, changed = null, signature = null, ended = null;
+  function tick() {
+    if (!state) return;
+    const at = ended ?? now();
+    text(timing, `Elapsed ${duration(at - started)} - ${state.running ? 'Local import is active' : 'Stopped at a retained checkpoint'}`);
+    const retry = state.details?.readRetry;
+    const delayed = state.running && now() - changed >= ACTIVITY_DELAY_MS;
+    waiting.hidden = !retry && !delayed;
+    text(waiting, retry
+      ? `Retrying a source read: attempt ${retry.attempt} of ${retry.maximum}. Verified bytes are retained; no destination is being recreated.`
+      : delayed ? 'Waiting for the current request or file check to finish. No new progress is confirmed yet; Pause stops at a safe checkpoint.' : '');
+  }
+  function update(message, progress = null, running = true, details = {}) {
+    const phase = progress?.phase || details.phase || 'source';
+    const current = ['source', 'transfer', 'copy', 'verify', 'register', 'complete'].indexOf(phase);
+    const phaseName = { source: 'Source validation', transfer: 'Browser transfer', copy: 'File copy', verify: 'File verification' }[phase];
+    const nextSignature = JSON.stringify([message, phase, progress?.completed, progress?.total, details.readRetry]);
+    const at = now();
+    if (started === null) started = at;
+    if (signature !== nextSignature) changed = at;
+    signature = nextSignature;
+    ended = !running || phase === 'complete' ? at : null;
+    state = { running: running && phase !== 'complete', details };
+    root.hidden = false;
+    const complete = phase === 'complete';
+    heading.className = `stage ${complete ? 'stage-done' : running ? 'stage-active' : 'stage-pending'}`;
+    text(heading.children[1], message);
+    phases.replaceChildren(...phaseStrip(['Read source', 'Transfer', 'Copy', 'Verify', 'Register', 'Ready'],
+      phase === 'compatibility' ? 3 : current, complete));
+    const measured = Boolean(phaseName && Number.isSafeInteger(progress?.total) && progress.total > 0 &&
+      Number.isSafeInteger(progress.completed) && progress.completed >= 0 && progress.completed <= progress.total);
+    count.hidden = meter.hidden = !measured;
+    path.hidden = !progress?.currentPath;
+    text(path, progress?.currentPath || '');
+    if (measured) {
+      const summary = `${progress.completed} of ${progress.total} files confirmed (${Math.floor(progress.completed * 100 / progress.total)}% of ${phaseName.toLowerCase()}).`;
+      text(count, summary);
+      meter.setAttribute('max', String(progress.total));
+      meter.setAttribute('value', String(progress.completed));
+      meter.setAttribute('aria-label', phaseName);
+      meter.setAttribute('aria-valuetext', summary);
+    }
+    tick();
+  }
   return { root, update, tick };
 }

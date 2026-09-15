@@ -8,6 +8,8 @@ import { parameterInput, setParameterInput } from '../web/js/contract-edit-state
 import { previewDocumentText } from '../shared/citadel-core.mjs';
 import { checkMigrationValue } from '../shared/migration-schema.mjs';
 import { validateNativeValues } from '../shared/terraform/schema.mjs';
+import { AZURE_REGION_CATALOG, AZURE_REGIONS, AZURE_REGION_NAMES } from '../shared/azure-regions.mjs';
+import { regionOptionsFor } from '../web/js/fields.mjs';
 
 let dom;
 beforeEach(() => {
@@ -45,10 +47,10 @@ for (const [name, path, schema] of [
 ]) {
   test(`custom regions: ${name} accepts an unlisted region with no unsupported warning`, () => {
     const f = field(path, schema);
-    type(f.input, 'austriaeast');
+    type(f.input, 'future-region-999');
     assert.ok(readText(dom.root).includes('Use this region'));
     f.input.dispatch('keydown', { key: 'Enter' });
-    assert.deepEqual(f.writes, [{ path, value: 'austriaeast' }]);
+    assert.deepEqual(f.writes, [{ path, value: 'future-region-999' }]);
     assert.equal(parameterInput(f.state, path), null);
     assert.doesNotMatch(readText(f.view), /unsupported|not one of|reject|custom/i);
     f.input.dispatch('keydown', { key: 'Escape' });
@@ -116,12 +118,30 @@ test('custom regions: expression fallbacks retain their source path and variable
     [{ op: 'set', ...f.writes[0] }]), "param location = readEnvironmentVariable('AZURE_LOCATION', 'austriaeast')\n");
 });
 
-test('custom regions: native text fields retain unrestricted string editing', () => {
+test('custom regions: native string fields offer the full catalog without restricting text entry', () => {
   const f = field(['location'], { name: 'location', type: 'string', native: true });
-  assert.notEqual(f.input.getAttribute('role'), 'combobox');
+  assert.equal(f.input.getAttribute('role'), 'combobox');
   type(f.input, 'austriaeast');
   f.input.dispatch('change');
   assert.equal(f.writes[0].value, 'austriaeast');
+});
+
+test('region catalog: every region dropdown includes public, Government and China names', () => {
+  assert.equal(AZURE_REGION_CATALOG.verifiedAt, '2026-09-15');
+  assert.equal(AZURE_REGIONS.length, 69);
+  assert.equal(new Set(AZURE_REGIONS).size, AZURE_REGIONS.length);
+  assert.equal(AZURE_REGION_NAMES.usdodcentral, 'US DoD Central');
+  for (const [name, schema, path] of [
+    ['primary', { name: 'location', type: 'string', allowedValues: ['eastus'] }, ['location']],
+    ['API Center', { name: 'apicLocation', type: 'string', allowedValues: ['', 'westeurope'] }, ['apicLocation']],
+    ['nested', null, ['aiFoundryInstances', 0, 'location']],
+    ['native', { name: 'location', type: 'string', native: true }, ['location']],
+  ]) {
+    const values = regionOptionsFor(schema, path);
+    for (const region of AZURE_REGIONS) assert.ok(values.includes(region), `${name} is missing ${region}`);
+  }
+  assert.ok(regionOptionsFor({ name: 'location', allowedValues: ['future-region-999'] }).includes('future-region-999'));
+  assert.equal(regionOptionsFor({ name: 'regionCount', type: 'int' }), null);
 });
 
 test('custom regions: catalog omissions and region decorators do not become validation flags', () => {

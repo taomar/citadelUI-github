@@ -153,6 +153,17 @@ export async function prepareGitHubRepository(payload) {
   });
 }
 
+export async function listRepositoryOwners() {
+  return githubRequest('/api/github/repository-owners');
+}
+
+export async function checkRepositoryOwner(owner) {
+  return githubRequest('/api/github/repository-owners', {
+    method: 'POST',
+    body: JSON.stringify(typeof owner === 'string' ? { organization: owner } : { owner }),
+  });
+}
+
 export async function listGitHubRepositoryCreations() {
   return githubRequest('/api/github/repository-creations');
 }

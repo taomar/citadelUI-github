@@ -15,10 +15,13 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { atomicJson } from '../atomic-json.mjs';
 import { githubError } from './api.mjs';
-import { inspectRepositoryCompatibility } from './compatibility.mjs';
+import { assertSnapshotCompatibility } from './snapshot-compatibility.mjs';
 import { decodeSnapshotBlob as decodeBlob, objectSha as sha, readRepositoryManifest, treeHash } from './repository-snapshot.mjs';
 import { refNameProblem } from '../../shared/git-refs.mjs';
 import { isGitHubLogin } from '../../shared/github-login.mjs';
+import { repositoryOwner, repositoryOwnerLabel, sameRepositoryOwner } from '../../shared/repository-owner.mjs';
+import { RepositoryOwners } from './repository-owners.mjs';
+import { importFailureDescription, importRequestContext, transientImportRead } from './import-errors.mjs';
 import { DEFAULT_REPOSITORY_SOURCE, parseRepositorySource, validateNewRepositoryName } from '../../shared/repository-source.mjs';
 import { REPOSITORY_SNAPSHOT_LIMITS } from '../../shared/repository-snapshot.mjs';
 
@@ -29,6 +32,7 @@ const DEFAULT_LIMITS = Object.freeze({
 const ACTIVE = new Set(['preparing', 'creating', 'copying', 'verifying']);
 const STAGES = Object.freeze({
   queued: 'Waiting for the importer.',
+  owner: 'Checking the selected Personal or Organization destination.',
   source: 'Resolving the source repository.',
   manifest: 'Checking the complete source tree.',
   blobs: 'Validating every source file.',
@@ -88,16 +92,23 @@ function sanitizedError(error, op) {
     IMPORT_ACTIONS_ENABLED: 'Repository Actions must remain disabled while importing workflows.',
     IMPORT_RENAME_PENDING: 'GitHub has not confirmed the branch rename yet. Resume this same operation to check again.',
     IMPORT_STORAGE_UNAVAILABLE: 'The recovery journal could not be written. No further GitHub requests will be sent. Restore data-directory access, then resume this attempt.',
-    IMPORT_FAILED: 'GitHub could not finish the import. Check permissions and resume the same operation.',
+    IMPORT_OWNER_CHANGED: 'The selected repository owner changed identity. This attempt will not be redirected to another owner.',
+    IMPORT_OWNER_ACCESS_DENIED: `Private repository creation is not allowed for ${repositoryOwnerLabel(op.owner || { type: 'User', id: op.accountId, login: op.login })}. Review the organization creation policy; this attempt will not switch to Personal automatically.`,
   };
   const code = error?.status === 401 ? 'IMPORT_AUTH_REQUIRED'
     : error?.code === 'GITHUB_RATE_LIMITED' || error?.status === 429
     ? 'IMPORT_RATE_LIMITED'
-    : Object.hasOwn(messages, error?.code) ? error.code : 'IMPORT_FAILED';
+    : Object.hasOwn(messages, error?.code) ? error.code : null;
+  const failure = code ? { code, message: messages[code] } : importFailureDescription(error, op);
   const retained = op.repositoryId
     ? ' The created repository is retained; Citadel will not delete it.'
     : op.createAttempted ? ' Creation may have succeeded; resume this operation to reconcile it safely.' : '';
-  return { code, message: messages[code] + retained };
+  return {
+    code: failure.code, message: failure.message + retained,
+    stageId: error?.importRequest?.stage || op.stage,
+    ...(error?.importRequest ? { action: error.importRequest.action, target: error.importRequest.target } : {}),
+    ...(Number.isInteger(error?.upstreamStatus || error?.status) ? { httpStatus: error.upstreamStatus || error.status } : {}),
+  };
 }
 
 export class RepositoryCreationService {
@@ -106,6 +117,7 @@ export class RepositoryCreationService {
     this.client = client;
     this.note = note;
     this.validateSession = validateSession;
+    this.ownerAccess = new RepositoryOwners({ client, validateSession });
     this.now = now;
     this.wait = wait;
     this.limits = { ...DEFAULT_LIMITS, ...limits };
@@ -152,6 +164,7 @@ export class RepositoryCreationService {
               validateNewRepositoryName(op.name) !== op.name || !SHA.test(op.source?.commit || '0'.repeat(40))) {
             throw new Error('Invalid repository creation journal.');
           }
+          if (op.owner) repositoryOwner(op.owner);
           if (op.state !== 'complete') {
             op.state = 'paused';
             op.stage = op.superseded ? 'superseded' : 'interrupted';
@@ -182,6 +195,26 @@ export class RepositoryCreationService {
     return op;
   }
 
+  owner(op) { return op.owner || { type: 'User', id: op.accountId, login: op.login }; }
+  fullName(op) { return `${this.owner(op).login}/${op.name}`; }
+
+  async listOwners(session) {
+    this.authorize(session);
+    return this.ownerAccess.list(session);
+  }
+
+  async checkOwner(session, input) {
+    this.authorize(session);
+    try {
+      repositoryOwner(typeof input === 'string' ? { type: 'Organization', id: 1, login: input } : input);
+    } catch {
+      throw fail('IMPORT_INVALID_OWNER', 'Choose a valid Personal account or an Organization handle; display names and URLs are not owner identities.', 400);
+    }
+    return typeof input === 'string'
+      ? this.ownerAccess.lookup(session, input)
+      : this.ownerAccess.check(session, input);
+  }
+
   public(op) {
     const running = this.queue.some((job) => job.id === op.id) || this.currentId === op.id;
     return {
@@ -197,10 +230,13 @@ export class RepositoryCreationService {
         hasWorkflows: op.source.hasWorkflows,
       } : null,
       destination: {
-        name: op.name, fullName: `${op.login}/${op.name}`, private: true,
+        name: op.name, fullName: this.fullName(op), owner: repositoryOwner(this.owner(op)), private: true,
         repositoryId: op.repositoryId || null, branch: 'main',
-        htmlUrl: `https://github.com/${op.login}/${op.name}`,
+        htmlUrl: `https://github.com/${this.fullName(op)}`,
       },
+      actor: { id: op.accountId, login: op.login },
+      ownerAccess: op.ownerAccess || null,
+      readRetry: op.readRetry ? { ...op.readRetry } : null,
       progress: { ...op.progress }, error: op.error ? { ...op.error } : null,
       created: Boolean(op.repositoryId), actionsDisabled: Boolean(op.actionsDisabled),
       canStart: op.state === 'ready' && !running && !op.superseded && !this.stopping && !this.fatalError,
@@ -223,14 +259,19 @@ export class RepositoryCreationService {
       this.authorize(session);
       if (this.fatalError) throw this.fatalError;
       if (!this.initialized || this.stopping) throw fail('IMPORT_UNAVAILABLE', 'Repository creation is unavailable.', 503);
-      if (!input || Object.keys(input).some((key) => !['name', 'sourceUrl', 'operationKey'].includes(key))) {
-        throw fail('IMPORT_INVALID_INPUT', 'Only a name, source URL and operation key are accepted.', 400);
+      if (!input || Object.keys(input).some((key) => !['name', 'sourceUrl', 'operationKey', 'owner'].includes(key))) {
+        throw fail('IMPORT_INVALID_INPUT', 'Only an owner, name, source URL and operation key are accepted.', 400);
       }
-      let name, parsed;
+      let name, parsed, owner;
       try {
         name = validateNewRepositoryName(input.name);
         parsed = parseRepositorySource(input.sourceUrl ?? DEFAULT_REPOSITORY_SOURCE);
+        owner = repositoryOwner(input.owner === undefined
+          ? { type: 'User', id: session.accountId, login: session.login } : input.owner);
       } catch { throw fail('IMPORT_INVALID_INPUT', 'Use a valid repository name and a GitHub repository-root source URL.', 400); }
+      if (owner.type === 'User' && owner.id !== session.accountId) {
+        throw fail('IMPORT_WRONG_ACCOUNT', 'Choose the connected Personal account or a verified Organization.', 403);
+      }
       if (typeof input.operationKey !== 'string' || input.operationKey.length < 8 || input.operationKey.length > 200 ||
           /[\u0000-\u0020\u007f]/.test(input.operationKey)) {
         throw fail('IMPORT_INVALID_INPUT', 'Supply a stable operation key of 8-200 non-space characters.', 400);
@@ -238,11 +279,16 @@ export class RepositoryCreationService {
       const keyHash = hash(input.operationKey);
       const prior = [...this.records.values()].find((op) => op.accountId === session.accountId && op.keyHash === keyHash);
       if (prior) {
-        if (prior.name !== name || prior.sourceUrl !== parsed.url) throw fail('IMPORT_KEY_CONFLICT', 'That operation key was already used with different inputs.', 409);
+        if (prior.name !== name || prior.sourceUrl !== parsed.url || !sameRepositoryOwner(this.owner(prior), owner)) {
+          throw fail('IMPORT_KEY_CONFLICT', 'That operation key was already used with a different source, name or repository owner.', 409);
+        }
         return this.public(prior);
       }
       const reservations = [...this.records.values()].filter((op) =>
-        op.accountId === session.accountId && sameName(op.name, name) && !op.superseded);
+        sameRepositoryOwner(this.owner(op), owner) && sameName(op.name, name) && !op.superseded);
+      if (reservations.some((op) => op.accountId !== session.accountId)) {
+        throw fail('IMPORT_DESTINATION_RESERVED', 'Another account already has a retained attempt for this destination. Its owner must resolve that attempt first.', 409);
+      }
       if (reservations.some((op) => !this.replaceable(op))) {
         throw fail('IMPORT_DESTINATION_RESERVED', 'Another operation already owns this destination name. Resume that operation.', 409);
       }
@@ -258,7 +304,7 @@ export class RepositoryCreationService {
         if (!evicted) throw fail('IMPORT_LIMIT', 'Repository creation history is full of active or recovery-protected operations.', 429);
       }
       const op = {
-        id: randomUUID(), nonce: randomUUID(), accountId: session.accountId, login: session.login,
+        id: randomUUID(), nonce: randomUUID(), accountId: session.accountId, login: session.login, owner,
         profileId: UUID.test(session.profileId || '') ? session.profileId : null,
         name, sourceUrl: parsed.url, keyHash,
         state: 'preparing', stage: 'queued', source: null, repositoryId: null,
@@ -457,9 +503,35 @@ export class RepositoryCreationService {
   async request(op, session, path, options = {}) {
     // Compatibility discovery can request several blobs concurrently. Serialize
     // those too, and read the mutable session only when the call actually starts.
-    const pending = this.networkTail.then(() => {
-      const token = this.check(op, session);
-      return this.client.request(path, { ...options, token });
+    const pending = this.networkTail.then(async () => {
+      const method = options.method || 'GET';
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const token = this.check(op, session);
+        try {
+          const result = await this.client.request(path, {
+            ...options, token, ...(method === 'GET' ? { timeoutMs: 60_000 } : {}),
+          });
+          if (op.readRetry) await this.serial(() => { op.readRetry = null; });
+          return result;
+        } catch (error) {
+          error.importRequest = importRequestContext(path, options, op);
+          const waitingForBootstrap = error.status === 404 && op.repositoryId && !op.bootstrap &&
+            error.importRequest.target === 'destination';
+          if (method !== 'GET' || !transientImportRead(error) && !waitingForBootstrap || attempt === 3) {
+            if (waitingForBootstrap) {
+              throw Object.assign(fail('IMPORT_BOOTSTRAP_PENDING', 'The created repository is not visible or initialized yet.'),
+                { importRequest: error.importRequest });
+            }
+            throw error;
+          }
+          await this.serial(() => {
+            op.readRetry = { attempt: attempt + 1, maximum: 3, action: error.importRequest.action, target: error.importRequest.target };
+            op.updatedAt = new Date(this.now()).toISOString();
+          });
+          await this.pace(attempt * 1000);
+          this.check(op, session);
+        }
+      }
     });
     this.networkTail = pending.catch(() => {});
     return pending;
@@ -500,8 +572,17 @@ export class RepositoryCreationService {
   }
 
   async run(op, session) {
+    let preserveSource = false;
     try {
       this.check(op, session);
+      if (this.owner(op).type === 'Organization') {
+        await this.checkpoint(op, { stage: 'owner' });
+        const access = await this.ownerAccess.check(session, this.owner(op));
+        await this.checkpoint(op, { ownerAccess: access });
+        if (access.access === 'denied') throw fail('IMPORT_OWNER_ACCESS_DENIED', access.message, 403);
+      } else if (!sameRepositoryOwner(this.owner(op), { type: 'User', id: session.accountId, login: session.login })) {
+        throw fail('IMPORT_WRONG_ACCOUNT', 'Personal destination differs from the authenticated account.', 403);
+      }
       await this.preflight(op, session);
       this.check(op, session);
       if (!op.authorized) {
@@ -516,28 +597,30 @@ export class RepositoryCreationService {
       await this.checkpoint(op, { state: 'complete', stage: 'complete', error: null });
       await this.activity(op, 'ok');
     } catch (error) {
+      preserveSource = error.importRequest?.method === 'GET' && transientImportRead(error);
       const clean = sanitizedError(error, op);
       const paused = ['IMPORT_PAUSED', 'IMPORT_AUTH_REQUIRED', 'IMPORT_WRONG_ACCOUNT', 'IMPORT_RATE_LIMITED',
-        'IMPORT_DESTINATION_CHANGED', 'IMPORT_BOOTSTRAP_PENDING', 'IMPORT_BOOTSTRAP_CHANGED', 'IMPORT_ACTIONS_ENABLED', 'IMPORT_RENAME_PENDING'].includes(clean.code);
+        'IMPORT_DESTINATION_CHANGED', 'IMPORT_BOOTSTRAP_PENDING', 'IMPORT_BOOTSTRAP_CHANGED', 'IMPORT_ACTIONS_ENABLED',
+        'IMPORT_OWNER_CHANGED', 'IMPORT_OWNER_ACCESS_DENIED', 'IMPORT_RENAME_PENDING'].includes(clean.code);
       const retryAfter = Number(error?.retryAfterSeconds);
       const resetAt = Date.parse(error?.rateResetAt);
       const retryAt = clean.code === 'IMPORT_RATE_LIMITED'
         ? Math.max(op.retryAt || 0, this.now() + (Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter, 86_400) * 1000 : 60_000),
           Number.isFinite(resetAt) ? Math.min(resetAt, this.now() + 86_400_000) : 0)
         : null;
-      await this.checkpoint(op, { state: paused ? 'paused' : 'failed', stage: paused ? 'paused' : 'failed', error: clean, retryAt });
+      await this.checkpoint(op, { state: paused ? 'paused' : 'failed', stage: paused ? 'paused' : 'failed', error: clean, retryAt, readRetry: null });
       if (clean.code !== 'IMPORT_PAUSED') await this.activity(op, op.createAttempted ? 'failed' : 'refused');
     } finally {
-      // Keep only a ready operation's cache. Failed/paused jobs refetch pinned
-      // immutable objects; a new preflight evicts any previous ready cache.
-      if ((this.stopping || op.state !== 'ready') && this.cache?.id === op.id) this.cache = null;
+      // A transient read failure can reuse already verified immutable source
+      // bytes. Authorization failures, manual pauses and other jobs evict them.
+      if ((this.stopping || op.state !== 'ready' && !preserveSource) && this.cache?.id === op.id) this.cache = null;
     }
   }
 
   async activity(op, outcome) {
     if (!this.note) return;
     try {
-      await this.note({ action: 'repository.create', outcome, target: `${op.login}/${op.name}`,
+      await this.note({ action: 'repository.create', outcome, target: this.fullName(op),
         account: op.login, reason: outcome === 'ok' ? 'repository-created' : outcome === 'refused' ? 'repository-create-refused' : 'repository-create-failed' });
     } catch { /* Activity failure does not undo a proven Git checkpoint. */ }
   }
@@ -547,8 +630,8 @@ export class RepositoryCreationService {
   }
 
   async preflight(op, session) {
-    if (this.cache?.id === op.id) return;
-    this.cache = null;
+    const retained = this.cache?.id === op.id ? this.cache : null;
+    if (!retained) this.cache = null;
     await this.checkpoint(op, { state: 'preparing', stage: 'source', error: null });
     const parsed = parseRepositorySource(op.sourceUrl);
     const metadata = await this.read(op, session, ep(parsed.fullName));
@@ -568,7 +651,8 @@ export class RepositoryCreationService {
     // Persist pin before the potentially long walk. Resume never resolves a
     // moving ref again, even if pause occurs during the first blob read.
     await this.checkpoint(op, { source, stage: 'manifest' });
-    const manifest = await this.manifest(op, session, source.fullName, root);
+    const reuse = retained && retained.repositoryId === source.repositoryId && retained.commit === source.commit && retained.root === root;
+    const manifest = reuse ? retained : await this.manifest(op, session, source.fullName, root);
     source.fileCount = manifest.files.length;
     source.totalBytes = manifest.totalBytes;
     source.hasWorkflows = manifest.files.some((file) => /^\.github\/workflows\//i.test(file.path));
@@ -576,7 +660,8 @@ export class RepositoryCreationService {
       completed, total: source.fileCount, unit: 'files', phase: 'source', currentPath,
     });
     await this.checkpoint(op, { source, stage: 'blobs', progress: sourceProgress(0) });
-    const blobs = new Map();
+    const blobs = reuse ? retained.blobs : new Map();
+    this.cache = { id: op.id, repositoryId: source.repositoryId, commit: source.commit, root, ...manifest, blobs, ready: false };
     let completed = 0;
     for (const entry of manifest.files) {
       await this.reportProgress(op, sourceProgress(completed, entry.path));
@@ -599,20 +684,18 @@ export class RepositoryCreationService {
       }
     }
     await this.checkpoint(op, { stage: 'compatibility' });
-    // The compatibility helper's requests also re-resolve the live session.
-    const guarded = { request: (path, options = {}) => this.request(op, session, path, options) };
-    const verdict = await inspectRepositoryCompatibility(guarded, null, source.fullName, source.commit);
-    if (!verdict.supported) throw fail('IMPORT_SOURCE_UNSUPPORTED', 'Unsupported Citadel source.', 422);
+    await assertSnapshotCompatibility(manifest, blobs);
     this.check(op, session);
-    this.cache = { id: op.id, ...manifest, blobs };
+    this.cache.ready = true;
   }
 
   description(op) { return `Citadel full snapshot operation ${op.nonce}`; }
 
   validateDestination(op, repo) {
+    const owner = this.owner(op);
     if (!repo || !validId(repo.id) || (op.repositoryId && repo.id !== op.repositoryId) ||
-        repo.owner?.id !== op.accountId || repo.owner?.type !== 'User' || repo.private !== true ||
-        !sameName(repo.full_name, `${op.login}/${op.name}`) || repo.description !== this.description(op) ||
+        repo.owner?.id !== owner.id || repo.owner?.type !== owner.type || repo.private !== true ||
+        !sameName(repo.full_name, this.fullName(op)) || repo.description !== this.description(op) ||
         repo.fork === true || repo.archived === true || repo.disabled === true) {
       throw fail('IMPORT_DESTINATION_CHANGED', 'Destination identity or privacy changed.');
     }
@@ -620,11 +703,11 @@ export class RepositoryCreationService {
   }
 
   async destination(op, session) {
-    return this.validateDestination(op, await this.read(op, session, ep(`${op.login}/${op.name}`)));
+    return this.validateDestination(op, await this.read(op, session, ep(this.fullName(op))));
   }
 
   async branch(op, session, name) {
-    const data = await this.optional(op, session, refPath(`${op.login}/${op.name}`, name));
+    const data = await this.optional(op, session, refPath(this.fullName(op), name));
     if (data === null) return null;
     if (data?.object?.type !== 'commit' || data.ref !== `refs/heads/${name}`) throw fail('IMPORT_INVALID_OBJECT', 'Invalid Git ref.', 502);
     return sha(data.object.sha);
@@ -667,7 +750,12 @@ export class RepositoryCreationService {
     if (identity?.id !== op.accountId || identity.type !== 'User' || !sameName(identity.login, op.login)) {
       throw fail('IMPORT_WRONG_ACCOUNT', 'GitHub identity differs from the creating account.', 403);
     }
-    let repository = await this.optional(op, session, ep(`${op.login}/${op.name}`));
+    const owner = this.owner(op);
+    if (owner.type === 'Organization') {
+      const access = await this.ownerAccess.check(session, owner);
+      if (access.access === 'denied') throw fail('IMPORT_OWNER_ACCESS_DENIED', access.message, 403);
+    }
+    let repository = await this.optional(op, session, ep(this.fullName(op)));
     if (repository) {
       if (!op.createAttempted) throw fail('IMPORT_DESTINATION_EXISTS', 'Existing destination.', 409);
       this.validateDestination(op, repository);
@@ -676,7 +764,7 @@ export class RepositoryCreationService {
       // Durable authority and nonce precede the POST. A lost response can only
       // adopt this exact nonce/owner/private tuple, never a name by itself.
       await this.checkpoint(op, { createAttempted: true, stage: 'creating-private-repository' });
-      repository = await this.write(op, session, '/user/repos', 'POST', {
+      repository = await this.write(op, session, owner.type === 'Organization' ? `/orgs/${owner.login}/repos` : '/user/repos', 'POST', {
         name: op.name, private: true, auto_init: true, description: this.description(op),
       }, false);
       this.validateDestination(op, repository);
@@ -688,14 +776,14 @@ export class RepositoryCreationService {
       if (typeof repository.default_branch !== 'string' || refNameProblem(repository.default_branch)) throw fail('IMPORT_BOOTSTRAP_PENDING', 'Bootstrap pending.');
       const head = await this.branch(op, session, repository.default_branch);
       if (!head) throw fail('IMPORT_BOOTSTRAP_PENDING', 'Bootstrap pending.');
-      const commit = await this.read(op, session, `${ep(`${op.login}/${op.name}`)}/git/commits/${head}`);
+      const commit = await this.read(op, session, `${ep(this.fullName(op))}/git/commits/${head}`);
       if (commit?.sha !== head || !Array.isArray(commit.parents) || commit.parents.length !== 0) throw fail('IMPORT_BOOTSTRAP_CHANGED', 'Bootstrap was advanced.');
       const tree = sha(commit.tree?.sha);
-      const snapshot = await this.manifest(op, session, `${op.login}/${op.name}`, tree);
+      const snapshot = await this.manifest(op, session, this.fullName(op), tree);
       if (snapshot.files.length !== 1 || snapshot.entries.length !== 1 ||
           snapshot.files[0].path !== 'README.md' || snapshot.files[0].mode !== '100644') throw fail('IMPORT_BOOTSTRAP_CHANGED', 'Unexpected bootstrap.');
       const entry = snapshot.files[0];
-      const blob = await this.read(op, session, `${ep(`${op.login}/${op.name}`)}/git/blobs/${entry.sha}`);
+      const blob = await this.read(op, session, `${ep(this.fullName(op))}/git/blobs/${entry.sha}`);
       if (!decodeBlob(blob, entry, this.limits.blobBytes).text?.includes(this.description(op))) throw fail('IMPORT_BOOTSTRAP_CHANGED', 'Bootstrap provenance missing.');
       const date = op.createdAt;
       await this.checkpoint(op, {
@@ -710,7 +798,7 @@ export class RepositoryCreationService {
     }
     await this.guard(op, session);
     if (op.source.hasWorkflows) {
-      const path = `${ep(`${op.login}/${op.name}`)}/actions/permissions`;
+      const path = `${ep(this.fullName(op))}/actions/permissions`;
       const permissions = await this.read(op, session, path);
       if (permissions?.enabled !== false) {
         if (op.actionsDisabled) throw fail('IMPORT_ACTIONS_ENABLED', 'Actions were re-enabled.');
@@ -723,13 +811,13 @@ export class RepositoryCreationService {
 
   async requireActionsDisabled(op, session) {
     if (op.source.hasWorkflows &&
-        (await this.read(op, session, `${ep(`${op.login}/${op.name}`)}/actions/permissions`))?.enabled !== false) {
+        (await this.read(op, session, `${ep(this.fullName(op))}/actions/permissions`))?.enabled !== false) {
       throw fail('IMPORT_ACTIONS_ENABLED', 'Actions must remain disabled.');
     }
   }
 
   async copy(op, session) {
-    const base = ep(`${op.login}/${op.name}`);
+    const base = ep(this.fullName(op));
     const cache = this.cache;
     const copyProgress = (completed, currentPath = null) => ({
       completed, total: op.source.fileCount, unit: 'files', phase: 'copy', currentPath,
@@ -833,7 +921,7 @@ export class RepositoryCreationService {
   }
 
   async verifyCommit(op, session) {
-    const commit = await this.read(op, session, `${ep(`${op.login}/${op.name}`)}/git/commits/${op.commitSha}`);
+    const commit = await this.read(op, session, `${ep(this.fullName(op))}/git/commits/${op.commitSha}`);
     if (commit?.sha !== op.commitSha || commit.tree?.sha !== op.source.tree ||
         !Array.isArray(commit.parents) || commit.parents.length !== 1 || commit.parents[0]?.sha !== op.bootstrap.head ||
         commit.message !== op.commitBody.message) throw fail('IMPORT_HASH_MISMATCH', 'Import commit does not match the pinned tree and parent.');
@@ -853,7 +941,7 @@ export class RepositoryCreationService {
     });
     await this.checkpoint(op, { state: 'verifying', stage: 'verify-snapshot', progress: verificationProgress(0) });
     await this.verifyCommit(op, session);
-    const actual = await this.manifest(op, session, `${op.login}/${op.name}`, op.source.tree);
+    const actual = await this.manifest(op, session, this.fullName(op), op.source.tree);
     const comparable = (entries) => JSON.stringify([...entries].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     if (comparable(actual.entries) !== comparable(this.cache.entries)) throw fail('IMPORT_HASH_MISMATCH', 'Destination manifest differs from source.');
     // Tree hashes attest all blob hashes; read back every unique blob as well,
@@ -863,7 +951,7 @@ export class RepositoryCreationService {
     for (const entry of actual.files) {
       await this.reportProgress(op, verificationProgress(completed, entry.path));
       if (!seen.has(entry.sha)) {
-        const data = await this.read(op, session, `${ep(`${op.login}/${op.name}`)}/git/blobs/${entry.sha}`, { limit: Math.ceil(this.limits.blobBytes * 1.4) + 4096 });
+        const data = await this.read(op, session, `${ep(this.fullName(op))}/git/blobs/${entry.sha}`, { limit: Math.ceil(this.limits.blobBytes * 1.4) + 4096 });
         decodeBlob(data, entry, this.limits.blobBytes);
         seen.add(entry.sha);
       }

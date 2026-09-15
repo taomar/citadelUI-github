@@ -17,6 +17,8 @@ import {
   listGitHubRepositories,
   nativeGitHubInventory,
   listGitHubRepositoryCreations,
+  listRepositoryOwners,
+  checkRepositoryOwner,
   pauseGitHubRepositoryCreation,
   prepareGitHubRepository,
   resumeGitHubRepositoryCreation,
@@ -221,6 +223,8 @@ function catalogActions() {
 
     getRepository: getGitHubRepository,
     listRepositoryCreations: listGitHubRepositoryCreations,
+    repositoryOwners: listRepositoryOwners,
+    checkRepositoryOwner,
     prepareRepository: prepareGitHubRepository,
     repositoryCreationStatus: gitHubRepositoryCreationStatus,
     startRepositoryCreation: startGitHubRepositoryCreation,

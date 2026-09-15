@@ -28,6 +28,10 @@ do not block saving or mark the entry unsupported. This is source editing, not
 a promise of Azure availability; template decorators/validation blocks are not
 silently changed. Other type, enum and sensitive-value safeguards still apply.
 
+All region controls share the 69-entry documented Azure region catalog in
+`shared/azure-regions.mjs` (public, China and Government/DoD). Names are suggestions
+checked against Microsoft documentation, not a service or subscription allowlist.
+
 GitHub.com Enterprise Managed User logins such as `name_company` are supported.
 Connection ownership still uses the immutable numeric GitHub account ID, and
 enterprise repository access/policy remains enforced by GitHub.
@@ -875,15 +879,22 @@ reached the same way: from **Saved workspaces** on the landing page, or through
 
 Choose **Existing GitHub Repo** for the current repository picker, **New GitHub Repo** to
 initialize a private repository first, or **Local** for the existing folder flow.
-New GitHub Repo defaults to the upstream `citadel-v1` source URL, lets you override
-that source and name the destination, and creates a complete fresh snapshot on
-`main` in the connected personal account. It then rejoins the normal repository,
+New GitHub Repo discovers organization memberships, defaults to a discovered
+Organization, and offers an explicit Personal/Organization owner choice. Handles
+and numeric owner IDs distinguish alike display names. Access-policy failures
+are visible; missing discovery rights do not imply that no organizations exist.
+The source defaults to upstream `citadel-v1`; a complete fresh snapshot is created
+on `main` in the selected owner. It then rejoins the normal repository,
 explicit branch, details and attachment-review flow.
 
-New GitHub Repo uses a temporary creation token with All repositories access,
+New GitHub Repo uses a temporary creation token scoped to the selected resource
+owner with All repositories access,
 Administration read/write and Contents read/write; Metadata read-only is
 automatic. Workflows read/write is needed only for sources containing workflow
 files, whose Actions are disabled before import and left disabled for review.
+Organization selection also checks active membership with Members read access.
+The owner type and handle are shown beside policy/access status at each
+decision point; a readable membership is not a guarantee that creation will pass.
 Regular Existing GitHub Repo editing still needs only selected-repository Contents
 read/write. Narrow or replace the creation token after setup.
 
@@ -896,6 +907,13 @@ file contents. **Previous setup
 attempts** resumes the same operation after reconnecting the same account. See
 [the creation guide](../guides/using-the-control-plane.md#create-a-new-private-github-repository)
 for supported file modes, source-size limits and recovery behavior.
+
+Progress shows owner/access, source reads, creation, copy and verification
+separately. A timeout uses bounded retries for the same GET, not a new create
+request. Safe error details identify the blocked action, selected owner and
+GitHub HTTP status. The confirmed source cache is reused where possible instead
+of downloading every file again for compatibility checks or transient-read
+recovery; write ambiguity remains a same-attempt reconciliation state.
 
 ### Saved workspaces
 

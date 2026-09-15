@@ -66,3 +66,35 @@ for (const persist of [false, true]) {
     assert.deepEqual(f.unexpected, []);
   });
 }
+
+test('organization destination discovery and access checks use protected real HTTP routes', async (t) => {
+  const f = await repositoryHttpFixture();
+  t.after(() => f.close());
+  const organization = f.github.organization('client-org');
+  const connected = await f.call('/api/github/connections', {
+    method: 'POST', body: { name: 'Organization admin', token: TEST_TOKEN },
+  });
+  assert.equal(connected.status, 200);
+  const githubSession = connected.body.session.id;
+  assert.equal((await f.call('/api/github/repository-owners')).status, 401);
+  const discovered = await f.call('/api/github/repository-owners', { githubSession });
+  assert.equal(discovered.status, 200, JSON.stringify(discovered.body));
+  assert.deepEqual(discovered.body.defaultOwner, { id: organization.id, login: organization.login, type: 'Organization' });
+  const access = await f.call('/api/github/repository-owners', {
+    method: 'POST', githubSession, body: { owner: discovered.body.defaultOwner },
+  });
+  assert.equal(access.status, 200, JSON.stringify(access.body));
+  assert.equal(access.body.access, 'not-verified', 'A metadata read is not proof that repository creation will be permitted.');
+  const request = await f.call('/api/github/repository-creations', {
+    method: 'POST', githubSession,
+    body: { name: 'org-copy', sourceUrl: 'https://github.com/fixture-upstream/source/tree/citadel-v1',
+      owner: discovered.body.defaultOwner, operationKey: 'org-http-creation-once' },
+  });
+  assert.equal(request.status, 200, JSON.stringify(request.body));
+  await f.creations.settled();
+  const ready = await f.call(`/api/github/repository-creations/${request.body.id}`, { githubSession });
+  assert.equal(ready.body.state, 'ready', JSON.stringify(ready.body.error));
+  assert.equal(ready.body.destination.fullName, 'client-org/org-copy');
+  assert.equal(f.github.calls.some((call) => call.method === 'POST'), false);
+  assert.deepEqual(f.unexpected, []);
+});

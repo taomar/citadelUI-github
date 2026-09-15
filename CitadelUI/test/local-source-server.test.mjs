@@ -128,6 +128,33 @@ test('local source: actual anonymous rate reset and retry-after values are retai
   fixture.before = () => new Response(null, {
     status: 403, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String((now + 3_600_000) / 1000), 'retry-after': '120' },
   });
+
+  test('local source: transient raw-file errors retry the same read without restarting the source pin', async () => {
+    const fixture = publicSourceFixture();
+    let failedPath = null;
+    let failed = false;
+    fixture.before = (call) => {
+      if (call.host === 'raw.githubusercontent.com' && !failed) {
+        failed = true;
+        failedPath = call.path;
+        return new Response(null, { status: 503 });
+      }
+    };
+    const result = await fixture.prepare();
+    assert.equal(result.state, 'ready', JSON.stringify(result.error));
+    assert.equal(fixture.calls.filter((call) => call.path === failedPath).length, 2);
+    assert.equal(fixture.calls.filter((call) => call.host === 'api.github.com').length, 3);
+    assert.equal(result.readRetry, null);
+  });
+
+  test('local source: definite access denial is not retried or mislabeled as a network timeout', async () => {
+    const fixture = publicSourceFixture();
+    fixture.before = () => new Response(null, { status: 403 });
+    const result = await fixture.prepare();
+    assert.equal(result.state, 'failed');
+    assert.equal(result.error.code, 'LOCAL_IMPORT_READ_FAILED');
+    assert.equal(fixture.calls.length, 1);
+  });
   const operation = await fixture.prepare();
   assert.equal(operation.error.code, 'LOCAL_IMPORT_RATE_LIMIT');
   assert.equal(operation.retryAt, now + 3_600_000);

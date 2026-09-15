@@ -175,8 +175,12 @@ export class GitHubApiClient {
       headers['Content-Type'] = 'application/json; charset=utf-8';
     }
 
+    const timeoutMs = options.timeoutMs ?? this.timeoutMs;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS) {
+      throw githubError(400, 'INVALID_GITHUB_TIMEOUT', 'GitHub request timeout is outside the supported bound.');
+    }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response;
     let bytes;
     try {
@@ -206,7 +210,7 @@ export class GitHubApiClient {
           limited ? {
             retryAfterSeconds: retry && /^\d+$/.test(retry) ? Math.min(Number(retry), 86_400) : null,
             rateResetAt: Number.isFinite(reset) && reset > 0 && reset < 8_640_000_000 ? new Date(reset * 1000).toISOString() : null,
-          } : null
+          } : { upstreamStatus: response.status }
         );
       }
       // Keep the deadline active through streaming, not just response headers.
@@ -240,7 +244,8 @@ export class GitHubApiClient {
       throw githubError(
         response.status < 500 ? response.status : 502,
         'GITHUB_REQUEST_FAILED',
-        describeStatus(response.status, 'GitHub rejected the request.')
+        describeStatus(response.status, 'GitHub rejected the request.'),
+        { upstreamStatus: response.status }
       );
     }
 
@@ -257,7 +262,8 @@ export class GitHubApiClient {
         throw githubError(
           response.status < 500 ? response.status : 502,
           'GITHUB_REQUEST_FAILED',
-          describeStatus(response.status, 'GitHub rejected the request.')
+          describeStatus(response.status, 'GitHub rejected the request.'),
+          { upstreamStatus: response.status }
         );
       }
       throw githubError(502, 'GITHUB_INVALID_RESPONSE', 'GitHub returned an unreadable response.');
@@ -272,7 +278,8 @@ export class GitHubApiClient {
       throw githubError(
         response.status < 500 ? response.status : 502,
         'GITHUB_REQUEST_FAILED',
-        describeStatus(response.status, detail || 'GitHub rejected the request.')
+        describeStatus(response.status, detail || 'GitHub rejected the request.'),
+        { upstreamStatus: response.status }
       );
     }
     return { status: response.status, data, link, rate };
@@ -283,16 +290,17 @@ export class GitHubApiClient {
    * separate transport cannot receive a token, a moving ref, or an arbitrary URL.
    * The caller must still verify the manifest's blob hash before using bytes.
    */
-  async publicFile(fullName, commit, path, { signal, limit = REPOSITORY_SNAPSHOT_LIMITS.blobBytes } = {}) {
+  async publicFile(fullName, commit, path, { signal, limit = REPOSITORY_SNAPSHOT_LIMITS.blobBytes, timeoutMs = this.timeoutMs } = {}) {
     const parsed = parseRepositorySource(`https://github.com/${fullName}`);
     validateLocalSnapshotPaths([{ path }]);
     if (parsed.fullName !== fullName || !/^[0-9a-f]{40}$/.test(commit) ||
-        !Number.isSafeInteger(limit) || limit < 0 || limit > REPOSITORY_SNAPSHOT_LIMITS.blobBytes) {
+        !Number.isSafeInteger(limit) || limit < 0 || limit > REPOSITORY_SNAPSHOT_LIMITS.blobBytes ||
+        !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS) {
       throw githubError(400, 'LOCAL_IMPORT_INVALID_SOURCE', 'A bounded, commit-pinned public source is required.');
     }
     const target = `${GITHUB_RAW_ORIGIN}/${fullName}/${commit}/${path.split('/').map(encodeURIComponent).join('/')}`;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await this.fetch(target, {
         method: 'GET', headers: { 'User-Agent': USER_AGENT }, redirect: 'manual', cache: 'no-store',
@@ -306,7 +314,8 @@ export class GitHubApiClient {
           remaining: response.headers.get('x-ratelimit-remaining') === '0' ? 0 : null,
           reset: Number(response.headers.get('x-ratelimit-reset')),
         });
-        throw githubError(502, 'LOCAL_IMPORT_READ_FAILED', 'A pinned public source file could not be read. No alternate source was used.');
+        throw githubError(502, 'LOCAL_IMPORT_READ_FAILED', 'A pinned public source file could not be read. No alternate source was used.',
+          { upstreamStatus: response.status });
       }
       return await readBounded(response, limit);
     } catch (error) {
