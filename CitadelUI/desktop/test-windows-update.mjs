@@ -36,13 +36,13 @@ const execute = (file, args) => run(file, args, { cwd: desktopRoot, env, windows
 let server;
 try {
   await run('gh', [
-    'release', 'download', 'citadel-ui-desktop-v1.1.4', '--repo', 'taomar/citadelUI-github',
+    'release', 'download', 'citadel-ui-desktop-v1.1.5', '--repo', 'taomar/citadelUI-github',
     '--pattern', 'CitadelUISetup.exe', '--dir', root,
   ], { cwd: desktopRoot, env: { ...env, GH_TOKEN: process.env.GH_TOKEN }, windowsHide: true, timeout: 180_000 });
   const installer = join(root, 'CitadelUISetup.exe');
   const hash = createHash('sha256');
   for await (const chunk of createReadStream(installer)) hash.update(chunk);
-  assert.equal(hash.digest('hex'), '55f9389101c7af1dfbb05e6b1b5743cca0b5388a699dca55441836acbae48003',
+  assert.equal(hash.digest('hex'), '4724783985164df5d5fed32ecfe9d30e126c7e88e243327d294dcd3c10d59a21',
     'The previous released installer must match its reviewed SHA-256.');
   await execute(installer, ['--silent']);
   assert.equal(await exists(updater), true, 'Squirrel Update.exe was not installed.');
@@ -97,7 +97,7 @@ try {
   assert.equal(proof.interface.updates.inPlaceSupported, true, 'The installed app did not recognize its native updater.');
   console.log(JSON.stringify({
     event: 'citadel_desktop_native_windows_update',
-    from: '1.1.4', to: version, retainedState: true, applicationRevision: identity.applicationRevision, passed: true,
+    from: '1.1.5', to: version, retainedState: true, applicationRevision: identity.applicationRevision, passed: true,
   }));
 } finally {
   if (server) {

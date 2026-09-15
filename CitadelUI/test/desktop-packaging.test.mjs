@@ -127,7 +127,7 @@ test('desktop package declares pinned Electron and Forge dependencies', async ()
   );
   assert.equal(packageJson.main, 'main.mjs');
   assert.equal(packageJson.license, 'MIT');
-  assert.equal(packageJson.version, '1.1.5');
+  assert.equal(packageJson.version, '1.1.6');
   assert.equal(packageJson.devDependencies.electron, '44.3.0');
   assert.equal(packageJson.devDependencies['@electron-forge/cli'], '7.11.2');
   assert.equal(packageJson.devDependencies['@electron-forge/maker-dmg'], '7.11.2');

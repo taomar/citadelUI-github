@@ -154,6 +154,8 @@ jobs:
 
           Region lists are now suggestions: unlisted region identifiers can be typed, reviewed, saved and reloaded as normal values, with no unsupported/custom marker. Bicep/native Terraform, nested fields, expression fallbacks, migration and export retain this behavior. Deployment templates and service availability are not changed or guaranteed. GitHub Enterprise Managed User logins such as \`name_company\` are accepted without weakening numeric account ownership checks.
 
+          New repository creation discovers organizations first and offers explicit Organization/Personal owners with distinct IDs and access status. Errors identify the selected owner, failed action and HTTP status. Transient reads and post-create visibility checks use bounded retries; uncertain writes are reconciled within the original attempt, never blindly recreated. Import progress shows confirmed phases and counts. All region dropdowns contain the shared catalog of 69 documented Azure regions, while manual region entry remains unrestricted.
+
           Every native package verifies the complete server/shared/web source inventory and hashes. The packaged UI test signs into an isolated instance, opens Add workspace, checks both formats and all four source choices, initializes the vendored native parser, and opens Diagnostics. Local-folder permission and persistent-workspace save checks run separately; native folder pickers are not automated.
 
           ## Assets
@@ -175,6 +177,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" release-assets/* \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
+            --target "$GITHUB_SHA" \
             --latest \
             --title "Citadel UI Desktop ${version}" \
             --notes-file release-notes.md

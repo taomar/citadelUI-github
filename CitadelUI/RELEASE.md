@@ -1,12 +1,53 @@
 # Local Release and Offline Operation
 
 The current packaged desktop delivery is
-[Citadel UI Desktop v1.1.5](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.5).
+[Citadel UI Desktop v1.1.6](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.6).
 Its full build source is the release tag target, recorded as `releaseRevision`
-in the attached `CitadelUI-build-*.json`. It integrates the compatibility fixes
+in the attached `CitadelUI-build-*.json`. It integrates the import and region fixes
 with the current application, Electron Windows/macOS fixes, version and updater.
 Follow the [pinned release checkout](../README.md#start-with-a-clone).
 Internal handovers and detailed review records remain local-only.
+
+## Desktop v1.1.6 import owners and progress
+
+Application baseline:
+[`0bc50b8c0c27002695cf9a8b47c0e1cd5e42037d`](https://github.com/taomar/citadelUI-github/commit/0bc50b8c0c27002695cf9a8b47c0e1cd5e42037d).
+The lower-left label reads `v1.1.6 | 0bc50b8`. All previous desktop, directory
+permission, update, managed-login and free-entry region fixes remain.
+
+- New repository setup checks organization memberships first and defaults to an
+  available Organization. Personal remains an explicit choice. Handles, owner
+  types and numeric IDs distinguish similar display names. Missing discovery
+  access is shown rather than interpreted as no organizations.
+- Membership and policy checks report denied or not-yet-verified creation
+  rights honestly. GitHub still enforces token, SSO and enterprise policy.
+  Existing attempts keep their original immutable owner; resume reconciles
+  that attempt instead of changing its namespace or overwriting a repository.
+- Import errors identify the owner, action and available HTTP status. Transient
+  reads use at most three attempts with bounded backoff. Lost write responses
+  are reconciled, not blindly repeated. Verified source bytes can be reused
+  within the same pinned operation after a temporary read failure.
+- Repository and local imports show phase-specific progress, confirmed counts,
+  elapsed time and retry/recheck reasons. Finishing the copy phase does not
+  falsely report that verification or registration has finished.
+- Every region picker offers the shared 69-entry documented Azure catalog,
+  including sovereign regions. Additional template strings and manually typed
+  regions remain normal entries, without custom/unsupported flags. Suggestions
+  do not guarantee availability for a subscription, cloud or individual service.
+
+Source preparation against the public `citadel-v1` snapshot verified 363 files
+and 20,303,635 bytes in 21 seconds without GitHub writes. Browser acceptance used
+the real application HTTP boundary with simulated GitHub organizations and
+transient source errors; it did not mutate or certify a customer's organization.
+The old generic error alone cannot establish that customer's original failure.
+
+The full application suite is qualified, not entirely green: historical
+failures remain, and an unchanged diagnostics case failed in the full run but
+passed in its isolated rerun. Native release gates include owner, retry, local
+progress, region, source-integrity and desktop regressions, plus organization
+selection and the complete region catalog inside each packaged renderer.
+Publication requires all three native package jobs and a real installed
+Windows v1.1.5-to-v1.1.6 upgrade with retained state.
 
 ## Desktop v1.1.5 compatibility release
 
@@ -189,13 +230,13 @@ downloads, not part of the application image or release archive.
 
 ## Windows and macOS desktop packages
 
-Desktop v1.1.5 packages application revision
-`128d269ca6f4dcd8a1d3ea011dc345dc8d153c3c` from the delivery branch, including the
+Desktop v1.1.6 packages application revision
+`0bc50b8c0c27002695cf9a8b47c0e1cd5e42037d` from the delivery branch, including the
 latest modularization and fixes. It retains the Windows/macOS Electron fixes.
 Desktop versions through v1.1.3 incorrectly used the September 7 application
 baseline. Do not use a version label or a startup smoke check as source proof.
 
-To rebuild this release's source, use tag `citadel-ui-desktop-v1.1.5`, separately
+To rebuild this release's source, use tag `citadel-ui-desktop-v1.1.6`, separately
 from the container. The development branch can advance beyond the released
 commit. `desktop/application-source.json` pins the embedded application baseline:
 
@@ -229,7 +270,9 @@ smoke-tests Windows x64, macOS Apple Silicon, and macOS Intel packages before
 publishing one GitHub Release with combined checksums. The packaged smoke test
 signs in through the actual owner form, opens Add workspace, checks Bicep and
 Terraform plus all four source choices, exercises the bundled native parser,
-and opens the Diagnostics window. Its screenshot is a separate CI artifact. It
+opens the Diagnostics window, checks the full region catalog and verifies
+Organization-first/Personal owner options through isolated synthetic GitHub
+ports. Its screenshot is a separate CI artifact. It
 also obtains read permission to a restricted local directory handle, so a
 release cannot publish if that permission check fails. It then
 uses two isolated persistent File System Access workspaces in the packaged
@@ -241,7 +284,7 @@ picker or claim that it selected a specific runner filesystem path.
 
 Windows staging validates the Squirrel feed's version, file sizes and package
 hashes and publishes the referenced packages. The native Windows CI check
-installs the checksum-pinned v1.1.4 fixture on a disposable runner, applies the
+installs the checksum-pinned v1.1.5 fixture on a disposable runner, applies the
 candidate feed with `Update.exe`, verifies the installed runtime identity, and
 runs the current packaged acceptance from that installation. It never runs on
 the operator's workstation or overwrites a pre-existing installation.

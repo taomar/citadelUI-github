@@ -729,6 +729,53 @@ async function runInterfaceAcceptance(window) {
     } finally { control.remove(); }
   })()`);
   if (!customRegions) throw new Error('Packaged region controls did not accept an unlisted value normally.');
+  const regionCatalog = await window.webContents.executeJavaScript(`(async () => {
+    const { regionOptionsFor } = await import('/js/fields.mjs');
+    const { AZURE_REGIONS } = await import('/shared/azure-regions.mjs');
+    const options = regionOptionsFor({ name: 'location', type: 'string', allowedValues: ['eastus'] });
+    return AZURE_REGIONS.length === 69 && AZURE_REGIONS.every(region => options.includes(region));
+  })()`);
+  if (!regionCatalog) throw new Error('Packaged region dropdowns do not contain the complete documented catalog.');
+  const ownerSelection = await window.webContents.executeJavaScript(`(async () => {
+    const { runAddWorkspace } = await import('/js/workspace-catalog.mjs');
+    const { RepositorySelection } = await import('/js/github-selection.mjs');
+    const { closeDialog } = await import('/js/dialog.mjs');
+    const profile = { id: 'desktop-owner-proof', accountId: 101, accountLogin: 'desktop-user', name: 'Desktop fixture', status: 'session' };
+    const account = { accountId: 101, login: profile.accountLogin, profileId: profile.id, profile };
+    const org = { type: 'Organization', id: 202, login: 'desktop-organization' };
+    const personal = { type: 'User', id: account.accountId, login: account.login };
+    const panel = runAddWorkspace({
+      connections: [profile], vault: { available: false }, rows: [], onDone() {},
+      actions: {
+        projects: [],
+        createSelection: () => new RepositorySelection({ listRepositories: async () => ({ repositories: [] }) }),
+        useConnection: async () => account,
+        listRepositoryCreations: async () => ({ operations: [] }),
+        repositoryOwners: async () => ({ owners: [org, personal], defaultOwner: org,
+          organizationLookup: { status: 'complete', message: 'Fixture membership discovered.' } }),
+        checkRepositoryOwner: async owner => ({ ...owner, access: 'not-verified', message: 'Creation rights are not inferred from membership.' })
+      }
+    });
+    try {
+      [...document.querySelectorAll('dialog[open] .catalog-choice-option')]
+        .find(button => button.querySelector('strong')?.textContent === 'New GitHub Repo').click();
+      [...document.querySelectorAll('dialog[open] button')]
+        .find(button => button.textContent.trim() === 'Continue').click();
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const owners = document.getElementById('catalog-create-repository-owner');
+        const prepare = [...document.querySelectorAll('dialog[open] button')].find(button => button.textContent === 'Check source');
+        if (owners && prepare && !prepare.disabled) {
+          return owners.value === 'Organization:202' &&
+            [...owners.options].some(option => option.textContent.includes('Personal @desktop-user')) &&
+            document.querySelector('dialog[open]').textContent.includes('not inferred');
+        }
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      throw new Error('Owner discovery did not finish in the packaged UI.');
+    } finally { panel.dispose(); closeDialog(); }
+  })()`);
+  if (!ownerSelection) throw new Error('Packaged import owner selection is not organization-first and explicit.');
 
   const created = new Promise((resolveWindow, rejectWindow) => {
     const onCreated = (child) => {
@@ -753,7 +800,8 @@ async function runInterfaceAcceptance(window) {
   } finally {
     diagnostics.destroy();
   }
-  return { ownerSignIn: true, currentSourceChoices: true, nativeParser, customRegions, diagnostics: true, versionBadge, updates, ...controls };
+  return { ownerSignIn: true, currentSourceChoices: true, nativeParser, customRegions, regionCatalog,
+    ownerSelection, diagnostics: true, versionBadge, updates, ...controls };
 }
 
 function protectNavigation(window) {

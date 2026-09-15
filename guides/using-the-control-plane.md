@@ -5,8 +5,8 @@ independent workspaces. Changes remain drafts until you review and save.
 It does not run Terraform, deploy resources or manage state.
 
 This guide describes the current UI included in desktop release
-`citadel-ui-desktop-v1.1.5`, with application baseline
-`128d269ca6f4dcd8a1d3ea011dc345dc8d153c3c`.
+`citadel-ui-desktop-v1.1.6`, with application baseline
+`0bc50b8c0c27002695cf9a8b47c0e1cd5e42037d`.
 Use the [pinned release checkout](../README.md#start-with-a-clone) or an
 operator-supplied image built from reviewed source, not an older `main` checkout.
 Documentation or source publication does not update an existing installation.

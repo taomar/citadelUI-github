@@ -28,7 +28,7 @@ async function fixture(t) {
 
 test('desktop build identity pins the current application, not the old main snapshot', async () => {
   const source = JSON.parse(await readFile(new URL('../desktop/application-source.json', import.meta.url), 'utf8'));
-  assert.equal(source.revision, '128d269ca6f4dcd8a1d3ea011dc345dc8d153c3c');
+  assert.equal(source.revision, '0bc50b8c0c27002695cf9a8b47c0e1cd5e42037d');
   assert.equal(source.ref, 'taomar-electron-desktop-packaging');
 });
 
