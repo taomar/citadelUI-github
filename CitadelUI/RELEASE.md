@@ -10,6 +10,16 @@ Internal handovers and detailed review records remain local-only.
 
 ## Desktop v1.1.5 compatibility release
 
+Released on 15 September 2026 from full build commit
+[`8db9d56d3c48d63e6994167bd007c0b1281341b9`](https://github.com/taomar/citadelUI-github/commit/8db9d56d3c48d63e6994167bd007c0b1281341b9).
+The [tagged release workflow](https://github.com/taomar/citadelUI-github/actions/runs/34957080437)
+passed Windows x64, Intel Mac and Apple Silicon packaged checks, including
+unlisted-region acceptance and retained local-folder permissions. Its real
+installed Windows upgrade from v1.1.4 to v1.1.5 passed with retained state.
+Downloaded Windows and both Mac ZIPs each matched all 175 application files
+to the pinned source and their recorded hashes. The live Windows update feed
+was verified after publication.
+
 Application baseline:
 [`128d269ca6f4dcd8a1d3ea011dc345dc8d153c3c`](https://github.com/taomar/citadelUI-github/commit/128d269ca6f4dcd8a1d3ea011dc345dc8d153c3c).
 The release preserves the complete current UI and earlier Electron fixes.
