@@ -1478,7 +1478,7 @@ test('migration UI filters on input, preserves caret and decisions, and clears a
 
 test('migration source UI keeps PAT help outside its label and preserves the same password control and typed values', async () => {
   const { controller } = sourceConnectionStub();
-  const { wizard } = await open({ wizard: { sourceConnection: controller } });
+  const { wizard, dialog } = await open({ wizard: { sourceConnection: controller } });
   await press(wizard, 'choose-github');
   input(wizard, 'Source repository URL or owner/repo', 'synthetic/source');
   input(wizard, 'Source ref type', 'tag');
@@ -1492,15 +1492,17 @@ test('migration source UI keeps PAT help outside its label and preserves the sam
   const parent = token.parentElement;
   assert.notEqual(toggle.parentElement.tagName, 'LABEL');
   toggle.click();
-  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
-  toggle.click();
-  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(toggle.getAttribute('aria-haspopup'), 'dialog');
+  assert.match(readText(dialog.modal), /GitHub token help/);
+  assert.match(readText(dialog.modal), /Contents: Read-only/);
+  assert.match(readText(dialog.modal), /Metadata: Read-only/);
+  assert.doesNotMatch(readText(dialog.modal), /Contents: Read and write|Administration: Read and write|All repositories/);
+  assert.doesNotMatch(readText(dialog.modal), /ui-only-token-marker/);
+  dialog.modal.dispatch('keydown', { key: 'Escape' });
+  assert.equal(dialog.modal.open, true, 'Escape closes only help, not the migration wizard');
   assert.equal(token.parentElement, parent);
   assert.equal(token.value, 'ui-only-token-marker');
   assert.equal(find(wizard.body, (node) => node.getAttribute?.('aria-label') === 'Source GitHub token'), token);
-  assert.match(readText(wizard.body), /Contents: Read-only/);
-  assert.match(readText(wizard.body), /Metadata: Read-only/);
-  assert.doesNotMatch(readText(wizard.body), /Contents: Read and write|Administration: Read and write|All repositories/);
   assert.doesNotMatch(readText(wizard.body), /ui-only-token-marker/);
   await press(wizard, 'connect-source');
   assert.equal(token.value, '');

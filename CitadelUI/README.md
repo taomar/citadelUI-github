@@ -879,7 +879,8 @@ reached the same way: from **Saved workspaces** on the landing page, or through
 
 Choose **Existing GitHub Repo** for the current repository picker, **New GitHub Repo** to
 initialize a private repository first, or **Local** for the existing folder flow.
-New GitHub Repo discovers organization memberships, defaults to a discovered
+New GitHub Repo discovers organization memberships and owners of readable
+repositories, defaults to a discovered
 Organization, and offers an explicit Personal/Organization owner choice. Handles
 and numeric owner IDs distinguish alike display names. Access-policy failures
 are visible; missing discovery rights do not imply that no organizations exist.
@@ -892,9 +893,15 @@ owner with All repositories access,
 Administration read/write and Contents read/write; Metadata read-only is
 automatic. Workflows read/write is needed only for sources containing workflow
 files, whose Actions are disabled before import and left disabled for review.
-Organization selection also checks active membership with Members read access.
+Read-only repository access can discover an organization even if the membership
+list omits it. Explicit handle lookup can discover its profile without claiming
+membership. Creation still requires active membership, checked with Members read
+access; visibility never grants write permission.
 The owner type and handle are shown beside policy/access status at each
 decision point; a readable membership is not a guarantee that creation will pass.
+The wizard groups connection identity, repository destination and source snapshot
+separately. **Token help** opens a compact overlay; closing it or pressing Escape
+returns to the same form without clearing credentials or other inputs.
 Regular Existing GitHub Repo editing still needs only selected-repository Contents
 read/write. Narrow or replace the creation token after setup.
 

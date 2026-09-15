@@ -45,6 +45,7 @@ import { createRepositoryProgress } from './repository-progress.mjs';
 import { openLocalSourceImport } from './local-source-import.mjs';
 import { createConfiguration, configurationOf } from '../../shared/workspace-configuration.mjs';
 import { repositoryOwner, repositoryOwnerKey, repositoryOwnerLabel } from '../../shared/repository-owner.mjs';
+import { githubTokenHelpButton } from './github-token-help.mjs';
 
 const pendingReattachmentViews = new WeakMap();
 
@@ -279,74 +280,16 @@ function field(id, labelText, control, hint = null) {
   );
 }
 
+function setupSection(id, title, description, ...controls) {
+  return h('section', { class: 'catalog-setup-section', 'aria-labelledby': `${id}-title` },
+    h('header', { class: 'catalog-setup-heading' },
+      h('h3', { id: `${id}-title` }, title),
+      description ? h('p', { class: 'hint' }, description) : null),
+    ...controls);
+}
+
 function githubTokenField(id, labelText, control, hint = null, purpose = 'existing') {
-  const creating = purpose === 'create';
-  const tokenPage = 'https://github.com/settings/personal-access-tokens/new';
-  const help = h(
-    'div',
-    {
-      id: `${id}-help`,
-      class: 'catalog-token-help',
-      hidden: true,
-      role: 'region',
-      'aria-label': 'Create a GitHub personal access token',
-    },
-    h(
-      'a',
-      {
-        href: creating
-          ? `${tokenPage}?name=Citadel%20repository%20creation&administration=write&contents=write&expires_in=1`
-          : tokenPage,
-        target: '_blank',
-        rel: 'noopener noreferrer',
-      },
-      creating
-        ? 'Open prefilled GitHub token form (Administration + Contents)'
-        : 'Create a fine-grained token on GitHub'
-    ),
-    creating
-      ? h('p', {}, 'This link only prefills a fine-grained token form; it does not create a token or grant permissions automatically. Review the settings on GitHub before generating the token.')
-      : null,
-    h(
-      'ol',
-      {},
-      h('li', {}, creating
-        ? 'Use a temporary token with a 1-day expiration. Choose the Resource owner that matches the intended Organization or Personal destination. Signing in as a user does not select the organization automatically.'
-        : 'Give the token a name and a short expiration. Set Resource owner to the user or organization that owns the repositories.'),
-      h('li', {}, creating
-        ? 'Under Repository access, choose All repositories for this creation flow. The new repository does not exist yet, so it cannot be selected beforehand.'
-        : 'Under Repository access, choose Only select repositories and select only the repositories you will use.'),
-      creating
-        ? h('li', {}, 'Under Repository permissions, grant ', h('strong', {}, 'Administration: Read and write'), ' to create the private repository, and ', h('strong', {}, 'Contents: Read and write'), ' to read branches and import files (write includes read). Administration alone cannot read branches or populate the repository.')
-        : h('li', {}, 'Under Repository permissions, set ', h('strong', {}, 'Contents: Read and write'), ' for Citadel editing.'),
-      h('li', {}, 'Generate the token, copy it once, and paste it into the GitHub token field.')
-    ),
-    creating
-      ? h('p', {}, h('strong', {}, 'Metadata: Read-only'), ' is automatic. Organization discovery requires ', h('strong', {}, 'Members: Read-only'), ' for the intended organization. Add ', h('strong', {}, 'Workflows: Read and write'), ' only if the source preview reports .github/workflows files. For those sources, Citadel disables Actions before copying and leaves Actions disabled for your review; GitHub must permit that settings change. No Pull requests permission is needed.')
-      : h('p', {}, h('strong', {}, 'Metadata: Read-only'), ' is included automatically. Leave all other repository, account and organization permissions unset. Pull requests, Actions, Workflows and administration permissions are not required.'),
-    creating
-      ? h('p', {}, 'After setup, narrow the token to Only select repositories and the new repository, remove Administration and any unneeded Workflows permission, or reconnect with a regular Contents-only token. Never share the token.')
-      : h('p', {}, 'Contents: Read-only can read files, but cannot create branches or save changes. Citadel attaches repositories for editing, not read-only browsing.'),
-    creating
-      ? h('p', {}, 'New repositories are always private. A token cannot grant more access than your account already has.')
-      : h('p', {}, 'If your organization requires approval, ask an organization owner to approve the token. Pending tokens can only read public resources. A token cannot grant more access than your account already has.')
-  );
-  const toggle = h(
-    'button',
-    {
-      class: 'btn btn-sm',
-      type: 'button',
-      'aria-label': 'Token help for GitHub personal access tokens',
-      'aria-expanded': 'false',
-      'aria-controls': `${id}-help`,
-      onclick: () => {
-        help.hidden = !help.hidden;
-        toggle.setAttribute('aria-expanded', String(!help.hidden));
-      },
-    },
-    'Token help'
-  );
-  // Keep help controls outside the input's label; toggling never rebuilds the form.
+  const help = githubTokenHelpButton({ id, purpose });
   return h(
     'div',
     { class: 'catalog-field' },
@@ -354,11 +297,10 @@ function githubTokenField(id, labelText, control, hint = null, purpose = 'existi
       'div',
       { class: 'catalog-field-head' },
       h('label', { class: 'catalog-field-label', for: id }, labelText),
-      toggle
+      help
     ),
     control,
-    hint ? h('small', { class: 'hint' }, hint) : null,
-    help
+    hint ? h('small', { class: 'hint' }, hint) : null
   );
 }
 
@@ -1811,7 +1753,7 @@ export function runAddWorkspace(options) {
         'GitHub token',
         tokenInput,
         creating
-          ? 'Temporary creation token: All repositories, Administration and Contents read/write. Token help explains conditional workflow access and narrowing access afterward.'
+          ? 'Read-only access can discover owners. Creating a repository requires Administration and Contents read/write; see Token help.'
           : 'Fine-grained token. Repository access: Only select repositories. Repository permissions: Contents \u2014 Read and write.',
         creating ? 'create' : 'existing'
       ),
@@ -1943,7 +1885,7 @@ export function runAddWorkspace(options) {
 
     const body = h(
       'div',
-      { class: 'catalog-form' },
+      { class: 'catalog-form catalog-connection-card' },
       chooser
         ? field(
             'catalog-connection-select',
@@ -1956,7 +1898,7 @@ export function runAddWorkspace(options) {
             { class: 'hint' },
             selected
               ? 'Use the existing GitHub connection shown below.'
-              : 'No connection is saved yet. Name this one, then paste a fine-grained personal access token for the account that owns the repositories.'
+              : 'No connection is saved yet. Name this connection and enter a token scoped to the repositories you want to access.'
           ),
       summary,
       ...(mode === 'new' ? newFields : needsToken ? reconnectFields : live ? liveFields : idleFields),
@@ -2005,7 +1947,11 @@ export function runAddWorkspace(options) {
     let ownerReady = false;
     let ownerBusy = false;
     let ownerRevision = 0;
-    const ownerStatus = h('p', { class: 'hint', role: 'status', 'aria-live': 'polite' }, 'Checking Personal and Organization owners...');
+    const discoveryStatus = h('p', {
+      id: 'catalog-create-owner-discovery', class: 'hint', role: 'status', 'aria-live': 'polite',
+    }, 'Discovering organizations through memberships and readable repositories...');
+    const discoveryChecks = h('ul', { class: 'catalog-discovery-checks', hidden: true });
+    const ownerStatus = h('p', { class: 'catalog-owner-status hint', role: 'status', 'aria-live': 'polite' }, 'Choose a repository owner.');
     const ownerChoice = h('select', {
       id: 'catalog-create-repository-owner', class: 'ctl', 'aria-label': 'Repository owner',
       onchange: () => {
@@ -2064,25 +2010,39 @@ export function runAddWorkspace(options) {
       const selected = explicitOrganization === null ? form.owner : explicitOrganization;
       const generation = ++ownerRevision;
       ownerReady = false;
+      ownerStatus.removeAttribute('data-state');
       if (!selected) { ownerStatus.textContent = 'Choose a Personal or Organization destination.'; paint(); return; }
       ownerBusy = true;
       ownerStatus.textContent = 'Checking the selected owner and visible access policy...';
       paint();
       try {
-        const checked = await actions.checkRepositoryOwner(selected);
+        let checked = await actions.checkRepositoryOwner(selected);
         if (disposed || generation !== ownerRevision || operation) return;
-        const owner = repositoryOwner(checked);
-        owners = [...owners.filter((item) => repositoryOwnerKey(item) !== repositoryOwnerKey(owner)), checked]
-          .sort((a, b) => a.type === b.type ? a.login.localeCompare(b.login) : a.type === 'Organization' ? -1 : 1);
-        form.owner = owner;
-        ownerReady = checked.access !== 'denied';
-        ownerStatus.textContent = `${repositoryOwnerLabel(owner)} (ID ${owner.id}): ${checked.message}`;
+        if (typeof selected === 'string') {
+          rememberOwner(checked);
+          paint();
+          checked = await actions.checkRepositoryOwner(form.owner);
+        }
+        if (disposed || generation !== ownerRevision || operation) return;
+        if (!['denied', 'not-verified'].includes(checked.access)) throw new Error('GitHub returned an invalid owner access result.');
+        rememberOwner(checked);
+        ownerReady = checked.access === 'not-verified';
+        ownerStatus.dataset.state = checked.access;
+        ownerStatus.textContent = checked.message;
       } catch (failure) {
         if (disposed || generation !== ownerRevision || operation) return;
-        ownerStatus.textContent = `Owner access could not be verified: ${failure.message} No repository will be created until the owner check succeeds.`;
+        ownerStatus.dataset.state = 'denied';
+        ownerStatus.textContent = `Creation access is not verified: ${failure.message} No repository will be created.`;
       } finally {
         if (!disposed && generation === ownerRevision) { ownerBusy = false; paint(); }
       }
+    }
+
+    function rememberOwner(checked) {
+      const owner = repositoryOwner(checked);
+      owners = [...owners.filter((item) => repositoryOwnerKey(item) !== repositoryOwnerKey(owner)), checked]
+        .sort((a, b) => a.type === b.type ? a.login.localeCompare(b.login) : a.type === 'Organization' ? -1 : 1);
+      form.owner = owner;
     }
 
     async function refreshOwners() {
@@ -2090,7 +2050,9 @@ export function runAddWorkspace(options) {
       const generation = ++ownerRevision;
       ownerBusy = true;
       ownerReady = false;
-      ownerStatus.textContent = 'Discovering available organizations before choosing a destination...';
+      discoveryStatus.textContent = 'Checking organization memberships and readable repositories...';
+      discoveryChecks.hidden = true;
+      ownerStatus.textContent = 'Choose a repository owner after discovery.';
       paint();
       try {
         const result = await actions.repositoryOwners();
@@ -2099,13 +2061,18 @@ export function runAddWorkspace(options) {
         for (const item of owners) repositoryOwner(item);
         const prior = form.owner && owners.find((item) => repositoryOwnerKey(item) === repositoryOwnerKey(form.owner));
         form.owner = prior ? repositoryOwner(prior) : result.defaultOwner;
-        ownerStatus.textContent = result.organizationLookup.message;
+        discoveryStatus.textContent = result.organizationLookup.message;
+        const incomplete = (result.organizationLookup.sources || []).filter((source) => source.status !== 'complete');
+        mount(discoveryChecks, ...incomplete.map((source) => h('li', {},
+          h('strong', {}, `${source.label}: ${source.status}${source.httpStatus ? ` (HTTP ${source.httpStatus})` : ''}. `),
+          source.message)));
+        discoveryChecks.hidden = incomplete.length === 0;
         ownerBusy = false;
         if (form.owner) await checkSelectedOwner();
         else paint();
       } catch (failure) {
         if (disposed || generation !== ownerRevision || operation) return;
-        ownerStatus.textContent = `Owner discovery failed: ${failure.message} Retry the owner lookup or check an explicit organization handle.`;
+        discoveryStatus.textContent = `Owner discovery failed: ${failure.message} Refresh owners or check an organization handle.`;
       } finally {
         if (!disposed && generation === ownerRevision) { ownerBusy = false; paint(); }
       }
@@ -2292,7 +2259,7 @@ export function runAddWorkspace(options) {
       const row = (label, value) => h('div', { class: 'catalog-summary-row' }, h('dt', {}, label), h('dd', {}, value));
       mount(preview, operation ? h('div', { class: 'catalog-form' },
         h('dl', { class: 'catalog-summary' },
-          row('Signed-in account', `Personal @${state.account.login} (ID ${state.account.accountId})`),
+          row('Signed-in account', `GitHub user @${state.account.login} (ID ${state.account.accountId})`),
           row('Repository owner', `${repositoryOwnerLabel(form.owner)} (ID ${form.owner.id})`),
           row('Destination', h('code', {}, operation.destination.fullName)),
           row('Visibility', 'Private only'),
@@ -2333,18 +2300,33 @@ export function runAddWorkspace(options) {
     present(
       'Create a private GitHub repository',
       h('div', { class: 'catalog-form' },
-        h('p', { class: 'hint' }, `Signed in as Personal @${state.account.login}. Choose the repository owner separately below; Organization is preferred when discovered. New repositories are always private and existing repositories are never overwritten.`),
-        field('catalog-create-repository-owner', 'Repository owner', ownerChoice, 'Owner type, handle and numeric ID are shown independently of display names.'),
-        ownerStatus,
-        h('div', { class: 'catalog-form-actions' }, refreshOwnerButton),
-        h('details', {},
-          h('summary', {}, 'Organization not listed?'),
-          field('catalog-create-organization', 'Organization handle', organization, 'Check the GitHub organization handle, not its display name. The same connection must prove active membership.'),
-          checkOrganization),
+        h('div', { class: 'catalog-connection-summary' },
+          h('div', {},
+            h('strong', {}, `GitHub user @${state.account.login}`),
+            h('p', { class: 'hint' }, 'Your token scope and repository owner are separate choices.')),
+          h('div', { class: 'catalog-form-actions' },
+            changeToken, githubTokenHelpButton({ id: 'catalog-create-token', purpose: 'create' }))),
+        h('div', { class: 'catalog-creation-grid' },
+          setupSection('catalog-destination', 'Repository destination', 'Organization or Personal. New repositories are always private.',
+            h('div', { class: 'catalog-owner-heading' },
+              h('label', { class: 'catalog-field-label', for: 'catalog-create-repository-owner' }, 'Repository owner'),
+              refreshOwnerButton),
+            h('div', { class: 'catalog-field' }, ownerChoice),
+            h('div', { class: 'catalog-discovery' }, discoveryStatus, discoveryChecks),
+            ownerStatus,
+            field('catalog-create-repository-name', 'Repository name', name),
+            h('div', { class: 'catalog-owner-lookup' },
+              field('catalog-create-organization', 'Organization not listed?', organization),
+              checkOrganization),
+            h('small', { class: 'hint' }, 'Use the organization handle, not its display name.')),
+          setupSection('catalog-import-source', 'Source snapshot', 'Copy a branch into the new repository without changing the source.',
+            field('catalog-create-repository-source', 'Source repository URL', source),
+            h('ul', { class: 'catalog-source-notes' },
+              h('li', {}, 'Check source reads and validates a pinned snapshot.'),
+              h('li', {}, 'Review the files and required permissions before creating.'),
+              h('li', {}, 'Existing repositories are never overwritten.')))),
         progress.root,
-        field('catalog-create-repository-name', 'Repository name', name),
-        field('catalog-create-repository-source', 'Source repository URL', source, 'Use a GitHub repository or branch URL. The checked-out source files, including binary assets and licenses, are copied into a fresh snapshot.'),
-        h('div', { class: 'catalog-form-actions' }, changeToken, refresh),
+        h('div', { class: 'catalog-recovery-tools' }, h('span', { class: 'hint' }, 'Resume a previous setup without creating another repository.'), refresh),
         previous,
         preview,
         error

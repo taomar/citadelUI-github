@@ -28,8 +28,10 @@ export async function repositoryHttpFixture(options = {}) {
     return {
       ...github.metadata(repo),
       permissions: {
+        pull: true,
         push: repo.owner.id === github.identity.id || membership?.state === 'active',
         admin: repo.owner.id === github.identity.id || membership?.state === 'active' && membership?.role === 'admin',
+        ...repo.permissions,
       },
     };
   };
@@ -46,10 +48,17 @@ export async function repositoryHttpFixture(options = {}) {
         const branches = /^\/repos\/([^/]+\/[^/]+)\/branches$/.exec(url.pathname);
         const history = /^\/repos\/([^/]+\/[^/]+)\/commits$/.exec(url.pathname);
         if (init.method === 'GET' && url.pathname === '/user/repos') {
-          github.calls.push({ method: 'GET', path: url.pathname + url.search });
-          result = { status: 200, data: Number(url.searchParams.get('page') || 1) === 1
-            ? [...github.repos.values()].filter((repo) => repo.owner.id === github.identity.id).map(metadata)
-            : [] };
+          const call = { method: 'GET', path: url.pathname + url.search };
+          github.calls.push(call);
+          if (github.before) await github.before(call, github);
+          const visible = [...github.repos.values()].filter((repo) => repo.owner.id === github.identity.id ||
+            repo.permissions?.pull === true || repo.owner.type === 'Organization' &&
+              github.memberships.get(repo.owner.login.toLowerCase())?.state === 'active');
+          const page = Number(url.searchParams.get('page') || 1);
+          const size = Number(url.searchParams.get('per_page') || 100);
+          result = { status: 200, data: visible.slice((page - 1) * size, page * size).map(metadata) };
+          if (visible.length > page * size) result.link = '<https://api.github.com/user/repos>; rel="next"';
+          if (github.after) await github.after(call, result, github);
         } else if (init.method === 'GET' && byId) {
           github.calls.push({ method: 'GET', path: url.pathname });
           const repo = [...github.repos.values()].find((item) => item.id === Number(byId[1]));

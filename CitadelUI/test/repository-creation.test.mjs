@@ -104,6 +104,88 @@ test('repository creation: no visible organization defaults to Personal without 
   assert.equal(owners.owners[0].access, 'not-verified');
 });
 
+test('repository creation: read-only repository access discovers an Organization missing from memberships', async (t) => {
+  const cx = await context(t);
+  const org = cx.mock.organization('readonly-org');
+  cx.mock.memberships.clear();
+  cx.mock.repository('readonly-org/source', {
+    owner: { type: org.type, id: org.id, login: org.login },
+    permissions: { pull: true, push: false, admin: false },
+  });
+  cx.mock.before = (call) => assert.equal(call.method, 'GET', 'discovery must not probe write permissions');
+  const result = await cx.service.listOwners(cx.session);
+  assert.deepEqual(result.defaultOwner, { type: org.type, id: org.id, login: org.login });
+  const discovered = result.owners.find((owner) => owner.id === org.id);
+  assert.equal(discovered.access, 'not-verified');
+  assert.equal(discovered.membership, undefined, 'repository visibility must not invent membership');
+  assert.match(discovered.message, /readable repositor/);
+  assert.equal(writes(cx.mock).length, 0);
+});
+
+test('repository creation: denied membership lookup does not hide repository-visible Organizations or grant creation', async (t) => {
+  const cx = await context(t);
+  const org = cx.mock.organization('visible-org');
+  cx.mock.repository('visible-org/source', { owner: { type: org.type, id: org.id, login: org.login } });
+  cx.mock.before = (call) => {
+    if (call.path.startsWith('/user/memberships/')) throw githubError(403, 'GITHUB_REQUEST_FAILED', 'Denied');
+    assert.equal(call.method, 'GET');
+  };
+  const result = await cx.service.listOwners(cx.session);
+  assert.equal(result.defaultOwner.id, org.id);
+  assert.equal(result.organizationLookup.status, 'partial');
+  assert.equal(result.organizationLookup.sources.find((source) => source.kind === 'membership').status, 'denied');
+  await assert.rejects(cx.service.checkOwner(cx.session, result.defaultOwner), { status: 403 });
+  assert.equal(writes(cx.mock).length, 0);
+});
+
+test('repository creation: readable repository owner discovery follows bounded pages and deduplicates owners', async (t) => {
+  const cx = await context(t);
+  const org = cx.mock.organization('paged-org');
+  cx.mock.memberships.clear();
+  const repo = cx.mock.repository('paged-org/source', { owner: { type: org.type, id: org.id, login: org.login } });
+  cx.mock.after = (call, response) => {
+    if (!call.path.startsWith('/user/repos?')) return;
+    const page = new URL(call.path, 'https://api.github.com').searchParams.get('page');
+    response.data = page === '1' ? [cx.mock.metadata(cx.mock.source)] : [cx.mock.metadata(repo), cx.mock.metadata(repo)];
+    response.link = '<https://api.github.com/user/repos?page=99>; rel="next"';
+  };
+  const result = await cx.service.listOwners(cx.session);
+  assert.equal(result.defaultOwner.id, org.id);
+  assert.equal(result.owners.filter((owner) => owner.id === org.id).length, 1);
+  assert.equal(result.organizationLookup.status, 'partial');
+  assert.equal(cx.mock.calls.filter((call) => call.path.startsWith('/user/repos?')).length, 5);
+  assert.equal(writes(cx.mock).length, 0);
+});
+
+test('repository creation: repository discovery does not downgrade confirmed membership or swallow revoked authentication', async (t) => {
+  const cx = await context(t);
+  const org = cx.mock.organization('member-org');
+  cx.mock.repository('member-org/source', { owner: { type: org.type, id: org.id, login: org.login } });
+  const result = await cx.service.listOwners(cx.session);
+  assert.equal(result.owners.filter((owner) => owner.id === org.id).length, 1);
+  assert.equal(result.owners.find((owner) => owner.id === org.id).membership, 'admin');
+  cx.mock.before = (call) => {
+    if (call.path.startsWith('/user/repos?')) throw githubError(401, 'GITHUB_AUTH_FAILED', 'Revoked');
+  };
+  await assert.rejects(cx.service.listOwners(cx.session), { status: 401 });
+});
+
+test('repository creation: explicit Organization discovery does not require membership but creation still does', async (t) => {
+  const cx = await context(t);
+  const org = cx.mock.organization('known-org');
+  cx.mock.memberships.clear();
+  const found = await cx.service.checkOwner(cx.session, org.login);
+  assert.equal(found.id, org.id);
+  assert.equal(found.access, 'not-verified');
+  assert.match(found.message, /Membership and creation permissions are not confirmed/);
+  const operation = await cx.service.prepare(cx.session, creation('not-authorized', { owner: {
+    type: found.type, id: found.id, login: found.login,
+  } }));
+  await cx.service.settled();
+  assert.equal((await cx.service.status(cx.session, operation.id)).state, 'failed');
+  assert.equal(writes(cx.mock).length, 0);
+});
+
 test('repository creation: Organization policy denial is explicit before any source transfer or write', async (t) => {
   const cx = await context(t);
   const org = cx.mock.organization('locked-org', { members_can_create_private_repositories: false }, { role: 'member' });

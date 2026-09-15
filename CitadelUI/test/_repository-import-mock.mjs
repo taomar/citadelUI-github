@@ -199,6 +199,12 @@ export class ImportGitHub {
 
   dispatch(path, method, body) {
     if (path === '/user' && method === 'GET') return this.identity;
+    if (path.startsWith('/user/repos?') && method === 'GET') {
+      const query = new URL(path, 'https://api.github.com').searchParams;
+      const page = Number(query.get('page') || 1);
+      const size = Number(query.get('per_page') || 100);
+      return [...this.repos.values()].slice((page - 1) * size, page * size).map((repo) => this.metadata(repo));
+    }
     if (path.startsWith('/user/memberships/orgs?') && method === 'GET') {
       const page = Number(new URL(path, 'https://api.github.com').searchParams.get('page') || 1);
       return page === 1 ? [...this.memberships.values()] : [];

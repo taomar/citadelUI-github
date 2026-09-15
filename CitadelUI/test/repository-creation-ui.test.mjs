@@ -144,15 +144,16 @@ function assertCreationTokenHelp() {
   const text = readText(help);
   for (const term of [
     'only prefills a fine-grained token form', 'does not create a token or grant permissions automatically',
-    'temporary token', '1-day expiration', 'Resource owner that matches the intended Organization or Personal destination',
+    'temporary token', '1-day expiration', 'Resource owner', 'intended Organization or Personal destination',
     'All repositories', 'does not exist yet, so it cannot be selected beforehand',
-    'Administration: Read and write to create the private repository',
-    'Contents: Read and write to read branches and import files (write includes read)',
+    'Repository Administration: Read and write', 'Create and configure the private repository',
+    'Repository Contents: Read and write', 'Read branches and import files',
     'Administration alone cannot read branches or populate the repository',
-    'Metadata: Read-only', 'Workflows: Read and write only if the source preview reports .github/workflows files',
+    'Metadata: Read-only', 'Workflows: Read and write', 'Only if the source preview reports .github/workflows files',
     'disables Actions', 'Members: Read-only', 'No Pull requests permission is needed',
     'After setup, narrow the token to Only select repositories and the new repository',
     'remove Administration and any unneeded Workflows permission', 'regular Contents-only token', 'always private',
+    'Discovering an owner does not prove permission to create',
   ]) assert.ok(text.includes(term), term);
 }
 
@@ -174,10 +175,13 @@ test('repository creation UI: local source choice preserves existing GitHub and 
 test('repository creation UI: new-token help explains temporary creation permissions without changing existing help', async (t) => {
   harness(t, {}, []);
   await click('New GitHub Repo');
-  assert.equal(control('catalog-connection-token').disabled, true);
+  const token = control('catalog-connection-token');
+  assert.equal(token.disabled, true);
   await click('Token help');
   assertCreationTokenHelp();
-  assert.equal(control('catalog-connection-token').disabled, true);
+  assert.equal(token.disabled, true);
+  await click('Back to form');
+  assert.equal(control('catalog-connection-token'), token);
   await click('Back');
   await click('Existing GitHub Repo');
   await click('Token help');
@@ -199,6 +203,7 @@ for (const status of ['session', 'reconnect']) {
     if (status === 'session') await click('Update token for repository creation');
     await click('Token help');
     assertCreationTokenHelp();
+    await click('Back to form');
     input('catalog-connection-token', TEST_TOKEN);
     await click('Reconnect and continue');
     await drain();
@@ -267,6 +272,29 @@ test('repository creation UI: missing organization permissions are visible and d
   assert.match(readText(document.getElementById('modal')), /Organization discovery denied/);
   assert.equal(button('Check source').disabled, true);
   assert.equal(button('Check organization').disabled, false);
+  const chooser = control('catalog-create-repository-owner');
+  chooser.value = `User:${account.accountId}`;
+  chooser.dispatch('change');
+  await drain();
+  assert.match(readText(control('catalog-create-owner-discovery')), /Organization discovery denied/,
+    'checking the selected user must not erase discovery failures');
+});
+
+test('repository creation UI: a repository-visible Organization remains listed when creation membership is denied', async (t) => {
+  const org = { type: 'Organization', id: 8001, login: 'readonly-org' };
+  const { calls } = harness(t, {
+    repositoryOwners: async () => ({ owners: [org], defaultOwner: org,
+      organizationLookup: { status: 'partial', message: 'Found an organization through readable repositories.',
+        sources: [{ kind: 'membership', label: 'Organization memberships', status: 'denied',
+          httpStatus: 403, message: 'Membership access was denied.' }] } }),
+    checkRepositoryOwner: async () => { throw new Error('Membership access denied'); },
+  });
+  await openCreation();
+  assert.match(readText(control('catalog-create-repository-owner')), /Organization @readonly-org/);
+  assert.match(readText(control('catalog-create-owner-discovery')), /readable repositories/);
+  assert.match(readText(document.getElementById('modal')), /HTTP 403/);
+  assert.equal(button('Check source').disabled, true);
+  assert.equal(calls.some((call) => call[0] === 'prepare' || call[0] === 'start'), false);
 });
 
 test('repository creation UI: denied Organization policy is visible before Check source', async (t) => {

@@ -319,7 +319,10 @@ is automatic. Ordinary editing does not need Administration, Actions, Workflows
 or Pull requests permissions. A pending organization approval can limit access.
 Classic tokens and the OAuth token from `gh auth token` are not accepted by default.
 
-**Token help** expands instructions without clearing entries. In Settings,
+**Token help** opens a compact overlay without clearing entries. **Back to form**
+or **Escape** restores the same inputs, scroll position and help-button focus.
+The new-repository wizard separates the signed-in GitHub user, repository
+destination, source snapshot and recovery actions. In Settings,
 **How to create this token** opens help over the unfinished form; **Close** or
 **Escape** returns to that form without submitting it or enabling storage.
 
@@ -686,11 +689,17 @@ owner, not a fork or a history copy. Existing repositories are never overwritten
 1. Connect a temporary creation token. It needs **All repositories**,
    **Administration: Read and write**, and **Contents: Read and write**;
    **Metadata: Read-only** is automatic. Set its **Resource owner** to the intended
-   destination. Organization discovery/access checks also need **Members: Read-only**.
-2. Citadel checks visible organization memberships first. **Repository owner**
+   destination. Creation membership checks also need **Members: Read-only**.
+2. Citadel checks organization memberships and owners of readable repositories.
+   A read-only token can discover an organization through repository metadata;
+   it does not need write access just to show that owner. Missing or denied
+   membership discovery does not hide owners found through repository access.
+   **Repository owner**
    defaults to an available organization, with the personal account also offered.
    Check the **Personal/Organization** type, GitHub handle and numeric ID; display
-   names can be alike. A failed organization lookup is not reported as "no
+   names can be alike. The signed-in user is not the PAT's resource owner.
+   Discovery status stays visible separately from the selected owner's
+   creation-access check. A failed organization lookup is not reported as "no
    organizations." Use **Refresh owners** or **Organization not listed?** to
    check an exact handle. Policy denials block preparation; unverified creation
    permissions are labeled honestly rather than claimed as granted.

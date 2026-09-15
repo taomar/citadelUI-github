@@ -608,7 +608,7 @@ for (const profile of [live, idle]) {
 }
 
 for (const reconnect of [false, true]) {
-  test(`GitHub token help toggles inline without changing ${reconnect ? 'reconnect' : 'new'} credentials`, async (t) => {
+  test(`GitHub token help stacks an overlay without changing ${reconnect ? 'reconnect' : 'new'} credentials`, async (t) => {
     let submissions = 0;
     const submit = async () => { submissions += 1; };
     await openConnectionStep(t, {
@@ -616,27 +616,27 @@ for (const reconnect of [false, true]) {
       actions: { createConnection: submit, reconnectConnection: submit },
     });
     const token = connectionControl('catalog-connection-token');
-    const help = connectionControl('catalog-connection-token-help');
     const toggle = descendants(document.getElementById('modal'))
-      .find((node) => node.getAttribute('aria-controls') === 'catalog-connection-token-help');
+      .find((node) => node.getAttribute('aria-haspopup') === 'dialog');
     assert.ok(toggle);
     assert.equal(toggle.tagName, 'BUTTON');
     assert.equal(toggle.getAttribute('type'), 'button');
     assert.equal(toggle.getAttribute('aria-label'), 'Token help for GitHub personal access tokens');
-    assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+    assert.equal(toggle.getAttribute('aria-haspopup'), 'dialog');
     assert.equal(toggle.disabled, false);
-    assert.equal(help.hidden, true);
-    assert.equal(help.getAttribute('role'), 'region');
-    assert.equal(help.getAttribute('aria-label'), 'Create a GitHub personal access token');
     assert.equal(toggle.parentElement.children[0].tagName, 'LABEL');
     assert.equal(toggle.parentElement.children[0].getAttribute('for'), 'catalog-connection-token');
     assert.equal(token.disabled, !reconnect);
 
     await clickDialogButton('Token help');
+    const help = connectionControl('catalog-connection-token-help');
     assert.equal(help.hidden, false);
-    assert.equal(toggle.getAttribute('aria-expanded'), 'true');
-    assert.equal(connectionControl('catalog-connection-token'), token);
+    assert.match(readText(document.getElementById('modal')), /GitHub token help/);
+    assert.equal(descendants(document.getElementById('modal'))
+      .some((node) => node.getAttribute('id') === 'catalog-connection-token'), false);
     assert.equal(token.disabled, !reconnect, 'help does not bypass the name gate');
+    await clickDialogButton('Back to form');
+    assert.equal(connectionControl('catalog-connection-token'), token);
 
     const name = reconnect ? null : connectionControl('catalog-connection-name');
     if (name) {
@@ -645,10 +645,10 @@ for (const reconnect of [false, true]) {
     }
     token.value = TEST_TOKEN;
     const tokenParent = token.parentElement;
-    for (const expanded of [false, true, false]) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       await clickDialogButton('Token help');
-      assert.equal(help.hidden, !expanded);
-      assert.equal(toggle.getAttribute('aria-expanded'), String(expanded));
+      assert.equal(readText(document.getElementById('modal')).includes(TEST_TOKEN), false);
+      await clickDialogButton('Back to form');
       assert.equal(connectionControl('catalog-connection-token'), token);
       assert.equal(token.parentElement, tokenParent);
       assert.equal(token.value, TEST_TOKEN);
@@ -675,19 +675,19 @@ test('GitHub token help links safely to fine-grained creation with least-privile
   for (const phrase of [
     'fine-grained token', 'short expiration', 'Resource owner',
     'Only select repositories', 'select only the repositories you will use',
-    'Contents: Read and write', 'Metadata: Read-only', 'included automatically',
+    'Contents: Read and write', 'Metadata: Read-only', 'Included automatically',
     'Leave all other repository, account and organization permissions unset',
     'Pull requests, Actions, Workflows and administration permissions are not required',
     'copy it once', 'paste it into the GitHub token field',
     'Contents: Read-only can read files, but cannot create branches or save changes',
-    'not read-only browsing', 'organization owner', 'Pending tokens can only read public resources',
+    'not read-only browsing', 'Organization approval', 'Pending tokens can only read public resources',
   ]) {
     assert.ok(text.includes(phrase), `guidance must include: ${phrase}`);
   }
   assert.doesNotMatch(text, /(?:Pull requests|Actions|Workflows|administration): (?:Read|write)/);
 });
 
-test('saved-connection reconnect also offers inline GitHub token help', async (t) => {
+test('saved-connection reconnect also offers a preserving token help overlay', async (t) => {
   t.after(() => closeDialog());
   let submissions = 0;
   const { container } = await paint({
@@ -700,10 +700,10 @@ test('saved-connection reconnect also offers inline GitHub token help', async (t
   assert.ok(reconnect);
   reconnect.click();
   const token = connectionControl('catalog-reconnect-token');
-  const help = connectionControl('catalog-reconnect-token-help');
   const parent = token.parentElement;
   token.value = TEST_TOKEN;
   await clickDialogButton('Token help');
+  const help = connectionControl('catalog-reconnect-token-help');
   assert.equal(help.hidden, false);
   const links = descendants(help).filter((node) => node.tagName === 'A');
   assert.equal(links.length, 1);
@@ -712,8 +712,7 @@ test('saved-connection reconnect also offers inline GitHub token help', async (t
   assert.equal(links[0].getAttribute('rel'), 'noopener noreferrer');
   assert.match(readText(help), /Only select repositories/);
   assert.doesNotMatch(readText(help), /All repositories|Administration: Read and write|prefill|1-day/);
-  await clickDialogButton('Token help');
-  assert.equal(help.hidden, true);
+  await clickDialogButton('Back to form');
   assert.equal(connectionControl('catalog-reconnect-token'), token);
   assert.equal(token.parentElement, parent);
   assert.equal(token.value, TEST_TOKEN);

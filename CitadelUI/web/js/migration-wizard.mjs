@@ -1,4 +1,5 @@
 import { h, mount } from './dom.mjs';
+import { githubTokenHelpButton } from './github-token-help.mjs';
 import { formatIcon } from './format-icon.mjs';
 import { reportClientError } from './diagnostics-client.mjs';
 import { showDialog, dismissDialog, confirmDialog } from './dialog.mjs';
@@ -119,7 +120,6 @@ export async function openMigrationWizard({
   let connection = sourceConnection;
   let profiles = [];
   let profileId = '';
-  let tokenHelpExpanded = false;
   let allowDismiss = false;
   let busy = false;
   let busyAction = null;
@@ -902,36 +902,13 @@ export async function openMigrationWizard({
 
   function renderTokenField() {
     tokenInput.disabled = busy;
-    const help = h('div', {
-      id: 'migration-token-help', class: 'catalog-token-help',
-      hidden: !tokenHelpExpanded, role: 'region', 'aria-label': 'Read-only source token help',
-    },
-    h('a', { href: 'https://github.com/settings/personal-access-tokens/new', target: '_blank', rel: 'noopener noreferrer' },
-      'Create a fine-grained token on GitHub'),
-    h('ol', {},
-      h('li', {}, 'Give the token a name and a short expiration. Set Resource owner to the user or organization that owns the source.'),
-      h('li', {}, 'Under Repository access, choose Only select repositories and select the source repository.'),
-      h('li', {}, 'Under Repository permissions, set ', h('strong', {}, 'Contents: Read-only'), '.'),
-      h('li', {}, 'Generate the token, copy it once, and paste it into Source GitHub token.')),
-    h('p', {}, h('strong', {}, 'Metadata: Read-only'), ' is included automatically. Leave other permissions unset. Source reading does not require write, Administration, repository creation, Actions, or Workflows permissions.'),
-    h('p', {}, 'Organization approval may be required before a token can read private repositories. A token cannot grant more access than your account has.'),
-    h('p', {}, 'This token is session-only and is erased from the form when submitted. Saved connection persistence is managed separately in Settings.'));
-    const toggle = h('button', {
-      type: 'button', class: 'btn btn-sm', disabled: busy,
-      'aria-controls': 'migration-token-help', 'aria-expanded': String(tokenHelpExpanded),
-      onclick: () => {
-        tokenHelpExpanded = !tokenHelpExpanded;
-        help.hidden = !tokenHelpExpanded;
-        toggle.setAttribute('aria-expanded', String(tokenHelpExpanded));
-      },
-    }, 'Token help');
+    const help = githubTokenHelpButton({ id: 'migration-token', purpose: 'source', disabled: busy, show, dismiss });
     return h('div', { class: 'catalog-field' },
       h('div', { class: 'catalog-field-head' },
-        h('label', { class: 'catalog-field-label', for: 'migration-source-token' }, 'Source GitHub token'), toggle),
+        h('label', { class: 'catalog-field-label', for: 'migration-source-token' }, 'Source GitHub token'), help),
       tokenInput,
       h('small', { id: 'migration-source-token-hint', class: 'hint' },
-        'Fine-grained token. Only select the source repository; Contents: Read-only. Metadata read is automatic. Session only.'),
-      help);
+        'Fine-grained token. Only select the source repository; Contents: Read-only. Metadata read is automatic. Session only.'));
   }
 
   function renderGitHubSetup() {

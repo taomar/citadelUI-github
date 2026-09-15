@@ -423,8 +423,11 @@ setup reports completion.
 
 Creation uses a temporary fine-grained token with All repositories access and
 Administration/Contents read-write permissions. Normal editing retains its
-selected-repository Contents-only recommendation. Organization discovery and
-membership checks require Members read access for the selected organization.
+selected-repository Contents-only recommendation. Discovery combines membership
+information with owners of repositories the token can read. It performs no write
+permission probes and does not require write access. An explicit organization
+profile lookup also proves visibility only. Creation's active-membership checks
+still require Members read access for the selected organization.
 The UI distinguishes verified membership, policy denial and unverified create
 rights; it does not treat a failed lookup as an empty organization list.
 Workflows permission is
