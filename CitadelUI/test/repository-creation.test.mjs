@@ -66,6 +66,21 @@ test('repository creation: strict Git object model has known real SHA-1 blob and
   }), /not source/);
 });
 
+test('repository creation: managed account logins remain valid through preparation and journal reload', async (t) => {
+  const cx = await context(t);
+  cx.mock.identity.login = 'fixture-owner_acme';
+  cx.session.login = cx.mock.identity.login;
+  const op = await ready(cx, creation('managed-copy'));
+  const complete = await finish(cx, op);
+  assert.equal(complete.state, 'complete', JSON.stringify(complete.error));
+  assert.equal(cx.mock.repos.get('fixture-owner_acme/managed-copy').private, true);
+  const reloaded = new RepositoryCreationService(cx.config);
+  await reloaded.initialize();
+  assert.equal((await reloaded.status(cx.session, op.id)).state, 'complete');
+  reloaded.shutdown();
+  await reloaded.settled();
+});
+
 test('repository creation: read-only prepare pins citadel-v1 and full snapshot preserves bytes, modes, license and dotfiles', async (t) => {
   const files = citadelRepositoryFiles({
     'LICENSE': 'MIT fixture license\nKeep exactly.\n',

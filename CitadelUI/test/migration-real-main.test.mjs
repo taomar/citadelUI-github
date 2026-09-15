@@ -153,10 +153,10 @@ test('migration real-main reporting counts real edits separately from equal acce
 test('migration real-main classification remains value-free and distinguishes type, constraint and candidate ambiguity', () => {
   const plan = buildMigrationPlan({
     target: {
-      text: "param Count = 1\nparam location = 'current'\nparam retained = false\n",
-      schemaText: "param Count int\n@allowed(['current'])\nparam location string\nparam retained bool\n",
+      text: "param Count = 1\nparam sku = 'current'\nparam retained = false\n",
+      schemaText: "param Count int\n@allowed(['current'])\nparam sku string\nparam retained bool\n",
     },
-    donors: [{ id: 'synthetic', alias: 'main.bicepparam', format: 'bicepparam', text: "param count = 'synthetic-type-error'\nparam location = 'synthetic-constraint-error'\nparam location = 'current'\nparam old = true\n" }],
+    donors: [{ id: 'synthetic', alias: 'main.bicepparam', format: 'bicepparam', text: "param count = 'synthetic-type-error'\nparam sku = 'synthetic-constraint-error'\nparam sku = 'current'\nparam old = true\n" }],
   });
   const counts = migrationClassification(plan);
   assert.equal(counts.typeMismatch, 1);

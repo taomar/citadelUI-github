@@ -2,6 +2,7 @@ import {
   children, decodeHclString, isExactNumber, nativeError, objectKey,
   readHclLiteral, unwrap, withNativeCst,
 } from './parser.mjs';
+import { isRegionField } from '../region-fields.mjs';
 
 const own = (value, key) => value !== null && typeof value === 'object' && Object.hasOwn(value, key);
 const presentSecret = (value) => Array.isArray(value) ? value.some(presentSecret) :
@@ -216,7 +217,8 @@ function validateValue(value, shape, path, findings) {
     if (shape.nullable === false) add('The variable declares nullable = false.');
     return;
   }
-  if (shape.allowedValues?.length && !shape.allowedValues.some((entry) => nativeLiteralEqual(entry, value))) {
+  if (shape.allowedValues?.length && !(isRegionField(path.at(-1)) && typeof value === 'string') &&
+      !shape.allowedValues.some((entry) => nativeLiteralEqual(entry, value))) {
     add('Value is outside the values permitted by the native Terraform validation.');
   }
   if (shape.type === 'any') return;

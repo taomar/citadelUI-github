@@ -22,6 +22,16 @@ Key Vault.
 For task procedures, start with the [user guide](../guides/using-the-control-plane.md).
 This reference holds the format, storage, transport and parser boundaries.
 
+Region fields accept identifiers absent from the suggestion list as ordinary
+values, including nested and expression-backed fields. Region-only enum lists
+do not block saving or mark the entry unsupported. This is source editing, not
+a promise of Azure availability; template decorators/validation blocks are not
+silently changed. Other type, enum and sensitive-value safeguards still apply.
+
+GitHub.com Enterprise Managed User logins such as `name_company` are supported.
+Connection ownership still uses the immutable numeric GitHub account ID, and
+enterprise repository access/policy remains enforced by GitHub.
+
 | Reference | Scope |
 | --- | --- |
 | [Bicep resource tags](#literal-bicep-resource-tags) | Source-defined literal entries, explicit staging and save/restore |

@@ -1,4 +1,5 @@
 import { refNameProblem } from './git-refs.mjs';
+import { isGitHubLogin } from './github-login.mjs';
 import { isSkippedDirectory, normalizeDirectoryAlias, sourceExtension } from './source-scope.mjs';
 import { MigrationError, safeLabel, sensitiveText } from './migration-input.mjs';
 
@@ -21,7 +22,7 @@ export function publicRepositoryName(input) {
   }
   const parts = name.split('/');
   if (parts.length !== 2 ||
-      !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(parts[0]) ||
+      !isGitHubLogin(parts[0]) || parts[0].endsWith('-') ||
       !/^[A-Za-z0-9_.-]{1,100}$/.test(parts[1]) || ['.', '..'].includes(parts[1])) {
     throw new MigrationError('public-input');
   }

@@ -1,6 +1,6 @@
 /**
  * Versioned, offline Azure product metadata used only for editor guidance.
- * Legal values still come from the repository's Bicep @allowed decorators.
+ * Region lists are suggestions, not deployment-availability validation.
  */
 
 export const AZURE_META = Object.freeze({

@@ -164,6 +164,21 @@ test('A5 Git connections: create persists through the existing vault and never r
   assert.equal(f.sessions.size, 1);
 });
 
+test('managed GitHub accounts retain encrypted credentials and numeric identity on restore', async (t) => {
+  const f = await fixture(t);
+  f.github.user.login = 'octo-dev_acme';
+  const created = await f.create(true);
+  assert.equal(created.persisted, true);
+  assert.equal(created.profile.accountLogin, 'octo-dev_acme');
+  await f.routes.disconnectConnection(created.profile.id);
+  const restored = await f.routes.resumeConnection(created.profile.id);
+  assert.equal(restored.profile.accountId, created.profile.accountId);
+  assert.equal(restored.profile.accountLogin, 'octo-dev_acme');
+  assert.equal(restored.persisted, true);
+  assert.equal(JSON.stringify(restored).includes(TEST_TOKEN), false);
+  assert.equal((await readFile(f.vault.path(created.profile.id), 'utf8')).includes(TEST_TOKEN), false);
+});
+
 for (const failure of ['throw', 'false', 'unavailable']) {
   test(`A5 Git connections: reconnect erases the old envelope before ${failure} persistence`, async (t) => {
     const f = await fixture(t);

@@ -70,6 +70,10 @@ it an **environment**. These names do not create a deployed environment or a
 Terraform CLI/state workspace. A native **unit** is one supported root plus one
 explicit operator value file within a workspace.
 
+GitHub Enterprise Managed User logins such as `name_company` are accepted.
+The connection is still bound to GitHub's immutable numeric account ID; the
+token must have access to the selected repositories under the enterprise policy.
+
 Choose the flow that matches your task:
 
 | Task | Format and action |
@@ -362,6 +366,17 @@ The source branch and actual write branch are not interchangeable.
 do not use it as a way to repair an unresolved transaction.
 
 ## The three areas
+
+Region dropdowns are suggestions: type the region identifier you need even if
+it is not listed, then press **Enter**, **Tab**, or continue to **Review & save**.
+The value is saved normally without an unsupported/custom marker. This also
+applies to region fields in nested objects, expression fallbacks, native
+Terraform, migration and export controls. Unrelated enums, types, secret
+boundaries and required-value checks remain in place.
+
+Saving a region does not edit a Bicep `@allowed` decorator or a Terraform
+validation block. The deployment template and service availability still govern
+deployment; maintain those outside the value editor when needed.
 
 The following area walkthroughs describe **Bicep / Citadel**. For native names,
 files and semantics, use [Native Terraform workspaces](#native-terraform-workspaces).

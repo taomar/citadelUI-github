@@ -73,6 +73,8 @@ export function picker(options, onPick, props = {}) {
   const panelId = `picker-listbox-${++pickerSequence}`;
   let query = '';
   let preserveQueryOnFocus = false;
+  let composing = false;
+  let selectedValue = String(props.value || '');
 
   const input = h('input', {
     class: 'ctl ctl-combo ctl-w-id',
@@ -94,13 +96,13 @@ export function picker(options, onPick, props = {}) {
   const actions = new Set();
   const inAction = (target) => [...actions].some((action) => action.contains(target));
 
-  const close = () => {
+  const close = (restore = true) => {
     deactivate(lifecycle);
     panel.classList.remove('mp-open');
     input.setAttribute('aria-expanded', 'false');
     input.removeAttribute('aria-activedescendant');
     query = '';
-    input.value = props.value || '';
+    if (restore) input.value = selectedValue;
     if (panel.isConnected) panel.remove();
   };
 
@@ -110,6 +112,7 @@ export function picker(options, onPick, props = {}) {
     // Close before handing over: the caller re-renders synchronously, and a
     // panel left in the body would outlive the field that owns it.
     close();
+    if (props.commitOnBlur) selectedValue = name;
     input.value = name;
     onPick(name);
   };
@@ -217,6 +220,8 @@ export function picker(options, onPick, props = {}) {
     query = input.value;
     open();
   });
+  input.addEventListener('compositionstart', () => { composing = true; });
+  input.addEventListener('compositionend', () => { composing = false; });
   if (props.commitOnBlur || props.freeText === false) {
     input.addEventListener('blur', () => {
       setTimeout(() => {
@@ -224,10 +229,10 @@ export function picker(options, onPick, props = {}) {
           close();
           return;
         }
-        if (panel.contains(document.activeElement) || inAction(document.activeElement)) return;
+        if (composing || panel.contains(document.activeElement) || inAction(document.activeElement)) return;
         const exact = items.find((item) => String(item.value) === input.value);
         if (exact || props.freeText !== false) {
-          if (String(input.value) === String(props.value || '')) close();
+          if (String(input.value) === selectedValue) close();
           else choose(input.value);
         } else {
           input.value = props.value || '';
@@ -237,6 +242,7 @@ export function picker(options, onPick, props = {}) {
     });
   }
   input.addEventListener('keydown', (e) => {
+    if (e.isComposing || composing) return;
     const choices = () => Array.from(panel.querySelectorAll('.mp-item:not(:disabled)'));
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
@@ -252,8 +258,13 @@ export function picker(options, onPick, props = {}) {
       e.preventDefault();
       const exact = items.find((item) => String(item.value) === input.value);
       if (exact || props.freeText !== false) choose(input.value);
+    } else if (e.key === 'Tab' && props.commitOnBlur) {
+      const exact = items.find((item) => String(item.value) === input.value);
+      if (input.value !== selectedValue && (exact || props.freeText !== false)) choose(input.value);
+      else close();
     } else if (e.key === 'Escape') {
       close();
+      props.onCancel?.();
     }
   });
   panel.addEventListener('keydown', (event) => {
@@ -275,6 +286,7 @@ export function picker(options, onPick, props = {}) {
       event.preventDefault();
       input.focus();
       close();
+      props.onCancel?.();
     }
   });
   panel.addEventListener('focusout', () => {
@@ -294,7 +306,11 @@ export function picker(options, onPick, props = {}) {
     place();
   };
   const outside = (event) => {
-    if (!wrap.contains(event.target) && !panel.contains(event.target) && !inAction(event.target)) close();
+    if (!wrap.contains(event.target) && !panel.contains(event.target) && !inAction(event.target)) {
+      // Field-style pickers keep text until blur/change commits it. Search-only
+      // pickers still treat an outside click as cancellation.
+      close(!(props.commitOnBlur && props.freeText !== false));
+    }
   };
   Object.assign(lifecycle, { input, panel, close, follow, outside });
 

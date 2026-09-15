@@ -71,13 +71,13 @@ assert.match(
   ))[0].message,
   /not allowed/
 );
-assert.match(
+assert.equal(
   validateDocument(doc({
     location: 'uaenorth',
     apicLocation: '',
     enableAPICenter: true,
-  }))[0].message,
-  /API Center/
+  })).length,
+  0
 );
 assert.match(
   validateDocument(doc({

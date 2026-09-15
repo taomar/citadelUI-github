@@ -29,6 +29,7 @@ import { h } from './dom.mjs';
 import { picker } from './picker.mjs';
 import { editorField, focusEditorControl, inputFeedback } from './editor-focus.mjs';
 import { exactNumber, isExactNumber } from '../../shared/terraform/parser.mjs';
+import { isRegionField } from '../../shared/region-fields.mjs';
 import {
   APIC_LOCATION_VALUES,
   PRIMARY_REGIONS,
@@ -271,7 +272,7 @@ function semanticFieldName(path = []) {
 }
 
 function isLocationSchema(schema, path = []) {
-  return /location|region/i.test((schema && schema.name) || semanticFieldName(path));
+  return isRegionField((schema && schema.name) || semanticFieldName(path));
 }
 
 export function regionOptionsFor(schema, path = []) {
@@ -295,29 +296,31 @@ function withRegionSchema(schema, path) {
   };
 }
 
-function comboControl(value, allowed, commit, secure, schema) {
+function comboControl(value, allowed, commit, secure, schema, path, ctx) {
   const current = value === null || value === undefined ? '' : String(value);
   const known = allowed.map(String);
   const width = widthClass(schema, current);
   const location = isLocationSchema(schema);
 
   if (location) {
+    if (current && !known.includes(current)) known.push(current);
     const candidates = known.map((option) => ({
       value: option,
       meta: option === '' ? 'Use primary location' : REGION_NAMES[option] || option,
     }));
     const control = picker(candidates, commit, {
       value: current,
-      placeholder: schema.name === 'apicLocation' ? 'Use primary location' : 'Choose a region',
+      placeholder: schema.name === 'apicLocation' ? 'Use primary location' : 'Type or choose a region',
       ariaLabel: `Value for ${schema.name}`,
-      freeText: false,
+      freeText: true,
+      freeTextLabel: 'Use this region',
       allowEmpty: known.includes(''),
-      empty: 'No legal region matches.',
+      empty: 'Type a region or choose a suggestion.',
       commitOnBlur: true,
+      onCancel: () => ctx.onInputDraft?.(path, null),
     });
-    const note = outsideNote();
-    note.hidden = current === '' || known.includes(current);
-    return h('div', { class: 'combo' }, control.el, note);
+    draftControl(control.input, path, ctx, () => control.choose());
+    return h('div', { class: 'combo' }, control.el);
   }
 
   const wrap = h('div', { class: 'combo' });
@@ -486,7 +489,7 @@ function scalarControl(value, path, ctx, schema) {
   }
 
   if (schema && Array.isArray(schema.allowedValues) && schema.allowedValues.length) {
-    return namedControl(comboControl(value, schema.allowedValues, commit, schema.secure, schema), label, path);
+    return namedControl(comboControl(value, schema.allowedValues, commit, schema.secure, schema, path, ctx), label, path);
   }
 
   const str = value === null ? '' : String(value);

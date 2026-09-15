@@ -18,6 +18,7 @@ import { githubError } from './api.mjs';
 import { inspectRepositoryCompatibility } from './compatibility.mjs';
 import { decodeSnapshotBlob as decodeBlob, objectSha as sha, readRepositoryManifest, treeHash } from './repository-snapshot.mjs';
 import { refNameProblem } from '../../shared/git-refs.mjs';
+import { isGitHubLogin } from '../../shared/github-login.mjs';
 import { DEFAULT_REPOSITORY_SOURCE, parseRepositorySource, validateNewRepositoryName } from '../../shared/repository-source.mjs';
 import { REPOSITORY_SNAPSHOT_LIMITS } from '../../shared/repository-snapshot.mjs';
 
@@ -49,7 +50,6 @@ const STAGES = Object.freeze({
   superseded: 'Replaced by a newer read-only preparation.',
 });
 const SHA = /^[0-9a-f]{40}$/;
-const LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 const UUID = /^[0-9a-f-]{36}$/;
 const fail = (code, message, status = 409) => githubError(status, code, message);
 const hash = (text) => createHash('sha256').update(text).digest('hex');
@@ -148,7 +148,7 @@ export class RepositoryCreationService {
           throw new Error('Invalid repository creation journal.');
         }
         for (const op of stored.operations) {
-          if (!UUID.test(op.id) || !UUID.test(op.nonce) || !validId(op.accountId) || !LOGIN.test(op.login) ||
+          if (!UUID.test(op.id) || !UUID.test(op.nonce) || !validId(op.accountId) || !isGitHubLogin(op.login) ||
               validateNewRepositoryName(op.name) !== op.name || !SHA.test(op.source?.commit || '0'.repeat(40))) {
             throw new Error('Invalid repository creation journal.');
           }
@@ -168,7 +168,7 @@ export class RepositoryCreationService {
 
   authorize(session, op = null) {
     this.validateSession?.(session);
-    if (!session?.token || typeof session.token !== 'string' || !validId(session.accountId) || !LOGIN.test(session.login || '')) {
+    if (!session?.token || typeof session.token !== 'string' || !validId(session.accountId) || !isGitHubLogin(session.login)) {
       throw fail('IMPORT_AUTH_REQUIRED', 'Connect GitHub before using repository creation.', 401);
     }
     if (op && session.accountId !== op.accountId) throw fail('IMPORT_WRONG_ACCOUNT', 'This operation belongs to another GitHub account.', 403);

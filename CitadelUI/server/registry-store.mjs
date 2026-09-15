@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { atomicJson } from './atomic-json.mjs';
 import { transactionError } from './transactions.mjs';
 import { labelKey as stringLabelKey } from '../shared/label-key.mjs';
+import { isGitHubLogin } from '../shared/github-login.mjs';
 import { assertNoWritableOverlap, assertUnchangedConfiguration, assertUnchangedNativeSource, bindingKey, configurationOf, validateConfiguration } from '../shared/workspace-configuration.mjs';
 
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -103,7 +104,8 @@ function gitRefName(value, name) {
 
 function repositoryFullName(value) {
   const fullName = typeof value === 'string' ? value.trim() : '';
-  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/.test(fullName)) {
+  const parts = fullName.split('/');
+  if (parts.length !== 2 || !isGitHubLogin(parts[0]) || !/^[A-Za-z0-9._-]{1,100}$/.test(parts[1])) {
     throw transactionError(400, 'INVALID_REGISTRY_REPOSITORY', 'Invalid repository full name.');
   }
   return fullName;

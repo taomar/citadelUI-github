@@ -39,6 +39,7 @@ import { join } from 'node:path';
 
 import { atomicJson } from './atomic-json.mjs';
 import { transactionError } from './transactions.mjs';
+import { isGitHubLogin } from '../shared/github-login.mjs';
 
 export const CONNECTIONS_VERSION = 1;
 const MAX_PROFILES = 24;
@@ -62,7 +63,7 @@ export function profileName(value) {
 
 function accountLogin(value) {
   const login = typeof value === 'string' ? value.trim() : '';
-  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(login)) {
+  if (!isGitHubLogin(login)) {
     throw transactionError(400, 'INVALID_CONNECTION_ACCOUNT', 'Invalid GitHub account login.');
   }
   return login;

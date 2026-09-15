@@ -1,4 +1,5 @@
-import { API_CENTER_REGIONS, APIM_SKUS, LOGIC_APPS_TEMPLATE } from './azuremeta.mjs';
+import { APIM_SKUS, LOGIC_APPS_TEMPLATE } from './azuremeta.mjs';
+import { isRegionField } from '../../shared/region-fields.mjs';
 import {
   azureProhibitedOverlap,
   Ipv4Cidr,
@@ -332,6 +333,7 @@ export function validateDocument(doc, { values: literalValues = null } = {}) {
   for (const [name, definition] of Object.entries(schema)) {
     if (!Array.isArray(definition.allowedValues) || !values.has(name)) continue;
     const value = values.get(name);
+    if (isRegionField(name) && typeof value === 'string') continue;
     if (!definition.allowedValues.some((allowed) => Object.is(allowed, value))) {
       findings.push(finding(name, `${JSON.stringify(value)} is not allowed by ${name}'s Bicep @allowed decorator.`));
     }
@@ -350,11 +352,6 @@ export function validateDocument(doc, { values: literalValues = null } = {}) {
     if (!Number.isInteger(units) || units < LOGIC_APPS_TEMPLATE.min || units > LOGIC_APPS_TEMPLATE.max) {
       findings.push(finding('logicAppsSkuCapacityUnits', 'Assigned plan instances must be an integer from 1 to 20 for this template.'));
     }
-  }
-
-  if (values.get('enableAPICenter') === true && values.get('apicLocation') === '' && !API_CENTER_REGIONS.includes(values.get('location'))) {
-    findings.push(finding('location', 'API Center is enabled and inherits this location, which is outside the eight API Center regions. Choose an API Center location explicitly.',
-      ['location'], 'error', VALIDATION_INPUTS.apiCenter));
   }
 
   const networkStart = findings.length;

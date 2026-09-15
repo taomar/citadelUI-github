@@ -1,4 +1,5 @@
 import { extractSchema } from './citadel-core.mjs';
+import { isRegionField } from './region-fields.mjs';
 import {
   literalBicep, MigrationError, MIGRATION_LIMITS, parameterName, safeLabel,
   scanBicep, sensitiveName, sensitiveValue,
@@ -130,7 +131,8 @@ export function checkMigrationValue(value, definition) {
   if (!definition?.known) return ['The current schema is unknown or unsupported.'];
   if (!typeMatches(value, definition.type)) return [`Requires a literal ${definition.type}; no coercion is performed.`];
   const problems = [];
-  if (definition.allowedValues && !definition.allowedValues.some((allowed) => Object.is(allowed, value))) {
+  if (definition.allowedValues && !(isRegionField(definition.name) && typeof value === 'string') &&
+      !definition.allowedValues.some((allowed) => Object.is(allowed, value))) {
     problems.push('The value is outside the current @allowed values.');
   }
   const size = typeof value === 'string' || Array.isArray(value) ? value.length : null;

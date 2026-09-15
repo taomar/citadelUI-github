@@ -1,9 +1,9 @@
 import { refNameProblem } from './git-refs.mjs';
+import { isGitHubLogin } from './github-login.mjs';
 
 export const DEFAULT_REPOSITORY_SOURCE =
   'https://github.com/mohamedsaif/ai-hub-gateway-solution-accelerator/blob/citadel-v1/';
 
-const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const REPOSITORY = /^[A-Za-z0-9_.-]{1,100}$/;
 
 export function validateNewRepositoryName(value) {
@@ -29,7 +29,7 @@ export function parseRepositorySource(value) {
     throw new Error('Use an unencoded GitHub repository URL without query, fragment or unsafe path characters.');
   }
   const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+)(\/.*)?$/.exec(raw);
-  if (!match || !OWNER.test(match[1]) || !REPOSITORY.test(match[2]) ||
+  if (!match || !isGitHubLogin(match[1]) || !REPOSITORY.test(match[2]) ||
       /^\.+$/.test(match[2]) || /\.git$/i.test(match[2])) {
     throw new Error('Use https://github.com/owner/repository, optionally followed by /tree/ref.');
   }
