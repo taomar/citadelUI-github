@@ -15,14 +15,14 @@ it does not deploy the gateway or manage Terraform state.
 
 The packaged Electron application needs no Docker, Node.js, or source checkout.
 The current desktop release is
-[Citadel UI Desktop v1.1.6](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.6).
+[Citadel UI Desktop v1.1.7](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.7).
 Download:
 
-- [Windows installer](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/CitadelUISetup.exe)
-- [Portable Windows ZIP](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/CitadelUIPortable.zip)
-- [macOS Apple Silicon DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/CitadelUI-macOS-arm64.dmg)
-- [macOS Intel DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/CitadelUI-macOS-x64.dmg)
-- [SHA-256 checksums](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/SHA256SUMS.txt)
+- [Windows installer](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/CitadelUISetup.exe)
+- [Portable Windows ZIP](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/CitadelUIPortable.zip)
+- [macOS Apple Silicon DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/CitadelUI-macOS-arm64.dmg)
+- [macOS Intel DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/CitadelUI-macOS-x64.dmg)
+- [SHA-256 checksums](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/SHA256SUMS.txt)
 
 See the
 [combined Windows and macOS deployment guide](guides/deployment.md#windows-and-macos-desktop-release)
@@ -37,10 +37,10 @@ in the current user's application-data directory, and keeps local repository
 handles in its own Electron profile.
 
 **Exact desktop build:** use tag
-[`citadel-ui-desktop-v1.1.6`](https://github.com/taomar/citadelUI-github/tree/citadel-ui-desktop-v1.1.6).
+[`citadel-ui-desktop-v1.1.7`](https://github.com/taomar/citadelUI-github/tree/citadel-ui-desktop-v1.1.7).
 This is the full application plus Electron wrapper, fixes and update controls.
 The embedded `server`, `shared` and `web` application baseline is
-[`0bc50b8c0c27002695cf9a8b47c0e1cd5e42037d`](https://github.com/taomar/citadelUI-github/tree/0bc50b8c0c27002695cf9a8b47c0e1cd5e42037d).
+[`772b49ff0a09a937a267c08c21f80c3247d6c1e6`](https://github.com/taomar/citadelUI-github/tree/772b49ff0a09a937a267c08c21f80c3247d6c1e6).
 It includes native Terraform, modularization and the current UI, plus unlisted
 region entry without special flags and managed GitHub account logins such as
 `name_company`. The full build retains the Electron
@@ -48,12 +48,14 @@ Windows/macOS local-folder fixes and updater. Versions through v1.1.3 packaged
 the older September 7 application. The lower-left version label, window title
 and attached `CitadelUI-build-*.json`
 identify the actual version and source; startup alone is not release verification.
-Version 1.1.6 also adds organization-first repository creation with explicit
-Personal/Organization identity, actionable errors and bounded read retries,
-clear import progress, and 69 documented Azure region suggestions.
-See the [current release details](./CitadelUI/RELEASE.md#desktop-v116-import-owners-and-progress)
+The current release includes organization-first repository creation with explicit
+Personal/Organization identity, actionable errors, bounded read retries, clear
+progress and 69 documented Azure region suggestions. Read-only repository
+visibility now also discovers organization owners. The setup wizard has separate
+destination/source sections and a preserving token-help overlay.
+See the [current release details](./CitadelUI/RELEASE.md#desktop-v117-read-only-discovery-and-wizard)
 for the native Windows/Mac evidence and exact artifact identity. These download
-links are pinned to v1.1.6, rather than following a future `latest` release.
+links are pinned to v1.1.7, rather than following a future `latest` release.
 
 Quit the older application before upgrading. Replace the whole portable folder
 or macOS `.app`, not just its executable, and retain the existing application-data
@@ -72,7 +74,7 @@ These instructions run **Citadel UI only**, not the gateway or sample apps.
 To get the exact source used for the published desktop build, clone its tag:
 
 ```text
-git clone --branch citadel-ui-desktop-v1.1.6 --single-branch https://github.com/taomar/citadelUI-github.git
+git clone --branch citadel-ui-desktop-v1.1.7 --single-branch https://github.com/taomar/citadelUI-github.git
 cd citadelUI-github
 git rev-parse HEAD
 ```

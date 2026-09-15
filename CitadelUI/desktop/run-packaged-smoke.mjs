@@ -75,6 +75,7 @@ try {
       result.version !== build.version || !result.interface?.currentSourceChoices ||
       !result.interface?.nativeParser || !result.interface?.customRegions || !result.interface?.diagnostics ||
       !result.interface?.regionCatalog || !result.interface?.ownerSelection ||
+      !result.interface?.tokenHelpOverlay || !result.interface?.structuredWizard ||
       result.interface?.updates?.phase !== 'available' || result.interface.updates.canInstall !== false ||
       !result.interface?.versionBadge?.text?.startsWith(`v${build.version} | ${source.revision.slice(0, 7)}`)) {
     throw new Error('The packaged process did not prove the current application UI and source revision.');

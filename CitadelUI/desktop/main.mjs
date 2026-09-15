@@ -736,7 +736,7 @@ async function runInterfaceAcceptance(window) {
     return AZURE_REGIONS.length === 69 && AZURE_REGIONS.every(region => options.includes(region));
   })()`);
   if (!regionCatalog) throw new Error('Packaged region dropdowns do not contain the complete documented catalog.');
-  const ownerSelection = await window.webContents.executeJavaScript(`(async () => {
+  const repositoryWizard = await window.webContents.executeJavaScript(`(async () => {
     const { runAddWorkspace } = await import('/js/workspace-catalog.mjs');
     const { RepositorySelection } = await import('/js/github-selection.mjs');
     const { closeDialog } = await import('/js/dialog.mjs');
@@ -766,16 +766,39 @@ async function runInterfaceAcceptance(window) {
         const owners = document.getElementById('catalog-create-repository-owner');
         const prepare = [...document.querySelectorAll('dialog[open] button')].find(button => button.textContent === 'Check source');
         if (owners && prepare && !prepare.disabled) {
-          return owners.value === 'Organization:202' &&
+          const dialog = document.querySelector('dialog[open]');
+          const ownerSelection = owners.value === 'Organization:202' &&
             [...owners.options].some(option => option.textContent.includes('Personal @desktop-user')) &&
-            document.querySelector('dialog[open]').textContent.includes('not inferred');
+            dialog.textContent.includes('not inferred');
+          const sections = [...dialog.querySelectorAll('.catalog-creation-grid > section')].map(node => node.getBoundingClientRect());
+          const structuredWizard = sections.length === 2 && dialog.scrollWidth <= dialog.clientWidth + 1 &&
+            (matchMedia('(min-width: 56.001rem)').matches ? sections[1].x > sections[0].x : sections[1].y >= sections[0].bottom);
+          const name = document.getElementById('catalog-create-repository-name');
+          const source = document.getElementById('catalog-create-repository-source');
+          name.value = 'packaged-wizard-draft';
+          name.dispatchEvent(new Event('input', { bubbles: true }));
+          const sourceValue = source.value;
+          const help = [...dialog.querySelectorAll('button')].find(button => button.textContent === 'Token help');
+          help.click();
+          const overlay = dialog.querySelector('h2')?.textContent === 'GitHub token help' &&
+            !document.getElementById('catalog-create-repository-name') &&
+            Boolean(dialog.querySelector('.catalog-token-help table'));
+          dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const tokenHelpOverlay = overlay && document.getElementById('catalog-create-repository-name') === name &&
+            name.value === 'packaged-wizard-draft' && source.value === sourceValue &&
+            document.getElementById('catalog-create-repository-owner') === owners &&
+            owners.value === 'Organization:202' && document.activeElement === help;
+          return { ownerSelection, tokenHelpOverlay, structuredWizard };
         }
         await new Promise(resolve => setTimeout(resolve, 25));
       }
       throw new Error('Owner discovery did not finish in the packaged UI.');
     } finally { panel.dispose(); closeDialog(); }
   })()`);
-  if (!ownerSelection) throw new Error('Packaged import owner selection is not organization-first and explicit.');
+  if (!repositoryWizard?.ownerSelection || !repositoryWizard.tokenHelpOverlay || !repositoryWizard.structuredWizard) {
+    throw new Error('Packaged repository owner selection, structured layout or preserving help overlay failed.');
+  }
 
   const created = new Promise((resolveWindow, rejectWindow) => {
     const onCreated = (child) => {
@@ -801,7 +824,7 @@ async function runInterfaceAcceptance(window) {
     diagnostics.destroy();
   }
   return { ownerSignIn: true, currentSourceChoices: true, nativeParser, customRegions, regionCatalog,
-    ownerSelection, diagnostics: true, versionBadge, updates, ...controls };
+    ...repositoryWizard, diagnostics: true, versionBadge, updates, ...controls };
 }
 
 function protectNavigation(window) {

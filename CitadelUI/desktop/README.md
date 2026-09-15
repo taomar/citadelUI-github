@@ -7,17 +7,17 @@ repository access into Electron's main process.
 ## Install the release
 
 The current package is
-[Citadel UI Desktop v1.1.6](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.6).
+[Citadel UI Desktop v1.1.7](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.7).
 Download the
-[Windows installer](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/CitadelUISetup.exe)
+[Windows installer](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/CitadelUISetup.exe)
 or
-[portable ZIP](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/CitadelUIPortable.zip),
+[portable ZIP](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/CitadelUIPortable.zip),
 or a macOS
-[Apple Silicon DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/CitadelUI-macOS-arm64.dmg)
+[Apple Silicon DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/CitadelUI-macOS-arm64.dmg)
 or
-[Intel DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/CitadelUI-macOS-x64.dmg).
+[Intel DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/CitadelUI-macOS-x64.dmg).
 Then verify it with
-[SHA256SUMS.txt](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/SHA256SUMS.txt).
+[SHA256SUMS.txt](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/SHA256SUMS.txt).
 Packages are unsigned and the macOS packages are not notarized until signing
 credentials are configured.
 
@@ -50,22 +50,22 @@ automated in CI.
 
 ## Source identity
 
-Version v1.1.6 combines application revision
-`0bc50b8c0c27002695cf9a8b47c0e1cd5e42037d` with the Windows/macOS Electron
+Version v1.1.7 combines application revision
+`772b49ff0a09a937a267c08c21f80c3247d6c1e6` with the Windows/macOS Electron
 fixes and updater. Unlisted regions are normal editable values, and managed
 GitHub logins with an underscore are accepted. Earlier desktop packages through v1.1.3 used the September 7
 application and did not include the later modularization, native Terraform and UI
 fixes.
 
-For the exact released source, use tag `citadel-ui-desktop-v1.1.6`, following the
+For the exact released source, use tag `citadel-ui-desktop-v1.1.7`, following the
 [pinned checkout](../../README.md#start-with-a-clone). The development branch
 `taomar-electron-desktop-packaging` may advance; it is not an immutable build
-identifier. See the [release details](../RELEASE.md#desktop-v116-import-owners-and-progress).
+identifier. See the [release details](../RELEASE.md#desktop-v117-read-only-discovery-and-wizard).
 `application-source.json` pins the reviewed application commit. Forge compares
 all `server`, `shared` and `web` files with it, then verifies the copied files
 against `resources/desktop-build.json`. Release staging rejects dirty builds.
 The title bar and a small lower-left label show the version and source commit
-(for example `v1.1.6 | 0bc50b8`); each release also attaches
+(for example `v1.1.7 | 772b49f`); each release also attaches
 `CitadelUI-build-<platform>-<arch>.json` with source/release revisions and hashes.
 
 The packaged test uses the real owner form and Add workspace dialog, checks both

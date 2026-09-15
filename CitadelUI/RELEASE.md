@@ -1,12 +1,48 @@
 # Local Release and Offline Operation
 
 The current packaged desktop delivery is
-[Citadel UI Desktop v1.1.6](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.6).
+[Citadel UI Desktop v1.1.7](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.7).
 Its full build source is the release tag target, recorded as `releaseRevision`
 in the attached `CitadelUI-build-*.json`. It integrates the import and region fixes
 with the current application, Electron Windows/macOS fixes, version and updater.
 Follow the [pinned release checkout](../README.md#start-with-a-clone).
 Internal handovers and detailed review records remain local-only.
+
+## Desktop v1.1.7 read-only discovery and wizard
+
+Application baseline:
+[`772b49ff0a09a937a267c08c21f80c3247d6c1e6`](https://github.com/taomar/citadelUI-github/commit/772b49ff0a09a937a267c08c21f80c3247d6c1e6).
+The lower-left label reads `v1.1.7 | 772b49f`.
+
+This corrects a reproduced v1.1.6 gap: an organization could be visible through
+readable repositories but absent from the membership list. Discovery now checks
+both sources, deduplicates immutable owner IDs and keeps partial or denied
+results visible. Read-only access can discover an owner; it does not grant
+membership or permission to create. Explicit handle lookup can find a profile
+without claiming membership, and creation still performs its strict checks.
+
+The setup wizard separates connection identity, repository destination and source
+snapshot. The authenticated GitHub user is no longer described as the token's
+destination. Source and destination sit side by side on larger screens and stack
+on narrow ones, with recovery actions kept separate.
+
+Token help is a compact overlay with scope, permissions and connection steps.
+Creation, editing, reconnection and read-only migration use the shared help.
+Closing it or pressing Escape restores the unfinished form, its values, scroll
+position and help-button focus. Opening help never submits or displays a token.
+
+Read-only organization discovery was exercised through the real application HTTP
+boundary with simulated GitHub responses and a ban on outbound write methods.
+Browser checks covered organization selection, 1440px and 390px layouts, no
+horizontal overflow, retained input values and restored focus. No client PAT was
+collected, and the client's live organization was not modified or certified.
+The final application suite recorded 2,675 entries: 2,631 passed, nine established
+baseline failures, 35 skips and no cancellations.
+
+Native release gates include the new discovery and help tests, packaged wizard
+layout and overlay acceptance, and a real installed Windows v1.1.6-to-v1.1.7
+upgrade. Existing directory permissions, update consent, region entry and source
+integrity protections remain. Earlier releases and their binaries are unchanged.
 
 ## Desktop v1.1.6 import owners and progress
 
@@ -240,13 +276,13 @@ downloads, not part of the application image or release archive.
 
 ## Windows and macOS desktop packages
 
-Desktop v1.1.6 packages application revision
-`0bc50b8c0c27002695cf9a8b47c0e1cd5e42037d` from the delivery branch, including the
+Desktop v1.1.7 packages application revision
+`772b49ff0a09a937a267c08c21f80c3247d6c1e6` from the delivery branch, including the
 latest modularization and fixes. It retains the Windows/macOS Electron fixes.
 Desktop versions through v1.1.3 incorrectly used the September 7 application
 baseline. Do not use a version label or a startup smoke check as source proof.
 
-To rebuild this release's source, use tag `citadel-ui-desktop-v1.1.6`, separately
+To rebuild this release's source, use tag `citadel-ui-desktop-v1.1.7`, separately
 from the container. The development branch can advance beyond the released
 commit. `desktop/application-source.json` pins the embedded application baseline:
 
@@ -294,7 +330,7 @@ picker or claim that it selected a specific runner filesystem path.
 
 Windows staging validates the Squirrel feed's version, file sizes and package
 hashes and publishes the referenced packages. The native Windows CI check
-installs the checksum-pinned v1.1.5 fixture on a disposable runner, applies the
+installs the checksum-pinned v1.1.6 fixture on a disposable runner, applies the
 candidate feed with `Update.exe`, verifies the installed runtime identity, and
 runs the current packaged acceptance from that installation. It never runs on
 the operator's workstation or overwrites a pre-existing installation.

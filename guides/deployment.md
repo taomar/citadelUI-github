@@ -28,12 +28,13 @@ been tested live.
 ## Windows and macOS desktop release
 
 The current Electron release is
-[Citadel UI Desktop v1.1.6](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.6).
+[Citadel UI Desktop v1.1.7](https://github.com/taomar/citadelUI-github/releases/tag/citadel-ui-desktop-v1.1.7).
 It needs no Docker, Node.js, Azure account, or source checkout.
 
-Version v1.1.6 packages application revision
-`0bc50b8c0c27002695cf9a8b47c0e1cd5e42037d`, including organization-first owner
-selection, actionable import errors, bounded read retries, clear progress and
+Version v1.1.7 packages application revision
+`772b49ff0a09a937a267c08c21f80c3247d6c1e6`, including organization-first owner
+selection through read-only repository visibility, structured setup and
+preserving token-help overlays, actionable import errors, bounded read retries, clear progress and
 the complete documented region catalog. It retains normal entry of unlisted
 regions and managed GitHub logins, plus native Terraform, local-source creation,
 modularization and the Windows/macOS Electron fixes. Versions through
@@ -43,21 +44,21 @@ server, shared and browser files.
 
 | Platform | Installer | Portable |
 | --- | --- | --- |
-| Windows x64 | [Installer](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/CitadelUISetup.exe) | [ZIP](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/CitadelUIPortable.zip) |
-| macOS Apple Silicon | [DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/CitadelUI-macOS-arm64.dmg) | [ZIP](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/CitadelUI-macOS-arm64.zip) |
-| macOS Intel | [DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/CitadelUI-macOS-x64.dmg) | [ZIP](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/CitadelUI-macOS-x64.zip) |
+| Windows x64 | [Installer](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/CitadelUISetup.exe) | [ZIP](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/CitadelUIPortable.zip) |
+| macOS Apple Silicon | [DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/CitadelUI-macOS-arm64.dmg) | [ZIP](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/CitadelUI-macOS-arm64.zip) |
+| macOS Intel | [DMG](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/CitadelUI-macOS-x64.dmg) | [ZIP](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/CitadelUI-macOS-x64.zip) |
 
-These links select the exact v1.1.6 assets, not a future `latest` release.
+These links select the exact v1.1.7 assets, not a future `latest` release.
 The full build commit is the tag target and the `releaseRevision` recorded in
-each `CitadelUI-build-*.json`; `0bc50b8` identifies the embedded application
-baseline. The [release details](../CitadelUI/RELEASE.md#desktop-v116-import-owners-and-progress)
+each `CitadelUI-build-*.json`; `772b49f` identifies the embedded application
+baseline. The [release details](../CitadelUI/RELEASE.md#desktop-v117-read-only-discovery-and-wizard)
 describe the import fixes and native release gates.
 
 Use the Apple Silicon package for an M1, M2, M3, M4, or later Apple processor.
 Use the Intel package when **About This Mac** identifies an Intel processor.
 
 Verify every package against
-[SHA256SUMS.txt](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.6/SHA256SUMS.txt).
+[SHA256SUMS.txt](https://github.com/taomar/citadelUI-github/releases/download/citadel-ui-desktop-v1.1.7/SHA256SUMS.txt).
 Use the Windows installer or macOS DMG for the normal platform installation
 flow. For a ZIP package, extract the complete archive before running the app.
 
@@ -96,7 +97,7 @@ the old instance first. A new launch otherwise focuses that already-running
 instance. Run the new Windows installer, replace the whole extracted portable
 folder, or replace the complete macOS `.app`; copying only the executable leaves
 old resources behind. Keep the existing application-data profile, owner and key.
-The lower-left label should read **v1.1.6 | 0bc50b8**. The Add workspace
+The lower-left label should read **v1.1.7 | 772b49f**. The Add workspace
 dialog includes **Configuration format**, **Terraform (native)** and
 **Create local from Citadel source**. The Diagnostics link opens a sandboxed
 window on the same desktop origin.
@@ -146,7 +147,7 @@ profile while the app is running.
 ## Azure prerequisites
 
 **Choose the application version first.** The clone examples below pin
-`citadel-ui-desktop-v1.1.6`; compare its full source commit with the release's
+`citadel-ui-desktop-v1.1.7`; compare its full source commit with the release's
 `CitadelUI-build-*.json`. This includes the current UI and compatibility fixes,
 native workspaces, modularization and fixes; it does not follow an older `main`
 checkout or a moving branch. Use the
@@ -177,7 +178,7 @@ are never relaxed by reuse.
 Clone and create an azd environment:
 
 ```powershell
-git clone --branch citadel-ui-desktop-v1.1.6 --single-branch https://github.com/taomar/citadelUI-github.git
+git clone --branch citadel-ui-desktop-v1.1.7 --single-branch https://github.com/taomar/citadelUI-github.git
 cd .\citadelUI-github\CitadelUI
 az login
 azd config set auth.useAzCliAuth true
@@ -213,7 +214,7 @@ the first visitor owns a new container. There is no password reset.
 Clone and create a separate azd environment:
 
 ```powershell
-git clone --branch citadel-ui-desktop-v1.1.6 --single-branch https://github.com/taomar/citadelUI-github.git
+git clone --branch citadel-ui-desktop-v1.1.7 --single-branch https://github.com/taomar/citadelUI-github.git
 cd .\citadelUI-github\CitadelUI
 az login
 azd config set auth.useAzCliAuth true
@@ -346,7 +347,7 @@ Requires Docker Desktop/Engine 29+ with Compose and Edge or Chrome.
 No Azure account is needed; Windows PowerShell 5.1 or PowerShell 7 works.
 
 ```powershell
-git clone --branch citadel-ui-desktop-v1.1.6 --single-branch https://github.com/taomar/citadelUI-github.git
+git clone --branch citadel-ui-desktop-v1.1.7 --single-branch https://github.com/taomar/citadelUI-github.git
 cd .\citadelUI-github\CitadelUI
 if (-not (Test-Path container.env)) { Copy-Item container.env.example container.env }
 .\scripts\start.ps1
@@ -361,7 +362,7 @@ Requires Docker Desktop/Engine 29+ with Compose, Bash and Edge or Chrome.
 
 ```bash
 set -euo pipefail
-git clone --branch citadel-ui-desktop-v1.1.6 --single-branch https://github.com/taomar/citadelUI-github.git
+git clone --branch citadel-ui-desktop-v1.1.7 --single-branch https://github.com/taomar/citadelUI-github.git
 cd citadelUI-github/CitadelUI
 if [ ! -f container.env ]; then cp container.env.example container.env; fi
 if [ "$(uname -s)" = "Linux" ]; then
