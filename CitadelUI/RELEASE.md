@@ -10,6 +10,16 @@ Internal handovers and detailed review records remain local-only.
 
 ## Desktop v1.1.6 import owners and progress
 
+Released on 15 September 2026 from full build commit
+[`4f1e4d27afe03c1d156236bcefaa7bc7390cd48c`](https://github.com/taomar/citadelUI-github/commit/4f1e4d27afe03c1d156236bcefaa7bc7390cd48c).
+The [tagged native workflow](https://github.com/taomar/citadelUI-github/actions/runs/34976309629)
+passed Windows x64, Intel Mac and Apple Silicon gates, including a real installed
+Windows v1.1.5-to-v1.1.6 upgrade with retained state. All 12 public assets were
+downloaded anonymously and checked. Each of the three ZIPs matched all 180
+application files to its manifest and platform-specific Git checkout, accounting
+for Windows CRLF checkout conversion. The actual desktop updater accepted the
+published release and its verified Windows feed.
+
 Application baseline:
 [`0bc50b8c0c27002695cf9a8b47c0e1cd5e42037d`](https://github.com/taomar/citadelUI-github/commit/0bc50b8c0c27002695cf9a8b47c0e1cd5e42037d).
 The lower-left label reads `v1.1.6 | 0bc50b8`. All previous desktop, directory
@@ -46,8 +56,8 @@ failures remain, and an unchanged diagnostics case failed in the full run but
 passed in its isolated rerun. Native release gates include owner, retry, local
 progress, region, source-integrity and desktop regressions, plus organization
 selection and the complete region catalog inside each packaged renderer.
-Publication requires all three native package jobs and a real installed
-Windows v1.1.5-to-v1.1.6 upgrade with retained state.
+All three native package jobs and the real installed Windows upgrade passed
+before publication. Old release tags and binaries remain unchanged.
 
 ## Desktop v1.1.5 compatibility release
 

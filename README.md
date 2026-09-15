@@ -82,8 +82,8 @@ Compare the returned commit with `releaseRevision` in the release's
 A detached HEAD is normal when checking out a release tag. Do not substitute
 `main` or a moving branch when you need this exact release:
 `taomar-electron-desktop-packaging` can advance with later documentation or work,
-and `taomar-citadel-orchestrator` identifies the application baseline without
-the complete Electron delivery.
+and `taomar-citadel-orchestrator` is an earlier UI baseline, not this complete
+desktop release.
 
 The downloadable packages are the exact tested binaries. Rebuilding the same
 source may produce different archive hashes because of packaging timestamps
