@@ -10,6 +10,16 @@ Internal handovers and detailed review records remain local-only.
 
 ## Desktop v1.1.7 read-only discovery and wizard
 
+Released on 15 September 2026 from full build commit
+[`4a0914c8343ba22dabae48ff615ab680fd62315e`](https://github.com/taomar/citadelUI-github/commit/4a0914c8343ba22dabae48ff615ab680fd62315e).
+The [tagged native workflow](https://github.com/taomar/citadelUI-github/actions/runs/34991474149)
+passed Windows x64, Intel Mac and Apple Silicon package gates, including the
+preserving help overlay and a real installed Windows v1.1.6-to-v1.1.7 upgrade.
+The expanded focused release gate contains 334 passing tests. All 12 public assets
+were downloaded anonymously; each ZIP matched all 181 application files against
+its recorded hashes and platform-specific Git checkout. The actual desktop
+updater accepted the published v1.1.7 feed.
+
 Application baseline:
 [`772b49ff0a09a937a267c08c21f80c3247d6c1e6`](https://github.com/taomar/citadelUI-github/commit/772b49ff0a09a937a267c08c21f80c3247d6c1e6).
 The lower-left label reads `v1.1.7 | 772b49f`.
@@ -39,7 +49,7 @@ collected, and the client's live organization was not modified or certified.
 The final application suite recorded 2,675 entries: 2,631 passed, nine established
 baseline failures, 35 skips and no cancellations.
 
-Native release gates include the new discovery and help tests, packaged wizard
+The passed native release gates include the new discovery and help tests, packaged wizard
 layout and overlay acceptance, and a real installed Windows v1.1.6-to-v1.1.7
 upgrade. Existing directory permissions, update consent, region entry and source
 integrity protections remain. Earlier releases and their binaries are unchanged.
